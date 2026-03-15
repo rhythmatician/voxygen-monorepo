@@ -54,6 +54,7 @@ runs/
 data/*
 training_run.txt
 *.npz
+VoxelTree/data/
 
 *.egg-info/
 .venv/
