@@ -77,3 +77,6 @@ tools/data-harvester/bin/
 
 *.egg-info/
 .venv/
+
+tools/fabric-server/runtime/train/
+tools/fabric-server/runtime/validate/
