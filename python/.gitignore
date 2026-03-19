@@ -82,3 +82,6 @@ tools/data-harvester/bin/
 
 tools/fabric-server/runtime/train/
 tools/fabric-server/runtime/validate/
+
+profile_order.json
+tools/fabric-server/runtime/crash-reports/
