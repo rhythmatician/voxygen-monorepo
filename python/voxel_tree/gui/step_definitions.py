@@ -719,6 +719,7 @@ def _train_voxy_run(p: dict[str, Any]) -> None:
             surface_veg_weight=float(train.get("surface_veg_weight", 3.0)),
             stone_ore_weight=float(train.get("stone_ore_weight", 0.35)),
             holdout_db_path=holdout_db_path,
+            loss_schedule=train.get("loss_schedule"),
             allow_overwrite_without_resume=bool(train.get("force_retrain", False)),
             progress_callback=lambda epoch, total, _m: _report_progress(epoch, total),
         )
@@ -836,6 +837,7 @@ def _continue_train_voxy_run(p: dict[str, Any]) -> None:
             surface_veg_weight=float(train.get("surface_veg_weight", 3.0)),
             stone_ore_weight=float(train.get("stone_ore_weight", 0.35)),
             holdout_db_path=holdout_db_path,
+            loss_schedule=train.get("loss_schedule"),
             allow_overwrite_without_resume=bool(train.get("force_retrain", False)),
             progress_callback=lambda epoch, total, _m: _report_progress(epoch, total),
         )
@@ -913,6 +915,7 @@ def _make_train_voxy_l_run(level: int) -> Callable[[dict[str, Any]], None]:
             surface_veg_weight=float(train.get("surface_veg_weight", 3.0)),
             stone_ore_weight=float(train.get("stone_ore_weight", 0.35)),
             holdout_db_path=holdout_db_path,
+            loss_schedule=train.get("loss_schedule"),
             allow_overwrite_without_resume=bool(train.get("force_retrain", False)),
             progress_callback=lambda epoch, total, _m: _report_progress(epoch, total),
         )

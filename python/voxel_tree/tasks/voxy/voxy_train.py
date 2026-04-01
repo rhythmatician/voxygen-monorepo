@@ -104,6 +104,107 @@ def _compute_semantic_weights(
     return class_weights.to(labels.device)[labels_safe]
 
 
+def _default_loss_schedule_for_level(level: int) -> list[dict[str, float]]:
+    """Return default phase schedule for a Voxy level.
+
+    Each phase uses:
+    - end_pct: inclusive fraction of total epochs in [0, 1]
+    - alpha: blend factor toward weighted objective (1=fully weighted, 0=neutral)
+    - occ_scale: multiplier for occupancy term (L1-L4 only)
+    """
+    schedules: dict[int, list[dict[str, float]]] = {
+        4: [
+            {"end_pct": 0.40, "alpha": 1.00, "occ_scale": 1.00},
+            {"end_pct": 0.75, "alpha": 0.70, "occ_scale": 0.80},
+            {"end_pct": 1.00, "alpha": 0.40, "occ_scale": 0.60},
+        ],
+        3: [
+            {"end_pct": 0.35, "alpha": 1.00, "occ_scale": 1.00},
+            {"end_pct": 0.70, "alpha": 0.75, "occ_scale": 0.80},
+            {"end_pct": 1.00, "alpha": 0.50, "occ_scale": 0.50},
+        ],
+        2: [
+            {"end_pct": 0.30, "alpha": 0.90, "occ_scale": 0.80},
+            {"end_pct": 0.70, "alpha": 0.65, "occ_scale": 0.60},
+            {"end_pct": 1.00, "alpha": 0.35, "occ_scale": 0.40},
+        ],
+        1: [
+            {"end_pct": 0.25, "alpha": 0.80, "occ_scale": 0.60},
+            {"end_pct": 0.65, "alpha": 0.55, "occ_scale": 0.40},
+            {"end_pct": 1.00, "alpha": 0.25, "occ_scale": 0.30},
+        ],
+        0: [
+            {"end_pct": 0.20, "alpha": 0.70, "occ_scale": 0.00},
+            {"end_pct": 0.60, "alpha": 0.45, "occ_scale": 0.00},
+            {"end_pct": 1.00, "alpha": 0.15, "occ_scale": 0.00},
+        ],
+    }
+    return schedules[level]
+
+
+def _resolve_loss_schedule_for_epoch(
+    *,
+    level: int,
+    epoch: int,
+    total_epochs: int,
+    loss_schedule: Optional[Any],
+) -> dict[str, float]:
+    """Resolve dynamic alpha/occ schedule for the current epoch.
+
+    Supported forms:
+    - ``None``: fixed legacy behavior (alpha=1, occ_scale=1)
+    - ``"default_by_level"``: built-in schedule for L0-L4
+    - ``{"mode": "default_by_level"}``
+    - ``{"phases_by_level": {"0": [...], "1": [...], ...}}``
+    """
+    phases: Optional[list[dict[str, float]]] = None
+
+    if loss_schedule is None:
+        return {"alpha": 1.0, "occ_scale": 1.0}
+
+    if isinstance(loss_schedule, str):
+        if loss_schedule == "default_by_level":
+            phases = _default_loss_schedule_for_level(level)
+        else:
+            return {"alpha": 1.0, "occ_scale": 1.0}
+
+    elif isinstance(loss_schedule, dict):
+        mode = str(loss_schedule.get("mode", "")).strip()
+        if mode == "default_by_level":
+            phases = _default_loss_schedule_for_level(level)
+        else:
+            by_level = loss_schedule.get("phases_by_level", {})
+            if isinstance(by_level, dict):
+                level_key = str(level)
+                level_phases = by_level.get(level_key)
+                if isinstance(level_phases, list):
+                    phases = level_phases
+
+    if not phases:
+        return {"alpha": 1.0, "occ_scale": 1.0}
+
+    progress = float(epoch) / max(float(total_epochs), 1.0)
+    for phase in phases:
+        end_pct = float(phase.get("end_pct", 1.0))
+        if progress <= end_pct:
+            return {
+                "alpha": float(phase.get("alpha", 1.0)),
+                "occ_scale": float(phase.get("occ_scale", 1.0)),
+            }
+
+    last = phases[-1]
+    return {
+        "alpha": float(last.get("alpha", 1.0)),
+        "occ_scale": float(last.get("occ_scale", 1.0)),
+    }
+
+
+def _blend_toward_neutral(base: float, alpha: float, neutral: float = 1.0) -> float:
+    """Blend a scalar toward neutral by alpha in [0, 1]."""
+    a = max(0.0, min(1.0, float(alpha)))
+    return neutral + a * (float(base) - neutral)
+
+
 def _build_semantic_class_weights(
     *,
     num_classes: int,
@@ -256,6 +357,7 @@ def _voxy_level_loss(
             # Visibility-weighted loss: prioritise air-adjacent blocks
             weights = weights * _compute_surface_weights(labels, interior_weight, air_id=0)
         if use_semantic:
+            assert semantic_class_weights is not None
             # Semantic weighting: category-aware priorities from class weights
             weights = weights * _compute_semantic_weights(
                 labels,
@@ -282,6 +384,7 @@ def _voxy_level_loss(
         else:
             surface_frac = 1.0
         if use_semantic:
+            assert semantic_class_weights is not None
             class_flat = semantic_class_weights.to(labels.device)[labels.clamp(min=0).reshape(-1)]
             priority_frac = (class_flat[valid_mask] > priority_threshold).float().mean().item()
         else:
@@ -423,6 +526,7 @@ def train_voxy_level(
     surface_veg_weight: float = 3.0,
     stone_ore_weight: float = 0.35,
     holdout_db_path: Optional[Path] = None,
+    loss_schedule: Optional[Any] = None,
     allow_overwrite_without_resume: bool = False,
     progress_callback: Optional[Callable[[int, int, Dict[str, float]], None]] = None,
 ) -> Dict[str, Any]:
@@ -457,6 +561,8 @@ def train_voxy_level(
         holdout_db_path: Optional path to a separate validation-world dumps DB.
             When provided, per-epoch holdout loss/accuracy are computed from
             this DB and reported separately from training metrics.
+        loss_schedule: Optional schedule config for dynamic loss weighting.
+            Use "default_by_level" for the built-in L0-L4 curriculum.
         allow_overwrite_without_resume: Safety escape hatch. When False
             (default), if ``out_path`` already exists and ``resume_from`` is
             not provided, training aborts to prevent accidental overwrite of
@@ -511,6 +617,8 @@ def train_voxy_level(
         f"stone/ore={stone_ore_weight:.2f}x "
         f"default={default_block_weight:.2f}x"
     )
+    if loss_schedule is not None:
+        print(f"[L{level}] Dynamic loss schedule enabled: {loss_schedule}")
 
     # ── Dataset ───────────────────────────────────────────────────
     print(f"[L{level}] Loading dataset from {db_path} (this may take a while)...", flush=True)
@@ -623,8 +731,8 @@ def train_voxy_level(
                     f"[L{level}] Optimizer state incompatible with new architecture; "
                     f"starting fresh optimizer."
                 )
-            start_epoch = ckpt.get("epoch", 0) + 1
-            best_loss = ckpt.get("best_loss", float("inf"))
+            start_epoch = int(ckpt.get("epoch", 0)) + 1
+            best_loss = float(ckpt.get("best_loss", float("inf")))
             print(f"[L{level}] Resumed from epoch {start_epoch - 1}, best_loss={best_loss:.4f}")
 
     if start_epoch > epochs:
@@ -640,6 +748,34 @@ def train_voxy_level(
     for epoch in range(start_epoch, epochs + 1):
         model.train()
         print(f"[L{level}] Starting epoch {epoch}/{epochs} ({n_batches} batches)", flush=True)
+        sched = _resolve_loss_schedule_for_epoch(
+            level=level,
+            epoch=epoch,
+            total_epochs=epochs,
+            loss_schedule=loss_schedule,
+        )
+        alpha = sched["alpha"]
+        occ_scale = sched["occ_scale"]
+        eff_default = _blend_toward_neutral(default_block_weight, alpha, neutral=1.0)
+        eff_air_water = _blend_toward_neutral(air_water_weight, alpha, neutral=1.0)
+        eff_surface_veg = _blend_toward_neutral(surface_veg_weight, alpha, neutral=1.0)
+        eff_stone_ore = _blend_toward_neutral(stone_ore_weight, alpha, neutral=1.0)
+        eff_interior = _blend_toward_neutral(interior_weight, alpha, neutral=1.0)
+        eff_occ_weight = float(occ_weight) * occ_scale
+        if epoch == start_epoch or epoch == epochs:
+            print(
+                f"[L{level}] Loss schedule @E{epoch}: alpha={alpha:.2f} occ_scale={occ_scale:.2f} "
+                f"weights(air/water={eff_air_water:.2f} surface+veg={eff_surface_veg:.2f} "
+                f"stone/ore={eff_stone_ore:.2f} default={eff_default:.2f} interior={eff_interior:.2f})"
+            )
+        epoch_semantic_weights, _ = _build_semantic_class_weights(
+            num_classes=num_classes,
+            cfg_dir=_cfg_dir,
+            default_block_weight=eff_default,
+            air_water_weight=eff_air_water,
+            surface_veg_weight=eff_surface_veg,
+            stone_ore_weight=eff_stone_ore,
+        )
         total_loss = 0.0
         total_block_loss = 0.0
         total_occ_loss = 0.0
@@ -679,10 +815,10 @@ def train_voxy_level(
                 preds["block_logits"],
                 labels32,
                 label_smoothing=label_smoothing,
-                occ_weight=occ_weight,
-                interior_weight=interior_weight,
-                semantic_class_weights=semantic_class_weights,
-                priority_threshold=default_block_weight,
+                occ_weight=eff_occ_weight,
+                interior_weight=eff_interior,
+                semantic_class_weights=epoch_semantic_weights,
+                priority_threshold=eff_default,
             )
 
             loss = losses["loss"]
@@ -702,8 +838,8 @@ def train_voxy_level(
                 acc = _compute_block_accuracy(
                     preds["block_logits"],
                     labels32,
-                    semantic_class_weights=semantic_class_weights,
-                    priority_threshold=default_block_weight,
+                    semantic_class_weights=epoch_semantic_weights,
+                    priority_threshold=eff_default,
                 )
                 total_acc += acc["block_acc"] * acc["n_valid"]
                 total_valid += acc["n_valid"]
@@ -752,6 +888,8 @@ def train_voxy_level(
             "important_frac": avg_priority_frac,
             "surface_frac": avg_surface,
             "elapsed_seconds": epoch_elapsed,
+            "schedule_alpha": alpha,
+            "schedule_occ_scale": occ_scale,
         }
 
         if holdout_loader is not None:
@@ -791,10 +929,10 @@ def train_voxy_level(
                         preds["block_logits"],
                         labels32,
                         label_smoothing=label_smoothing,
-                        occ_weight=occ_weight,
-                        interior_weight=interior_weight,
-                        semantic_class_weights=semantic_class_weights,
-                        priority_threshold=default_block_weight,
+                        occ_weight=eff_occ_weight,
+                        interior_weight=eff_interior,
+                        semantic_class_weights=epoch_semantic_weights,
+                        priority_threshold=eff_default,
                     )
                     h_loss += losses["loss"].item()
                     h_block_loss += losses["block_loss"].item()
@@ -804,8 +942,8 @@ def train_voxy_level(
                     acc = _compute_block_accuracy(
                         preds["block_logits"],
                         labels32,
-                        semantic_class_weights=semantic_class_weights,
-                        priority_threshold=default_block_weight,
+                        semantic_class_weights=epoch_semantic_weights,
+                        priority_threshold=eff_default,
                     )
                     h_acc_weighted += acc["block_acc"] * acc["n_valid"]
                     h_acc_n += acc["n_valid"]
@@ -932,6 +1070,12 @@ def main() -> None:
         default=None,
         help="Optional separate holdout DB path used only for validation metrics",
     )
+    parser.add_argument(
+        "--loss-schedule",
+        type=str,
+        default=None,
+        help="Loss schedule mode (for now: default_by_level)",
+    )
     args = parser.parse_args()
 
     out = args.out or Path(f"checkpoints/voxy_L{args.level}.pt")
@@ -958,6 +1102,7 @@ def main() -> None:
         surface_veg_weight=args.surface_veg_weight,
         stone_ore_weight=args.stone_ore_weight,
         holdout_db_path=args.holdout_db,
+        loss_schedule=args.loss_schedule,
     )
 
 

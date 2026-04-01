@@ -53,6 +53,7 @@ train:
   voxy_variant: fast
   num_classes: 513
   pruning_boost: 4.0
+  loss_schedule: default_by_level
   # resume_from: models/phase7_multilevel/voxy_model.pt  # disabled: input dim changed (2272->1072)
 
 export:
@@ -66,4 +67,3 @@ rcon:
   port: 25575
   password: voxeltree
   timeout: 3600
-
