@@ -739,13 +739,8 @@ def _deploy_voxy_run(p: dict[str, Any]) -> None:
     raise NotImplementedError("Per-level deployment is not yet implemented.")
 
 
-def _continue_train_voxy_run(p: dict[str, Any]) -> None:
-    """Continue training one or more Voxy levels from an existing checkpoint.
-
-    Injected parameters (not part of the YAML profile):
-      p["_continue_levels"]  : list[int]  — levels to resume (e.g. [3, 4])
-      p["_continue_epochs"]  : int        — additional epochs to run
-    """
+def _continue_train_voxy_level_run(p: dict[str, Any], level: int, additional: int) -> None:
+    """Run continue-training for exactly one Voxy level in-process."""
     import json  # noqa: PLC0415
     import sqlite3  # noqa: PLC0415
 
@@ -757,14 +752,12 @@ def _continue_train_voxy_run(p: dict[str, Any]) -> None:
     data = p.get("data", {})
     train = p.get("train", {})
 
-    # ── Required: training DB ──────────────────────────────────────────────
     dumps_db_str = data.get("v7_dumps_db")
     if not dumps_db_str or not Path(dumps_db_str).exists():
         raise FileNotFoundError(
             "v7_dumps_db is required for training. Set data.v7_dumps_db in your profile YAML."
         )
 
-    # ── Optional: holdout DB (same validation as main train step) ─────────
     holdout_db_str = data.get("holdout_v7_dumps_db")
     holdout_db_path: Path | None = None
     if holdout_db_str:
@@ -786,62 +779,110 @@ def _continue_train_voxy_run(p: dict[str, Any]) -> None:
                     "holdout_v7_dumps_db must contain sections and voxy_sections tables."
                 )
 
-    # ── Injected parameters ────────────────────────────────────────────────
+    out_dir = Path(train.get("output_dir", "."))
+    out_path = out_dir / f"voxy_L{level}.pt"
+    if not out_path.exists():
+        raise FileNotFoundError(
+            f"[L{level}] No checkpoint at {out_path}; cannot continue training."
+        )
+
+    try:
+        ckpt = torch.load(str(out_path), map_location="cpu", weights_only=False)
+    except ModuleNotFoundError as exc:
+        if "voxel_tree.tasks.sparse_octree" not in str(exc):
+            raise
+        _install_legacy_sparse_octree_aliases()
+        ckpt = torch.load(str(out_path), map_location="cpu", weights_only=False)
+    current_epoch: int = ckpt.get("epoch", 0)
+    if current_epoch <= 0:
+        raise RuntimeError(
+            f"[L{level}] Checkpoint at {out_path} has no valid epoch metadata; "
+            "aborting continue-train to avoid accidental retraining from epoch 1."
+        )
+    target_epoch = current_epoch + additional
+
+    print(
+        f"[L{level}] Resuming from epoch {current_epoch} → {target_epoch} "
+        f"({additional} additional epochs)"
+    )
+
+    result = train_voxy_level(
+        db_path=Path(dumps_db_str),
+        out_path=out_path,
+        level=level,
+        epochs=target_epoch,
+        resume_from=out_path,
+        batch_size=train.get("batch_size", 16),
+        lr=train.get("lr", 1e-3),
+        device=_resolve_device(train.get("device", "auto")),
+        num_workers=train.get("num_workers", None),
+        default_block_weight=float(train.get("default_block_weight", 1.0)),
+        air_water_weight=float(train.get("air_water_weight", 1.7)),
+        surface_veg_weight=float(train.get("surface_veg_weight", 3.0)),
+        stone_ore_weight=float(train.get("stone_ore_weight", 0.35)),
+        holdout_db_path=holdout_db_path,
+        loss_schedule=train.get("loss_schedule"),
+        allow_overwrite_without_resume=bool(train.get("force_retrain", False)),
+        progress_callback=lambda epoch, total, _m: _report_progress(epoch, total),
+    )
+    print(f"[STEP_RESULT]{json.dumps(result, sort_keys=True)}")
+
+
+def _continue_train_voxy_run(p: dict[str, Any]) -> None:
+    """Continue training one or more Voxy levels from an existing checkpoint.
+
+    Injected parameters (not part of the YAML profile):
+      p["_continue_levels"]    : list[int]  — levels to resume (e.g. [3, 4])
+      p["_continue_epochs"]    : int        — additional epochs to run
+      p["_continue_inprocess"] : bool       — force legacy single-process mode
+    """
+    import json  # noqa: PLC0415
+    import subprocess  # noqa: PLC0415
+
     levels: list[int] = p.get("_continue_levels", [])
     additional: int = int(p.get("_continue_epochs", 5))
     if not levels:
         raise ValueError("No levels selected for continuation. _continue_levels is empty.")
 
-    out_dir = Path(train.get("output_dir", "."))
+    # Default to isolated per-level workers because sequential in-process
+    # Torch runs can crash natively on some Windows/CUDA setups.
+    inprocess = bool(p.get("_continue_inprocess", False))
+    repo_root = Path(__file__).resolve().parents[2]
 
     for level in sorted(levels, reverse=True):  # high → low, same convention as main train
-        out_path = out_dir / f"voxy_L{level}.pt"
-        if not out_path.exists():
-            raise FileNotFoundError(
-                f"[L{level}] No checkpoint at {out_path}; cannot continue training."
-            )
+        if inprocess:
+            _continue_train_voxy_level_run(p, int(level), additional)
+            continue
 
-        # Determine how many epochs we've already run
-        try:
-            ckpt = torch.load(str(out_path), map_location="cpu", weights_only=False)
-        except ModuleNotFoundError as exc:
-            if "voxel_tree.tasks.sparse_octree" not in str(exc):
-                raise
-            _install_legacy_sparse_octree_aliases()
-            ckpt = torch.load(str(out_path), map_location="cpu", weights_only=False)
-        current_epoch: int = ckpt.get("epoch", 0)
-        if current_epoch <= 0:
+        payload = {
+            "profile": p,
+            "level": int(level),
+            "additional_epochs": additional,
+        }
+        cmd = [sys.executable, "-u", "-m", "voxel_tree.gui.continue_train_worker"]
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            bufsize=1,
+            cwd=str(repo_root),
+        )
+        assert proc.stdin is not None
+        proc.stdin.write(json.dumps(payload))
+        proc.stdin.close()
+
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            print(line.rstrip("\r\n"), flush=True)
+
+        proc.wait()
+        if proc.returncode != 0:
             raise RuntimeError(
-                f"[L{level}] Checkpoint at {out_path} has no valid epoch metadata; "
-                "aborting continue-train to avoid accidental retraining from epoch 1."
+                f"[L{level}] Continue-train subprocess failed with exit code {proc.returncode}."
             )
-        target_epoch = current_epoch + additional
-
-        print(
-            f"[L{level}] Resuming from epoch {current_epoch} → {target_epoch} "
-            f"({additional} additional epochs)"
-        )
-
-        result = train_voxy_level(
-            db_path=Path(dumps_db_str),
-            out_path=out_path,
-            level=level,
-            epochs=target_epoch,
-            resume_from=out_path,
-            batch_size=train.get("batch_size", 16),
-            lr=train.get("lr", 1e-3),
-            device=_resolve_device(train.get("device", "auto")),
-            num_workers=train.get("num_workers", None),
-            default_block_weight=float(train.get("default_block_weight", 1.0)),
-            air_water_weight=float(train.get("air_water_weight", 1.7)),
-            surface_veg_weight=float(train.get("surface_veg_weight", 3.0)),
-            stone_ore_weight=float(train.get("stone_ore_weight", 0.35)),
-            holdout_db_path=holdout_db_path,
-            loss_schedule=train.get("loss_schedule"),
-            allow_overwrite_without_resume=bool(train.get("force_retrain", False)),
-            progress_callback=lambda epoch, total, _m: _report_progress(epoch, total),
-        )
-        print(f"[STEP_RESULT]{json.dumps(result, sort_keys=True)}")
 
 
 # ---------------------------------------------------------------------------

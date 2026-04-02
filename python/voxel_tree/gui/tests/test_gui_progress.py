@@ -202,6 +202,7 @@ def test_continue_train_runner_passes_resume_from(monkeypatch, tmp_path):
         "train": {"output_dir": str(tmp_path)},
         "_continue_levels": [2],
         "_continue_epochs": 2,
+        "_continue_inprocess": True,
     }
     step_definitions._continue_train_voxy_run(profile)
 
@@ -219,6 +220,7 @@ def test_continue_train_runner_fails_if_checkpoint_missing(tmp_path):
         "train": {"output_dir": str(tmp_path)},
         "_continue_levels": [2],
         "_continue_epochs": 2,
+        "_continue_inprocess": True,
     }
 
     with pytest.raises(FileNotFoundError, match="cannot continue training"):
