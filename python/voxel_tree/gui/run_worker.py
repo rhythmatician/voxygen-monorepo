@@ -17,6 +17,14 @@ from pathlib import Path
 from PySide6.QtCore import QThread, Signal
 
 
+def _to_qt_int32(value: int) -> int:
+    """Convert arbitrary Python int to signed 32-bit range for Qt signals."""
+    value &= 0xFFFFFFFF
+    if value >= 0x80000000:
+        value -= 0x100000000
+    return value
+
+
 class RunWorker(QThread):
     """Runs a single pipeline step as a subprocess.
 
@@ -95,7 +103,7 @@ class RunWorker(QThread):
             self.log_line.emit(self.step_id, f"[RunWorker error] {exc}")
             exit_code = -1
 
-        self.step_finished.emit(self.step_id, exit_code)
+        self.step_finished.emit(self.step_id, _to_qt_int32(exit_code))
 
     def cancel(self) -> None:
         """Request cancellation — kills the subprocess if running."""

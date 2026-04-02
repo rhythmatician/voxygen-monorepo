@@ -19,6 +19,7 @@ Schema:
 from __future__ import annotations
 
 import json
+import os
 import sys
 import types
 import importlib
@@ -178,6 +179,46 @@ class RunRegistry:
     # State reconciliation helpers
     # ------------------------------------------------------------------
 
+    def _iter_level_npz_paths(self, data_dir: Path):
+        """Yield NPZ paths under level_* subdirectories without glob expansion.
+
+        ``Path.glob('level_*/*.npz')`` can materialize very large directory
+        listings.  This streaming scanner avoids building large intermediate
+        lists and gracefully skips unreadable directories.
+        """
+        try:
+            with os.scandir(data_dir) as level_entries:
+                for level_entry in level_entries:
+                    try:
+                        if not level_entry.is_dir(follow_symlinks=False):
+                            continue
+                    except OSError:
+                        continue
+                    if not level_entry.name.startswith("level_"):
+                        continue
+
+                    try:
+                        with os.scandir(level_entry.path) as files:
+                            for file_entry in files:
+                                try:
+                                    if not file_entry.is_file(follow_symlinks=False):
+                                        continue
+                                except OSError:
+                                    continue
+                                if file_entry.name.endswith(".npz"):
+                                    yield Path(file_entry.path)
+                    except (OSError, MemoryError):
+                        continue
+        except (OSError, MemoryError):
+            return
+
+    def _has_level_npz(self, data_dir: Path) -> bool:
+        try:
+            next(self._iter_level_npz_paths(data_dir))
+            return True
+        except StopIteration:
+            return False
+
     def reconcile_with_profile(self, profile: dict) -> None:
         """Attempt to repair registry state by inspecting output files.
 
@@ -213,7 +254,7 @@ class RunRegistry:
         # If extraction output exists, assume the early pipeline steps completed.
         any_npz = False
         if data_dir.is_dir():
-            any_npz = any(data_dir.glob("level_*/*.npz"))
+            any_npz = self._has_level_npz(data_dir)
 
         if any_npz:
             _set_success("pregen")
@@ -236,7 +277,7 @@ class RunRegistry:
             # (avoid loading many large npz files on the UI thread)
             max_checks = 20
             checked = 0
-            for npz_path in data_dir.glob("level_*/*.npz"):
+            for npz_path in self._iter_level_npz_paths(data_dir):
                 if checked >= max_checks:
                     break
                 checked += 1
