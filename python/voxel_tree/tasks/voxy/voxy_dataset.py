@@ -31,7 +31,6 @@ from __future__ import annotations
 import logging
 import sqlite3
 import threading
-import zlib
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -39,6 +38,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
+from .blob_codecs import VOXY_LABELS_CODEC_LEGACY, decompress_voxy_labels
 from .build_voxy_pairs import (
     N_FIELDS,
     _unpack_biome_blob,
@@ -79,10 +79,39 @@ _CELL_HEIGHT = 8
 # ══════════════════════════════════════════════════════════════════════
 
 
-def _unpack_voxy_blob(blob: bytes) -> np.ndarray:
-    """Decompress a zlib-compressed int32[32,32,32] Voxy grid."""
-    raw = zlib.decompress(blob)
-    return np.frombuffer(raw, dtype=np.int32).reshape(32, 32, 32).copy()
+def _unpack_voxy_blob(blob: bytes, codec: str) -> np.ndarray:
+    """Decode a compressed Voxy labels32 blob to int32[32,32,32]."""
+    return decompress_voxy_labels(blob, codec=codec, shape=(32, 32, 32))
+
+
+def _detect_voxy_label_codec(conn: sqlite3.Connection) -> str:
+    has_meta = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='voxy_metadata'"
+    ).fetchone()
+    if has_meta is None:
+        return VOXY_LABELS_CODEC_LEGACY
+
+    row = conn.execute("SELECT value FROM voxy_metadata WHERE key='labels32_codec'").fetchone()
+    if row is None:
+        return VOXY_LABELS_CODEC_LEGACY
+    return str(row[0])
+
+
+def _build_remap_array(vocab_remap: Dict[int, int]) -> np.ndarray:
+    remap_arr = np.zeros(max(vocab_remap.keys()) + 1, dtype=np.int32)
+    for src, dst in vocab_remap.items():
+        remap_arr[src] = max(dst, 0)
+    return remap_arr
+
+
+def _compact_block_tensor(labels32: np.ndarray) -> torch.Tensor:
+    return torch.from_numpy(labels32.astype(np.int16, copy=False))
+
+
+def _compact_biome_tensor(biome: np.ndarray) -> torch.Tensor:
+    if np.any(biome < 0) or np.any(biome > 255):
+        raise ValueError("biome IDs must be within uint8 range")
+    return torch.from_numpy(biome.astype(np.uint8, copy=False))
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -309,12 +338,14 @@ class VoxyLevelDataset(Dataset):  # type: ignore[type-arg]
         self.level = level
         self.min_coverage = min_coverage
         self.vocab_remap = vocab_remap
+        self._remap_arr = _build_remap_array(vocab_remap) if vocab_remap is not None else None
 
         # Thread-local storage for SQLite connections
         self._local = threading.local()
 
         # Discover available samples (uses a temporary connection)
         conn = sqlite3.connect(self.db_path)
+        self._voxy_label_codec = _detect_voxy_label_codec(conn)
         self.samples = _discover_complete_world_sections(conn, level, min_coverage)
         conn.close()
         log.info(
@@ -414,19 +445,16 @@ class VoxyLevelDataset(Dataset):  # type: ignore[type-arg]
             (self.level, ws_x, ws_y, ws_z),
         ).fetchone()
         assert row is not None, f"Missing voxy_sections: L{self.level} ({ws_x},{ws_y},{ws_z})"
-        labels32 = _unpack_voxy_blob(row[0])  # int32 (32, 32, 32) in (Y, Z, X) order
+        labels32 = _unpack_voxy_blob(row[0], self._voxy_label_codec)
 
         # Remap vocabulary if needed
-        if self.vocab_remap is not None:
-            remap_arr = np.full(max(self.vocab_remap.keys()) + 1, -1, dtype=np.int32)
-            for src, dst in self.vocab_remap.items():
-                remap_arr[src] = dst
-            labels32 = remap_arr[np.clip(labels32, 0, len(remap_arr) - 1)]
+        if self._remap_arr is not None:
+            labels32 = self._remap_arr[np.clip(labels32, 0, len(self._remap_arr) - 1)]
 
         # ── Pack as tensors ───────────────────────────────────────
         result: Dict[str, Any] = {
             "y_position": torch.tensor(y_position, dtype=torch.long),
-            "labels32": torch.from_numpy(labels32).long(),  # [32, 32, 32]
+            "labels32": _compact_block_tensor(labels32),  # [32, 32, 32]
             "block_y_min": torch.tensor(block_y_min, dtype=torch.long),
             "ws_coords": torch.tensor([ws_x, ws_y, ws_z], dtype=torch.long),
         }
@@ -435,10 +463,10 @@ class VoxyLevelDataset(Dataset):  # type: ignore[type-arg]
         if self.level >= 2:
             climate_2d, biome_2d = _select_climate_2d(noise_3d, biome_3d, self.level)
             result["climate_2d"] = torch.from_numpy(climate_2d)  # [C_sel, 8, 8]
-            result["biome_2d"] = torch.from_numpy(biome_2d).int()  # [8, 8]
+            result["biome_2d"] = _compact_biome_tensor(biome_2d)  # [8, 8]
         else:
             result["noise_3d"] = torch.from_numpy(noise_3d)  # [15, Nx, Ny, Nz]
-            result["biome_3d"] = torch.from_numpy(biome_3d).int()  # [Nx, Ny, Nz]
+            result["biome_3d"] = _compact_biome_tensor(biome_3d)  # [Nx, Ny, Nz]
 
         return result
 
@@ -665,7 +693,7 @@ class VoxyLevelWithParentDataset(Dataset):  # type: ignore[type-arg]
             (coarser, parent_ws_x, parent_ws_y, parent_ws_z),
         ).fetchone()
         assert row is not None
-        parent_labels32 = _unpack_voxy_blob(row[0])
+        parent_labels32 = _unpack_voxy_blob(row[0], self.base._voxy_label_codec)
 
         # Determine which octant we are within the parent WorldSection
         octant_x = ws_x & 1
@@ -675,13 +703,12 @@ class VoxyLevelWithParentDataset(Dataset):  # type: ignore[type-arg]
 
         parent_blocks = extract_parent_from_coarser(parent_labels32, octant_idx)
 
-        if self.vocab_remap is not None:
-            remap_arr = np.full(max(self.vocab_remap.keys()) + 1, -1, dtype=np.int32)
-            for src, dst in self.vocab_remap.items():
-                remap_arr[src] = dst
-            parent_blocks = remap_arr[np.clip(parent_blocks, 0, len(remap_arr) - 1)]
+        if self.base._remap_arr is not None:
+            parent_blocks = self.base._remap_arr[
+                np.clip(parent_blocks, 0, len(self.base._remap_arr) - 1)
+            ]
 
-        sample["parent_blocks"] = torch.from_numpy(parent_blocks).long()
+        sample["parent_blocks"] = _compact_block_tensor(parent_blocks)
         return sample
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:

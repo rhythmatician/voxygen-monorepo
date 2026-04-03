@@ -37,7 +37,7 @@ from .voxy_dataset import (
     VoxyLevelWithParentDataset,
     voxy_level_collate,
 )
-from .voxy_models import VoxyModelConfig, create_model
+from .voxy_models import UNet3D32, VoxyModelConfig, create_model
 
 # ══════════════════════════════════════════════════════════════════════
 #  Loss
@@ -648,8 +648,9 @@ def train_voxy_level(
     model = create_model(level, cfg).to(_device)
 
     # ── Channels-last 3D memory format (CPU speedup) ─────────
-    if channels_last and hasattr(model, "unet"):
-        model.unet.channels_last_3d = True
+    unet = getattr(model, "unet", None)
+    if channels_last and isinstance(unet, UNet3D32):
+        unet.channels_last_3d = True
         print(f"[L{level}] Using channels-last-3d memory format")
 
     n_params = sum(p.numel() for p in model.parameters())
@@ -675,7 +676,7 @@ def train_voxy_level(
     print(f"[L{level}] DataLoader: num_workers={_nw}")
 
     # ── Optional holdout loader (separate world/seed) ─────────────────
-    holdout_loader: Optional[DataLoader] = None
+    holdout_loader: Optional[DataLoader[Any]] = None
     if holdout_db_path is not None and Path(holdout_db_path).exists():
         holdout_db_path = Path(holdout_db_path)
         if level == 4:
@@ -790,7 +791,7 @@ def train_voxy_level(
 
         for batch in loader:
             y_position = batch["y_position"].to(_device)
-            labels32 = batch["labels32"].to(_device)
+            labels32 = batch["labels32"].to(_device, dtype=torch.long)
 
             # Forward pass — L0/L1 use 3D noise, L2-L4 use 2D climate
             if level >= 2:
@@ -842,9 +843,9 @@ def train_voxy_level(
                     priority_threshold=eff_default,
                 )
                 total_acc += acc["block_acc"] * acc["n_valid"]
-                total_valid += acc["n_valid"]
+                total_valid += int(acc["n_valid"])
                 total_priority_acc += acc["priority_acc"] * acc["n_priority"]
-                total_priority += acc["n_priority"]
+                total_priority += int(acc["n_priority"])
 
             # Progress logging
             if (
@@ -906,7 +907,7 @@ def train_voxy_level(
             with torch.no_grad():
                 for batch in holdout_loader:
                     y_position = batch["y_position"].to(_device)
-                    labels32 = batch["labels32"].to(_device)
+                    labels32 = batch["labels32"].to(_device, dtype=torch.long)
 
                     if level >= 2:
                         climate_2d = batch["climate_2d"].to(_device)
@@ -946,9 +947,9 @@ def train_voxy_level(
                         priority_threshold=eff_default,
                     )
                     h_acc_weighted += acc["block_acc"] * acc["n_valid"]
-                    h_acc_n += acc["n_valid"]
+                    h_acc_n += int(acc["n_valid"])
                     h_priority_acc_weighted += acc["priority_acc"] * acc["n_priority"]
-                    h_priority_n += acc["n_priority"]
+                    h_priority_n += int(acc["n_priority"])
 
             row["holdout_loss"] = h_loss / max(h_batches, 1)
             row["holdout_block_loss"] = h_block_loss / max(h_batches, 1)

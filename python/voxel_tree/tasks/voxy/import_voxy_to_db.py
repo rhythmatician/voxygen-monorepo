@@ -23,11 +23,12 @@ import os
 import re
 import sqlite3
 import time
-import zlib
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
+
+from .blob_codecs import VOXY_LABELS_CODEC_DEFAULT, compress_voxy_labels
 
 
 # ── Schema ───────────────────────────────────────────────────────────────
@@ -41,18 +42,25 @@ CREATE TABLE IF NOT EXISTS voxy_sections (
     labels32 BLOB NOT NULL,
     PRIMARY KEY (level, ws_x, ws_y, ws_z)
 );
+
+CREATE TABLE IF NOT EXISTS voxy_metadata (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 
-def _read_and_compress(args: tuple[int, int, int, int, str, int]) -> tuple[int, int, int, int, bytes]:
+def _read_and_compress(
+    args: tuple[int, int, int, int, str, int, str],
+) -> tuple[int, int, int, int, bytes]:
     """Read one NPZ file and zlib-compress its labels32 array.
 
     Designed to run in a ThreadPoolExecutor — I/O-bound, releases GIL.
     """
-    level, wx, wy, wz, fpath, comp_level = args
+    level, wx, wy, wz, fpath, comp_level, label_codec = args
     with np.load(fpath) as npz:
         labels32 = npz["labels32"]
-    blob = zlib.compress(labels32.astype(np.int32).tobytes(), level=comp_level)
+    blob = compress_voxy_labels(labels32, codec=label_codec, compression_level=comp_level)
     return (level, wx, wy, wz, blob)
 
 
@@ -63,12 +71,14 @@ def import_voxy(
     batch_size: int = 2000,
     compression_level: int = 1,
     num_workers: int = 0,
+    label_codec: str = VOXY_LABELS_CODEC_DEFAULT,
 ) -> int:
     """Import Voxy NPZ files into the ``voxy_sections`` table.
 
     Scans ``voxy_dir/level_0/`` through ``voxy_dir/level_4/`` for NPZ files,
-    reads each ``labels32`` array (int32, 32x32x32), compresses with zlib,
-    and inserts into the ``voxy_sections`` table in the dumps database.
+    reads each ``labels32`` array (int32, 32x32x32), encodes it with the
+    configured label codec, and inserts into the ``voxy_sections`` table in
+    the dumps database.
 
     If ``voxy_sections`` already exists it is **dropped and recreated** so
     the import is idempotent.
@@ -86,6 +96,8 @@ def import_voxy(
         faster than level 9 with only ~15% larger BLOBs.
     num_workers : int
         Number of threads for parallel NPZ reads.  0 = auto (cpu_count).
+    label_codec : str
+        Label storage codec recorded in ``voxy_metadata`` for loader discovery.
 
     Returns
     -------
@@ -103,7 +115,16 @@ def import_voxy(
 
     # Drop + recreate for idempotent reimport
     conn.execute("DROP TABLE IF EXISTS voxy_sections")
+    conn.execute("DROP TABLE IF EXISTS voxy_metadata")
     conn.executescript(_VOXY_TABLE_SQL)
+    conn.executemany(
+        "INSERT OR REPLACE INTO voxy_metadata (key, value) VALUES (?, ?)",
+        [
+            ("labels32_codec", label_codec),
+            ("labels32_shape", "32,32,32"),
+        ],
+    )
+    conn.commit()
 
     # Scan all 5 levels
     total_imported = 0
@@ -114,24 +135,21 @@ def import_voxy(
             continue
 
         # Match both old (voxy_L4_...) and new (w0_voxy_L4_...) naming.
-        pat = re.compile(
-            rf"(?:w\d+_)?voxy_L{level}_x(-?\d+)_y(-?\d+)_z(-?\d+)\.npz$"
-        )
+        pat = re.compile(rf"(?:w\d+_)?voxy_L{level}_x(-?\d+)_y(-?\d+)_z(-?\d+)\.npz$")
 
-        files: list[tuple[int, int, int, int, str, int]] = []
+        files: list[tuple[int, int, int, int, str, int, str]] = []
         for f in level_dir.iterdir():
             m = pat.search(f.name)
             if m:
                 x, y, z = int(m.group(1)), int(m.group(2)), int(m.group(3))
-                files.append((level, x, y, z, str(f), compression_level))
+                files.append((level, x, y, z, str(f), compression_level, label_codec))
 
         if not files:
             print(f"  level_{level}: no files found")
             continue
 
         print(
-            f"  level_{level}: importing {len(files):,} files "
-            f"({num_workers} workers) ...",
+            f"  level_{level}: importing {len(files):,} files " f"({num_workers} workers) ...",
             flush=True,
         )
 
