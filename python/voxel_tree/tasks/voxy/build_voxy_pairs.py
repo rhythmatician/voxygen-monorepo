@@ -89,6 +89,12 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from .blob_codecs import (
+    VOXY_LABELS_CODEC_DEFAULT,
+    VOXY_LABELS_CODEC_LEGACY,
+    compress_voxy_labels,
+    is_bitpack_codec,
+)
 
 from voxel_tree.utils.coords import section_to_world_section
 
@@ -412,6 +418,7 @@ def build_voxy_indices(
 
 # ── BLOB compression helpers ─────────────────────────────────────────────
 
+
 def _pack_blob(arr: np.ndarray) -> bytes:
     """Compress a numpy array to a zlib BLOB for storage."""
     return zlib.compress(arr.astype(arr.dtype).tobytes(), level=1)  # fast compression
@@ -467,6 +474,7 @@ def _init_pairs_db(output_path: Path) -> sqlite3.Connection:
 
 # ── Voxy temp-table injection ────────────────────────────────────────────
 
+
 def _populate_voxy_temp_tables(
     conn: sqlite3.Connection,
     voxy_indices: dict[int, dict[tuple[int, int, int], Path]],
@@ -494,6 +502,7 @@ def _populate_voxy_temp_tables(
 
 # ── SQL JOIN query builder ───────────────────────────────────────────────
 
+
 def _voxy_join_clause(require_all_levels: bool = True) -> str:
     """Build FROM … JOIN clause that filters sections by Voxy availability.
 
@@ -517,13 +526,12 @@ def _voxy_join_clause(require_all_levels: bool = True) -> str:
             f" AND v{level}.wz = (s.chunk_z >> {shift})"
         )
     if not require_all_levels:
-        parts.append(
-            "WHERE " + " OR ".join(f"v{lv}.wx IS NOT NULL" for lv in range(5))
-        )
+        parts.append("WHERE " + " OR ".join(f"v{lv}.wx IS NOT NULL" for lv in range(5)))
     return "\n".join(parts)
 
 
 # ── Main scalable builder ───────────────────────────────────────────────
+
 
 def build_pairs_db(
     dump_db_path: Path,
@@ -533,6 +541,7 @@ def build_pairs_db(
     require_all_levels: bool = True,
     vocab_remap_lut: np.ndarray | None = None,
     batch_size: int = 10_000,
+    label_codec: str = VOXY_LABELS_CODEC_DEFAULT,
 ) -> tuple[int, dict[str, int]]:
     """Build training pairs using SQL JOINs — write to SQLite.
 
@@ -562,6 +571,8 @@ def build_pairs_db(
         Vocabulary remap LUT (old block ID → new ID).
     batch_size : int
         Rows to process between DB commits and progress reports.
+    label_codec : str
+        Label storage codec for ``labels_L*`` blobs in ``training_pairs``.
 
     Returns
     -------
@@ -599,18 +610,20 @@ def build_pairs_db(
     # ── Init output DB ──────────────────────────────────────────────────
     out_conn = _init_pairs_db(output_path)
 
+    effective_label_codec = label_codec
+    if is_bitpack_codec(label_codec) and not require_all_levels:
+        print(
+            "  WARNING: bit-packed label codec requires non-negative labels; "
+            "falling back to legacy codec because require_all_levels=False"
+        )
+        effective_label_codec = VOXY_LABELS_CODEC_LEGACY
+
     # ── Voxy grid cache: (level, ws_tuple) → labels32 (32,32,32) ───────
     voxy_cache: dict[tuple[int, tuple[int, int, int]], np.ndarray] = {}
 
     # ── Stream matching rows ────────────────────────────────────────────
-    select_cols = (
-        "s.chunk_x, s.section_y, s.chunk_z, "
-        "s.noise_data, s.biome_ids"
-    )
-    data_sql = (
-        f"SELECT {select_cols} {join_clause} "
-        f"ORDER BY s.chunk_x, s.chunk_z, s.section_y"
-    )
+    select_cols = "s.chunk_x, s.section_y, s.chunk_z, " "s.noise_data, s.biome_ids"
+    data_sql = f"SELECT {select_cols} {join_clause} " f"ORDER BY s.chunk_x, s.chunk_z, s.section_y"
     cursor = src.execute(data_sql)
 
     sample_id = 0
@@ -655,26 +668,41 @@ def build_pairs_db(
                 grid = extract_section_subcube(labels32, cx, sy, cz, level)
                 if vocab_remap_lut is not None:
                     grid = _apply_remap(grid, vocab_remap_lut)
-                label_blobs[level] = _pack_blob(grid)
+                label_blobs[level] = compress_voxy_labels(
+                    grid,
+                    codec=effective_label_codec,
+                    compression_level=1,
+                )
                 level_counts[level] += 1
 
             # Fill missing levels with sentinel
             for lv in range(5):
                 if lv not in label_blobs:
                     n = 16 >> lv
-                    label_blobs[lv] = _pack_blob(
-                        np.full((n, n, n), -1, dtype=np.int32)
+                    missing_grid = np.full((n, n, n), -1, dtype=np.int32)
+                    label_blobs[lv] = compress_voxy_labels(
+                        missing_grid,
+                        codec=effective_label_codec,
+                        compression_level=1,
                     )
 
-            batch_inserts.append((
-                sample_id, cx, sy, cz,
-                sy * 16,  # block_y_min
-                finest,
-                _pack_blob(noise),
-                _pack_blob(biome),
-                label_blobs[0], label_blobs[1], label_blobs[2],
-                label_blobs[3], label_blobs[4],
-            ))
+            batch_inserts.append(
+                (
+                    sample_id,
+                    cx,
+                    sy,
+                    cz,
+                    sy * 16,  # block_y_min
+                    finest,
+                    _pack_blob(noise),
+                    _pack_blob(biome),
+                    label_blobs[0],
+                    label_blobs[1],
+                    label_blobs[2],
+                    label_blobs[3],
+                    label_blobs[4],
+                )
+            )
             sample_id += 1
 
         # Batch INSERT + commit
@@ -709,6 +737,7 @@ def build_pairs_db(
         "pairs_written": str(sample_id),
         "require_all_levels": str(require_all_levels),
         "vocab_remapped": str(vocab_remap_lut is not None),
+        "labels_codec": effective_label_codec,
         "source_db": str(dump_db_path),
         "elapsed_seconds": f"{elapsed:.1f}",
     }
