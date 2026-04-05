@@ -86,15 +86,9 @@ import sys
 import time
 import zlib
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
-from .blob_codecs import (
-    VOXY_LABELS_CODEC_DEFAULT,
-    VOXY_LABELS_CODEC_LEGACY,
-    compress_voxy_labels,
-    is_bitpack_codec,
-)
 
 from voxel_tree.utils.coords import section_to_world_section
 
@@ -541,7 +535,6 @@ def build_pairs_db(
     require_all_levels: bool = True,
     vocab_remap_lut: np.ndarray | None = None,
     batch_size: int = 10_000,
-    label_codec: str = VOXY_LABELS_CODEC_DEFAULT,
 ) -> tuple[int, dict[str, int]]:
     """Build training pairs using SQL JOINs — write to SQLite.
 
@@ -571,9 +564,6 @@ def build_pairs_db(
         Vocabulary remap LUT (old block ID → new ID).
     batch_size : int
         Rows to process between DB commits and progress reports.
-    label_codec : str
-        Label storage codec for ``labels_L*`` blobs in ``training_pairs``.
-
     Returns
     -------
     (pairs_saved, stats_dict)
@@ -610,14 +600,6 @@ def build_pairs_db(
     # ── Init output DB ──────────────────────────────────────────────────
     out_conn = _init_pairs_db(output_path)
 
-    effective_label_codec = label_codec
-    if is_bitpack_codec(label_codec) and not require_all_levels:
-        print(
-            "  WARNING: bit-packed label codec requires non-negative labels; "
-            "falling back to legacy codec because require_all_levels=False"
-        )
-        effective_label_codec = VOXY_LABELS_CODEC_LEGACY
-
     # ── Voxy grid cache: (level, ws_tuple) → labels32 (32,32,32) ───────
     voxy_cache: dict[tuple[int, tuple[int, int, int]], np.ndarray] = {}
 
@@ -635,7 +617,7 @@ def build_pairs_db(
         if not rows:
             break
 
-        batch_inserts: list[tuple] = []
+        batch_inserts: list[tuple[Any, ...]] = []
 
         for cx, sy, cz, noise_blob, biome_blob in rows:
             rows_fetched += 1
@@ -647,7 +629,7 @@ def build_pairs_db(
             # Determine Voxy availability at each level (for subcube extraction)
             available_ws: dict[int, tuple[int, int, int]] = {}
             for level in range(5):
-                ws = (
+                ws: tuple[int, int, int] = (
                     section_to_world_section(cx, level),
                     section_to_world_section(sy, level),
                     section_to_world_section(cz, level),
@@ -668,23 +650,14 @@ def build_pairs_db(
                 grid = extract_section_subcube(labels32, cx, sy, cz, level)
                 if vocab_remap_lut is not None:
                     grid = _apply_remap(grid, vocab_remap_lut)
-                label_blobs[level] = compress_voxy_labels(
-                    grid,
-                    codec=effective_label_codec,
-                    compression_level=1,
-                )
+                label_blobs[level] = _pack_blob(grid)
                 level_counts[level] += 1
 
             # Fill missing levels with sentinel
             for lv in range(5):
                 if lv not in label_blobs:
                     n = 16 >> lv
-                    missing_grid = np.full((n, n, n), -1, dtype=np.int32)
-                    label_blobs[lv] = compress_voxy_labels(
-                        missing_grid,
-                        codec=effective_label_codec,
-                        compression_level=1,
-                    )
+                    label_blobs[lv] = _pack_blob(np.full((n, n, n), -1, dtype=np.int32))
 
             batch_inserts.append(
                 (
@@ -737,7 +710,6 @@ def build_pairs_db(
         "pairs_written": str(sample_id),
         "require_all_levels": str(require_all_levels),
         "vocab_remapped": str(vocab_remap_lut is not None),
-        "labels_codec": effective_label_codec,
         "source_db": str(dump_db_path),
         "elapsed_seconds": f"{elapsed:.1f}",
     }
@@ -930,7 +902,8 @@ def build_pairs(
     print(f"  Noise channels: {all_noise_3d.shape[1]} (v7 RouterField)")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(output_path, **save_dict)
+    savez_kwargs: dict[str, Any] = dict(save_dict)
+    cast(Any, np.savez_compressed)(output_path, **savez_kwargs)
 
     size_mb = output_path.stat().st_size / (1024 * 1024)
     print(f"  Saved -> {output_path}  ({size_mb:.1f} MB)")
