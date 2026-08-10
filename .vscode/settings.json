@@ -1,0 +1,14 @@
+{
+    "editor.formatOnSave": true,
+    "files.autoSaveWorkspaceFilesOnly": true,
+    "java.compile.nullAnalysis.mode": "automatic",
+    "java.configuration.updateBuildConfiguration": "interactive",
+    "python.analysis.typeCheckingMode": "basic",
+    "python.analysis.autoImportCompletions": true,
+    "[python]": {
+        "editor.formatOnSave": true
+    },
+    "[java]": {
+        "editor.formatOnSave": true
+    }
+}
