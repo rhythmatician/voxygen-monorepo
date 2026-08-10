@@ -1,0 +1,4 @@
+# external/.gitignore
+*
+!.gitignore
+!README.md
