@@ -1,0 +1,56 @@
+# IDE and local config
+.coverage
+.fabric/
+
+# Python cache and artifacts
+*.pyc
+tests/__pycache__/*
+*.log
+logs/
+artifacts/
+
+# Test and temporary files
+check_*.py
+test_metrics_report.json
+debug_*
+output.txt
+
+# External dependencies and reference code
+libraries/
+reference-code/
+
+# Model checkpoints, exports, and training artifacts
+models/
+multi_lod_test/
+onnx_export/
+production/
+*.pt
+*.onnx
+
+# Experiment notebooks (keep main notebooks in repo)
+notebooks/experimental/old/
+
+# Minecraft server files (not part of codebase)
+tools/fabric-server/runtime/world/
+tools/fabric-server/runtime/noise_dumps/*.json
+tools/fabric-server/runtime/eula.txt
+eula.txt
+usercache.json
+whitelist.json
+ops.json
+banned-players.json
+banned-ips.json
+level.dat
+server.properties
+session.lock
+
+# Minecraft data files
+data/test_world/region/*
+*.mca
+
+# Training profiles and pipeline intermediates (generated, can be regenerated)
+profiles/
+runs/
+data/*
+training_run.txt
+*.npz
