@@ -1,0 +1,52 @@
+<?xml version="1.0"?>
+<!DOCTYPE module PUBLIC
+  "-//Checkstyle//DTD Checkstyle Configuration 1.3//EN"
+  "https://checkstyle.org/dtds/configuration_1_3.dtd">
+
+<!--
+  LODiffusion Checkstyle configuration.
+  Tuned to catch real bugs while respecting the project's existing code style.
+
+  Intentionally omitted (project idiom):
+    - NeedBraces: codebase consistently uses brace-less single-line ifs
+    - FileTabCharacter: mixed indentation in boilerplate files
+    - LeftCurly/RightCurly: compact one-liner else-if blocks
+    - MultipleVariableDeclarations: int x, y, z is idiomatic in voxel code
+    - ConstantName: static fields like regionFileCache aren't true constants
+    - MethodName: version-suffixed names like extractBiomes1_18Plus
+-->
+<module name="Checker">
+  <property name="charset" value="UTF-8"/>
+  <property name="severity" value="warning"/>
+
+  <!-- File-level checks -->
+  <module name="NewlineAtEndOfFile"/>
+
+  <module name="TreeWalker">
+    <!-- ===== Import hygiene ===== -->
+    <module name="AvoidStarImport">
+      <property name="excludes" value="org.junit.jupiter.api.Assertions"/>
+    </module>
+    <module name="UnusedImports"/>
+    <module name="RedundantImport"/>
+
+    <!-- ===== Coding (bug-prone patterns) ===== -->
+    <module name="EqualsHashCode"/>
+    <module name="MissingSwitchDefault"/>
+    <module name="SimplifyBooleanExpression"/>
+    <module name="StringLiteralEquality"/>
+    <module name="DefaultComesLast"/>
+    <module name="FallThrough"/>
+    <module name="OneStatementPerLine"/>
+    <module name="UnnecessaryParentheses"/>
+
+    <!-- ===== Modifiers ===== -->
+    <module name="ModifierOrder"/>
+    <module name="RedundantModifier"/>
+
+    <!-- ===== Misc ===== -->
+    <module name="ArrayTypeStyle"/>
+    <module name="UpperEll"/>
+    <module name="OuterTypeFilename"/>
+  </module>
+</module>

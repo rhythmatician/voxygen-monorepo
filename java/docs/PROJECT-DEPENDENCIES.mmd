@@ -1,0 +1,41 @@
+graph TD
+  %% Nodes and groups
+  Developer_Infrastructure(["Developer Infrastructure"])
+  Core_Diffusion_Engine(["Core Diffusion Engine"])
+  World_Integration(["World Integration and Hook Points"])
+  Distant_Horizons_Compat(["Distant Horizons Compat"])
+  LODManager_Compat(["LODManager Compat"])
+  Data_Extraction(["Data Extraction for Training"])
+  Chunk_Data_Extractor(["Chunk Data Extractor"])
+  Model_Training_Pipeline(["Model Training Pipeline"])
+  Train_Py(["train.py"])
+  Model_Export(["Model Export"])
+  Runtime_Inference(["Runtime Inference Engine"])
+  Tuning_UI(["Tuning Debugging and UI"])
+  Packaging(["Packaging and Distribution"])
+  Real_World_Data(["Real World Data Test"])
+
+  %% Connections
+  Developer_Infrastructure --> Core_Diffusion_Engine
+  Developer_Infrastructure --> Packaging
+  Core_Diffusion_Engine --> World_Integration
+  Core_Diffusion_Engine --> Runtime_Inference
+  Core_Diffusion_Engine --> Packaging
+  World_Integration --> Data_Extraction
+  World_Integration --> Packaging
+  Distant_Horizons_Compat --> World_Integration
+  LODManager_Compat --> World_Integration
+  Chunk_Data_Extractor --> Data_Extraction
+  Data_Extraction --> Model_Training_Pipeline
+  Data_Extraction --> Packaging
+  Real_World_Data --> Core_Diffusion_Engine
+  Real_World_Data --> Data_Extraction
+  Model_Training_Pipeline --> Model_Export
+  Model_Training_Pipeline --> Packaging
+  Model_Export --> Runtime_Inference
+  Runtime_Inference --> Tuning_UI
+  Runtime_Inference --> Packaging
+  Tuning_UI --> Model_Training_Pipeline
+  Tuning_UI --> Runtime_Inference
+  Tuning_UI --> Packaging
+  Train_Py --> Model_Training_Pipeline

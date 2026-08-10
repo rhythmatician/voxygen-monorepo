@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "id": "lodiffusion",
+  "version": "${version}",
+  "name": "LODiffusion",
+  "description": "AI-powered terrain diffusion for enhanced Level of Detail generation in Minecraft",
+  "authors": [
+    "Your Name"
+  ],
+  "contact": {
+    "homepage": "https://github.com/rhythmatician/lodiffusion",
+    "sources": "https://github.com/rhythmatician/lodiffusion"
+  },
+  "license": "MIT",
+  "icon": "assets/lodiffusion/icon.png",
+  "accessWidener": "lodiffusion.accesswidener",
+  "environment": "*",
+  "entrypoints": {
+    "main": [
+      "com.rhythmatician.lodiffusion.HelloTerrainMod"
+    ],
+    "client": [
+      "com.rhythmatician.lodiffusion.LodiffusionClient"
+    ]
+  },
+  "mixins": [
+    "lodiffusion.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=0.18.4",
+    "minecraft": "1.21.11",
+    "java": ">=21",
+    "fabric-api": "*"
+  },
+  "suggests": {
+    "voxy": "*"
+  }
+}

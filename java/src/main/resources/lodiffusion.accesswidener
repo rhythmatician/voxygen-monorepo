@@ -1,0 +1,12 @@
+accessWidener v2 named
+
+# Allow mod code to call ChunkNoiseSampler.sampleBlockState() (protected)
+# Used by WorldNoiseAccess.sampleBothHeightmaps() to drive the same
+# populateNoise() interpolation loop without writing blocks.
+accessible method net/minecraft/world/gen/chunk/ChunkNoiseSampler sampleBlockState ()Lnet/minecraft/block/BlockState;
+
+# Allow mod code to reference the no-op Beardifier singleton.
+# Beardifier.INSTANCE is the zero-structure-weight placeholder used by
+# NoiseChunkGenerator.getHeight() — identical semantics for our use case.
+# Making the class public exposes its public static members (including INSTANCE).
+accessible class net/minecraft/world/gen/densityfunction/DensityFunctionTypes$Beardifier

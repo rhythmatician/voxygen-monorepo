@@ -1,0 +1,182 @@
+name: Auto-Merge
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+  pull_request_review:
+    types:
+      - submitted
+  check_suite:
+    types:
+      - completed
+
+jobs:
+  auto-merge:
+    name: Auto-Merge Docs & Small PRs
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.draft == false
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check if auto-merge eligible
+        id: check-eligibility
+        run: |
+          # Get the list of changed files
+          git fetch origin main
+          CHANGED_FILES=$(git diff --name-only origin/main...HEAD)
+          echo "Changed files: $CHANGED_FILES"
+
+          # Count lines of code changed
+          LOC_CHANGED=$(git diff --stat origin/main...HEAD | tail -1 | grep -oE '[0-9]+' | head -1 || echo "0")
+          echo "Lines changed: $LOC_CHANGED"
+
+          # Check if only docs/ or .md files changed
+          DOCS_ONLY=true
+          for file in $CHANGED_FILES; do
+            if [[ ! $file =~ ^docs/ ]] && [[ ! $file =~ \.md$ ]] && [[ ! $file =~ ^\.github/workflows/.*\.yml$ ]]; then
+              DOCS_ONLY=false
+              break
+            fi
+          done
+
+          # Check size limit (< 200 LOC)
+          SIZE_OK=false
+          if [ "$LOC_CHANGED" -lt 200 ]; then
+            SIZE_OK=true
+          fi
+
+          echo "docs_only=$DOCS_ONLY" >> $GITHUB_OUTPUT
+          echo "size_ok=$SIZE_OK" >> $GITHUB_OUTPUT
+          echo "loc_changed=$LOC_CHANGED" >> $GITHUB_OUTPUT
+
+          # Determine if eligible for auto-merge
+          if [ "$DOCS_ONLY" = true ] && [ "$SIZE_OK" = true ]; then
+            echo "eligible=true" >> $GITHUB_OUTPUT
+            echo "✅ PR is eligible for auto-merge (docs/CI only, $LOC_CHANGED LOC)"
+          else
+            echo "eligible=false" >> $GITHUB_OUTPUT
+            echo "❌ PR not eligible: docs_only=$DOCS_ONLY, size_ok=$SIZE_OK ($LOC_CHANGED LOC)"
+          fi
+
+      - name: Wait for and check CI status
+        id: check-ci
+        if: steps.check-eligibility.outputs.eligible == 'true'
+        run: |
+          # Wait for CI checks to complete with retry mechanism
+          COMMIT_SHA="${{ github.event.pull_request.head.sha }}"
+          MAX_ATTEMPTS=12  # 12 attempts * 30 seconds = 6 minutes max wait
+          ATTEMPT=1
+          CI_STATUS="false"
+
+          echo "🔄 Waiting for CI checks to complete for commit $COMMIT_SHA..."
+
+          while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
+            echo "⏱️  Attempt $ATTEMPT/$MAX_ATTEMPTS - checking CI status..."
+
+            # Check if all required checks are passing
+            CI_STATUS=$(gh api repos/${{ github.repository }}/commits/$COMMIT_SHA/check-runs \
+              --jq '[.check_runs[] | select(.name | test("Code Quality & Linting|Tests & Coverage|Build Mod|CodeQL Security Scan")) | .conclusion] | all(. == "success")' 2>/dev/null || echo "false")
+
+            # Also check if all checks have completed (not pending)
+            CHECKS_COMPLETED=$(gh api repos/${{ github.repository }}/commits/$COMMIT_SHA/check-runs \
+              --jq '[.check_runs[] | select(.name | test("Code Quality & Linting|Tests & Coverage|Build Mod|CodeQL Security Scan")) | .status] | all(. == "completed")' 2>/dev/null || echo "false")
+
+            echo "📊 CI Status: $CI_STATUS | Checks Completed: $CHECKS_COMPLETED"
+
+            if [ "$CI_STATUS" = "true" ] && [ "$CHECKS_COMPLETED" = "true" ]; then
+              echo "✅ All CI checks are passing!"
+              break
+            elif [ "$CHECKS_COMPLETED" = "false" ]; then
+              echo "⏳ CI checks still running, waiting 30 seconds..."
+            else
+              echo "❌ Some CI checks failed or are in unknown state"
+              break
+            fi
+
+            sleep 30
+            ATTEMPT=$((ATTEMPT + 1))
+          done
+
+          echo "ci_passing=$CI_STATUS" >> $GITHUB_OUTPUT
+
+          if [ "$CI_STATUS" = "true" ]; then
+            echo "✅ All required CI checks are passing"
+          else
+            echo "❌ CI checks are not all passing yet (waited up to $((MAX_ATTEMPTS * 30 / 60)) minutes)"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check for open threads
+        id: check-threads
+        if: steps.check-eligibility.outputs.eligible == 'true' && steps.check-ci.outputs.ci_passing == 'true'
+        run: |
+          # Check for unresolved review comments
+          OPEN_THREADS=$(gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews \
+            --jq '[.[] | select(.state == "COMMENTED" or .state == "CHANGES_REQUESTED")] | length')
+
+          # Check for unresolved conversations
+          UNRESOLVED_CONVERSATIONS=$(gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/comments \
+            --jq '[.[] | select(.in_reply_to_id == null)] | length')
+
+          TOTAL_THREADS=$((OPEN_THREADS + UNRESOLVED_CONVERSATIONS))
+
+          echo "open_threads=$TOTAL_THREADS" >> $GITHUB_OUTPUT
+
+          if [ "$TOTAL_THREADS" -eq 0 ]; then
+            echo "✅ No open review threads"
+          else
+            echo "❌ $TOTAL_THREADS open review threads found"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Enable auto-merge
+        if: steps.check-eligibility.outputs.eligible == 'true' && steps.check-ci.outputs.ci_passing == 'true' && steps.check-threads.outputs.open_threads == '0'
+        run: |
+          echo "🚀 Enabling auto-merge for PR #${{ github.event.pull_request.number }}"
+          echo "📊 Summary:"
+          echo "  - Docs/CI only: ✅"
+          echo "  - Size: ${{ steps.check-eligibility.outputs.loc_changed }} LOC (< 200) ✅"
+          echo "  - CI passing: ✅"
+          echo "  - No open threads: ✅"
+
+          gh pr merge ${{ github.event.pull_request.number }} --auto --squash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Add auto-merge comment
+        if: steps.check-eligibility.outputs.eligible == 'true' && steps.check-ci.outputs.ci_passing == 'true' && steps.check-threads.outputs.open_threads == '0'
+        run: |
+          gh pr comment ${{ github.event.pull_request.number }} --body "🤖 **Auto-merge enabled**
+
+          This PR meets all criteria for automatic merging:
+          - ✅ **Docs/CI changes only**: Only \`docs/\`, \`*.md\`, or CI workflow files modified
+          - ✅ **Size limit**: ${{ steps.check-eligibility.outputs.loc_changed }} lines changed (< 200 LOC)
+          - ✅ **CI passing**: All required checks are green
+          - ✅ **No open threads**: No unresolved review comments
+
+          The PR will be automatically merged when all branch protection rules are satisfied."
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log ineligible reason
+        if: steps.check-eligibility.outputs.eligible == 'false'
+        run: |
+          echo "❌ PR not eligible for auto-merge:"
+          echo "  - Docs only: ${{ steps.check-eligibility.outputs.docs_only }}"
+          echo "  - Size OK: ${{ steps.check-eligibility.outputs.size_ok }} (${{ steps.check-eligibility.outputs.loc_changed }} LOC)"
+          echo ""
+          echo "Auto-merge criteria:"
+          echo "  - Only docs/, *.md, or .github/workflows/*.yml files"
+          echo "  - < 200 lines of code changed"
+          echo "  - All CI checks passing"
+          echo "  - No open review threads"

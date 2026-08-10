@@ -1,0 +1,8 @@
+{
+  "useOnnxTerrain": true,
+  "modelPath": "config/lodiffusion/model.onnx",
+  "adapter": "unified_v1",
+  "inferenceThreads": 2,
+  "threshold": 0.5,
+  "inferenceDevice": "auto"
+}
