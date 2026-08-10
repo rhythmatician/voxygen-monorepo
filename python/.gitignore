@@ -54,3 +54,6 @@ runs/
 data/*
 training_run.txt
 *.npz
+
+*.egg-info/
+.venv/
