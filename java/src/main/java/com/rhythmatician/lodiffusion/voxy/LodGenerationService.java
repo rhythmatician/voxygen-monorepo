@@ -725,29 +725,29 @@ public final class LodGenerationService {
                     if (generatedSections.contains(key)) continue;
 
                     VoxelVolume vol = VoxelPredictionDecoder.fromFallback(sy, ctx.rawHm(), ctx.oceanFloorHm(), ctx.biomeIdx());
-                                SectionPos pos = new SectionPos(sx, sy, sz);
-                                WriteOutcome outcome;
-                                try {
-                                    outcome = writer.writeSection(pos, vol);
-                                } catch (VolumeUnavailableException e) {
-                                    HelloTerrainMod.LOGGER.warn("[LodGen] writer unavailable {}: {}", pos, e.getMessage());
-                                    skippedExisting++;
-                                    generatedSections.add(key);
-                                    continue;
-                                }
-                                switch (outcome.status()) {
-                                    case WRITTEN -> {
-                                        totalSections++;
-                                        anyNew = true;
-                                        generatedSections.add(key);
-                                    }
-                                    case SKIPPED_AIR -> skippedAir++;
-                                    case SKIPPED_EXISTS -> {
-                                        skippedExisting++;
-                                        generatedSections.add(key);
-                                    }
-                                    default -> throw new IllegalStateException("Unknown status: " + outcome.status());
-                                }
+                    SectionPos pos = new SectionPos(sx, sy, sz);
+                    WriteOutcome outcome;
+                    try {
+                        outcome = writer.writeSection(pos, vol);
+                    } catch (VolumeUnavailableException e) {
+                        HelloTerrainMod.LOGGER.warn("[LodGen] writer unavailable {}: {}", pos, e.getMessage());
+                        skippedExisting++;
+                        generatedSections.add(key);
+                        continue;
+                    }
+                    switch (outcome.status()) {
+                        case WRITTEN -> {
+                            totalSections++;
+                            anyNew = true;
+                            generatedSections.add(key);
+                        }
+                        case SKIPPED_AIR -> skippedAir++;
+                        case SKIPPED_EXISTS -> {
+                            skippedExisting++;
+                            generatedSections.add(key);
+                        }
+                        default -> throw new IllegalStateException("Unknown status: " + outcome.status());
+                    }
                 }
 
                 columnsProcessed++;
@@ -1205,15 +1205,12 @@ public final class LodGenerationService {
             {
                 claimed.removeIf(t -> {
                     Level lvl = Level.values()[t.level];
-                int s = lvl.regionSections();
-                // ws -> L0 section: ws << (lvl+1)
-                SectionPos origin = new SectionPos(t.wsX << (lvl.value() + 1), t.wsY << (lvl.value() + 1), t.wsZ << (lvl.value() + 1));
-                // Already aligned by construction (shift ensures divisibility by s=1<<(lvl+1)), but floor anyway
-                SectionPos aligned = new SectionPos(
-                        Math.floorDiv(origin.x(), s) * s,
-                        Math.floorDiv(origin.y(), s) * s,
-                        Math.floorDiv(origin.z(), s) * s);
-                if (writer.isRegionFullyPopulated(aligned, lvl)) {
+                    // ws -> L0 section: ws << (lvl+1); already aligned by construction
+                    SectionPos origin = new SectionPos(
+                            t.wsX << (lvl.value() + 1),
+                            t.wsY << (lvl.value() + 1),
+                            t.wsZ << (lvl.value() + 1));
+                    if (writer.isRegionFullyPopulated(origin, lvl)) {
                         t.markReady();
                         queue.markCompleted();
                         queue.propagateAdjacency(t);
@@ -1316,21 +1313,19 @@ public final class LodGenerationService {
                     //     parent nodes and stops descending, making far-distance
                     //     LOD invisible.  Coarse levels (L4/L3) are progressively
                     //     replaced by finer data as the octree expands.
-                    if (true) {
-                                VoxelVolume vol = VoxelPredictionDecoder.fromOctreeArgmax(output.blockArgmax(), task.columnContext.biomeIdx());
-                                // VoxelVolume is 32^3 XYZ; task (wsX,wsY,wsZ) is WorldSection coord at `level`.
-                                // Writer expects origin in SectionPos (16-block) and Level. Convert ws->section.
-                                int sx0 = WorldSectionCoord.worldSectionToBlockMin(task.wsX, level) >> 4;
-                                int sy0 = WorldSectionCoord.worldSectionToBlockMin(task.wsY, level) >> 4;
-                                int sz0 = WorldSectionCoord.worldSectionToBlockMin(task.wsZ, level) >> 4;
-                                SectionPos origin = new SectionPos(sx0, sy0, sz0);
-                                Level lvl = Level.values()[level];
-                                try {
-                                    writer.writeRegion(origin, lvl, vol);
-                                } catch (VolumeUnavailableException e) {
-                                    HelloTerrainMod.LOGGER.warn("[LodGen] writer region unavailable {} L{}: {}", origin, lvl, e.getMessage());
-                                }
-                            }
+                    VoxelVolume vol = VoxelPredictionDecoder.fromOctreeArgmax(output.blockArgmax(), task.columnContext.biomeIdx());
+                    // VoxelVolume is 32^3 XYZ; task (wsX,wsY,wsZ) is WorldSection coord at `level`.
+                    // Writer expects origin in SectionPos (16-block) and Level. Convert ws->section.
+                    int sx0 = WorldSectionCoord.worldSectionToBlockMin(task.wsX, level) >> 4;
+                    int sy0 = WorldSectionCoord.worldSectionToBlockMin(task.wsY, level) >> 4;
+                    int sz0 = WorldSectionCoord.worldSectionToBlockMin(task.wsZ, level) >> 4;
+                    SectionPos origin = new SectionPos(sx0, sy0, sz0);
+                    Level lvl = Level.values()[level];
+                    try {
+                        writer.writeRegion(origin, lvl, vol);
+                    } catch (VolumeUnavailableException e) {
+                        HelloTerrainMod.LOGGER.warn("[LodGen] writer region unavailable {} L{}: {}", origin, lvl, e.getMessage());
+                    }
 
                     // Spawn children for non-leaf levels
                     if (level > 0) {

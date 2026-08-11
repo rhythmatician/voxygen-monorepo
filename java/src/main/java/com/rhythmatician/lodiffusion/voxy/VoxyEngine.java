@@ -26,10 +26,9 @@ import org.slf4j.LoggerFactory;
  * {@link VoxyWorldBinding} handles direct {@code WorldSection} field writes and voxel encoding.
  */
 /**
- * @deprecated Prefer {@link VoxelVolumeWriter} seam; this class is retained only
- * for internal {@link RealVoxyVolumeWriter} delegation and will be removed.
+ * Internal reflection layer behind the {@link VoxelVolumeWriter} seam.
+ * Retained for {@link RealVoxyVolumeWriter} delegation; not part of the public seam.
  */
-@Deprecated
 public final class VoxyEngine {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(VoxyEngine.class);

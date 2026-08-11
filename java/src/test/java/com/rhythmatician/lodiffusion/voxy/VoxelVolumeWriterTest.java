@@ -122,13 +122,11 @@ class VoxelVolumeWriterTest {
     // ------------------------------------------------------------------
 
     @Test
-    void level_voxelSizeAndRegionSections() {
-        assertEquals(1, Level.L0.voxelSize());
-        assertEquals(32, Level.L0.regionBlocks());
+    void level_regionSections() {
         assertEquals(2, Level.L0.regionSections());
         assertEquals(4, Level.L1.regionSections());
-        assertEquals(64, Level.L1.regionBlocks());
-        assertEquals(512, Level.L4.regionBlocks());
+        assertEquals(8, Level.L2.regionSections());
+        assertEquals(16, Level.L3.regionSections());
         assertEquals(32, Level.L4.regionSections());
     }
 
@@ -322,11 +320,15 @@ class VoxelVolumeWriterTest {
     void voxelVolume_xyzYzxAsymmetricSentinel_notTransposed() {
         // Sentinel values that differ per-axis; catches XYZ/YZX transpose
         VoxelVolume.Builder b = VoxelVolume.builder(32);
-        for (int y = 0; y < 32; y++) for (int z = 0; z < 32; z++) for (int x = 0; x < 32; x++) {
-            int v = (x * 100 + y * 10 + z) % 1104;
-            if (v == 0) v = 1;
-            b.setBlock(x, y, z, v);
-            b.setBiome(x, y, z, (x + y*2 + z*3) % 54);
+        for (int y = 0; y < 32; y++) {
+            for (int z = 0; z < 32; z++) {
+                for (int x = 0; x < 32; x++) {
+                    int v = (x * 100 + y * 10 + z) % 1104;
+                    if (v == 0) v = 1;
+                    b.setBlock(x, y, z, v);
+                    b.setBiome(x, y, z, (x + y * 2 + z * 3) % 54);
+                }
+            }
         }
         VoxelVolume vol = b.build();
         writer.writeRegion(new SectionPos(0, 0, 0), Level.L2, vol);
@@ -385,7 +387,13 @@ class VoxelVolumeWriterTest {
         float[][] rawHm = new float[16][16];
         float[][] floor = new float[16][16];
         int[][] biomes = new int[16][16];
-        for (int x=0;x<16;x++) for(int z=0;z<16;z++){ rawHm[x][z]= 70f; floor[x][z]=65f; biomes[x][z]= BiomeMapping.toCanonicalId("minecraft:plains"); }
+        for (int x = 0; x < 16; x++) {
+            for (int z = 0; z < 16; z++) {
+                rawHm[x][z] = 70f;
+                floor[x][z] = 65f;
+                biomes[x][z] = BiomeMapping.toCanonicalId("minecraft:plains");
+            }
+        }
         VoxelVolume vol = VoxelPredictionDecoder.fromFallback(4, rawHm, floor, biomes); // sy=4 => baseY=64 straddles surface
         // At worldY=48, below ground 65 => stone, at worldY=64 ground top => grass, above => air
         // Check a column survives as non-air

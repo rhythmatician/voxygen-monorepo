@@ -41,9 +41,6 @@ public final class HeightmapFallbackGenerator {
     /** Minecraft sea level in block Y coordinates. */
     static final int SEA_LEVEL = 63;
 
-    /** Default light value: full sky light, no block light → 0x0F. */
-    private static final int DEFAULT_LIGHT = 0x0F;
-
     private HeightmapFallbackGenerator() {}
 
     // ------------------------------------------------------------------ //
@@ -235,87 +232,6 @@ public final class HeightmapFallbackGenerator {
     // ------------------------------------------------------------------ //
     //  Section generation
     // ------------------------------------------------------------------ //
-
-    /**
-     * Generate a semantic 16^3 section (canonical IDs) for fallback.
-     *
-     * <p>Semantic generation -- no Voxy types. See
-     * {@link VoxelPredictionDecoder#fromFallback(int, float[][], float[][], int[][])} for the
-     * preferred entry point which builds a {@link VoxelVolume} extent 16.
-     *
-     * @param sectionX     section X
-     * @param sectionY     section Y
-     * @param sectionZ     section Z (unused for generation, kept for symmetry)
-     * @param rawHm        [16][16] water surface heightmap
-     * @param oceanFloorHm [16][16] floor or null
-     * @param biomeIdx     [16][16] canonical biome indices
-     * @deprecated prefer semantic {@link VoxelPredictionDecoder#fromFallback} + {@link VoxelVolumeWriter#writeSection}
-     */
-    @Deprecated
-    public static Object generateSection(int sectionX, int sectionY, int sectionZ,
-                                          float[][] rawHm, float[][] oceanFloorHm,
-                                          int[][] biomeIdx,
-                                          int[][] biomeVoxyIds,
-                                          FallbackBlockIds blockIds,
-                                          Object voxyMapper) {
-        int baseY = sectionY * 16;
-
-        // Quick check: if the entire section is above the max heightmap AND
-        // above sea level, it's all air — skip it.
-        if (baseY >= SEA_LEVEL) {
-            boolean allAboveSurface = true;
-            for (int lx = 0; lx < 16 && allAboveSurface; lx++) {
-                for (int lz = 0; lz < 16 && allAboveSurface; lz++) {
-                    if (baseY < rawHm[lx][lz]) {
-                        allAboveSurface = false;
-                    }
-                }
-            }
-            if (allAboveSurface) return null;
-        }
-
-        Object section = VoxyCompat.createEmptySection();
-        VoxyCompat.setSectionPosition(section, sectionX, sectionY, sectionZ);
-        long[] data = VoxyCompat.getSectionData(section);
-
-        int nonAir = 0;
-
-        for (int lx = 0; lx < 16; lx++) {
-            for (int lz = 0; lz < 16; lz++) {
-                float waterSurfaceY = rawHm[lx][lz];
-                // If ocean floor data is available, use it as the solid ground.
-                // Otherwise, fall back to the surface heightmap (no water distinction).
-                float groundY = oceanFloorHm != null ? oceanFloorHm[lx][lz] : waterSurfaceY;
-                int waterSurfaceBlockY = (int) Math.floor(waterSurfaceY);
-                int groundBlockY = (int) Math.floor(groundY);
-
-                int canonBiome = biomeIdx[lx][lz];
-                int voxyBiome = biomeVoxyIds[lx][lz];
-
-                SurfaceType surfaceType = surfaceTypeForBiome(canonBiome);
-
-                for (int ly = 0; ly < 16; ly++) {
-                    int worldY = baseY + ly;
-                    int idx = VoxyCompat.l0Index(lx, ly, lz);
-
-                    int blockId = pickBlockId(worldY, groundBlockY,
-                            waterSurfaceBlockY, surfaceType, blockIds);
-
-                    data[idx] = VoxyCompat.composeVoxel(blockId, voxyBiome, DEFAULT_LIGHT);
-
-                    if (blockId != blockIds.air()) {
-                        nonAir++;
-                    }
-                }
-            }
-        }
-
-        if (nonAir == 0) return null;
-
-        VoxyCompat.setNonAirCount(section, nonAir);
-        VoxyCompat.mipSection(section, voxyMapper);
-        return section;
-    }
 
     /**
      * Map a canonical biome index to a {@link SurfaceType} for the top 3 solid blocks.

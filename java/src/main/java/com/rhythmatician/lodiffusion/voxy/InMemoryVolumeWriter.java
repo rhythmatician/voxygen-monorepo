@@ -88,9 +88,6 @@ public final class InMemoryVolumeWriter implements VoxelVolumeWriter {
             return WriteOutcome.skippedAir();
         }
         int nonAir = volume.countNonAir();
-        if (nonAir == 0) {
-            return WriteOutcome.skippedAir();
-        }
         writtenSections.add(key);
         records.add(new SectionRecord(pos, volume.copy()));
         return WriteOutcome.written(nonAir);
@@ -119,9 +116,6 @@ public final class InMemoryVolumeWriter implements VoxelVolumeWriter {
             return WriteOutcome.skippedAir();
         }
         int nonAir = volume.countNonAir();
-        if (nonAir == 0) {
-            return WriteOutcome.skippedAir();
-        }
         writtenRegions.add(key);
         records.add(new RegionRecord(origin, level, volume.copy()));
         return WriteOutcome.written(nonAir);

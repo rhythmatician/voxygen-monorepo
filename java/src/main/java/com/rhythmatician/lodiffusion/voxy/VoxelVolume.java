@@ -62,7 +62,7 @@ public final class VoxelVolume {
         return new VoxelVolume(extent, blocks.clone(), biomes.clone());
     }
 
-        /** Returns true if every blockId is air (0). Centralized to deduplicate writer loops. */
+    /** Returns true if every blockId is air (0). Centralized to deduplicate writer loops. */
     public boolean isAllAir() {
         for (int v : blocks) {
             if (v != 0) {
@@ -83,7 +83,7 @@ public final class VoxelVolume {
         return c;
     }
 
-// ------------------------------------------------------------------
+    // ------------------------------------------------------------------
     // Builder -- mutable only before build()
     // ------------------------------------------------------------------
 

@@ -20,10 +20,6 @@ public final class RealVoxyVolumeWriter implements VoxelVolumeWriter {
     private static final Logger LOGGER = LoggerFactory.getLogger(RealVoxyVolumeWriter.class);
     private static final int DEFAULT_LIGHT = 0x0F;
 
-    // YZX stride constants for 32^3 WorldSection: index = (y<<10)|(z<<5)|x
-    private static final int Y_STRIDE = 1 << 10;
-    private static final int Z_STRIDE = 1 << 5;
-
     private final Object worldEngine;
     private final Object voxyMapper;
     private final int[] canonicalBiomeToVoxy;
@@ -58,29 +54,30 @@ public final class RealVoxyVolumeWriter implements VoxelVolumeWriter {
      *
      * <p>Only 12 canonical IDs are used by {@link VoxelPredictionDecoder} fallback path;
      * remaining entries stay 0 (air) which is correct because fallback never emits those IDs.
-     * See {@link VoxelPredictionDecoder.FallbackPalette} for the canonical constants
-     * (verified against {@code python/config/voxy_vocab.json}).
+     * Canonical IDs come from {@link VoxelPredictionDecoder.FallbackPalette#defaults()}
+     * (verified against {@code python/config/voxy_vocab.json}) so the two stay in sync.
      */
     public static int[] buildFallbackBlockMap(HeightmapFallbackGenerator.FallbackBlockIds voxyIds) {
         int[] map = new int[CanonicalRegistries.BLOCK_COUNT];
-        map[0] = voxyIds.air();
-        map[923] = voxyIds.stone();
-        map[319] = voxyIds.deepslate();
-        map[343] = voxyIds.dirt();
-        map[400] = voxyIds.grassBlock();
-        map[855] = voxyIds.sand();
-        map[1018] = voxyIds.water();
-        map[825] = voxyIds.redSand();
-        map[401] = voxyIds.gravel();
-        map[893] = voxyIds.snowLayer();
-        map[703] = voxyIds.podzol();
-        map[593] = voxyIds.mycelium();
+        VoxelPredictionDecoder.FallbackPalette palette = VoxelPredictionDecoder.FallbackPalette.defaults();
+        map[palette.air()] = voxyIds.air();
+        map[palette.stone()] = voxyIds.stone();
+        map[palette.deepslate()] = voxyIds.deepslate();
+        map[palette.dirt()] = voxyIds.dirt();
+        map[palette.grassBlock()] = voxyIds.grassBlock();
+        map[palette.sand()] = voxyIds.sand();
+        map[palette.water()] = voxyIds.water();
+        map[palette.redSand()] = voxyIds.redSand();
+        map[palette.gravel()] = voxyIds.gravel();
+        map[palette.snowLayer()] = voxyIds.snowLayer();
+        map[palette.podzol()] = voxyIds.podzol();
+        map[palette.mycelium()] = voxyIds.mycelium();
         return map;
     }
 
     public static int[] buildBiomeMap(
             Object voxyMapper, net.minecraft.registry.Registry<net.minecraft.world.biome.Biome> biomeRegistry) {
-        return VoxyBlockMapper.resolveBiomeMappingsPublic(voxyMapper, biomeRegistry);
+        return VoxyBlockMapper.resolveBiomeMappings(voxyMapper, biomeRegistry);
     }
 
     public static int[] buildBlockMap(com.rhythmatician.lodiffusion.onnx.BlockVocabulary vocab, Object voxyMapper) {
@@ -134,9 +131,6 @@ public final class RealVoxyVolumeWriter implements VoxelVolumeWriter {
         if (!VoxyCompat.isAvailable()) {
             throw new VolumeUnavailableException("Voxy not available");
         }
-        if (worldEngine == null) {
-            throw new VolumeUnavailableException("WorldEngine unavailable");
-        }
         if (VoxyCompat.sectionExists(worldEngine, pos.x(), pos.y(), pos.z())) {
             return WriteOutcome.skippedExists();
         }
@@ -164,9 +158,6 @@ public final class RealVoxyVolumeWriter implements VoxelVolumeWriter {
         }
         if (!VoxyCompat.isAvailable()) {
             throw new VolumeUnavailableException("Voxy not available");
-        }
-        if (worldEngine == null) {
-            throw new VolumeUnavailableException("WorldEngine unavailable");
         }
         if (isRegionFullyPopulated(origin, level)) {
             return WriteOutcome.skippedExists();
@@ -255,11 +246,6 @@ public final class RealVoxyVolumeWriter implements VoxelVolumeWriter {
     /** YZX index for 32^3 WorldSection: (y<<10)|(z<<5)|x. Single source of truth. */
     static int yzxIndex(int x, int y, int z) {
         return (y << 10) | (z << 5) | x;
-    }
-
-    /** YZX for L0 16^3 reuses VoxyCompat but kept explicit for locality; delegates to l0Index. */
-    static int l0YzxIndex(int x, int y, int z) {
-        return VoxyCompat.l0Index(x, y, z);
     }
 
     private int toVoxyBlock(int canonical) {

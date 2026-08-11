@@ -22,10 +22,9 @@ import com.rhythmatician.lodiffusion.onnx.InferenceResult;
  * </ol>
  */
 /**
- * @deprecated Prefer {@link VoxelVolumeWriter} seam; this class is retained only
- * for internal {@link RealVoxyVolumeWriter} delegation and will be removed.
+ * Internal write helper behind the {@link VoxelVolumeWriter} seam.
+ * Retained for {@link RealVoxyVolumeWriter} delegation; not part of the public seam.
  */
-@Deprecated
 public final class VoxySectionWriter {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(VoxySectionWriter.class);
