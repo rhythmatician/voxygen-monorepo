@@ -255,8 +255,12 @@ public final class RealVoxyVolumeWriter implements VoxelVolumeWriter {
 
     private static boolean isAllAir(VoxelVolume v) {
         int e = v.extent();
-        for (int y = 0; y < e; y++) for (int z = 0; z < e; z++) for (int x = 0; x < e; x++) {
-            if (v.blockId(x, y, z) != CanonicalRegistries.BLOCK_AIR) return false;
+        for (int y = 0; y < e; y++) {
+            for (int z = 0; z < e; z++) {
+                for (int x = 0; x < e; x++) {
+                    if (v.blockId(x, y, z) != CanonicalRegistries.BLOCK_AIR) return false;
+                }
+            }
         }
         return true;
     }
