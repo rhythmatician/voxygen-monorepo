@@ -22,26 +22,28 @@ import java.util.Set;
  * when marked unavailable. No Voxy or Minecraft runtime required.
  */
 public final class InMemoryVolumeWriter implements VoxelVolumeWriter {
-
     public sealed interface WriteRecord permits SectionRecord, RegionRecord {}
-
     public record SectionRecord(SectionPos pos, VoxelVolume volume) implements WriteRecord {}
-
     public record RegionRecord(SectionPos origin, Level level, VoxelVolume volume) implements WriteRecord {}
-
     private record SectionKey(int x, int y, int z) {}
-
     private record RegionKey(Level level, int x, int y, int z) {}
-
     private final List<WriteRecord> records = new ArrayList<>();
     private final Set<SectionKey> writtenSections = new HashSet<>();
     private final Set<RegionKey> writtenRegions = new HashSet<>();
     private boolean unavailable = false;
 
-    @Override public int saveQueueDepth() { return 0; }
-    @Override public boolean isRegionFullyPopulated(Level level, int wsX, int wsY, int wsZ) { return false; }
-    public void setUnavailable(boolean v) {
-        this.unavailable = v;
+    @Override
+    public int saveQueueDepth() {
+        return 0;
+    }
+
+    @Override
+    public boolean isRegionFullyPopulated(SectionPos origin, Level level) {
+        return false;
+    }
+
+    public void setUnavailable(boolean unavailable) {
+        this.unavailable = unavailable;
     }
 
     public List<WriteRecord> records() {
@@ -76,18 +78,20 @@ public final class InMemoryVolumeWriter implements VoxelVolumeWriter {
         Objects.requireNonNull(pos, "pos");
         Objects.requireNonNull(volume, "volume");
         if (volume.extent() != 16) {
-            throw new IllegalArgumentException(
-                    "writeSection requires extent 16, got " + volume.extent());
+            throw new IllegalArgumentException("writeSection requires extent 16, got " + volume.extent());
         }
         SectionKey key = new SectionKey(pos.x(), pos.y(), pos.z());
         if (writtenSections.contains(key)) {
             return WriteOutcome.skippedExists();
         }
-        if (isAllAir(volume)) {
+        if (volume.isAllAir()) {
+            return WriteOutcome.skippedAir();
+        }
+        int nonAir = volume.countNonAir();
+        if (nonAir == 0) {
             return WriteOutcome.skippedAir();
         }
         writtenSections.add(key);
-        int nonAir = countNonAir(volume);
         records.add(new SectionRecord(pos, volume.copy()));
         return WriteOutcome.written(nonAir);
     }
@@ -101,53 +105,25 @@ public final class InMemoryVolumeWriter implements VoxelVolumeWriter {
         Objects.requireNonNull(level, "level");
         Objects.requireNonNull(volume, "volume");
         if (volume.extent() != 32) {
-            throw new IllegalArgumentException(
-                    "writeRegion requires extent 32, got " + volume.extent());
+            throw new IllegalArgumentException("writeRegion requires extent 32, got " + volume.extent());
         }
         if (!level.isAligned(origin)) {
             throw new IllegalArgumentException(
-                    "origin " + origin + " not aligned to " + level
-                            + " regionSections=" + level.regionSections());
+                    "origin " + origin + " not aligned to " + level + " regionSections=" + level.regionSections());
         }
         RegionKey key = new RegionKey(level, origin.x(), origin.y(), origin.z());
         if (writtenRegions.contains(key)) {
             return WriteOutcome.skippedExists();
         }
-        if (isAllAir(volume)) {
+        if (volume.isAllAir()) {
+            return WriteOutcome.skippedAir();
+        }
+        int nonAir = volume.countNonAir();
+        if (nonAir == 0) {
             return WriteOutcome.skippedAir();
         }
         writtenRegions.add(key);
-        int nonAir = countNonAir(volume);
         records.add(new RegionRecord(origin, level, volume.copy()));
         return WriteOutcome.written(nonAir);
-    }
-
-    private static boolean isAllAir(VoxelVolume v) {
-        int e = v.extent();
-        for (int y = 0; y < e; y++) {
-            for (int z = 0; z < e; z++) {
-                for (int x = 0; x < e; x++) {
-                    if (v.blockId(x, y, z) != CanonicalRegistries.BLOCK_AIR) {
-                        return false;
-                    }
-                }
-            }
-        }
-        return true;
-    }
-
-    private static int countNonAir(VoxelVolume v) {
-        int c = 0;
-        int e = v.extent();
-        for (int y = 0; y < e; y++) {
-            for (int z = 0; z < e; z++) {
-                for (int x = 0; x < e; x++) {
-                    if (v.blockId(x, y, z) != CanonicalRegistries.BLOCK_AIR) {
-                        c++;
-                    }
-                }
-            }
-        }
-        return c;
     }
 }

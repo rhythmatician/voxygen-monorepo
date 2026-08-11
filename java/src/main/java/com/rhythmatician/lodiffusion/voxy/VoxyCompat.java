@@ -19,6 +19,11 @@ package com.rhythmatician.lodiffusion.voxy;
  * <p>This facade exists solely so that all existing callers ({@code VoxySectionWriter},
  * {@code LodGenerationService}, etc.) continue to compile and run without modification.
  */
+/**
+ * @deprecated Prefer {@link VoxelVolumeWriter} seam; this class is retained only
+ * for internal {@link RealVoxyVolumeWriter} delegation and will be removed.
+ */
+@Deprecated
 public final class VoxyCompat {
 
     private VoxyCompat() {}

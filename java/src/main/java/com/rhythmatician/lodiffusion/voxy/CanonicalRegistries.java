@@ -43,6 +43,6 @@ public final class CanonicalRegistries {
     }
 
     public static boolean isValidBiomeId(int id) {
-        return (id >= 0 && id < BIOME_COUNT) || id == BIOME_UNKNOWN;
+        return id >= 0 && id < BIOME_COUNT || id == BIOME_UNKNOWN;
     }
 }

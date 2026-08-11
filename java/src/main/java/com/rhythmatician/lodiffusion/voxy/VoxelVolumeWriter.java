@@ -1,13 +1,13 @@
 package com.rhythmatician.lodiffusion.voxy;
 
 /**
- * Deep module seam between generation and storage.
+ * Deep module seam between generation and Voxy storage.
  *
  * <p>Two explicit operations:
  * <ul>
- *   <li>{@link #writeSection(SectionPos, VoxelVolume)} - L0 section write, volume extent must be 16.</li>
- *   <li>{@link #writeRegion(SectionPos, Level, VoxelVolume)} - 32^3 octree region write,
- *       volume extent must be 32, origin is an L0 SectionPos aligned to the level's region grid.</li>
+ * <li>{@link #writeSection(SectionPos, VoxelVolume)} -- L0 section write, volume extent must be 16.</li>
+ * <li>{@link #writeRegion(SectionPos, Level, VoxelVolume)} -- 32^3 octree region write,
+ * volume extent must be 32, origin is an L0 SectionPos aligned to the level's region grid.</li>
  * </ul>
  *
  * <p>No operation infers extent. Contract violations for invalid non-null values throw
@@ -15,6 +15,7 @@ package com.rhythmatician.lodiffusion.voxy;
  * binding unavailability throws unchecked {@link VolumeUnavailableException}.
  */
 public interface VoxelVolumeWriter {
+
     /**
      * Write one L0 16^3 section.
      *
@@ -29,10 +30,10 @@ public interface VoxelVolumeWriter {
      *
      * @param origin L0 SectionPos of the region's minimum corner, must be
      *               aligned: each coordinate divisible by {@code level.regionSections()}
-     * @param level  L0..L4, controls voxel scale (1 &lt;&lt; level blocks per voxel)
+     * @param level L0..L4, controls voxel scale (1 &lt;&lt; level blocks per voxel)
      * @throws NullPointerException if origin, level, or volume is null
      * @throws IllegalArgumentException if volume extent != 32, origin not aligned to level,
-     *                                  or ids invalid
+     *         or ids invalid
      * @throws VolumeUnavailableException if backend is not available
      */
     WriteOutcome writeRegion(SectionPos origin, Level level, VoxelVolume volume);
@@ -41,12 +42,15 @@ public interface VoxelVolumeWriter {
      * Returns save-queue depth for backpressure, or 0 if unavailable.
      * Default returns 0 (no backpressure signal).
      */
-    default int saveQueueDepth() { return 0; }
+    default int saveQueueDepth() {
+        return 0;
+    }
 
     /**
      * True if region already fully populated (0xFF nonEmptyChildren).
-     * Default returns false.
+     * Origin is the L0 SectionPos aligned to level. Default returns false.
      */
-    default boolean isRegionFullyPopulated(Level level, int wsX, int wsY, int wsZ) { return false; }
-
+    default boolean isRegionFullyPopulated(SectionPos origin, Level level) {
+        return false;
+    }
 }

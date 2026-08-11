@@ -27,6 +27,11 @@ import org.slf4j.LoggerFactory;
  * <p>Detection logic lives in {@link VoxyDetection}.
  * Engine-level reflection setup and operations live in {@link VoxyEngine}.
  */
+/**
+ * @deprecated Prefer {@link VoxelVolumeWriter} seam; this class is retained only
+ * for internal {@link RealVoxyVolumeWriter} delegation and will be removed.
+ */
+@Deprecated
 public final class VoxyWorldBinding {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(VoxyWorldBinding.class);

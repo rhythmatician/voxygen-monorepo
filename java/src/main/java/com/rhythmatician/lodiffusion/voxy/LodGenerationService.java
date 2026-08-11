@@ -736,12 +736,18 @@ public final class LodGenerationService {
                                     continue;
                                 }
                                 switch (outcome.status()) {
-                                    case WRITTEN -> { totalSections++; anyNew = true; }
+                                    case WRITTEN -> {
+                                        totalSections++;
+                                        anyNew = true;
+                                        generatedSections.add(key);
+                                    }
                                     case SKIPPED_AIR -> skippedAir++;
-                                    case SKIPPED_EXISTS -> skippedExisting++;
+                                    case SKIPPED_EXISTS -> {
+                                        skippedExisting++;
+                                        generatedSections.add(key);
+                                    }
+                                    default -> throw new IllegalStateException("Unknown status: " + outcome.status());
                                 }
-
-                    generatedSections.add(key);
                 }
 
                 columnsProcessed++;
@@ -1198,7 +1204,16 @@ public final class LodGenerationService {
             // and will skip any sub-cubes Voxy already owns.
             {
                 claimed.removeIf(t -> {
-                    if (writer.isRegionFullyPopulated(Level.values()[t.level], t.wsX, t.wsY, t.wsZ)) {
+                    Level lvl = Level.values()[t.level];
+                int s = lvl.regionSections();
+                // ws -> L0 section: ws << (lvl+1)
+                SectionPos origin = new SectionPos(t.wsX << (lvl.value() + 1), t.wsY << (lvl.value() + 1), t.wsZ << (lvl.value() + 1));
+                // Already aligned by construction (shift ensures divisibility by s=1<<(lvl+1)), but floor anyway
+                SectionPos aligned = new SectionPos(
+                        Math.floorDiv(origin.x(), s) * s,
+                        Math.floorDiv(origin.y(), s) * s,
+                        Math.floorDiv(origin.z(), s) * s);
+                if (writer.isRegionFullyPopulated(aligned, lvl)) {
                         t.markReady();
                         queue.markCompleted();
                         queue.propagateAdjacency(t);
