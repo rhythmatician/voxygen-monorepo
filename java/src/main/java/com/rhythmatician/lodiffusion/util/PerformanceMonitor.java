@@ -9,12 +9,33 @@ import com.rhythmatician.lodiffusion.HelloTerrainMod;
 /**
  * Performance monitoring utilities for ONNX terrain generation.
  * Tracks timing metrics, inference counts, and error rates.
+ *
+ * <p>Per-level octree counters are stored in fixed-size arrays indexed
+ * by LOD level (0=L0 finest … 4=L4 coarsest).  They are updated via
+ * lock-free atomics so no locking occurs on the hot path.
  */
 public final class PerformanceMonitor {
     
     private static final Map<String, AtomicLong> COUNTERS = new ConcurrentHashMap<>();
     private static final Map<String, AtomicLong> TIMING_TOTALS = new ConcurrentHashMap<>();
     private static final Map<String, AtomicLong> TIMING_COUNTS = new ConcurrentHashMap<>();
+
+    /** Number of octree LOD levels tracked (L0-L4). */
+    public static final int NUM_LEVELS = 5;
+
+    /** Per-level inference timing totals (nanoseconds). Indexed by LOD level. */
+    private static final AtomicLong[] LEVEL_TIMING_TOTALS;
+    /** Per-level inference timing sample counts. Indexed by LOD level. */
+    private static final AtomicLong[] LEVEL_TIMING_COUNTS;
+
+    static {
+        LEVEL_TIMING_TOTALS = new AtomicLong[NUM_LEVELS];
+        LEVEL_TIMING_COUNTS = new AtomicLong[NUM_LEVELS];
+        for (int i = 0; i < NUM_LEVELS; i++) {
+            LEVEL_TIMING_TOTALS[i] = new AtomicLong(0);
+            LEVEL_TIMING_COUNTS[i] = new AtomicLong(0);
+        }
+    }
     
     // Performance counter names
     public static final String CHUNKS_GENERATED = "chunks_generated";
@@ -43,12 +64,66 @@ public final class PerformanceMonitor {
         TIMING_TOTALS.computeIfAbsent(operationName, k -> new AtomicLong(0)).addAndGet(nanos);
         TIMING_COUNTS.computeIfAbsent(operationName, k -> new AtomicLong(0)).incrementAndGet();
     }
+
+    /**
+     * Record per-level inference timing (in nanoseconds).
+     *
+     * @param level LOD level (0=L0 finest … 4=L4 coarsest)
+     * @param nanos elapsed time in nanoseconds
+     */
+    public static void addLevelTiming(int level, long nanos) {
+        if (level >= 0 && level < NUM_LEVELS) {
+            LEVEL_TIMING_TOTALS[level].addAndGet(nanos);
+            LEVEL_TIMING_COUNTS[level].incrementAndGet();
+        }
+    }
+
+    /**
+     * Average per-level inference latency in milliseconds.
+     *
+     * @param level LOD level (0-4)
+     * @return average latency ms, or 0.0 if no samples recorded
+     */
+    public static double getAverageLevelTiming(int level) {
+        if (level < 0 || level >= NUM_LEVELS) return 0.0;
+        long count = LEVEL_TIMING_COUNTS[level].get();
+        if (count == 0) return 0.0;
+        return (LEVEL_TIMING_TOTALS[level].get() / (double) count) / 1_000_000.0;
+    }
+
+    /**
+     * Total per-level inference time in milliseconds.
+     *
+     * @param level LOD level (0-4)
+     * @return total ms, or 0.0 if no samples recorded
+     */
+    public static double getTotalLevelTiming(int level) {
+        if (level < 0 || level >= NUM_LEVELS) return 0.0;
+        return LEVEL_TIMING_TOTALS[level].get() / 1_000_000.0;
+    }
+
+    /**
+     * Total number of timing samples recorded at {@code level}.
+     */
+    public static long getLevelTimingCount(int level) {
+        if (level < 0 || level >= NUM_LEVELS) return 0L;
+        return LEVEL_TIMING_COUNTS[level].get();
+    }
     
     /**
      * Record timing for an operation using try-with-resources.
      */
     public static TimingScope startTiming(String operationName) {
         return new TimingScope(operationName);
+    }
+
+    /**
+     * Record per-level timing for an operation using try-with-resources.
+     *
+     * @param level LOD level (0-4); also records to the named operation
+     */
+    public static LevelTimingScope startLevelTiming(int level, String operationName) {
+        return new LevelTimingScope(level, operationName);
     }
     
     /**
@@ -97,6 +172,22 @@ public final class PerformanceMonitor {
             report.append(String.format("  %s: %.2f ms (%.2f ms total)\n", 
                 operation, getAverageTiming(operation), getTotalTiming(operation)));
         }
+
+        // Per-level inference latency
+        boolean anyLevelTiming = false;
+        for (int lvl = 4; lvl >= 0; lvl--) {
+            if (LEVEL_TIMING_COUNTS[lvl].get() > 0) { anyLevelTiming = true; break; }
+        }
+        if (anyLevelTiming) {
+            report.append("\nPer-Level Inference Latency (ms avg):\n");
+            for (int lvl = 4; lvl >= 0; lvl--) {
+                long cnt = LEVEL_TIMING_COUNTS[lvl].get();
+                if (cnt > 0) {
+                    report.append(String.format("  L%d: %.2f ms avg (%d samples)\n",
+                            lvl, getAverageLevelTiming(lvl), cnt));
+                }
+            }
+        }
         
         // Calculate derived metrics
         long chunksGenerated = getCounter(CHUNKS_GENERATED);
@@ -121,6 +212,10 @@ public final class PerformanceMonitor {
         COUNTERS.clear();
         TIMING_TOTALS.clear();
         TIMING_COUNTS.clear();
+        for (int i = 0; i < NUM_LEVELS; i++) {
+            LEVEL_TIMING_TOTALS[i].set(0);
+            LEVEL_TIMING_COUNTS[i].set(0);
+        }
         HelloTerrainMod.LOGGER.info("[PerformanceMonitor] Reset all metrics");
     }
     
@@ -147,6 +242,28 @@ public final class PerformanceMonitor {
         public void close() {
             long elapsed = System.nanoTime() - startTime;
             addTiming(operationName, elapsed);
+        }
+    }
+
+    /**
+     * AutoCloseable timing scope that records both named and per-level timing.
+     */
+    public static class LevelTimingScope implements AutoCloseable {
+        private final int level;
+        private final String operationName;
+        private final long startTime;
+
+        LevelTimingScope(int level, String operationName) {
+            this.level = level;
+            this.operationName = operationName;
+            this.startTime = System.nanoTime();
+        }
+
+        @Override
+        public void close() {
+            long elapsed = System.nanoTime() - startTime;
+            addTiming(operationName, elapsed);
+            addLevelTiming(level, elapsed);
         }
     }
     

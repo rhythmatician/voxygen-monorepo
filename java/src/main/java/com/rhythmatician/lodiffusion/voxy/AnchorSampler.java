@@ -21,7 +21,7 @@ import net.minecraft.world.chunk.Chunk;
  * information.  See {@code docs/NOISE-DESIGN.md} for rationale.
  *
  * <p>This class retains the 16×16 sampling helpers used by the heightmap
- * fallback pipeline and the {@code OctreeColumnContext} builder.
+ * fallback pipeline and the sparse-octree column builder.
  */
 public final class AnchorSampler {
 
@@ -38,7 +38,7 @@ public final class AnchorSampler {
 
     /** Container for anchor inputs for one 16×16 chunk column. */
     public record AnchorInputs(
-        float[][]  heightPlanes5,  // [5][256] row-major (will be reshaped to [5,16,16])
+        float[][]  heightPlanes5,  // [5][16] row-major (will be reshaped to [5,4,4]) — density-cell resolution
         int[][]    biomeIdx,       // [16][16]
         float[][]  rawHm,          // [16][16] surface block-Y
         float[][]  oceanFloorHm    // [16][16] ocean/river floor block-Y (may be null)
@@ -135,6 +135,12 @@ public final class AnchorSampler {
     /**
      * Derive the 5-plane height feature tensor from a raw heightmap.
      *
+     * <p>The raw 16×16 block-resolution heightmap is first downsampled to 4×4
+     * density-cell resolution (stride 4, matching vanilla's
+     * {@code horizontalCellBlockCount = 4}).  The 16×16 heightmap contains only
+     * ~4×4 independent samples; intermediate values are trilinear interpolation
+     * of cell-corner densities.
+     *
      * <p>Planes:
      * <ol>
      *   <li>surface         — normalised block-Y / 320</li>
@@ -147,82 +153,81 @@ public final class AnchorSampler {
      * @param hm           surface heightmap [16][16] in block-Y
      * @param oceanFloorHm ocean floor heightmap [16][16] in block-Y, or {@code null}
      *                     to fall back to {@code min(surface, SEA_LEVEL)} approximation
-     * @return float[5][256] in row-major order (channel, lx*16+lz)
+     * @return float[5][16] in row-major order (channel, cx*4+cz) at 4×4 density-cell resolution
      */
     static float[][] computeHeightPlanes(float[][] hm, float[][] oceanFloorHm) {
-        float[][] planes = new float[5][256];
+        // Density-cell resolution: 4×4 (stride 4 from 16×16 block grid)
+        final int S = 4;   // grid side
+        final int STRIDE = 4;  // block stride matching horizontalCellBlockCount
+        float[][] planes = new float[5][S * S];
 
-        // Step 1: Normalise surface (matches Python: surf = height / 320.0)
-        float[][] surfNorm = new float[16][16];
-        for (int lx = 0; lx < 16; lx++) {
-            for (int lz = 0; lz < 16; lz++) {
-                float h = hm[lx][lz];
-                surfNorm[lx][lz] = h / HEIGHT_RANGE;
-                planes[0][lx * 16 + lz] = surfNorm[lx][lz];                // surface
-                // Ocean floor: use real OCEAN_FLOOR_WG data when available,
-                // otherwise fall back to the min(surface, SEA_LEVEL) approximation.
+        // Step 1: Downsample 16×16 → 4×4 and normalise surface + ocean floor
+        float[][] surfNorm = new float[S][S];
+        for (int cx = 0; cx < S; cx++) {
+            for (int cz = 0; cz < S; cz++) {
+                int bx = cx * STRIDE;
+                int bz = cz * STRIDE;
+                float h = hm[bx][bz];
+                surfNorm[cx][cz] = h / HEIGHT_RANGE;
+                planes[0][cx * S + cz] = surfNorm[cx][cz];                // surface
+
                 float of = (oceanFloorHm != null)
-                        ? oceanFloorHm[lx][lz]
+                        ? oceanFloorHm[bx][bz]
                         : Math.min(h, SEA_LEVEL);
-                planes[1][lx * 16 + lz] = of / HEIGHT_RANGE;              // ocean_floor
+                planes[1][cx * S + cz] = of / HEIGHT_RANGE;              // ocean_floor
             }
         }
 
-        // Step 2: slope_x = np.gradient(surfNorm, axis=x)
-        // Matches Python: central differences on NORMALISED surface,
-        // forward/backward one-sided at boundaries (np.gradient edge_order=1).
-        float[][] slopeX = new float[16][16];
-        for (int lx = 0; lx < 16; lx++) {
-            for (int lz = 0; lz < 16; lz++) {
-                if (lx == 0) {
-                    slopeX[lx][lz] = surfNorm[1][lz] - surfNorm[0][lz];
-                } else if (lx == 15) {
-                    slopeX[lx][lz] = surfNorm[15][lz] - surfNorm[14][lz];
+        // Step 2: slope_x = central/one-sided difference on 4×4 normalised surface
+        float[][] slopeX = new float[S][S];
+        for (int cx = 0; cx < S; cx++) {
+            for (int cz = 0; cz < S; cz++) {
+                if (cx == 0) {
+                    slopeX[cx][cz] = surfNorm[1][cz] - surfNorm[0][cz];
+                } else if (cx == S - 1) {
+                    slopeX[cx][cz] = surfNorm[S - 1][cz] - surfNorm[S - 2][cz];
                 } else {
-                    slopeX[lx][lz] = (surfNorm[lx + 1][lz] - surfNorm[lx - 1][lz]) / 2f;
+                    slopeX[cx][cz] = (surfNorm[cx + 1][cz] - surfNorm[cx - 1][cz]) / 2f;
                 }
-                planes[2][lx * 16 + lz] = slopeX[lx][lz];
+                planes[2][cx * S + cz] = slopeX[cx][cz];
             }
         }
 
-        // Step 3: slope_z = np.gradient(surfNorm, axis=z)
-        float[][] slopeZ = new float[16][16];
-        for (int lx = 0; lx < 16; lx++) {
-            for (int lz = 0; lz < 16; lz++) {
-                if (lz == 0) {
-                    slopeZ[lx][lz] = surfNorm[lx][1] - surfNorm[lx][0];
-                } else if (lz == 15) {
-                    slopeZ[lx][lz] = surfNorm[lx][15] - surfNorm[lx][14];
+        // Step 3: slope_z = central/one-sided difference on 4×4 normalised surface
+        float[][] slopeZ = new float[S][S];
+        for (int cx = 0; cx < S; cx++) {
+            for (int cz = 0; cz < S; cz++) {
+                if (cz == 0) {
+                    slopeZ[cx][cz] = surfNorm[cx][1] - surfNorm[cx][0];
+                } else if (cz == S - 1) {
+                    slopeZ[cx][cz] = surfNorm[cx][S - 1] - surfNorm[cx][S - 2];
                 } else {
-                    slopeZ[lx][lz] = (surfNorm[lx][lz + 1] - surfNorm[lx][lz - 1]) / 2f;
+                    slopeZ[cx][cz] = (surfNorm[cx][cz + 1] - surfNorm[cx][cz - 1]) / 2f;
                 }
-                planes[3][lx * 16 + lz] = slopeZ[lx][lz];
+                planes[3][cx * S + cz] = slopeZ[cx][cz];
             }
         }
 
-        // Step 4: curvature = np.gradient(slope_x, axis=x) + np.gradient(slope_z, axis=z)
-        // This is the Laplacian computed as gradient-of-gradient, matching Python exactly.
-        for (int lx = 0; lx < 16; lx++) {
-            for (int lz = 0; lz < 16; lz++) {
-                // d(slope_x)/dx
+        // Step 4: curvature = Laplacian on 4×4 grid
+        for (int cx = 0; cx < S; cx++) {
+            for (int cz = 0; cz < S; cz++) {
                 float dsx;
-                if (lx == 0) {
-                    dsx = slopeX[1][lz] - slopeX[0][lz];
-                } else if (lx == 15) {
-                    dsx = slopeX[15][lz] - slopeX[14][lz];
+                if (cx == 0) {
+                    dsx = slopeX[1][cz] - slopeX[0][cz];
+                } else if (cx == S - 1) {
+                    dsx = slopeX[S - 1][cz] - slopeX[S - 2][cz];
                 } else {
-                    dsx = (slopeX[lx + 1][lz] - slopeX[lx - 1][lz]) / 2f;
+                    dsx = (slopeX[cx + 1][cz] - slopeX[cx - 1][cz]) / 2f;
                 }
-                // d(slope_z)/dz
                 float dsz;
-                if (lz == 0) {
-                    dsz = slopeZ[lx][1] - slopeZ[lx][0];
-                } else if (lz == 15) {
-                    dsz = slopeZ[lx][15] - slopeZ[lx][14];
+                if (cz == 0) {
+                    dsz = slopeZ[cx][1] - slopeZ[cx][0];
+                } else if (cz == S - 1) {
+                    dsz = slopeZ[cx][S - 1] - slopeZ[cx][S - 2];
                 } else {
-                    dsz = (slopeZ[lx][lz + 1] - slopeZ[lx][lz - 1]) / 2f;
+                    dsz = (slopeZ[cx][cz + 1] - slopeZ[cx][cz - 1]) / 2f;
                 }
-                planes[4][lx * 16 + lz] = dsx + dsz;
+                planes[4][cx * S + cz] = dsx + dsz;
             }
         }
 

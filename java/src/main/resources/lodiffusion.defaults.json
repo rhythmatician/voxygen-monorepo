@@ -1,8 +1,27 @@
 {
+  "terrainBackend": "auto",
   "useOnnxTerrain": true,
   "modelPath": "config/lodiffusion/model.onnx",
   "adapter": "unified_v1",
   "inferenceThreads": 2,
   "threshold": 0.5,
-  "inferenceDevice": "auto"
+  "inferenceDevice": "auto",
+  "sparseRootSplitThreshold": 0.43,
+  "_commentSparseRootSplitThresholdRationale": "0.43 keeps borderline split logits active, preserving fine detail while still pruning many branches for faster decode.",
+  "_commentSparseRootSplitThresholdTradeoff": "Raise toward 0.5+ for sparser octrees and speed; lower toward 0.35 for denser octrees with more structural detail.",
+  "parity": {
+    "_comment": "Shadow-mode parity validation settings (terrainBackend=shadow).",
+    "samplingRate": 0.10,
+    "aggregationWindow": 1000,
+    "logLevel": "SUMMARY",
+    "climateThreshold": 0.01,
+    "depthThreshold": 0.05,
+    "densityThreshold": 0.10,
+    "aquiferThreshold": 0.05,
+    "oreThreshold": 0.05,
+    "densitySignAgreementMin": 0.995
+  },
+  "datasetExportEnabled": false,
+  "datasetExportPath": "dataset/",
+  "datasetExportFormat": "BINARY"
 }

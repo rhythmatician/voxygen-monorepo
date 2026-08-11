@@ -4,8 +4,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.rhythmatician.lodiffusion.command.LodiffusionCommand;
-import com.rhythmatician.lodiffusion.command.NoiseDumperCommand;
-import java.nio.file.Files;
+import com.rhythmatician.lodiffusion.onnx.OnnxModelFiles;
+import io.github.lodiffusion.worldgen.WorldGenEventHandler;
 import com.rhythmatician.lodiffusion.voxy.VoxyCompat;
 
 import net.fabricmc.api.ModInitializer;
@@ -19,13 +19,15 @@ public class HelloTerrainMod implements ModInitializer {
 	public void onInitialize() {
 		LOGGER.info("[LODiffusion] Mod initialized!");
 
+		// Initialize world generation event handlers (GPU NoiseRouter extraction)
+		WorldGenEventHandler.initialize();
+
 		// Register /lodiffusion command
 		try {
 			CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
 				LodiffusionCommand.register(dispatcher);
-				NoiseDumperCommand.register(dispatcher);
 			});
-			LOGGER.info("[LODiffusion] Registered /lodiffusion and /dumpnoise commands");
+			LOGGER.info("[LODiffusion] Registered /lodiffusion command");
 		} catch (Exception e) {
 			LOGGER.error("[LODiffusion] Failed to register command: {}", e.getMessage(), e);
 		}
@@ -37,15 +39,14 @@ public class HelloTerrainMod implements ModInitializer {
 			LOGGER.info("[LODiffusion] Voxy reflection bindings OK — LOD injection path available");
 		}
 
-		// Check if octree model files are present in the model dir (v5.octree pipeline)
+		// Report which ONNX model contract is currently available.
 		java.nio.file.Path modelDir = Config.modelDir();
-		boolean modelsPresent = Files.isRegularFile(modelDir.resolve("octree_init.onnx"))
-				&& Files.isRegularFile(modelDir.resolve("octree_refine.onnx"))
-				&& Files.isRegularFile(modelDir.resolve("octree_leaf.onnx"));
-		if (modelsPresent) {
-			LOGGER.info("[LODiffusion] Octree ONNX models found in {}", modelDir);
+		if (OnnxModelFiles.hasFullVoxyModelSet(modelDir)) {
+			LOGGER.info("[LODiffusion] Voxy 5-model set found in {}", modelDir);
+		} else if (OnnxModelFiles.hasAnyVoxyModel(modelDir)) {
+			LOGGER.warn("[LODiffusion] Partial Voxy model set in {} — expected voxy_l0.onnx through voxy_l4.onnx", modelDir);
 		} else {
-			LOGGER.warn("[LODiffusion] Octree model files not found in {} — LOD generation will fail until models are placed", modelDir);
+			LOGGER.warn("[LODiffusion] No Voxy ONNX model files found in {} — place voxy_l0.onnx through voxy_l4.onnx", modelDir);
 		}
 
 		LOGGER.info("[LODiffusion] Mod initialization complete!");

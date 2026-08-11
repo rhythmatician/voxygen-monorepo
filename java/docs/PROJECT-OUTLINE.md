@@ -23,7 +23,8 @@ Render plausible terrain for far chunks via an **octree‑based LOD pipeline** d
 
 **What’s new**
 
-* **Three octree models**: `octree_init` (L4 seed), `octree_refine` (shared for L3→L2→L1→L0), `octree_leaf` (final 32³ leaf) – vanilla handles LOD0
+* **Three octree models**: `octree_init` (L4 seed), `octree_refine` (shared for L3→L2→L1), `octree_leaf` (final L0 leaf 16³) – vanilla handles empty/ambient LOD0
+* **Top-down distance-gated pipeline** (new target architecture): L4 init all, then L3/L2/L1/ L0 conditionally as player nears. Avoid `mipSection()` for generated data.
 * **Shared conditioning inputs** (identical across all models):
 
   * `x_height_planes` **[1,5,16,16]** float32 — surface, ocean\_floor, slope\_x, slope\_z, curvature
@@ -112,7 +113,7 @@ Render plausible terrain for far chunks via an **octree‑based LOD pipeline** d
 ### **PHASE 5 — UI, Debug, and Metrics (🆕 Planned)**
 
 * Toggles: model packs on/off, optional channels on/off
-* Visual overlays: `air_mask`, seam highlighters, Router-6 inspector
+* Visual overlays: `air_mask`, seam highlighters, shadow router output inspector
 * Counters: cache hit/miss, sampling ms, inference ms per stage
 
 ---
@@ -141,6 +142,12 @@ Render plausible terrain for far chunks via an **octree‑based LOD pipeline** d
 | `DistantHorizonsCompat`   | DH LOD queries + safe guards                                            | ✅ Implemented              |
 | `LodiffusionCommand`      | In-game control: `/lodiffusion status\|toggle\|performance\|reload`       | ✅ Implemented              |
 | `Diagnostics`             | Per-section timers, performance counters, debug overlay                  | ✅ Implemented (expanded)   |
+| **Shadow Router (GPU path)** | | |
+| `ShadowRouterExtractor`   | Walk live vanilla `NoiseRouter` at world load; serialize all noise params to `ShadowRouterData` NIO buffers for SSBO upload | ✅ Implemented |
+| `ShaderSSBOManager`       | Allocate & upload 8 GPU SSBOs (bindings 0–7) from `ShadowRouterData`; holds GPU buffer lifetime | ✅ Implemented |
+| `TerrainComputeDispatcher` | Issue one GL compute dispatch per chunk column; update `RouterConfig` UBO with chunk coords | ✅ Implemented |
+| `ShadowRouterJobQueue`    | Thread-safe priority queue fed by `VoxyShadowBridgeMixin`; supplies work to dispatcher | ✅ Implemented |
+| `WorldGenEventHandler`    | Bootstrap shadow router at world load: extract → upload SSBOs → build biome palette | ✅ Implemented |
 
 ---
 

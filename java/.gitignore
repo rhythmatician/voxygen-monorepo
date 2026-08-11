@@ -68,17 +68,19 @@ bin/
 *.code-workspace
 
 # Minecraft Development
-run/
+run/*
+!run/*.onnx
+!run/config/lodiffusion/
+!run/config/lodiffusion/*
+!run/config/lodiffusion/*.json
+!run/config/lodiffusion/*.onnx
 logs/
-.minecraft/
-crash-reports/
-screenshots/
-saves/
-resourcepacks/
-shaderpacks/
-config/
-!config/checkstyle/checkstyle.xml
-mods/
+run/crash-reports/
+run/screenshots/
+run/saves/
+run/resourcepacks/
+run/shaderpacks/
+run/mods/
 *.log
 *.log.*
 
@@ -119,7 +121,6 @@ venv.bak/
 
 # PyTorch/ML models
 *.pth
-# *.onnx  # Unignoring until VoxelTree includes builds in CD
 *.pt
 *.model
 checkpoints/
@@ -209,3 +210,5 @@ logs/
 # Cache directories
 .cache/
 cache/
+tmp.md
+docs/terraingen.mmd

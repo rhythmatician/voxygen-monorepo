@@ -19,7 +19,8 @@ import com.google.gson.JsonParser;
 /**
  * Lightweight runtime config loader with overlay semantics.
  * Base: classpath /lodiffusion.defaults.json
- * Overlay: config/lodiffusion/runtime.json (created lazily on first write)
+ * Overlay: the game config directory's lodiffusion/runtime.json
+ * (typically run/config/lodiffusion/runtime.json under Fabric Loom)
  */
 public final class Config {
   private static final Gson GSON = new Gson();
@@ -77,8 +78,9 @@ public final class Config {
   }
 
   /**
-   * Directory containing the 4 progressive ONNX models exported by export_lod.py.
-   * Defaults to the parent of {@link #modelPath()} (i.e. {@code config/lodiffusion/}).
+  * Directory containing deployed ONNX models and sidecar configs.
+  * Defaults to the parent of {@link #modelPath()} relative to the game run directory
+  * (typically {@code run/config/lodiffusion/} under Fabric Loom).
    */
   public static java.nio.file.Path modelDir() {
     String raw = getString("modelDir", "");
@@ -139,6 +141,31 @@ public final class Config {
     return getString("inferenceDevice", "auto");
   }
 
+  /**
+   * Terrain noise backend: {@code "vanilla"}, {@code "gpu"}, {@code "shadow"},
+   * or {@code "auto"}.
+   *
+   * <ul>
+   *   <li>{@code "vanilla"} — evaluate all 15 NoiseRouter fields on the CPU
+   *       via the Fabric DensityFunction API.  Bit-exact with vanilla MC.</li>
+   *   <li>{@code "gpu"} — use the shadow router GPU compute pipeline.
+   *       Falls back to CPU for fields the shader doesn't yet output.</li>
+   *   <li>{@code "shadow"} — run <em>both</em> vanilla and GPU backends in parallel,
+   *       always returning vanilla results while logging per-field parity statistics.
+   *       Configure thresholds via the {@code "parity"} config block.
+   *       See {@link com.rhythmatician.lodiffusion.world.noise.ShadowValidatingSampler}.</li>
+   *   <li>{@code "auto"} (default) — currently equivalent to {@code "vanilla"};
+   *       will prefer GPU when the shadow router covers all 15 fields.</li>
+   * </ul>
+   *
+   * <p>Hot-swappable: changing this value takes effect on the next section
+   * request without restarting the world.
+   */
+  public static String terrainBackend() {
+    return getString("terrainBackend", "auto");
+  }
+
+  public static void setTerrainBackend(String backend) { setRuntime("terrainBackend", backend); }
   public static void setUseOnnxTerrain(boolean enabled) { setRuntime("useOnnxTerrain", enabled); }
   public static void setAdapter(String adapterId) { setRuntime("adapter", adapterId); }
   public static void setThreshold(double thr) { setRuntime("threshold", thr); }
@@ -203,4 +230,146 @@ public final class Config {
     JsonObject o = merged();
     return o.has(key) ? o.get(key).getAsDouble() : def;
   }
+
+  /** Returns {@code true} if the runtime config explicitly declares the given key. */
+  public static boolean hasKey(String key) {
+    return merged().has(key);
+  }
+
+  // ========== Parity / Shadow Validation Configuration ==========
+
+  private static JsonObject getParityObject() {
+    JsonObject merged = merged();
+    return merged.has("parity") && merged.get("parity").isJsonObject()
+        ? merged.getAsJsonObject("parity") : null;
+  }
+
+  private static double getParityDouble(String key, double def) {
+    JsonObject parity = getParityObject();
+    if (parity == null) return def;
+    return parity.has(key) ? parity.get(key).getAsDouble() : def;
+  }
+
+  private static int getParityInt(String key, int def) {
+    JsonObject parity = getParityObject();
+    if (parity == null) return def;
+    return parity.has(key) ? parity.get(key).getAsInt() : def;
+  }
+
+  private static String getParityString(String key, String def) {
+    JsonObject parity = getParityObject();
+    if (parity == null) return def;
+    return parity.has(key) ? parity.get(key).getAsString() : def;
+  }
+
+  /**
+   * Fraction of sections to validate in shadow mode (0.0 = none, 1.0 = all).
+   * Read from {@code parity.samplingRate}. Default: 0.10.
+   */
+  public static double paritySamplingRate() {
+    return getParityDouble("samplingRate", 0.10);
+  }
+
+  /**
+   * Number of sections per rolling-stats aggregation window.
+   * Read from {@code parity.aggregationWindow}. Default: 1000.
+   */
+  public static int parityAggregationWindow() {
+    return getParityInt("aggregationWindow", 1000);
+  }
+
+  /**
+   * Parity log level: {@code "PER_SECTION"}, {@code "SUMMARY"}, or {@code "QUIET"}.
+   * Read from {@code parity.logLevel}. Default: {@code "SUMMARY"}.
+   */
+  public static String parityLogLevel() {
+    return getParityString("logLevel", "SUMMARY");
+  }
+
+  /** Climate field threshold. Read from {@code parity.climateThreshold}. Default: 0.01. */
+  public static float parityClimateThreshold() {
+    return (float) getParityDouble("climateThreshold", 0.01);
+  }
+
+  /** Depth field threshold. Read from {@code parity.depthThreshold}. Default: 0.05. */
+  public static float parityDepthThreshold() {
+    return (float) getParityDouble("depthThreshold", 0.05);
+  }
+
+  /** Density field threshold. Read from {@code parity.densityThreshold}. Default: 0.10. */
+  public static float parityDensityThreshold() {
+    return (float) getParityDouble("densityThreshold", 0.10);
+  }
+
+  /** Aquifer field threshold. Read from {@code parity.aquiferThreshold}. Default: 0.05. */
+  public static float parityAquiferThreshold() {
+    return (float) getParityDouble("aquiferThreshold", 0.05);
+  }
+
+  /** Ore vein field threshold. Read from {@code parity.oreThreshold}. Default: 0.05. */
+  public static float parityOreThreshold() {
+    return (float) getParityDouble("oreThreshold", 0.05);
+  }
+
+  /** Minimum FINAL_DENSITY sign agreement. Read from {@code parity.densitySignAgreementMin}. Default: 0.995. */
+  public static float parityDensitySignAgreementMin() {
+    return (float) getParityDouble("densitySignAgreementMin", 0.995);
+  }
+
+  /**
+   * Build a {@link com.rhythmatician.lodiffusion.world.noise.ParityConfig} from the
+   * current {@code "parity"} config block, falling back to hardcoded defaults for
+   * any missing fields.
+   *
+   * @return ParityConfig populated from JSON config
+   */
+  public static com.rhythmatician.lodiffusion.world.noise.ParityConfig parityConfig() {
+    com.rhythmatician.lodiffusion.world.noise.ParityConfig.LogLevel level;
+    try {
+      level = com.rhythmatician.lodiffusion.world.noise.ParityConfig.LogLevel.valueOf(parityLogLevel());
+    } catch (IllegalArgumentException e) {
+      level = com.rhythmatician.lodiffusion.world.noise.ParityConfig.LogLevel.SUMMARY;
+    }
+    return new com.rhythmatician.lodiffusion.world.noise.ParityConfig(
+        paritySamplingRate(),
+        parityAggregationWindow(),
+        level,
+        parityClimateThreshold(),
+        parityDepthThreshold(),
+        parityDensityThreshold(),
+        parityAquiferThreshold(),
+        parityOreThreshold(),
+        parityDensitySignAgreementMin()
+    );
+  }
+
+  // ========== Dataset Export Configuration ==========
+
+  /**
+   * Check if dataset export is enabled.
+   *
+   * @return true if dataset export should be active
+   */
+  public static boolean isDatasetExportEnabled() {
+    return getBoolean("datasetExportEnabled", false);
+  }
+
+  /**
+   * Get the dataset export directory path.
+   *
+   * @return Path to the dataset export directory (relative to instance directory)
+   */
+  public static Path getDatasetExportPath() {
+    return Paths.get(getString("datasetExportPath", "dataset/"));
+  }
+
+  /**
+   * Get the dataset export format.
+   *
+   * @return Export format as a string (BINARY or PARQUET)
+   */
+  public static String getDatasetExportFormat() {
+    return getString("datasetExportFormat", "BINARY");
+  }
 }
+

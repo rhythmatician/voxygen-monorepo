@@ -1,0 +1,663 @@
+#version 450
+// =============================================================================
+// terrain_compute.comp
+// GPU Shadow Router — Minecraft terrain density field compute shader.
+//
+// Computes a 16 × Y_LEVELS × 16 density field for one chunk column.
+// Density > 0 → solid block; density <= 0 → air.
+//
+// GOAL: Vanilla-parity Overworld NoiseRouter / finalDensity evaluation.
+// PARITY STATUS: partial — see IMPLEMENTATION STATUS near computeFinalDensity().
+// Loaded and concatenated by com.rhythmatician.lodiffusion.gpu.GlslShaderLoader:
+//   [this file from #version to before "// --- INCLUDE CUT ---"]
+//   + mc_improved_noise.glsl
+//   + mc_perlin_noise.glsl
+//   + mc_normal_noise.glsl
+//   [this file from "// --- INCLUDE CUT ---" to end]
+// =============================================================================
+
+// One workgroup = one 16×16 chunk column.
+// Thread (localX, localZ) handles all Y values for its block column.
+layout(local_size_x = 16, local_size_y = 1, local_size_z = 16) in;
+
+// ---------------------------------------------------------------------------
+// Constants matching vanilla Overworld dimensions
+// ---------------------------------------------------------------------------
+#define Y_MIN       (-64)
+#define Y_MAX       320
+#define Y_LEVELS    384      // Y_MAX - Y_MIN
+#define MAX_OCTAVES 16
+
+// Sea level below which air blocks become water
+#define SEA_LEVEL   62
+
+// Material type codes written to block_out by the surface pass.
+// Translated to Voxy block IDs on the Java side (ShaderSectionWriter).
+#define MAT_AIR     0
+#define MAT_STONE   1
+#define MAT_WATER   2
+#define MAT_GRASS   3   // topmost solid at Y >= SEA_LEVEL
+#define MAT_DIRT    4   // 1-3 blocks below grass surface
+
+// ---------------------------------------------------------------------------
+// SSBOs — populated once at world load by ShadowRouterExtractor.java
+//         (the shadow router bootstrap: mirrors vanilla NoiseRouter onto GPU)
+// ---------------------------------------------------------------------------
+
+// ImprovedNoise origin offsets: 4 floats per instance [xo, yo, zo, _pad]
+layout(binding = 0, std430) buffer ImprovedOrigins {
+    float data[];
+} improved_origins;
+
+// ImprovedNoise permutation tables: 256 uints per instance, flat
+layout(binding = 1, std430) buffer ImprovedPerms {
+    uint data[];
+} improved_perms;
+
+// PerlinNoise integer config (stride = PN_INT_STRIDE ints per instance):
+//   [0]           : num_octaves
+//   [1..3]        : _pad
+//   [4 + octave]  : improved_noise_index  (-1 = null octave)
+#define PN_INT_STRIDE   (4 + MAX_OCTAVES)
+layout(binding = 2, std430) buffer PerlinInt {
+    int data[];
+} perlin_int;
+
+// PerlinNoise float config (stride = PN_FLOAT_STRIDE floats per instance):
+//   [0]           : lowestFreqInputFactor
+//   [1]           : lowestFreqValueFactor
+//   [2 + octave]  : amplitude[octave]
+#define PN_FLOAT_STRIDE (2 + MAX_OCTAVES)
+layout(binding = 3, std430) buffer PerlinFloat {
+    float data[];
+} perlin_float;
+
+// NormalNoise integer config: 4 ints per instance
+//   [0] : first_perlin_idx
+//   [1] : second_perlin_idx
+//   [2..3] : _pad
+layout(binding = 4, std430) buffer NormalNoiseInt {
+    int data[];
+} normal_noise_int;
+
+// NormalNoise float config: 1 float per instance
+//   [0] : value_factor
+layout(binding = 5, std430) buffer NormalNoiseFloat {
+    float data[];
+} normal_noise_float;
+
+// Spline control point data (packed).
+// Layout: [numPoints, x0, y0, x1, y1, ...] per spline, addressed by spline_offsets UBO.
+// Used for TerrainProvider cubic splines (continents→offset, etc.).
+layout(binding = 6, std430) buffer SplineData {
+    float data[];
+} spline_data;
+
+// TerrainShaperMLP weights and biases (SSBO).
+// Flattened layout:
+//   [0..127]    = W1[32,4] row-major (input layer weights)
+//   [128..159]  = b1[32] (input layer bias)
+//   [160..1183] = W2[32,32] row-major (hidden layer weights)
+//   [1184..1215] = b2[32] (hidden layer bias)
+//   [1216..1248] = W3[3,32] row-major (output layer weights)
+//   [1249..1251] = b3[3] (output layer bias)
+layout(binding = 9, std430) buffer ShapeMlpWeights {
+    float data[];
+} shape_mlp_weights;
+
+// TerrainShaperMLP configuration (UBO).
+// Stores layer sizes and byte offsets into the weights SSBO.
+layout(binding = 10, std140) uniform ShapeMlpConfig {
+    int in_size;         // 4
+    int hidden_size;     // 32
+    int out_size;        // 3
+    int _pad0;
+    
+    int w1_offset;       // 0
+    int b1_offset;       // 128
+    int w2_offset;       // 160
+    int b2_offset;       // 1184
+    int w3_offset;       // 1216
+    int b3_offset;       // 1249
+} shape_mlp_cfg;
+
+// Output density field for the current chunk dispatch.
+// Indexed: [localX + 16 * localZ] * Y_LEVELS + (blockY - Y_MIN)
+// i.e., column-major XZ, then Y.
+layout(binding = 7, std430) buffer DensityOutput {
+    float data[];
+} density_out;
+
+// Output material type for each block (same indexing as density_out).
+// Material codes (see MAT_xxx constants below) are written after the density
+// pass so the Java side can build Voxy sections without re-running the CPU.
+layout(binding = 11, std430) buffer BlockOutput {
+    int data[];
+} block_out;
+
+// Biome parameter palette — uploaded once at world load by BiomePaletteSSBO.java.
+// Stride = 16 floats per entry:
+//   [0..1]   temperature   (min, max), de-quantised (÷10000)
+//   [2..3]   humidity      (min, max)
+//   [4..5]   continentalness (min, max)
+//   [6..7]   erosion       (min, max)
+//   [8..9]   depth         (min, max)
+//   [10..11] weirdness     (min, max)
+//   [12]     offset        (7th dimension; query-point is always 0)
+//   [13]     biome_id      (bit-cast float — recover with floatBitsToInt)
+//   [14..15] pad
+#define BIOME_PALETTE_STRIDE 16
+layout(binding = 12, std430) buffer BiomePalette {
+    float data[];
+} biome_palette;
+
+// Per-dispatch biome output: one int per quart-Y lattice point.
+// 4 (qx) × 4 (qz) × BIOME_Y_LEVELS (qy) entries.
+// Index: qx * (4 * BIOME_Y_LEVELS) + qz * BIOME_Y_LEVELS + qy
+#define BIOME_Y_LEVELS  (Y_LEVELS / 4)    // = 96
+layout(binding = 13, std430) buffer BiomeOutput {
+    int data[];
+} biome_out;
+
+// ---------------------------------------------------------------------------
+// Uniform buffer: dimension-specific router configuration.
+// Populated from the live NoiseRouter at world load.
+// ---------------------------------------------------------------------------
+layout(binding = 8, std140) uniform RouterConfig {
+    // Chunk origin in block coords (set per dispatch via push constant or update)
+    int chunk_origin_x;
+    int chunk_origin_z;
+    int _pad0;
+    int _pad1;
+
+    // NormalNoise indices for named router outputs
+    int nn_continents;      // NoiseRouter.continents (horizontal shaping)
+    int nn_erosion;         // NoiseRouter.erosion
+    int nn_ridges;          // NoiseRouter.ridges (weirdness)
+    int nn_depth_noise;     // The "sloped cheese" base noise for finalDensity
+    int nn_jagged;          // Jaggedness noise (high-freq vertical shape)
+    int nn_shift_a;         // X/Z coordinate shift noise
+    int nn_shift_b;         // X/Z coordinate shift noise (Z component)
+    int _pad2;
+
+    // YClampedGradient parameters for the depth gradient
+    // (from NoiseRouterData, varies slightly by worldgen preset)
+    float grad_from_y;      // Overworld default: -64
+    float grad_to_y;        // Overworld default:  320
+    float grad_from_value;  // Overworld default:   1.5
+    float grad_to_value;    // Overworld default:  -1.5
+
+    // Spline table offsets (index into spline_data.data[] for each named spline)
+    int spline_offset_offset;   // terrain offset spline
+    int spline_factor_offset;   // terrain factor (vertical scale) spline
+    int spline_jagged_offset;   // jaggedness modifier spline
+    int _pad3;
+
+    // WS-4.1a: Cave noise NormalNoise indices (-1 = disabled / not yet wired)
+    // Indices into the flat NormalNoise arrays at bindings 4 and 5.
+    int nn_entrances;           // overworld/caves/entrances  (cave bore openings)
+    int nn_cheese_caves;        // overworld/caves/pillars    (large spherical caves)
+    int nn_spaghetti_2d;        // overworld/caves/spaghetti_2d  (2D tunnel axis)
+    int nn_roughness;           // overworld/caves/spaghetti_roughness_function
+    int nn_noodle;              // overworld/caves/noodle     (thin connected tunnels)
+    int nn_temperature;         // NoiseRouter.temperature  (biome climate signal)
+    int nn_vegetation;          // NoiseRouter.vegetation   (= humidity, biome climate signal)
+    int biome_palette_count;    // number of entries in BiomePalette SSBO (binding 12; 0 = disabled)
+
+    // WS-quart: Aquifer + ore vein NormalNoise indices (-1 = not wired)
+    // Used by quart_noise_compute.comp; present here for UBO layout compatibility.
+    int nn_barrier;             // NoiseRouter.barrierNoise()          — aquifer pressure barrier
+    int nn_floodedness;         // NoiseRouter.fluidLevelFloodedness() — aquifer flood level
+    int nn_spread;              // NoiseRouter.fluidLevelSpread()      — aquifer spread randomization
+    int nn_lava;                // NoiseRouter.lavaNoise()             — lava vs water selection
+    int nn_vein_toggle;         // NoiseRouter.veinToggle()            — copper/iron toggle
+    int nn_vein_ridged;         // NoiseRouter.veinRidged()            — ridged vein shape
+    int nn_vein_gap;            // NoiseRouter.veinGap()               — vein gap/holes
+    int _pad_aq;                // align to 144 bytes (9 × 16)
+    // total: 144 bytes (std140 requires multiple-of-16 struct size)
+} router;
+
+// ---------------------------------------------------------------------------
+// [mc_improved_noise.glsl CONCATENATED HERE by Java loader]
+// [mc_perlin_noise.glsl   CONCATENATED HERE by Java loader]
+// [mc_normal_noise.glsl   CONCATENATED HERE by Java loader]
+// ---------------------------------------------------------------------------
+// --- INCLUDE CUT ---
+
+// ---------------------------------------------------------------------------
+// Density graph helpers
+// ---------------------------------------------------------------------------
+
+// DensityFunctions.Mapped.Type.SQUEEZE
+// Matches Java: x / 2 - x*x*x / 24
+float mc_squeeze(float x) {
+    return x / 2.0 - x * x * x / 24.0;
+}
+
+// DensityFunctions.Mapped.Type.HALF_NEGATIVE
+float mc_half_negative(float x) {
+    return x > 0.0 ? x : x * 0.5;
+}
+
+// DensityFunctions.Mapped.Type.QUARTER_NEGATIVE
+float mc_quarter_negative(float x) {
+    return x > 0.0 ? x : x * 0.25;
+}
+
+// ---------------------------------------------------------------------------
+// TerrainShaperMLP evaluation
+// Evaluates a 4->32->32->3 MLP that approximates the nested CubicSpline
+// terrain shaper functions (offset, factor, jaggedness).
+// ---------------------------------------------------------------------------
+vec3 mc_terrain_shaper_mlp(vec4 input_vec) {
+    // Extract input vector
+    float input_data[4] = {input_vec.x, input_vec.y, input_vec.z, input_vec.w};
+    
+    // Layer 1: W1[32,4] @ input + b1[32] -> ReLU
+    float hidden1[32];
+    for (int i = 0; i < 32; i++) {
+        float val = shape_mlp_weights.data[shape_mlp_cfg.b1_offset + i];  // Bias
+        for (int j = 0; j < 4; j++) {
+            int w_idx = shape_mlp_cfg.w1_offset + i * 4 + j;
+            val += shape_mlp_weights.data[w_idx] * input_data[j];
+        }
+        hidden1[i] = max(0.0, val);  // ReLU
+    }
+    
+    // Layer 2: W2[32,32] @ hidden1 + b2[32] -> ReLU
+    float hidden2[32];
+    for (int i = 0; i < 32; i++) {
+        float val = shape_mlp_weights.data[shape_mlp_cfg.b2_offset + i];  // Bias
+        for (int j = 0; j < 32; j++) {
+            int w_idx = shape_mlp_cfg.w2_offset + i * 32 + j;
+            val += shape_mlp_weights.data[w_idx] * hidden1[j];
+        }
+        hidden2[i] = max(0.0, val);  // ReLU
+    }
+    
+    // Layer 3: W3[3,32] @ hidden2 + b3[3] -> Linear (no activation)
+    vec3 output;
+    for (int i = 0; i < 3; i++) {
+        float val = shape_mlp_weights.data[shape_mlp_cfg.b3_offset + i];  // Bias
+        for (int j = 0; j < 32; j++) {
+            int w_idx = shape_mlp_cfg.w3_offset + i * 32 + j;
+            val += shape_mlp_weights.data[w_idx] * hidden2[j];
+        }
+        output[i] = val;
+    }
+    
+    return output;  // [offset, factor, jaggedness]
+}
+
+// ---------------------------------------------------------------------------
+// Biome classification helpers
+// ---------------------------------------------------------------------------
+
+// Single-dimension biome parameter distance (squared).
+// Returns 0 inside [p_min, p_max], otherwise the squared edge-distance.
+float biome_dim_dist_sq(float q, float p_min, float p_max) {
+    float d = max(p_min - q, q - p_max);
+    return max(d, 0.0) * max(d, 0.0);
+}
+
+// Brute-force 7D nearest-neighbour biome classification.
+// All inputs are de-quantised floats (NOT ×10000).
+// Returns canonical biome ID (0–53) or 255 if palette is empty or no match.
+int mc_classify_biome(float temp, float hum, float cont, float ero, float depth, float weird) {
+    int   best_id   = 255;
+    float best_dist = 1.0e30;
+    int   count     = router.biome_palette_count;
+    for (int i = 0; i < count; i++) {
+        int   base  = i * BIOME_PALETTE_STRIDE;
+        float t_min = biome_palette.data[base + 0],  t_max = biome_palette.data[base + 1];
+        float h_min = biome_palette.data[base + 2],  h_max = biome_palette.data[base + 3];
+        float c_min = biome_palette.data[base + 4],  c_max = biome_palette.data[base + 5];
+        float e_min = biome_palette.data[base + 6],  e_max = biome_palette.data[base + 7];
+        float d_min = biome_palette.data[base + 8],  d_max = biome_palette.data[base + 9];
+        float w_min = biome_palette.data[base + 10], w_max = biome_palette.data[base + 11];
+        float offset = biome_palette.data[base + 12];
+        int   biome  = floatBitsToInt(biome_palette.data[base + 13]);
+        float dist =
+            biome_dim_dist_sq(temp,  t_min, t_max) +
+            biome_dim_dist_sq(hum,   h_min, h_max) +
+            biome_dim_dist_sq(cont,  c_min, c_max) +
+            biome_dim_dist_sq(ero,   e_min, e_max) +
+            biome_dim_dist_sq(depth, d_min, d_max) +
+            biome_dim_dist_sq(weird, w_min, w_max) +
+            offset * offset;          // 7th dimension: query-point is always 0
+        if (dist < best_dist) {
+            best_dist = dist;
+            best_id   = biome;
+        }
+    }
+    return best_id;
+}
+
+// DensityFunctions.YClampedGradient.compute():
+// Mth.clampedMap(y, fromY, toY, fromValue, toValue)
+float mc_y_gradient(float y, float from_y, float to_y, float from_val, float to_val) {
+    return clamp(from_val + (y - from_y) * (to_val - from_val) / (to_y - from_y),
+                 min(from_val, to_val), max(from_val, to_val));
+}
+
+// DensityFunctions.Spline cubic spline evaluation.
+// Reads control points from spline_data starting at 'offset':
+//   spline_data[offset]     = num_points (float, cast to int)
+//   spline_data[offset+1+i] = location[i]
+//   spline_data[offset+1+N+i] = value[i]
+//   spline_data[offset+1+2N+i] = derivative[i]
+// Uses Minecraft's CubicSpline evaluation (Catmull-Rom style with explicit derivatives).
+float mc_spline_eval(int offset, float t) {
+    int n = int(spline_data.data[offset]);
+    if (n == 0) return 0.0;
+
+    // Find the interval [i, i+1] that contains t
+    int base = offset + 1;
+    int i = 0;
+    for (int k = 0; k < n - 1; k++) {
+        if (spline_data.data[base + k] <= t) i = k;
+    }
+
+    // Clamp extrapolation
+    float x0 = spline_data.data[base + i];
+    float x1 = spline_data.data[base + i + 1];
+    float y0 = spline_data.data[base + n + i];
+    float y1 = spline_data.data[base + n + i + 1];
+    float d0 = spline_data.data[base + 2 * n + i];
+    float d1 = spline_data.data[base + 2 * n + i + 1];
+
+    // Hermite cubic segment
+    float dx = x1 - x0;
+    if (abs(dx) < 1e-6) return y0;
+    float u = clamp((t - x0) / dx, 0.0, 1.0);
+    float u2 = u * u;
+    float u3 = u2 * u;
+
+    // Standard cubic Hermite: h00, h10, h01, h11 basis functions
+    float h00 =  2.0*u3 - 3.0*u2 + 1.0;
+    float h10 =      u3 - 2.0*u2 + u;
+    float h01 = -2.0*u3 + 3.0*u2;
+    float h11 =      u3 -     u2;
+
+    return h00*y0 + h10*dx*d0 + h01*y1 + h11*dx*d1;
+}
+
+// ---------------------------------------------------------------------------
+// finalDensity evaluation
+// Mirrors the vanilla Overworld NoiseRouter.finalDensity density function graph.
+// Now uses the TerrainShaperMLP for continents/erosion/ridges -> offset/factor/jaggedness
+// mapping instead of the stubbed spline_eval calls.
+//
+//  IMPLEMENTATION STATUS (snapshot-26.1, 2026-03-16):
+//   [x] YClampedGradient  (depth base: y=-64→1.5, y=320→-1.5 — exact)
+//   [x] ShiftedNoise XZ distortion  (Noises.SHIFT/offset, wired via extractor)
+//   [x] Continents, erosion, ridges/weirdness NormalNoise  (wired via extractor)
+//   [x] Temperature & vegetation NormalNoise  (biome classification, wired)
+//   [x] SQUEEZE, HALF_NEGATIVE, QUARTER_NEGATIVE  (exact)
+//   [x] peaksAndValleys (ridges_folded)  (exact vanilla formula; MLP needs retrain)
+//   [x] Noises.JAGGED xzScale=1500 (wired by extractor normalNoiseScaleMap)
+//   [~] TerrainShaperMLP  (continents/erosion/ridges → offset/factor/jag — approx)
+//   [~] Cave NormalNoises  (cheese, spaghetti, entrances, noodle — first-order approx)
+//   [ ] BASE_3D_NOISE_OVERWORLD  (BlendedNoise — WS-1.2-BlendedNoise; currently 0)
+//   [ ] WeirdScaledSampler / RangeChoice  (exact cave gate logic)
+//   [ ] FindTopSurface  (preliminary surface level)
+//   [ ] Aquifer / fluid noises
+//
+//  PARITY THRESHOLD (validate_shader_parity.py):
+//   Acceptance: solid/air agreement ≥ 95 %, density MAE < 0.5 per block
+//   Expected FAIL until WS-1.2-BlendedNoise is implemented.
+// ---------------------------------------------------------------------------
+float computeFinalDensity(float bx, float by, float bz) {
+    // -- Step 1: Compute XZ coordinate distortion (ShiftedNoise) ---------------
+    // In vanilla all climate noises are ShiftedNoise2d — sampled at:
+    //   (bx * 0.25 + shift_x,  0,  bz * 0.25 + shift_z)
+    // Both shift_x and shift_z come from Noises.SHIFT (the same NormalNoise) evaluated
+    // at permuted coordinates (ShiftA / ShiftB from DensityFunctions.java):
+    //   shift_x = SHIFT.getValue(bx*0.25, 0,      bz*0.25) * 4.0  [ShiftA]
+    //   shift_z = SHIFT.getValue(bz*0.25, bx*0.25, 0     ) * 4.0  [ShiftB — x/z swap]
+    // nn_shift_a holds the SHIFT NormalNoise index (same index used for both permutations).
+    // Guard: if not yet wired (WS-1.2), fall back to correct xzScale without shift.
+    float sx, sz;
+    if (router.nn_shift_a >= 0) {
+        float shift_x = mc_normal_noise(router.nn_shift_a, bx * 0.25, 0.0,       bz * 0.25) * 4.0;
+        float shift_z = mc_normal_noise(router.nn_shift_a, bz * 0.25, bx * 0.25, 0.0      ) * 4.0;
+        sx = bx * 0.25 + shift_x;
+        sz = bz * 0.25 + shift_z;
+    } else {
+        // Fallback: correct xzScale=0.25, no distortion (until WS-1.2 wires nn_shift_a)
+        sx = bx * 0.25;
+        sz = bz * 0.25;
+    }
+
+    // -- Step 2: Sample horizontal routing noises (2D at shifted/scaled XZ) ----
+    // These drive the spline-based terrain shaping (continents, erosion, ridges, weirdness).
+    //
+    // In vanilla, NoiseRouter.ridges is the single noise source for both "weirdness"
+    // and the folded "peaks and valleys" ridges value fed to the terrain shaper:
+    //   weirdness     = ridges_noise (raw)          → TerrainShaper input 4
+    //   ridges_folded = peaksAndValleys(weirdness)  → TerrainShaper input 3
+    float continents = mc_normal_noise(router.nn_continents, sx, 0.0, sz);
+    float erosion    = mc_normal_noise(router.nn_erosion,    sx, 0.0, sz);
+    float weirdness  = mc_normal_noise(router.nn_ridges,     sx, 0.0, sz);
+
+    // Exact vanilla formula from NoiseRouterData.peaksAndValleys(float):
+    //   result = -(|{|weirdness| - 2/3}| - 1/3) * 3
+    // Peaks at |weirdness| ≈ 0.667 (value = +1.0), troughs at 0 and 1 (value = -1.0).
+    // NOTE: The MLP was trained with the previous approximate formula; if ridges/shaping
+    //       quality regresses, retrain with training data that uses this corrected formula.
+    float ridges_folded = -(abs(abs(weirdness) - 0.6666667) - 0.3333333) * 3.0;
+
+    // -- Step 3: TerrainShaperMLP evaluation -----------------------------------
+    // The MLP replaces the nested cubic splines that map
+    // (continents, erosion, ridges_folded, weirdness) -> (offset, factor, jaggedness)
+    vec4 mlp_input = vec4(continents, erosion, ridges_folded, weirdness);
+    vec3 mlp_output = mc_terrain_shaper_mlp(mlp_input);
+    float terrain_offset = mlp_output.x;      // offset
+    float terrain_factor = mlp_output.y;      // steepness factor
+    float jaggedness_factor = mlp_output.z;   // jaggedness
+
+    // -- Step 4: Y-based depth gradient ---------------------------------------
+    // DensityFunctions.YClampedGradient — maps block Y to a depth value.
+    // Overworld: y=−64 → +1.5, y=320 → −1.5 (surface near 0, underground positive)
+    float depth_gradient = mc_y_gradient(by,
+                                         router.grad_from_y,
+                                         router.grad_to_y,
+                                         router.grad_from_value,
+                                         router.grad_to_value);
+
+    float depth = depth_gradient + terrain_offset;
+
+    // -- Step 5: BASE_3D_NOISE_OVERWORLD contribution (currently absent) ---------
+    // In vanilla: slopedCheese = initialDensity + BASE_3D_NOISE_OVERWORLD
+    // BASE_3D_NOISE_OVERWORLD = BlendedNoise(xzScale=0.25, yScale=0.125,
+    //                            xzFactor=80, yFactor=160, smearScale=8)
+    // BlendedNoise blends three PerlinNoise instances via a smooth interpolation;
+    // it is NOT a NormalNoise, so mc_normal_noise() cannot evaluate it.
+    // nn_depth_noise is always -1 until a dedicated mc_blended_noise() GLSL function
+    // and matching SSBO indices are added (WS-1.2-BlendedNoise).
+    // EFFECT OF ABSENCE: terrain variation is driven only by the y-gradient +
+    // jaggedness; large-scale 3D density modulation (caves, mountains) is flattened.
+    float sloped_cheese = mc_normal_noise(router.nn_depth_noise, bx, by, bz);
+    // sloped_cheese == 0.0 until WS-1.2-BlendedNoise is resolved.
+
+    // -- Step 6: Jaggedness bias (high-frequency detail near surface) ----------
+    // Noises.JAGGED with xzScale=1500, yScale=0 — wired by ShadowRouterExtractor
+    // via normalNoiseScaleMap (unique scale signature).  mc_normal_noise() returns
+    // 0.0 safely when nn_jagged == -1 (index-guard added in mc_normal_noise.glsl).
+    float jagged_noise = mc_normal_noise(router.nn_jagged, bx, by, bz);
+    float jaggedness_applied = jaggedness_factor * mc_half_negative(jagged_noise);
+
+    // -- Step 7: Combine into raw final density --------------------------------
+    // Vanilla formula:
+    //   initialDensity = 4.0 * mc_quarter_negative(factor * (depth + jaggedness))
+    //   finalDensity = squeeze(initialDensity + slopedCheese)
+    // This is now applied correctly with the factor term.
+    float initial_density = 4.0 * mc_quarter_negative(terrain_factor * (depth + jaggedness_applied));
+    float raw_density = initial_density + sloped_cheese;
+
+    // -- Step 8: Squeeze and first clamp (before cave carving) ---------------
+    // Apply vanilla SQUEEZE transform: result in roughly [-1..+1].
+    float squeezed = mc_squeeze(raw_density);
+
+    // -- Step 9: Cave carving (WS-4.1a) ---------------------------------------
+    // Each cave noise is evaluated independently; a cave is present when the
+    // noise implies a hollow volume.  All branch on index -1 so they degrade
+    // gracefully when the index has not been wired yet.
+    //
+    // Coordinate conventions follow vanilla:
+    //   spaghetti_2d : 2D (Y=0), tunnels modulated by roughness
+    //   entrances    : 3D, Y*0.5 scale (wider vertical bores)
+    //   cheese       : 3D, XZ*0.4 / Y*0.4*2.0 scale (large blobs)
+    //   noodle       : 3D, XZ*1.5 scale (thin corridors)
+
+    float cave_density_delta = 0.0;
+
+    // Cheese / pillar caves (large spherical voids)
+    if (router.nn_cheese_caves >= 0) {
+        float cheese = mc_normal_noise(router.nn_cheese_caves,
+                                       bx * 0.4, by * 0.8, bz * 0.4);
+        // Threshold: cave where cheese > 0.03 (matches vanilla approx)
+        float cave_val = cheese - 0.03;
+        cave_density_delta = max(cave_density_delta, cave_val);
+    }
+
+    // Spaghetti tunnel caves (2D axis + 3D roughness perturbation)
+    if (router.nn_spaghetti_2d >= 0) {
+        float spaghetti_2d = mc_normal_noise(router.nn_spaghetti_2d, bx, 0.0, bz);
+        float roughness = (router.nn_roughness >= 0)
+            ? mc_normal_noise(router.nn_roughness, bx, by, bz) * 0.03
+            : 0.0;
+        // Spaghetti tube: carve near zero
+        float spaghetti_tube = -abs(spaghetti_2d + roughness) + 0.03;
+        cave_density_delta = max(cave_density_delta, spaghetti_tube);
+    }
+
+    // Cave entrances (vertical bores, scaled Y)
+    if (router.nn_entrances >= 0) {
+        float entrance = mc_normal_noise(router.nn_entrances, bx, by * 0.5, bz);
+        float entrance_cave = -abs(entrance) + 0.05;
+        cave_density_delta = max(cave_density_delta, entrance_cave);
+    }
+
+    // Noodle caves (thin, XZ-scaled)
+    if (router.nn_noodle >= 0) {
+        float noodle = mc_normal_noise(router.nn_noodle, bx * 1.5, by, bz * 1.5);
+        float noodle_cave = -abs(noodle) + 0.02;
+        cave_density_delta = max(cave_density_delta, noodle_cave);
+    }
+
+    // Apply cave carving: subtract cavity contribution then clamp to [-64, 64].
+    // cave_density_delta > 0 → underground void; subtract it from solid density.
+    float carved = squeezed - cave_density_delta;
+    return clamp(carved * 64.0, -64.0, 64.0);
+}
+
+// ---------------------------------------------------------------------------
+// Compute shader entry point
+// ---------------------------------------------------------------------------
+void main() {
+    // Each thread handles one (localX, localZ) block column in the chunk.
+    int localX = int(gl_LocalInvocationID.x);   // 0..15
+    int localZ = int(gl_LocalInvocationID.z);   // 0..15
+
+    // Absolute block coordinates for this column
+    int blockX = router.chunk_origin_x + localX;
+    int blockZ = router.chunk_origin_z + localZ;
+
+    // Column index in the output array (XZ-major)
+    int col     = localX + 16 * localZ;         // 0..255
+    int col_off = col * Y_LEVELS;               // stride into density_out
+
+    // -- Pass 0: Biome classification (4×4×BIOME_Y_LEVELS lattice) ----------
+    // Threads where (localX % 4 == 0 && localZ % 4 == 0) own one XZ lattice column.
+    // They sample all 6 climate signals, run the terrain shaper MLP once for the
+    // depth offset, then classify BIOME_Y_LEVELS Y-quart positions writing to biome_out.
+    // Guard: disabled when palette count is 0 or temperature noise is not yet wired.
+    if (router.biome_palette_count > 0 && router.nn_temperature >= 0
+            && (localX % 4 == 0) && (localZ % 4 == 0)) {
+        int qx = localX / 4;   // 0..3
+        int qz = localZ / 4;   // 0..3
+
+        float bxF = float(blockX);
+        float bzF = float(blockZ);
+
+        // Shifted XZ coordinates (same as the density pass)
+        float sx, sz;
+        if (router.nn_shift_a >= 0) {
+            float shift_x = mc_normal_noise(router.nn_shift_a, bxF * 0.25, 0.0,       bzF * 0.25) * 4.0;
+            float shift_z = mc_normal_noise(router.nn_shift_a, bzF * 0.25, bxF * 0.25, 0.0      ) * 4.0;
+            sx = bxF * 0.25 + shift_x;
+            sz = bzF * 0.25 + shift_z;
+        } else {
+            sx = bxF * 0.25;
+            sz = bzF * 0.25;
+        }
+
+        // Sample all 6 XZ-only climate signals
+        float b_temp  = mc_normal_noise(router.nn_temperature, sx, 0.0, sz);
+        float b_hum   = mc_normal_noise(router.nn_vegetation,  sx, 0.0, sz);
+        float b_cont  = mc_normal_noise(router.nn_continents,  sx, 0.0, sz);
+        float b_ero   = mc_normal_noise(router.nn_erosion,     sx, 0.0, sz);
+        float b_weird = mc_normal_noise(router.nn_ridges,      sx, 0.0, sz);
+
+        // Compute terrain_offset via MLP for biome depth: depth ≈ gradient + offset
+        float b_ridges_abs    = abs(b_weird) * 2.0 - 1.0;
+        float b_ridges_folded = mc_half_negative(1.0 - abs(b_ridges_abs));
+        vec3  b_shaper        = mc_terrain_shaper_mlp(vec4(b_cont, b_ero, b_ridges_folded, b_weird));
+        float b_terrain_off   = b_shaper.x;   // terrain offset (offset component)
+
+        // Classify one biome per quart-Y position for this XZ column
+        for (int qy = 0; qy < BIOME_Y_LEVELS; qy++) {
+            float byF    = float(Y_MIN + qy * 4);
+            float b_depth = mc_y_gradient(byF,
+                                          router.grad_from_y,   router.grad_to_y,
+                                          router.grad_from_value, router.grad_to_value)
+                           + b_terrain_off;
+            int biome_id = mc_classify_biome(b_temp, b_hum, b_cont, b_ero, b_depth, b_weird);
+            biome_out.data[qx * (4 * BIOME_Y_LEVELS) + qz * BIOME_Y_LEVELS + qy] = biome_id;
+        }
+    }
+
+    // -- Pass 1: Density field (written to density_out) ---------------------
+    for (int yi = 0; yi < Y_LEVELS; yi++) {
+        int blockY = Y_MIN + yi;
+        float density = computeFinalDensity(float(blockX), float(blockY), float(blockZ));
+        density_out.data[col_off + yi] = density;
+    }
+
+    // -- Pass 2: Surface detection + material assignment (WS-2.1 / WS-2.2) -
+    // Scan top-down to find the highest solid block in this column.
+    // This is done after writing all densities so we can read them back.
+    int surface_yi = -1;
+    for (int yi = Y_LEVELS - 1; yi >= 0; yi--) {
+        if (density_out.data[col_off + yi] > 0.0) {
+            surface_yi = yi;
+            break;
+        }
+    }
+    int surface_blockY = Y_MIN + surface_yi;  // block Y of highest solid block
+
+    for (int yi = 0; yi < Y_LEVELS; yi++) {
+        int blockY = Y_MIN + yi;
+        float dens  = density_out.data[col_off + yi];
+
+        int mat;
+        if (dens <= 0.0) {
+            // Air or open-air water: fill with water below sea level.
+            mat = (blockY < SEA_LEVEL) ? MAT_WATER : MAT_AIR;
+        } else {
+            // Solid block — apply surface-layer heuristic only for dry land
+            // (surface above sea level).  Underwater solid blocks stay stone.
+            int dist = surface_yi - yi;  // 0 = surface, >0 = below surface
+            if (dist == 0 && surface_blockY >= SEA_LEVEL) {
+                mat = MAT_GRASS;
+            } else if (dist <= 3 && surface_blockY >= SEA_LEVEL) {
+                mat = MAT_DIRT;
+            } else {
+                mat = MAT_STONE;
+            }
+        }
+
+        block_out.data[col_off + yi] = mat;
+    }
+}

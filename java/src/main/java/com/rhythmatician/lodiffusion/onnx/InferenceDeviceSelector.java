@@ -30,7 +30,7 @@ import com.rhythmatician.lodiffusion.Config;
  *   { "inferenceDevice": "auto" }       // auto-detect (default)
  * </pre>
  *
- * @see OctreeModelRunner
+ * @see SparseOctreeModelRunner
  */
 public final class InferenceDeviceSelector {
 

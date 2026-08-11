@@ -1,0 +1,493 @@
+#version 450
+// =============================================================================
+// quart_noise_compute.comp
+// GPU Shadow Router — Quart-resolution NoiseRouter field evaluator.
+//
+// Evaluates all 15 RouterField values at 4×4×4 quart resolution for batched
+// sections.  Each workgroup (64 threads) handles one section; threads map 1:1
+// to quart cells.
+//
+// Output: float[N × 960] SSBO in channel-first layout matching SectionNoiseData:
+//   flat[sectionIdx * 960 + field * 64 + qx * 16 + qy * 4 + qz]
+//
+// This shader is DRAMATICALLY simpler than terrain_compute.comp — no per-block
+// iteration, no surface detection, no material pass.  Just noise evaluation.
+//
+// Loaded and concatenated by QuartNoiseCompute.java:
+//   [this file from #version to before "// --- INCLUDE CUT ---"]
+//   + mc_improved_noise.glsl
+//   + mc_perlin_noise.glsl
+//   + mc_normal_noise.glsl
+//   [this file from "// --- INCLUDE CUT ---" to end]
+// =============================================================================
+
+// One workgroup = one section (4×4×4 quart cells).
+// gl_WorkGroupID.x = section index within the batch (0..N-1).
+// gl_LocalInvocationID = (qx, qy, qz) within the section.
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+#define Y_MIN         (-64)
+#define Y_MAX         320
+#define MAX_OCTAVES   16
+#define FIELD_COUNT   15
+#define CELLS_PER_FIELD 64   // 4 × 4 × 4
+#define FLOATS_PER_SECTION 960  // 15 × 64
+
+// RouterField ordinals (must match Java RouterField enum)
+#define RF_TEMPERATURE              0
+#define RF_VEGETATION               1
+#define RF_CONTINENTS               2
+#define RF_EROSION                  3
+#define RF_DEPTH                    4
+#define RF_RIDGES                   5
+#define RF_PRELIMINARY_SURFACE_LEVEL 6
+#define RF_FINAL_DENSITY            7
+#define RF_BARRIER                  8
+#define RF_FLUID_LEVEL_FLOODEDNESS  9
+#define RF_FLUID_LEVEL_SPREAD       10
+#define RF_LAVA                     11
+#define RF_VEIN_TOGGLE              12
+#define RF_VEIN_RIDGED              13
+#define RF_VEIN_GAP                 14
+
+// ---------------------------------------------------------------------------
+// SSBOs — same noise data as terrain_compute.comp (bindings 0–6)
+// ---------------------------------------------------------------------------
+
+// ImprovedNoise origin offsets: 4 floats per instance [xo, yo, zo, _pad]
+layout(binding = 0, std430) buffer ImprovedOrigins {
+    float data[];
+} improved_origins;
+
+// ImprovedNoise permutation tables: 256 uints per instance, flat
+layout(binding = 1, std430) buffer ImprovedPerms {
+    uint data[];
+} improved_perms;
+
+// PerlinNoise integer config (stride = PN_INT_STRIDE ints per instance)
+#define PN_INT_STRIDE   (4 + MAX_OCTAVES)
+layout(binding = 2, std430) buffer PerlinInt {
+    int data[];
+} perlin_int;
+
+// PerlinNoise float config (stride = PN_FLOAT_STRIDE floats per instance)
+#define PN_FLOAT_STRIDE (2 + MAX_OCTAVES)
+layout(binding = 3, std430) buffer PerlinFloat {
+    float data[];
+} perlin_float;
+
+// NormalNoise integer config: 4 ints per instance
+layout(binding = 4, std430) buffer NormalNoiseInt {
+    int data[];
+} normal_noise_int;
+
+// NormalNoise float config: 1 float per instance
+layout(binding = 5, std430) buffer NormalNoiseFloat {
+    float data[];
+} normal_noise_float;
+
+// Spline control point data
+layout(binding = 6, std430) buffer SplineData {
+    float data[];
+} spline_data;
+
+// TerrainShaperMLP weights (SSBO)
+layout(binding = 9, std430) buffer ShapeMlpWeights {
+    float data[];
+} shape_mlp_weights;
+
+// TerrainShaperMLP configuration (UBO)
+layout(binding = 10, std140) uniform ShapeMlpConfig {
+    int in_size;
+    int hidden_size;
+    int out_size;
+    int _pad0;
+    int w1_offset;
+    int b1_offset;
+    int w2_offset;
+    int b2_offset;
+    int w3_offset;
+    int b3_offset;
+} shape_mlp_cfg;
+
+// ---------------------------------------------------------------------------
+// RouterConfig UBO — shared with terrain_compute.comp (binding 8, 144 bytes)
+// ---------------------------------------------------------------------------
+layout(binding = 8, std140) uniform RouterConfig {
+    // Chunk origin (unused in quart shader — section origins come from SSBO)
+    int chunk_origin_x;
+    int chunk_origin_z;
+    int _pad0;
+    int _pad1;
+
+    // NormalNoise indices for named router outputs
+    int nn_continents;
+    int nn_erosion;
+    int nn_ridges;
+    int nn_depth_noise;
+    int nn_jagged;
+    int nn_shift_a;
+    int nn_shift_b;
+    int _pad2;
+
+    // YClampedGradient parameters
+    float grad_from_y;
+    float grad_to_y;
+    float grad_from_value;
+    float grad_to_value;
+
+    // Spline table offsets
+    int spline_offset_offset;
+    int spline_factor_offset;
+    int spline_jagged_offset;
+    int _pad3;
+
+    // Cave noise indices
+    int nn_entrances;
+    int nn_cheese_caves;
+    int nn_spaghetti_2d;
+    int nn_roughness;
+    int nn_noodle;
+    int nn_temperature;
+    int nn_vegetation;
+    int biome_palette_count;
+
+    // Aquifer noise indices
+    int nn_barrier;
+    int nn_floodedness;
+    int nn_spread;
+    int nn_lava;
+
+    // Ore vein noise indices
+    int nn_vein_toggle;
+    int nn_vein_ridged;
+    int nn_vein_gap;
+    int _pad_aq;
+} router;
+
+// ---------------------------------------------------------------------------
+// Quart-shader-specific SSBOs (bindings 14–15)
+// ---------------------------------------------------------------------------
+
+// Section origins: [N][4] packed as [sectionBaseX, sectionBaseY, sectionBaseZ, _pad]
+// Coordinates are in BLOCK space (sectionX * 16, sectionY * 16, sectionZ * 16).
+layout(binding = 14, std430) buffer SectionOrigins {
+    int data[];
+} section_origins;
+
+// Output: float[N * 960] — all 15 RouterField values at 4×4×4 quart resolution.
+// Layout: [sectionIdx * 960 + fieldOrdinal * 64 + qx * 16 + qy * 4 + qz]
+layout(binding = 15, std430) buffer QuartNoiseOutput {
+    float data[];
+} quart_out;
+
+// ---------------------------------------------------------------------------
+// [mc_improved_noise.glsl CONCATENATED HERE by Java loader]
+// [mc_perlin_noise.glsl   CONCATENATED HERE by Java loader]
+// [mc_normal_noise.glsl   CONCATENATED HERE by Java loader]
+// ---------------------------------------------------------------------------
+// --- INCLUDE CUT ---
+
+// ---------------------------------------------------------------------------
+// Density graph helpers (shared with terrain_compute.comp)
+// ---------------------------------------------------------------------------
+
+float mc_squeeze(float x) {
+    return x / 2.0 - x * x * x / 24.0;
+}
+
+float mc_half_negative(float x) {
+    return x > 0.0 ? x : x * 0.5;
+}
+
+float mc_quarter_negative(float x) {
+    return x > 0.0 ? x : x * 0.25;
+}
+
+float mc_y_gradient(float y, float from_y, float to_y, float from_val, float to_val) {
+    return clamp(from_val + (y - from_y) * (to_val - from_val) / (to_y - from_y),
+                 min(from_val, to_val), max(from_val, to_val));
+}
+
+// ---------------------------------------------------------------------------
+// TerrainShaperMLP evaluation  (4 → 32 → 32 → 3)
+// ---------------------------------------------------------------------------
+vec3 mc_terrain_shaper_mlp(vec4 input_vec) {
+    float input_data[4] = {input_vec.x, input_vec.y, input_vec.z, input_vec.w};
+
+    // Layer 1: 4→32 + ReLU
+    float hidden1[32];
+    for (int i = 0; i < 32; i++) {
+        float val = shape_mlp_weights.data[shape_mlp_cfg.b1_offset + i];
+        for (int j = 0; j < 4; j++) {
+            val += shape_mlp_weights.data[shape_mlp_cfg.w1_offset + i * 4 + j] * input_data[j];
+        }
+        hidden1[i] = max(0.0, val);
+    }
+
+    // Layer 2: 32→32 + ReLU
+    float hidden2[32];
+    for (int i = 0; i < 32; i++) {
+        float val = shape_mlp_weights.data[shape_mlp_cfg.b2_offset + i];
+        for (int j = 0; j < 32; j++) {
+            val += shape_mlp_weights.data[shape_mlp_cfg.w2_offset + i * 32 + j] * hidden1[j];
+        }
+        hidden2[i] = max(0.0, val);
+    }
+
+    // Layer 3: 32→3 (linear)
+    vec3 output;
+    for (int i = 0; i < 3; i++) {
+        float val = shape_mlp_weights.data[shape_mlp_cfg.b3_offset + i];
+        for (int j = 0; j < 32; j++) {
+            val += shape_mlp_weights.data[shape_mlp_cfg.w3_offset + i * 32 + j] * hidden2[j];
+        }
+        output[i] = val;
+    }
+    return output;
+}
+
+// ---------------------------------------------------------------------------
+// Spline evaluation (shared with terrain_compute.comp)
+// ---------------------------------------------------------------------------
+float mc_spline_eval(int offset, float t) {
+    int n = int(spline_data.data[offset]);
+    if (n == 0) return 0.0;
+
+    int base = offset + 1;
+    int i = 0;
+    for (int k = 0; k < n - 1; k++) {
+        if (spline_data.data[base + k] <= t) i = k;
+    }
+
+    float x0 = spline_data.data[base + i];
+    float x1 = spline_data.data[base + i + 1];
+    float y0 = spline_data.data[base + n + i];
+    float y1 = spline_data.data[base + n + i + 1];
+    float d0 = spline_data.data[base + 2 * n + i];
+    float d1 = spline_data.data[base + 2 * n + i + 1];
+
+    float dx = x1 - x0;
+    if (abs(dx) < 1e-6) return y0;
+    float u = clamp((t - x0) / dx, 0.0, 1.0);
+    float u2 = u * u;
+    float u3 = u2 * u;
+
+    float h00 =  2.0*u3 - 3.0*u2 + 1.0;
+    float h10 =      u3 - 2.0*u2 + u;
+    float h01 = -2.0*u3 + 3.0*u2;
+    float h11 =      u3 -     u2;
+
+    return h00*y0 + h10*dx*d0 + h01*y1 + h11*dx*d1;
+}
+
+// ---------------------------------------------------------------------------
+// Compute shifted XZ coordinates (ShiftedNoise2d coordinate distortion)
+// Shared between climate fields and density evaluation.
+// ---------------------------------------------------------------------------
+void computeShiftedXZ(float bx, float bz, out float sx, out float sz) {
+    if (router.nn_shift_a >= 0) {
+        float shift_x = mc_normal_noise(router.nn_shift_a, bx * 0.25, 0.0,       bz * 0.25) * 4.0;
+        float shift_z = mc_normal_noise(router.nn_shift_a, bz * 0.25, bx * 0.25, 0.0      ) * 4.0;
+        sx = bx * 0.25 + shift_x;
+        sz = bz * 0.25 + shift_z;
+    } else {
+        sx = bx * 0.25;
+        sz = bz * 0.25;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// FINAL_DENSITY evaluation (adapted from terrain_compute.comp)
+// Evaluates the full finalDensity function at a single block position.
+// ---------------------------------------------------------------------------
+float computeFinalDensity(float bx, float by, float bz,
+                          float continents, float erosion, float weirdness,
+                          float sx, float sz) {
+
+    // peaksAndValleys (exact vanilla formula)
+    float ridges_folded = -(abs(abs(weirdness) - 0.6666667) - 0.3333333) * 3.0;
+
+    // TerrainShaperMLP: (continents, erosion, ridges_folded, weirdness) → (offset, factor, jag)
+    vec3 mlp_output = mc_terrain_shaper_mlp(vec4(continents, erosion, ridges_folded, weirdness));
+    float terrain_offset = mlp_output.x;
+    float terrain_factor = mlp_output.y;
+    float jaggedness_factor = mlp_output.z;
+
+    // Y-gradient
+    float depth_gradient = mc_y_gradient(by,
+                                         router.grad_from_y, router.grad_to_y,
+                                         router.grad_from_value, router.grad_to_value);
+    float depth = depth_gradient + terrain_offset;
+
+    // BASE_3D_NOISE_OVERWORLD (BlendedNoise — currently 0, WS-1.2-BlendedNoise)
+    float sloped_cheese = mc_normal_noise(router.nn_depth_noise, bx, by, bz);
+
+    // Jaggedness
+    float jagged_noise = mc_normal_noise(router.nn_jagged, bx, by, bz);
+    float jaggedness_applied = jaggedness_factor * mc_half_negative(jagged_noise);
+
+    // Combine
+    float initial_density = 4.0 * mc_quarter_negative(terrain_factor * (depth + jaggedness_applied));
+    float raw_density = initial_density + sloped_cheese;
+    float squeezed = mc_squeeze(raw_density);
+
+    // Cave carving
+    float cave_density_delta = 0.0;
+
+    if (router.nn_cheese_caves >= 0) {
+        float cheese = mc_normal_noise(router.nn_cheese_caves, bx * 0.4, by * 0.8, bz * 0.4);
+        cave_density_delta = max(cave_density_delta, cheese - 0.03);
+    }
+
+    if (router.nn_spaghetti_2d >= 0) {
+        float spaghetti_2d = mc_normal_noise(router.nn_spaghetti_2d, bx, 0.0, bz);
+        float roughness = (router.nn_roughness >= 0)
+            ? mc_normal_noise(router.nn_roughness, bx, by, bz) * 0.03
+            : 0.0;
+        cave_density_delta = max(cave_density_delta, -abs(spaghetti_2d + roughness) + 0.03);
+    }
+
+    if (router.nn_entrances >= 0) {
+        float entrance = mc_normal_noise(router.nn_entrances, bx, by * 0.5, bz);
+        cave_density_delta = max(cave_density_delta, -abs(entrance) + 0.05);
+    }
+
+    if (router.nn_noodle >= 0) {
+        float noodle = mc_normal_noise(router.nn_noodle, bx * 1.5, by, bz * 1.5);
+        cave_density_delta = max(cave_density_delta, -abs(noodle) + 0.02);
+    }
+
+    float carved = squeezed - cave_density_delta;
+    return clamp(carved * 64.0, -64.0, 64.0);
+}
+
+// ---------------------------------------------------------------------------
+// DEPTH evaluation
+// DensityFunctions.Add(YClampedGradient, terrain_offset_from_MLP)
+// ---------------------------------------------------------------------------
+float computeDepth(float by, float continents, float erosion, float weirdness) {
+    float ridges_folded = -(abs(abs(weirdness) - 0.6666667) - 0.3333333) * 3.0;
+    vec3 mlp_output = mc_terrain_shaper_mlp(vec4(continents, erosion, ridges_folded, weirdness));
+    float terrain_offset = mlp_output.x;
+
+    return mc_y_gradient(by, router.grad_from_y, router.grad_to_y,
+                         router.grad_from_value, router.grad_to_value) + terrain_offset;
+}
+
+// ---------------------------------------------------------------------------
+// PRELIMINARY_SURFACE_LEVEL approximation
+//
+// In vanilla, this is FindTopSurface — a column scan finding the highest Y
+// where finalDensity > 0.  Exact evaluation requires sampling the entire
+// Y column, which is expensive.
+//
+// Approximation: terrain_offset from MLP + sea level.  This is the Y where
+// the Y-gradient crosses 0 after applying the terrain offset.
+// For Overworld defaults: grad_from_y=-64, grad_to_y=320, from_val=1.5, to_val=-1.5.
+//   0 = 1.5 + (y - (-64)) * (-1.5 - 1.5) / (320 - (-64))
+//   y = -64 + 384 * (1.5) / 3.0 = -64 + 192 = 128
+//   With terrain_offset: surface_y ≈ 128 + offset * (384/3)
+//
+// This is a first-order approximation.  Accurate surface-level requires
+// a dedicated top-down binary search pass (future GpuHeightmapProvider).
+// ---------------------------------------------------------------------------
+float computePreliminarySurface(float continents, float erosion, float weirdness) {
+    float ridges_folded = -(abs(abs(weirdness) - 0.6666667) - 0.3333333) * 3.0;
+    vec3 mlp_output = mc_terrain_shaper_mlp(vec4(continents, erosion, ridges_folded, weirdness));
+    float terrain_offset = mlp_output.x;
+
+    // Surface Y where depth_gradient + offset = 0
+    // gradient(y) = from_val + (y - from_y) * (to_val - from_val) / (to_y - from_y)
+    // Solve: gradient(y) = -offset
+    // y = from_y + (-offset - from_val) * (to_y - from_y) / (to_val - from_val)
+    float range = router.grad_to_y - router.grad_from_y;
+    float val_range = router.grad_to_value - router.grad_from_value;
+    if (abs(val_range) < 1e-6) return 64.0;  // fallback
+
+    float y = router.grad_from_y + (-terrain_offset - router.grad_from_value) * range / val_range;
+    return clamp(y, float(Y_MIN), float(Y_MAX));
+}
+
+// ---------------------------------------------------------------------------
+// Write helper: stores a field value in the output SSBO at the correct offset.
+// ---------------------------------------------------------------------------
+void writeField(int sectionIdx, int fieldOrdinal, int qx, int qy, int qz, float value) {
+    int idx = sectionIdx * FLOATS_PER_SECTION
+            + fieldOrdinal * CELLS_PER_FIELD
+            + qx * 16 + qy * 4 + qz;
+    quart_out.data[idx] = value;
+}
+
+// ---------------------------------------------------------------------------
+// Compute shader entry point
+// ---------------------------------------------------------------------------
+void main() {
+    int sectionIdx = int(gl_WorkGroupID.x);
+
+    int qx = int(gl_LocalInvocationID.x);  // 0..3
+    int qy = int(gl_LocalInvocationID.y);  // 0..3
+    int qz = int(gl_LocalInvocationID.z);  // 0..3
+
+    // Read section origin from SSBO (block coordinates)
+    int sectionBaseX = section_origins.data[sectionIdx * 4 + 0];
+    int sectionBaseY = section_origins.data[sectionIdx * 4 + 1];
+    int sectionBaseZ = section_origins.data[sectionIdx * 4 + 2];
+
+    // Block coordinate at the center of this quart cell
+    float bx = float(sectionBaseX + qx * 4 + 2);
+    float by = float(sectionBaseY + qy * 4 + 2);
+    float bz = float(sectionBaseZ + qz * 4 + 2);
+
+    // Compute shifted XZ coordinates (for climate fields)
+    float sx, sz;
+    computeShiftedXZ(bx, bz, sx, sz);
+
+    // ── Climate fields (all 2D at shifted/scaled XZ) ───────────────────
+    float temperature = mc_normal_noise(router.nn_temperature, sx, 0.0, sz);
+    float vegetation  = mc_normal_noise(router.nn_vegetation,  sx, 0.0, sz);
+    float continents  = mc_normal_noise(router.nn_continents,  sx, 0.0, sz);
+    float erosion     = mc_normal_noise(router.nn_erosion,     sx, 0.0, sz);
+    float ridges      = mc_normal_noise(router.nn_ridges,      sx, 0.0, sz);
+
+    writeField(sectionIdx, RF_TEMPERATURE, qx, qy, qz, temperature);
+    writeField(sectionIdx, RF_VEGETATION,  qx, qy, qz, vegetation);
+    writeField(sectionIdx, RF_CONTINENTS,  qx, qy, qz, continents);
+    writeField(sectionIdx, RF_EROSION,     qx, qy, qz, erosion);
+    writeField(sectionIdx, RF_RIDGES,      qx, qy, qz, ridges);
+
+    // ── Depth (3D — Y-gradient + terrain offset from MLP) ──────────────
+    float depth = computeDepth(by, continents, erosion, ridges);
+    writeField(sectionIdx, RF_DEPTH, qx, qy, qz, depth);
+
+    // ── Preliminary surface level (approximation) ──────────────────────
+    float preliminary_surface = computePreliminarySurface(continents, erosion, ridges);
+    writeField(sectionIdx, RF_PRELIMINARY_SURFACE_LEVEL, qx, qy, qz, preliminary_surface);
+
+    // ── Final density (full computation) ───────────────────────────────
+    float final_density = computeFinalDensity(bx, by, bz, continents, erosion, ridges, sx, sz);
+    writeField(sectionIdx, RF_FINAL_DENSITY, qx, qy, qz, final_density);
+
+    // ── Aquifer fields (direct NormalNoise evaluation) ──────────────────
+    float barrier     = mc_normal_noise(router.nn_barrier,     bx, by, bz);
+    float floodedness = mc_normal_noise(router.nn_floodedness, bx, by, bz);
+    float spread      = mc_normal_noise(router.nn_spread,      bx, by, bz);
+    float lava        = mc_normal_noise(router.nn_lava,        bx, by, bz);
+
+    writeField(sectionIdx, RF_BARRIER,                 qx, qy, qz, barrier);
+    writeField(sectionIdx, RF_FLUID_LEVEL_FLOODEDNESS, qx, qy, qz, floodedness);
+    writeField(sectionIdx, RF_FLUID_LEVEL_SPREAD,      qx, qy, qz, spread);
+    writeField(sectionIdx, RF_LAVA,                    qx, qy, qz, lava);
+
+    // ── Ore vein fields (direct NormalNoise evaluation) ─────────────────
+    float vein_toggle = mc_normal_noise(router.nn_vein_toggle, bx, by, bz);
+    float vein_ridged = mc_normal_noise(router.nn_vein_ridged, bx, by, bz);
+    float vein_gap    = mc_normal_noise(router.nn_vein_gap,    bx, by, bz);
+
+    writeField(sectionIdx, RF_VEIN_TOGGLE, qx, qy, qz, vein_toggle);
+    writeField(sectionIdx, RF_VEIN_RIDGED, qx, qy, qz, vein_ridged);
+    writeField(sectionIdx, RF_VEIN_GAP,    qx, qy, qz, vein_gap);
+}
