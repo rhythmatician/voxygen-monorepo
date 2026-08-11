@@ -1,0 +1,44 @@
+name: validation_collect
+description: Validation-world data collection profile for server-backed acquisition steps.
+
+dag:
+  steps:
+    - id: pregen
+    - id: harvest
+    - id: dumpnoise
+    - id: import_voxy
+
+data:
+  data_dir: data/validation/voxy_octree_seed3141592
+  voxy_dir: C:/Users/JeffHall/AppData/Roaming/ModrinthApp/profiles/LODiffusion dependencies/.voxy/saves/localhost_25566
+  max_sections: null
+  min_solid: 0.02
+  val_split: 0.1
+  noise_dump_dir: data/validation/seed_3141592/20260330_015148/stage1_dumps
+  v7_dumps_dir: data/validation/seed_3141592/20260330_013429/sparse_root_dumps
+  v7_dumps_db: data/validation/seed_3141592/v7_dumps_seed3141592.db
+  v7_pairs_npz: data/validation/seed_3141592/voxy_pairs_v7_seed3141592.npz
+  v7_pairs_db: data/validation/seed_3141592/voxy_pairs_v7_seed3141592.db
+
+world:
+  name: validate
+  radius: 256
+
+rcon:
+  timeout: 7200
+
+train:
+  output_dir: models/validation_collect
+  max_samples: null
+  epochs: 20
+  batch_size: 8
+  lr: 0.0001
+  target_mse: 0.001
+  device: auto
+
+export:
+  output_dir: production/validation_collect
+
+deploy:
+  target_dir: ../LODiffusion/run/config/lodiffusion
+
