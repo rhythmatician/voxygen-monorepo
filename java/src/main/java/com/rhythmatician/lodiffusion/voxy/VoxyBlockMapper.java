@@ -109,8 +109,9 @@ public class VoxyBlockMapper {
      * @param biomeRegistry  the game's biome registry ({@code world.getRegistryManager()
      *                       .getOrThrow(RegistryKeys.BIOME)})
      */
-    private static int[] resolveBiomeMappings(Object voxyMapper,
-                                               Registry<Biome> biomeRegistry) {
+    public static int[] resolveBiomeMappingsPublic(Object voxyMapper, Registry<Biome> biomeRegistry) { return resolveBiomeMappings(voxyMapper, biomeRegistry); }
+
+    private static int[] resolveBiomeMappings(Object voxyMapper, Registry<Biome> biomeRegistry) {
         int[] map = new int[BiomeMapping.size()];
         try {
             // Find Mapper.getIdForBiome(RegistryEntry) via reflection.

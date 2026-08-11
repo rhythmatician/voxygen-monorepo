@@ -7,6 +7,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 
 /**
  * Deterministic unit tests for the semantic writer contract and
@@ -315,6 +316,97 @@ class VoxelVolumeWriterTest {
         assertEquals(Level.L2, rec.level());
         assertEquals(42, rec.volume().blockId(1, 2, 3));
         assertEquals(7, rec.volume().biomeId(1, 2, 3));
+    }
+
+    @Test
+    void voxelVolume_xyzYzxAsymmetricSentinel_notTransposed() {
+        // Sentinel values that differ per-axis; catches XYZ/YZX transpose
+        VoxelVolume.Builder b = VoxelVolume.builder(32);
+        for (int y = 0; y < 32; y++) for (int z = 0; z < 32; z++) for (int x = 0; x < 32; x++) {
+            int v = (x * 100 + y * 10 + z) % 1104;
+            if (v == 0) v = 1;
+            b.setBlock(x, y, z, v);
+            b.setBiome(x, y, z, (x + y*2 + z*3) % 54);
+        }
+        VoxelVolume vol = b.build();
+        writer.writeRegion(new SectionPos(0, 0, 0), Level.L2, vol);
+        VoxelVolume captured = writer.regionRecords().get(0).volume();
+        // Spot-check asymmetric positions
+        assertEquals(1*100 + 2*10 + 3, captured.blockId(1, 2, 3) % 1104 == 0 ? 1 : captured.blockId(1,2,3) == 0 ? 1 : captured.blockId(1,2,3));
+        assertEquals(vol.blockId(1, 2, 3), captured.blockId(1, 2, 3));
+        assertEquals(vol.blockId(17, 5, 9), captured.blockId(17, 5, 9));
+        assertEquals(vol.biomeId(17, 5, 9), captured.biomeId(17, 5, 9));
+        // Different axis permutation must differ
+        assertNotEquals(captured.blockId(1, 2, 3), captured.blockId(3, 1, 2));
+    }
+
+    @Test
+    void voxelVolume_writeSection_xyzSentinel_notTransposed() {
+        VoxelVolume.Builder b = VoxelVolume.builder(16);
+        for (int y=0;y<16;y++) for(int z=0;z<16;z++) for(int x=0;x<16;x++) b.setBlock(x,y,z, (x*50 + y*7 + z*3)%1103+1);
+        VoxelVolume v=b.build();
+        writer.writeSection(new SectionPos(0,0,0), v);
+        VoxelVolume cap = writer.sectionRecords().get(0).volume();
+        assertEquals(v.blockId(2,5,7), cap.blockId(2,5,7));
+        assertNotEquals(cap.blockId(2,5,7), cap.blockId(7,2,5));
+    }
+
+    @Test
+    void levelAlignment_allLevels_andOffByOne() {
+        for (Level lvl : Level.values()) {
+            int s = lvl.regionSections();
+            assertDoesNotThrow(() -> writer.writeRegion(new SectionPos(0,0,0), lvl, VoxelVolume.uniform(32,1,0)));
+            assertDoesNotThrow(() -> writer.writeRegion(new SectionPos(s,0,0), lvl, VoxelVolume.uniform(32,1,0)));
+            assertDoesNotThrow(() -> writer.writeRegion(new SectionPos(-s,0,0), lvl, VoxelVolume.uniform(32,1,0)));
+            writer.clear();
+            assertThrows(IllegalArgumentException.class, () -> writer.writeRegion(new SectionPos(1,0,0), lvl, VoxelVolume.uniform(32,1,0)));
+            assertThrows(IllegalArgumentException.class, () -> writer.writeRegion(new SectionPos(s-1,0,0), lvl, VoxelVolume.uniform(32,1,0)));
+            writer.clear();
+        }
+    }
+
+    @Test
+    void decoder_fromOctreeArgmax_xyzContract() {
+        int[][][] argmax = new int[32][32][32]; // YZX
+        int[][] biome = new int[32][32]; // Z,X
+        // Put asymmetric sentinel at (x=5,y=7,z=11)
+        argmax[7][11][5] = 42;
+        biome[11][5] = 9;
+        biome[5][11] = 20; // ensure indexing is Z,X not X,Z
+        VoxelVolume vol = VoxelPredictionDecoder.fromOctreeArgmax(argmax, biome);
+        assertEquals(42, vol.blockId(5,7,11));
+        assertEquals(9, vol.biomeId(5,7,11));
+        // Adjacent transpose must not alias
+        assertEquals(0, vol.blockId(11,5,7));
+    }
+
+    @Test
+    void decoder_fromFallback_belowSeaLevelSurfaceLogic() {
+        float[][] rawHm = new float[16][16];
+        float[][] floor = new float[16][16];
+        int[][] biomes = new int[16][16];
+        for (int x=0;x<16;x++) for(int z=0;z<16;z++){ rawHm[x][z]= 70f; floor[x][z]=65f; biomes[x][z]= BiomeMapping.toCanonicalId("minecraft:plains"); }
+        VoxelVolume vol = VoxelPredictionDecoder.fromFallback(4, rawHm, floor, biomes); // sy=4 => baseY=64 straddles surface
+        // At worldY=48, below ground 65 => stone, at worldY=64 ground top => grass, above => air
+        // Check a column survives as non-air
+        int nonAir=0; for(int y=0;y<16;y++) if(vol.blockId(0,y,0)!=0) nonAir++;
+        assertTrue(nonAir > 0 && nonAir < 16);
+    }
+
+    @Test
+    void writeRegion_originIsSectionPos_alignedConversionMatchesWorldSectionCoord() {
+        // Origin (2, 0, 2) in sections == ws (1,0,1) at L0 (32 blocks), L1 ws(0,0,0) etc.
+        VoxelVolume v = VoxelVolume.uniform(32, 1, 0);
+        for (Level lvl: Level.values()){
+            int s=lvl.regionSections();
+            SectionPos origin = new SectionPos(s*2, 0, s*3);
+            WriteOutcome o = writer.writeRegion(origin, lvl, v);
+            assertEquals(WriteOutcome.Status.WRITTEN, o.status());
+            InMemoryVolumeWriter.RegionRecord r = writer.regionRecords().get(writer.regionRecords().size()-1);
+            assertEquals(origin, r.origin());
+            assertEquals(lvl, r.level());
+            writer.clear();
+        }
     }
 
     @Test

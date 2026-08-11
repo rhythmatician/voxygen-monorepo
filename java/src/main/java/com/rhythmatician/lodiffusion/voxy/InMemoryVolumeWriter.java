@@ -38,6 +38,8 @@ public final class InMemoryVolumeWriter implements VoxelVolumeWriter {
     private final Set<RegionKey> writtenRegions = new HashSet<>();
     private boolean unavailable = false;
 
+    @Override public int saveQueueDepth() { return 0; }
+    @Override public boolean isRegionFullyPopulated(Level level, int wsX, int wsY, int wsZ) { return false; }
     public void setUnavailable(boolean v) {
         this.unavailable = v;
     }

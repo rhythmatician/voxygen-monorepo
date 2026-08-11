@@ -349,8 +349,10 @@ public final class LodGenerationService {
                         "[LodGen] Starting FALLBACK generation from player section ({}, {})",
                         playerSectionX, playerSectionZ);
 
-                runFallbackPipeline(world, worldEngine, voxyMapper,
-                        fallbackBlocks, fallbackBiomeMappings);
+                int[] fallbackBlockMap = RealVoxyVolumeWriter.buildFallbackBlockMap(fallbackBlocks);
+                VoxelVolumeWriter fallbackWriter = new RealVoxyVolumeWriter(worldEngine, voxyMapper,
+                        fallbackBiomeMappings, fallbackBlockMap);
+                runFallbackPipeline(world, fallbackWriter);
                 return;
             }
 
@@ -359,11 +361,12 @@ public final class LodGenerationService {
             Object voxyMapper = VoxyCompat.getMapper(worldEngine);
             Registry<Biome> biomeRegistry =
                     world.getRegistryManager().getOrThrow(RegistryKeys.BIOME);
-            VoxyBlockMapper blockMapper = VoxyBlockMapper.build(model.vocabulary(), voxyMapper, biomeRegistry);
-            VoxySectionWriter writer = new VoxySectionWriter(worldEngine, blockMapper);
+            int[] canonicalBiomeToVoxy = RealVoxyVolumeWriter.buildBiomeMap(voxyMapper, biomeRegistry);
+            int[] canonicalBlockToVoxy = RealVoxyVolumeWriter.buildBlockMap(model.vocabulary(), voxyMapper);
+            VoxelVolumeWriter writer = new RealVoxyVolumeWriter(worldEngine, voxyMapper, canonicalBiomeToVoxy, canonicalBlockToVoxy);
 
             HelloTerrainMod.LOGGER.info("[LodGen] Ready — waiting for player position " +
-                    "(vocab={}, biomeVoxyId={})", model.vocabulary().size(), blockMapper.defaultBiomeVoxyId());
+                    "(vocab={}, biomeVoxyId={})", model.vocabulary().size(), canonicalBiomeToVoxy[BiomeMapping.toCanonicalId("minecraft:plains")]);
 
             // Wait for the client tick to supply the real player position
             waitForPlayerPosition();
@@ -373,7 +376,7 @@ public final class LodGenerationService {
                     playerSectionX, playerSectionY, playerSectionZ);
 
             // Run the octree pipeline
-            runOctreePipeline(world, model, writer, blockMapper);
+            runOctreePipeline(world, model, writer, canonicalBiomeToVoxy, canonicalBlockToVoxy);
 
         } catch (Exception e) {
             if (!stopRequested.get()) {
@@ -554,7 +557,7 @@ public final class LodGenerationService {
      *
      * <p>Every pass covers a <em>full disc</em> — finer LOD passes
      * naturally overwrite our earlier coarser data.  Voxy-native sections
-     * (from real chunk loading) are protected in {@link VoxySectionWriter}.
+     * (from real chunk loading) are protected in the semantic writer (insert-only guard).
      *
      * @param distantFirst if true, sort furthest-from-center first so
      *                     distant horizon terrain appears immediately.
@@ -653,10 +656,7 @@ public final class LodGenerationService {
      * <p>Reuses all existing infrastructure: spiral ordering, column context
      * caching, surface Y-range filtering, and deduplication.
      */
-    private void runFallbackPipeline(World world, Object worldEngine,
-                                      Object voxyMapper,
-                                      HeightmapFallbackGenerator.FallbackBlockIds blockIds,
-                                      int[] biomeVoxyMappings) {
+    private void runFallbackPipeline(World world, VoxelVolumeWriter writer) {
         int totalSections = 0;
         int skippedAir = 0;
         int skippedExisting = 0;
@@ -696,15 +696,6 @@ public final class LodGenerationService {
                 // Get or build column context (cached across Y sections)
                 ColumnContext ctx = getOrBuildColumnContext(world, sx, sz);
 
-                // Build per-column Voxy biome IDs
-                int[][] biomeVoxyIds = new int[16][16];
-                for (int lx = 0; lx < 16; lx++) {
-                    for (int lz = 0; lz < 16; lz++) {
-                        int canonical = ctx.biomeIdx()[lx][lz];
-                        biomeVoxyIds[lx][lz] = (canonical >= 0 && canonical < biomeVoxyMappings.length)
-                                ? biomeVoxyMappings[canonical] : 0;
-                    }
-                }
 
                 // Compute Y range from surface heightmap
                 float minH = Float.MAX_VALUE, maxH = -Float.MAX_VALUE;
@@ -733,24 +724,22 @@ public final class LodGenerationService {
                     long key = sectionKey(sx, sy, sz);
                     if (generatedSections.contains(key)) continue;
 
-                    // Skip if Voxy already has real data for this section
-                    if (VoxyCompat.sectionExists(worldEngine, sx, sy, sz)) {
-                        skippedExisting++;
-                        generatedSections.add(key);
-                        continue;
-                    }
-
-                    Object section = HeightmapFallbackGenerator.generateSection(
-                            sx, sy, sz, ctx.rawHm(), ctx.oceanFloorHm(),
-                            ctx.biomeIdx(), biomeVoxyIds, blockIds, voxyMapper);
-
-                    if (section == null) {
-                        skippedAir++;
-                    } else {
-                        VoxyCompat.insertUpdate(worldEngine, section);
-                        totalSections++;
-                        anyNew = true;
-                    }
+                    VoxelVolume vol = VoxelPredictionDecoder.fromFallback(sy, ctx.rawHm(), ctx.oceanFloorHm(), ctx.biomeIdx());
+                                SectionPos pos = new SectionPos(sx, sy, sz);
+                                WriteOutcome outcome;
+                                try {
+                                    outcome = writer.writeSection(pos, vol);
+                                } catch (VolumeUnavailableException e) {
+                                    HelloTerrainMod.LOGGER.warn("[LodGen] writer unavailable {}: {}", pos, e.getMessage());
+                                    skippedExisting++;
+                                    generatedSections.add(key);
+                                    continue;
+                                }
+                                switch (outcome.status()) {
+                                    case WRITTEN -> { totalSections++; anyNew = true; }
+                                    case SKIPPED_AIR -> skippedAir++;
+                                    case SKIPPED_EXISTS -> skippedExisting++;
+                                }
 
                     generatedSections.add(key);
                 }
@@ -975,7 +964,7 @@ public final class LodGenerationService {
      * from the player position, and drive the scheduler until stop is requested.
      */
     private void runOctreePipeline(World world, OctreeModelRunner model,
-                                    VoxySectionWriter writer, VoxyBlockMapper blockMapper) {
+            VoxelVolumeWriter writer, int[] canonicalBiomeToVoxy, int[] canonicalBlockToVoxy) {
         OctreeQueue queue = new OctreeQueue();
         this.activeQueue = null; // octree queue is separate type; kept for fallback compat
 
@@ -1000,7 +989,7 @@ public final class LodGenerationService {
                 final int idx = i;
                 workers[wIdx] = new Thread(() -> {
                     try {
-                        runOctreeLevelWorker(level, queue, model, writer, blockMapper);
+                        runOctreeLevelWorker(level, queue, model, writer, canonicalBiomeToVoxy, canonicalBlockToVoxy);
                     } finally {
                         if (activeCounters[level].decrementAndGet() == 0) {
                             queue.signalLevelComplete(level);
@@ -1151,8 +1140,8 @@ public final class LodGenerationService {
      */
     private void runOctreeLevelWorker(int level, OctreeQueue queue,
                                        OctreeModelRunner model,
-                                       VoxySectionWriter writer,
-                                       VoxyBlockMapper blockMapper) {
+                                       VoxelVolumeWriter writer,
+                                       int[] canonicalBiomeToVoxy, int[] canonicalBlockToVoxy) {
         String tName = Thread.currentThread().getName();
         HelloTerrainMod.LOGGER.info("[LodGen] {} starting", tName);
         int processed = 0;
@@ -1208,9 +1197,8 @@ public final class LodGenerationService {
             // writeFullWorldSection / writeAtLevel handle per-octant merging
             // and will skip any sub-cubes Voxy already owns.
             {
-                Object we = writer.getWorldEngine();
                 claimed.removeIf(t -> {
-                    if (we != null && VoxyCompat.allOctantsPopulated(we, t.level, t.wsX, t.wsY, t.wsZ)) {
+                    if (writer.isRegionFullyPopulated(Level.values()[t.level], t.wsX, t.wsY, t.wsZ)) {
                         t.markReady();
                         queue.markCompleted();
                         queue.propagateAdjacency(t);
@@ -1226,7 +1214,7 @@ public final class LodGenerationService {
             // tasks — its internal rate-limiter threshold), pause briefly
             // so we don't pile up faster than Voxy can persist.
             {
-                int depth = VoxyCompat.getSaveQueueDepth(writer.getWorldEngine());
+                int depth = writer.saveQueueDepth();
                 if (depth >= 1200) {
                     HelloTerrainMod.LOGGER.warn(
                             "[LodGen] {} save-queue backpressure: {} pending — throttling 200 ms",
@@ -1313,18 +1301,21 @@ public final class LodGenerationService {
                     //     parent nodes and stops descending, making far-distance
                     //     LOD invisible.  Coarse levels (L4/L3) are progressively
                     //     replaced by finer data as the octree expands.
-                    if (level == 0) {
-                        writer.writeOctreeBlockData(
-                                output.blockArgmax(),
-                                task.columnContext.biomeIdx(),
-                                task.wsX, task.wsY, task.wsZ);
-                    } else {
-                        writer.writeOctreeToLevel(
-                                output.blockArgmax(),
-                                task.columnContext.biomeIdx(),
-                                level,
-                                task.wsX, task.wsY, task.wsZ);
-                    }
+                    if (true) {
+                                VoxelVolume vol = VoxelPredictionDecoder.fromOctreeArgmax(output.blockArgmax(), task.columnContext.biomeIdx());
+                                // VoxelVolume is 32^3 XYZ; task (wsX,wsY,wsZ) is WorldSection coord at `level`.
+                                // Writer expects origin in SectionPos (16-block) and Level. Convert ws->section.
+                                int sx0 = WorldSectionCoord.worldSectionToBlockMin(task.wsX, level) >> 4;
+                                int sy0 = WorldSectionCoord.worldSectionToBlockMin(task.wsY, level) >> 4;
+                                int sz0 = WorldSectionCoord.worldSectionToBlockMin(task.wsZ, level) >> 4;
+                                SectionPos origin = new SectionPos(sx0, sy0, sz0);
+                                Level lvl = Level.values()[level];
+                                try {
+                                    writer.writeRegion(origin, lvl, vol);
+                                } catch (VolumeUnavailableException e) {
+                                    HelloTerrainMod.LOGGER.warn("[LodGen] writer region unavailable {} L{}: {}", origin, lvl, e.getMessage());
+                                }
+                            }
 
                     // Spawn children for non-leaf levels
                     if (level > 0) {

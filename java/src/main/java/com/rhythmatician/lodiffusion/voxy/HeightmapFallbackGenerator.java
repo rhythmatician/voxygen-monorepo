@@ -26,10 +26,10 @@ import net.minecraft.world.biome.Biome;
  *   <li>Above surface, at or above sea level → air</li>
  * </ul>
  *
- * <p>This bypasses the entire ONNX pipeline and {@link VoxySectionWriter},
- * composing 64-bit Voxy voxels directly via {@link VoxyCompat#composeVoxel}
- * for maximum throughput.  With no compute bottleneck, performance is
- * limited only by Voxy I/O ({@code insertUpdate}).
+ * <p>This bypasses the entire ONNX pipeline, producing semantic
+ * {@link VoxelVolume} (extent 16) decoded via {@link VoxelPredictionDecoder}
+ * and written through {@link VoxelVolumeWriter#writeSection}. No Voxy
+ * packing is performed here; that is owned by the writer adapter.
  *
  * <p>The generator is stateless — all mutable state (block IDs, biome IDs)
  * is held externally in {@link FallbackBlockIds} and passed per call.
@@ -237,29 +237,21 @@ public final class HeightmapFallbackGenerator {
     // ------------------------------------------------------------------ //
 
     /**
-     * Generate a single 16³ section filled according to the heightmap rules.
+     * Generate a semantic 16^3 section (canonical IDs) for fallback.
      *
-     * <p>This method creates a {@code VoxelizedSection}, fills its L0 data,
-     * computes the mip pyramid, and is ready for {@link VoxyCompat#insertUpdate}.
+     * <p>Semantic generation -- no Voxy types. See
+     * {@link VoxelPredictionDecoder#fromFallback(int, float[][], float[][], int[][])} for the
+     * preferred entry point which builds a {@link VoxelVolume} extent 16.
      *
-     * <p>When {@code oceanFloorHm} is provided (non-null), it is used as the
-     * real solid ground surface for columns where water is present.  Water is
-     * placed between the ocean/river floor and the water surface ({@code rawHm}).
-     * The top 3 solid blocks are placed relative to the floor, not the water
-     * surface, so riverbeds get sand/dirt/grass correctly.
-     *
-     * @param sectionX      section X coordinate (blockX / 16)
-     * @param sectionY      section Y coordinate (blockY / 16)
-     * @param sectionZ      section Z coordinate (blockZ / 16)
-     * @param rawHm         [16][16] surface heightmap (water surface) in block Y, indexed [x][z]
-     * @param oceanFloorHm  [16][16] ocean/river floor heightmap in block Y, or null
-     * @param biomeIdx      [16][16] canonical biome indices, indexed [x][z]
-     * @param biomeVoxyIds  [16][16] Voxy biome IDs, indexed [x][z]
-     * @param blockIds      pre-resolved Voxy block IDs
-     * @param voxyMapper    Voxy Mapper for mip computation
-     * @return the filled and mipped {@code VoxelizedSection}, or {@code null}
-     *         if the section is entirely air (skip insertion)
+     * @param sectionX     section X
+     * @param sectionY     section Y
+     * @param sectionZ     section Z (unused for generation, kept for symmetry)
+     * @param rawHm        [16][16] water surface heightmap
+     * @param oceanFloorHm [16][16] floor or null
+     * @param biomeIdx     [16][16] canonical biome indices
+     * @deprecated prefer semantic {@link VoxelPredictionDecoder#fromFallback} + {@link VoxelVolumeWriter#writeSection}
      */
+    @Deprecated
     public static Object generateSection(int sectionX, int sectionY, int sectionZ,
                                           float[][] rawHm, float[][] oceanFloorHm,
                                           int[][] biomeIdx,
