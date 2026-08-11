@@ -2,7 +2,9 @@ package com.rhythmatician.lodiffusion;
 
 import com.rhythmatician.lodiffusion.voxy.LodGenerationService;
 import com.rhythmatician.lodiffusion.voxy.VoxyCompat;
+import com.rhythmatician.lodiffusion.voxy.VoxyDatasetExportService;
 import com.rhythmatician.lodiffusion.voxy.VoxyDebugState;
+import com.rhythmatician.lodiffusion.world.noise.GpuNoiseDispatchQueue;
 
 
 import net.fabricmc.api.ClientModInitializer;
@@ -21,15 +23,21 @@ import net.minecraft.text.Text;
  * service when the player joins/leaves a world.  The service runs on a
  * daemon thread and feeds ONNX-generated terrain into Voxy for distant
  * LOD rendering.
+ *
+ * <p>Also manages the optional dataset export service for collecting training data.
  */
 @Environment(EnvType.CLIENT)
 public class LodiffusionClient implements ClientModInitializer {
 
     private static final LodGenerationService LOD_SERVICE = new LodGenerationService();
+    private static VoxyDatasetExportService DATASET_EXPORT_SERVICE = null;
 
     @Override
     public void onInitializeClient() {
         HelloTerrainMod.LOGGER.info("[LODiffusion] Client initializer starting");
+
+        // Publish the singleton so server-side command handlers can query stats.
+        LodGenerationService.setInstance(LOD_SERVICE);
 
         // --- Connection init: pre-load ONNX models during "Logging in..." screen ---
         ClientPlayConnectionEvents.INIT.register((handler, client) -> {
@@ -39,7 +47,7 @@ public class LodiffusionClient implements ClientModInitializer {
             }
         });
 
-        // --- World join: start LOD generation ---
+        // --- World join: start LOD generation and dataset export ---
         ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> {
             if (!VoxyCompat.isAvailable()) {
                 HelloTerrainMod.LOGGER.warn("[LODiffusion] Voxy not available — LOD generation disabled");
@@ -47,34 +55,42 @@ public class LodiffusionClient implements ClientModInitializer {
             }
             if (!Config.useOnnxTerrain()) {
                 HelloTerrainMod.LOGGER.info("[LODiffusion] ONNX terrain disabled in config");
-                return;
+            } else {
+                // JOIN fires on the render thread with client.world already set.
+                // start() just spawns a daemon thread and returns — no need to defer.
+
+                // Seed position immediately from the player entity.
+                if (client.player != null) {
+                    LOD_SERVICE.updatePlayerPosition(client.player.getBlockPos());
+                }
+
+                if (client.world != null) {
+                    HelloTerrainMod.LOGGER.info("[LODiffusion] World joined — starting LOD generation service");
+                    LOD_SERVICE.start(client.world, client.getServer());
+                }
             }
 
-            // JOIN fires on the render thread with client.world already set.
-            // start() just spawns a daemon thread and returns — no need to defer.
-
-            // Seed position immediately from the player entity.
-            if (client.player != null) {
-                LOD_SERVICE.updatePlayerPosition(client.player.getBlockPos());
-            }
-
-            if (client.world != null) {
-                HelloTerrainMod.LOGGER.info("[LODiffusion] World joined — starting LOD generation service");
-                LOD_SERVICE.start(client.world, client.getServer());
+            // Start dataset export service if enabled
+            if (Config.isDatasetExportEnabled()) {
+                startDatasetExportService();
             }
         });
 
-        // --- World leave: stop LOD generation ---
+        // --- World leave: stop LOD generation and dataset export ---
         ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
-            HelloTerrainMod.LOGGER.info("[LODiffusion] Disconnected — stopping LOD generation service");
+            HelloTerrainMod.LOGGER.info("[LODiffusion] Disconnected — stopping services");
             LOD_SERVICE.stop();
+            stopDatasetExportService();
         });
 
-        // --- Client tick: update player position ---
+        // --- Client tick: update player position + drain GPU noise queue ---
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             if (LOD_SERVICE.isRunning() && client.player != null) {
                 LOD_SERVICE.updatePlayerPosition(client.player.getBlockPos());
             }
+            // Drain pending GPU noise requests on the render thread (GL context).
+            // No-ops if the dispatch queue hasn't been initialised yet.
+            GpuNoiseDispatchQueue.tickDrain();
         });
 
         // register debug toggle command in our own namespace
@@ -85,9 +101,9 @@ public class LodiffusionClient implements ClientModInitializer {
                         .executes(ctx -> {
                             int next = VoxyDebugState.occlusionDebugState == 0 ? 1 : 0;
                             VoxyDebugState.occlusionDebugState = next;
-                            ctx.getSource().sendFeedback(
-                                Text.literal("Voxy occlusion debug " + (next != 0 ? "enabled" : "disabled"))
-                            );
+                            @SuppressWarnings("null")
+                            Text msg = Text.literal("Voxy occlusion debug " + (next != 0 ? "enabled" : "disabled"));
+                            ctx.getSource().sendFeedback(msg);
                             return 1;
                         })
                     )
@@ -100,5 +116,42 @@ public class LodiffusionClient implements ClientModInitializer {
     /** Get the active LOD generation service (for status commands etc). */
     public static LodGenerationService getLodService() {
         return LOD_SERVICE;
+    }
+
+    /**
+     * Start the dataset export service if it's not already running.
+     */
+    private static void startDatasetExportService() {
+        if (DATASET_EXPORT_SERVICE != null && DATASET_EXPORT_SERVICE.isActive()) {
+            HelloTerrainMod.LOGGER.info("[LODiffusion] Dataset export service already running");
+            return;
+        }
+
+        try {
+            var exportPath = Config.getDatasetExportPath();
+            var formatStr = Config.getDatasetExportFormat();
+            var format = VoxyDatasetExportService.Format.valueOf(formatStr.toUpperCase());
+
+            DATASET_EXPORT_SERVICE = new VoxyDatasetExportService(exportPath, format);
+            if (DATASET_EXPORT_SERVICE.start()) {
+                HelloTerrainMod.LOGGER.info("[LODiffusion] Dataset export service started: {}",
+                        DATASET_EXPORT_SERVICE);
+            } else {
+                HelloTerrainMod.LOGGER.error("[LODiffusion] Failed to start dataset export service");
+            }
+        } catch (Exception e) {
+            HelloTerrainMod.LOGGER.error("[LODiffusion] Error starting dataset export service", e);
+        }
+    }
+
+    /**
+     * Stop the dataset export service if it's running.
+     */
+    private static void stopDatasetExportService() {
+        if (DATASET_EXPORT_SERVICE != null) {
+            DATASET_EXPORT_SERVICE.stop();
+            HelloTerrainMod.LOGGER.info("[LODiffusion] Dataset export service stopped");
+            DATASET_EXPORT_SERVICE = null;
+        }
     }
 }

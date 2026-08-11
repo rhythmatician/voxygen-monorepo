@@ -6,6 +6,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.rhythmatician.lodiffusion.Config;
 import com.rhythmatician.lodiffusion.onnx.InferenceResult;
 
 /**
@@ -27,6 +28,12 @@ public final class VoxySectionWriter {
 
     /** Default light value: full sky light, no block light → 0x0F. */
     static final int DEFAULT_LIGHT = 0x0F;
+
+    // Keep coarse fallback stable: avoid publishing extremely sparse child sections
+    // that can cause brief pop-in then disappear during parent/child handoff.
+    private static final int MIN_NON_AIR_L0 = Config.getInt("voxyMinNonAirL0", 192);
+    private static final int MIN_NON_AIR_L1 = Config.getInt("voxyMinNonAirL1", 128);
+    private static final int MIN_NON_AIR_L2 = Config.getInt("voxyMinNonAirL2", 64);
 
     /**
      * Thread-local scratch buffer for 32³ WorldSection voxel data.
@@ -507,7 +514,7 @@ public final class VoxySectionWriter {
      * guide the GPU to descend from coarse to fine.
      *
      * <p>Accepts pre-computed argmax IDs to avoid redundant argmax
-     * computation (already computed in OctreeModelRunner).
+     * computation (already computed in SparseOctreeModelRunner).
      *
      * @param blockArgmax  {@code int[32][32][32]} argmax class indices in Y,Z,X order
      * @param biomeIdx32   {@code int[32][32]} canonical biome indices, indexed [z][x]
@@ -521,6 +528,14 @@ public final class VoxySectionWriter {
                                   int[][] biomeIdx32,
                                   int level,
                                   int wsX, int wsY, int wsZ) {
+        return writeOctreeToLevel(blockArgmax, biomeIdx32, level, wsX, wsY, wsZ, (byte) 0);
+    }
+
+    public int writeOctreeToLevel(int[][][] blockArgmax,
+                                  int[][] biomeIdx32,
+                                  int level,
+                                  int wsX, int wsY, int wsZ,
+                                  byte preserveOctantsMask) {
         if (worldEngine == null) {
             throw new IllegalStateException("writeOctreeToLevel requires a live WorldEngine");
         }
@@ -571,7 +586,18 @@ public final class VoxySectionWriter {
             return 0; // Skip all-air sections
         }
 
-        VoxyCompat.writeFullWorldSection(worldEngine, level, wsX, wsY, wsZ, voxels);
+        int minNonAir = minNonAirForLevel(level);
+        if (nonAir < minNonAir) {
+            if (sectionsWritten.get() < 20) {
+                LOGGER.info(
+                        "[VoxySectionWriter] Suppressed sparse L{} WorldSection ({},{},{}) "
+                        + "— {} solid voxels (< {})",
+                        level, wsX, wsY, wsZ, nonAir, minNonAir);
+            }
+            return 0;
+        }
+
+        VoxyCompat.writeFullWorldSection(worldEngine, level, wsX, wsY, wsZ, voxels, preserveOctantsMask);
 
         int written = sectionsWritten.incrementAndGet();
         boolean detailed = written < 5;
@@ -583,6 +609,15 @@ public final class VoxySectionWriter {
         }
 
         return nonAir;
+    }
+
+    private static int minNonAirForLevel(int level) {
+        return switch (level) {
+            case 0 -> MIN_NON_AIR_L0;
+            case 1 -> MIN_NON_AIR_L1;
+            case 2 -> MIN_NON_AIR_L2;
+            default -> 1;
+        };
     }
 
     /**
@@ -602,7 +637,7 @@ public final class VoxySectionWriter {
      * {@code writeFullWorldSection}.
      *
      * <p>Accepts pre-computed argmax IDs to avoid redundant argmax
-     * computation (already computed in OctreeModelRunner).
+     * computation (already computed in SparseOctreeModelRunner).
      *
      * @param blockArgmax  {@code int[32][32][32]} argmax class indices in Y,Z,X order
      * @param biomeIdx32   {@code int[32][32]} canonical biome indices covering the section footprint

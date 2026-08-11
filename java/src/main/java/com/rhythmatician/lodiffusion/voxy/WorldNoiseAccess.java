@@ -4,8 +4,11 @@ import com.rhythmatician.lodiffusion.HelloTerrainMod;
 
 import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
+import net.minecraft.registry.Registry;
 import net.minecraft.registry.RegistryKey;
+import net.minecraft.registry.RegistryKeys;
 import net.minecraft.registry.entry.RegistryEntry;
+import net.minecraft.util.Identifier;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.util.math.MathHelper;
@@ -20,8 +23,10 @@ import net.minecraft.world.gen.chunk.ChunkGeneratorSettings;
 import net.minecraft.world.gen.chunk.ChunkNoiseSampler;
 import net.minecraft.world.gen.chunk.GenerationShapeConfig;
 import net.minecraft.world.gen.chunk.NoiseChunkGenerator;
+import net.minecraft.world.gen.densityfunction.DensityFunction;
 import net.minecraft.world.gen.densityfunction.DensityFunctionTypes;
 import net.minecraft.world.gen.noise.NoiseConfig;
+import net.minecraft.world.gen.noise.NoiseRouter;
 
 import java.util.Arrays;
 import java.util.function.Predicate;
@@ -58,6 +63,30 @@ public final class WorldNoiseAccess {
         this.generator = generator;
         this.noiseConfig = noiseConfig;
         this.biomeSource = generator.getBiomeSource();
+    }
+
+    /**
+     * The world's {@link NoiseConfig}, needed by
+     * {@link com.rhythmatician.lodiffusion.world.noise.NoiseRouterSamplerFactory}
+     * to build a {@link com.rhythmatician.lodiffusion.world.noise.VanillaNoiseRouterSampler}.
+     */
+    public NoiseConfig noiseConfig() {
+        return noiseConfig;
+    }
+
+    /** The server-side world (needed by {@code VanillaHeightmapProvider}). */
+    public ServerWorld serverWorld() {
+        return serverWorld;
+    }
+
+    /** The chunk generator (needed by {@code VanillaHeightmapProvider}). */
+    public ChunkGenerator generator() {
+        return generator;
+    }
+
+    /** The biome source (needed by {@code VanillaBiomeProvider}). */
+    public BiomeSource biomeSource() {
+        return biomeSource;
     }
 
     // ------------------------------------------------------------------
@@ -396,8 +425,8 @@ public final class WorldNoiseAccess {
      * on {@code ServerChunkLoadingManager} and created during world loading for
      * every {@code ChunkGenerator} type (with a fallback for non-noise generators).
      *
-     * <p>This is the authoritative implementation — used by both
-     * {@code WorldNoiseAccess} and {@code NoiseDumperCommand}.
+     * <p>This is the authoritative implementation — used by
+     * {@code WorldNoiseAccess} (and by the data-harvester mod's {@code NoiseDumperCommand}).
      */
     private static NoiseConfig tryGetNoiseConfig(ServerWorld world) {
         try {
@@ -412,5 +441,391 @@ public final class WorldNoiseAccess {
     /** Expose for diagnostics. */
     public boolean isAvailable() {
         return true;  // if constructed, it's available
+    }
+
+    // ------------------------------------------------------------------
+    // Named DensityFunction registry lookup (WS-4.1)
+    // ------------------------------------------------------------------
+
+    /**
+     * Look up a registered {@link DensityFunction} by its overworld resource path.
+     *
+     * <p>Density functions such as {@code "overworld/offset"},
+     * {@code "overworld/caves/spaghetti_2d"}, etc. are stored in Minecraft's
+     * dynamic {@code DensityFunction} registry and can be sampled via
+     * {@link #sampleRouterField3D(DensityFunction, int, int)} at any world
+     * coordinate without a loaded chunk.
+     *
+     * <p>Returns {@code null} if the registry or the specific ID is not found
+     * (e.g. the world uses a non-overworld or custom generator).
+     *
+     * @param path  the overworld-relative resource path, e.g.
+     *              {@code "overworld/offset"} or
+     *              {@code "overworld/caves/spaghetti_2d"}
+     * @return the {@link DensityFunction}, or {@code null} on failure
+     */
+    public DensityFunction lookupDensityFunction(String path) {
+        try {
+            var dfReg = serverWorld.getRegistryManager()
+                    .getOrThrow(RegistryKeys.DENSITY_FUNCTION);
+            Identifier id = Identifier.of("minecraft", path);
+            RegistryKey<DensityFunction> key =
+                    RegistryKey.of(RegistryKeys.DENSITY_FUNCTION, id);
+            DensityFunction df = dfReg.get(key);
+            if (df == null) {
+                HelloTerrainMod.LOGGER.debug(
+                        "[WorldNoiseAccess] DensityFunction not found: minecraft:{}", path);
+            }
+            return df;
+        } catch (Exception e) {
+            HelloTerrainMod.LOGGER.warn(
+                    "[WorldNoiseAccess] lookupDensityFunction({}) failed: {}",
+                    path, e.getMessage());
+            return null;
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Raw NoiseRouter field sampling
+    // ------------------------------------------------------------------
+
+    /**
+     * Expose the {@link NoiseRouter} for direct {@link DensityFunction} access.
+     *
+     * <p>The returned router's functions can be sampled at arbitrary (x, y, z)
+     * positions using {@link DensityFunction#sample(DensityFunction.NoisePos)}.
+     */
+    public NoiseRouter getNoiseRouter() {
+        return noiseConfig.getNoiseRouter();
+    }
+
+    // -------------------------------------------------------------------------
+    // Block-resolution sampling (WS-1.3 parity validation)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Sample {@code router.finalDensity()} at every block in a chunk column,
+     * producing the same 16×384×16 grid written by the GPU compute shader to Binding 7.
+     *
+     * <p>Indexing matches the shader: {@code [lx + 16*lz] * 384 + (by + 64)}.
+     *
+     * @param router   the NoiseRouter for the dimension
+     * @param sectionX chunk X coordinate
+     * @param sectionZ chunk Z coordinate
+     * @return flat {@code float[16 * 384 * 16]} array
+     */
+    public float[] sampleFinalDensityBlockRes(NoiseRouter router,
+                                               int sectionX, int sectionZ) {
+        float[] out = new float[16 * 384 * 16];
+        DensityFunction df = router.finalDensity();
+        int baseX = sectionX * 16;
+        int baseZ = sectionZ * 16;
+        for (int lx = 0; lx < 16; lx++) {
+            int bx = baseX + lx;
+            for (int lz = 0; lz < 16; lz++) {
+                int bz = baseZ + lz;
+                int colBase = (lx + 16 * lz) * 384;
+                for (int by = -64; by < 320; by++) {
+                    out[colBase + (by + 64)] = (float) df.sample(
+                            new DensityFunction.UnblendedNoisePos(bx, by, bz));
+                }
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Sample a {@link DensityFunction} at 16×16 <em>block</em> resolution for a single Y.
+     * Higher-resolution than {@link #sampleRouterField2D} (which uses 4×4 cells).
+     *
+     * @param df       the density function to evaluate
+     * @param sectionX chunk X coordinate
+     * @param sectionZ chunk Z coordinate
+     * @param sampleY  block Y at which to evaluate
+     * @return {@code float[16][16]}, lx-outer / lz-inner (x-major)
+     */
+    public float[][] sampleRouterField2DBlockRes(DensityFunction df,
+                                                  int sectionX, int sectionZ,
+                                                  int sampleY) {
+        float[][] out = new float[16][16];
+        int baseX = sectionX * 16;
+        int baseZ = sectionZ * 16;
+        for (int lx = 0; lx < 16; lx++) {
+            for (int lz = 0; lz < 16; lz++) {
+                out[lx][lz] = (float) df.sample(
+                        new DensityFunction.UnblendedNoisePos(
+                                baseX + lx, sampleY, baseZ + lz));
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Sample a {@link DensityFunction} at 4×4 cell resolution at a fixed Y.
+     *
+     * <p>Cell centre coordinates: {@code X = chunkBaseX + cx*4 + 2},
+     * {@code Z = chunkBaseZ + cz*4 + 2}.  The Y coordinate is fixed for
+     * fields that do not vary vertically (continents, erosion, ridges,
+     * temperature, vegetation).
+     *
+     * @param df       the density function to evaluate
+     * @param sectionX chunk X coordinate
+     * @param sectionZ chunk Z coordinate
+     * @param sampleY  block Y at which to evaluate
+     * @return {@code float[4][4]} grid, cx-outer / cz-inner (x-major)
+     */
+    public float[][] sampleRouterField2D(DensityFunction df,
+                                         int sectionX, int sectionZ,
+                                         int sampleY) {
+        float[][] out = new float[4][4];
+        int baseX = sectionX * 16;
+        int baseZ = sectionZ * 16;
+        for (int cx = 0; cx < 4; cx++) {
+            int x = baseX + cx * 4 + 2;  // cell centre X
+            for (int cz = 0; cz < 4; cz++) {
+                int z = baseZ + cz * 4 + 2;  // cell centre Z
+                out[cx][cz] = (float) df.sample(
+                        new DensityFunction.UnblendedNoisePos(x, sampleY, z));
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Sample a {@link DensityFunction} at 4×48×4 cell resolution — the full
+     * overworld noise grid from Y=-64 to Y=320 (48 cells of 8 blocks each).
+     *
+     * <p>Cell centre coordinates:
+     * <ul>
+     *   <li>X: {@code chunkBaseX + cx*4 + 2}</li>
+     *   <li>Z: {@code chunkBaseZ + cz*4 + 2}</li>
+     *   <li>Y: {@code -64 + cy*8 + 4}  (centre of 8-block cell)</li>
+     * </ul>
+     *
+     * @param df       the density function to evaluate
+     * @param sectionX chunk X coordinate
+     * @param sectionZ chunk Z coordinate
+     * @return {@code float[4][48][4]} grid, {@code [cx][cy][cz]} order
+     */
+    public float[][][] sampleRouterField3D(DensityFunction df,
+                                           int sectionX, int sectionZ) {
+        float[][][] out = new float[4][48][4];
+        int baseX = sectionX * 16;
+        int baseZ = sectionZ * 16;
+        for (int cx = 0; cx < 4; cx++) {
+            int x = baseX + cx * 4 + 2;
+            for (int cz = 0; cz < 4; cz++) {
+                int z = baseZ + cz * 4 + 2;
+                for (int cy = 0; cy < 48; cy++) {
+                    int y = -64 + cy * 8 + 4;  // cell centre Y
+                    out[cx][cy][cz] = (float) df.sample(
+                            new DensityFunction.UnblendedNoisePos(x, y, z));
+                }
+            }
+        }
+        return out;
+    }
+
+    // ------------------------------------------------------------------
+    // SparseOctree noise input (Stage 2 model: noise_3d)
+    // ------------------------------------------------------------------
+
+    /**
+     * Registry paths and special handling for the 13 SparseOctree noise channels.
+     *
+     * <p>Layout matches the Python training pipeline:
+     * <pre>
+     *   0  offset           overworld/offset
+     *   1  factor           overworld/factor
+     *   2  jaggedness       overworld/jaggedness
+     *   3  depth            router.depth()  (null path → special)
+     *   4  sloped_cheese    overworld/sloped_cheese
+     *   5  y                cell-centre Y (null path → special)
+     *   6  entrances        overworld/caves/entrances
+     *   7  cheese_caves     overworld/caves/pillars
+     *   8  spaghetti_2d     overworld/caves/spaghetti_2d
+     *   9  roughness        overworld/caves/spaghetti_roughness_function
+     *  10  noodle           overworld/caves/noodle
+     *  11  base_3d_noise    overworld/base_3d_noise
+     *  12  final_density    router.finalDensity() (null path → special)
+     * </pre>
+     */
+    private static final String[] NOISE_3D_PATHS = {
+        "overworld/offset",
+        "overworld/factor",
+        "overworld/jaggedness",
+        null,   // depth → router.depth()
+        "overworld/sloped_cheese",
+        null,   // y → cell-centre Y value
+        "overworld/caves/entrances",
+        "overworld/caves/pillars",
+        "overworld/caves/spaghetti_2d",
+        "overworld/caves/spaghetti_roughness_function",
+        "overworld/caves/noodle",
+        "overworld/base_3d_noise",
+        null,   // final_density → router.finalDensity()
+    };
+
+    /** Number of SparseOctree noise channels. */
+    public static final int N_NOISE_3D = NOISE_3D_PATHS.length; // 13
+
+    /**
+     * Lazily-resolved density functions for {@link #sampleNoise3DForSection}.
+     * Index 5 (Y) stays null; indices 3 and 12 use router fields.
+     * Protected by {@code this} monitor on first initialization.
+     */
+    private volatile DensityFunction[] noise3dFunctions = null;
+
+    /**
+     * Resolve (once) and cache all {@link DensityFunction} objects needed for
+     * the 13-channel SparseOctree noise input.
+     */
+    private DensityFunction[] getNoise3dFunctions() {
+        if (noise3dFunctions != null) return noise3dFunctions;
+        synchronized (this) {
+            if (noise3dFunctions != null) return noise3dFunctions;
+            NoiseRouter router = noiseConfig.getNoiseRouter();
+            DensityFunction[] dfs = new DensityFunction[N_NOISE_3D];
+            for (int i = 0; i < N_NOISE_3D; i++) {
+                String path = NOISE_3D_PATHS[i];
+                if (path == null) {
+                    if (i == 3)  { dfs[i] = router.depth(); }           // depth
+                    else if (i == 12) { dfs[i] = router.finalDensity(); } // final_density
+                    // i == 5 (Y): stays null, handled per-cell
+                } else {
+                    DensityFunction df = lookupDensityFunction(path);
+                    if (df == null) {
+                        HelloTerrainMod.LOGGER.warn(
+                                "[WorldNoiseAccess] noise3d[{}] '{}' not found — using zero",
+                                i, path);
+                        df = DensityFunctionTypes.zero();
+                    }
+                    dfs[i] = df;
+                }
+            }
+            noise3dFunctions = dfs;
+            return dfs;
+        }
+    }
+
+    /**
+     * Sample the 13-channel SparseOctree noise input for a single L0 Voxy section.
+     *
+     * <p>Returns a flat {@code float[N_NOISE_3D * 4 * 2 * 4]} array in
+     * {@code [field][cx][cy][cz]} (channel-outermost, C-contiguous) order,
+     * matching the Python training pipeline's <br>
+     * {@code noise_3d shape=(N, 13, 4, 2, 4)}.
+     *
+     * <p>The two Y-cells that make up a 16-block section at vanilla cell resolution
+     * (8 blocks/cell) are sliced from the full 48-cell column:
+     * <pre>
+     *   cy_start = (sectionY + 4) * 2
+     *   cy values sampled: cy_start, cy_start + 1
+     * </pre>
+     *
+     * @param chunkX   chunk X coordinate (= wsX at L0)
+     * @param chunkZ   chunk Z coordinate (= wsZ at L0)
+     * @param sectionY section Y in native (L0) units, range [-4, 19]
+     * @return flat {@code float[13 * 4 * 2 * 4 = 416]}, or an all-zeros array
+     *         if the noise pipeline is unavailable
+     *
+     * @deprecated Legacy 13-channel path.  Use
+     *     {@link com.rhythmatician.lodiffusion.world.noise.NoiseRouterSampler#sampleSection}
+     *     which produces the standard 15-field × 4×4×4 quart tensor.
+     */
+    @Deprecated
+    public float[] sampleNoise3DForSection(int chunkX, int chunkZ, int sectionY) {
+        DensityFunction[] dfs = getNoise3dFunctions();
+        float[] flat = new float[N_NOISE_3D * 4 * 2 * 4];
+
+        // cy_start = (sectionY + 4) * 2; clamp to valid cell range [0, 47]
+        int cyStart = (sectionY + 4) * 2;
+        cyStart = Math.max(0, Math.min(46, cyStart));  // ensure cy_start+1 ≤ 47
+
+        int baseX = chunkX * 16;
+        int baseZ = chunkZ * 16;
+
+        int flatIdx = 0;
+        for (int field = 0; field < N_NOISE_3D; field++) {
+            DensityFunction df = dfs[field];
+            for (int cx = 0; cx < 4; cx++) {
+                int x = baseX + cx * 4 + 2;
+                for (int localCy = 0; localCy < 2; localCy++) {
+                    int cy = cyStart + localCy;
+                    int y = -64 + cy * 8 + 4;  // cell-centre Y in blocks
+                    for (int cz = 0; cz < 4; cz++) {
+                        int z = baseZ + cz * 4 + 2;
+                        float val;
+                        if (df == null) {
+                            // field 5 = Y: emit cell-centre Y
+                            val = y;
+                        } else {
+                            val = (float) df.sample(
+                                    new DensityFunction.UnblendedNoisePos(x, y, z));
+                        }
+                        flat[flatIdx++] = val;
+                    }
+                }
+            }
+        }
+        return flat;
+    }
+
+    /**
+     * Sample biome IDs at 4×2×4 noise cell resolution for a section.
+     *
+     * <p>Used by SparseOctree training data export. Biomes are sampled at
+     * quarter-block resolution and mapped to stable integer IDs via
+     * biome registry position.
+     *
+     * @param chunkX   chunk X coordinate
+     * @param chunkZ   chunk Z coordinate
+     * @param sectionY section Y in native units, range [-4, 19]
+     * @return {@code int[4][2][4]} grid, {@code [cx][localCy][cz]} order
+     */
+    public int[][][] sampleBiomeIdsForSection(int chunkX, int chunkZ, int sectionY) {
+        int[][][] result = new int[4][2][4];
+        int cyStart = (sectionY + 4) * 2;
+        cyStart = Math.max(0, Math.min(46, cyStart));
+
+        int baseX = chunkX * 16;
+        int baseZ = chunkZ * 16;
+
+        try {
+            Registry<Biome> biomeReg = serverWorld.getRegistryManager()
+                    .getOrThrow(RegistryKeys.BIOME);
+
+            for (int cx = 0; cx < 4; cx++) {
+                int x = baseX + cx * 4 + 2;
+                for (int localCy = 0; localCy < 2; localCy++) {
+                    int cy = cyStart + localCy;
+                    int y = -64 + cy * 8 + 4;
+                    for (int cz = 0; cz < 4; cz++) {
+                        int z = baseZ + cz * 4 + 2;
+
+                        // Sample biome at quart coordinates
+                        RegistryEntry<Biome> biomeEntry = biomeSource.getBiome(
+                                x >> 2, y >> 2, z >> 2,
+                                noiseConfig.getMultiNoiseSampler());
+
+                        // Get the index in the biome registry
+                        int biomeId = biomeReg.getRawId(biomeEntry.value());
+                        result[cx][localCy][cz] = biomeId >= 0 ? biomeId : 0;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            HelloTerrainMod.LOGGER.warn(
+                    "[WorldNoiseAccess] Failed to sample biome IDs: {}", e.getMessage());
+            // Return all zeros on error
+            for (int cx = 0; cx < 4; cx++) {
+                for (int cy = 0; cy < 2; cy++) {
+                    for (int cz = 0; cz < 4; cz++) {
+                        result[cx][cy][cz] = 0;
+                    }
+                }
+            }
+        }
+        return result;
     }
 }

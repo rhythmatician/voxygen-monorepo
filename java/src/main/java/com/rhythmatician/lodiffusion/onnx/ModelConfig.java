@@ -10,7 +10,7 @@ import java.util.Map;
  * <ul>
  *   <li><b>lodiffusion.v1</b> – single unified model with simple inputs
  *       ({@code x_parent}, {@code x_biome}, {@code x_height}, {@code x_lod})</li>
- *   <li><b>future rich contract</b> – NoiseTap-based inputs (router6, height planes, etc.)</li>
+ *   <li><b>future rich contract</b> – {@link com.rhythmatician.lodiffusion.world.noise.tools.NoiseTap NoiseTap}-based inputs (router6, height planes, etc.)</li>
  * </ul>
  *
  * <p>When the sidecar uses the {@code lodiffusion.v1} contract, the
@@ -34,7 +34,10 @@ public record ModelConfig(
     Integer biomeVocabSize,
     Integer blockVocabSize,
     Map<String, Integer> blockMapping,    // "minecraft:stone" -> 42
-    Map<String, String> blockIdToName     // "42" -> "minecraft:stone"  (keys are string-ified ints)
+    Map<String, String> blockIdToName,    // "42" -> "minecraft:stone"  (keys are string-ified ints)
+
+    /* ---- sparse-octree sidecar fields (nullable) ---- */
+    Double splitThreshold                  // sigmoid decision boundary for octree expansion
 ) {
 
     // ------------------------------------------------------------------
