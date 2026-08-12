@@ -38,7 +38,7 @@ Prerequisites
 
 from __future__ import annotations
 
-import argparse  # noqa: E402
+import argparse
 import os
 import sys
 import time
@@ -50,7 +50,7 @@ _PKG_ROOT = _SCRIPT_DIR.parent.parent.parent  # .../VoxelTree/ (repo root)
 if str(_PKG_ROOT) not in sys.path:
     sys.path.insert(0, str(_PKG_ROOT))
 
-from voxel_tree.utils.rcon import RconClient, RconError  # noqa: E402
+from voxel_tree.utils.rcon import RconClient, RconError
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -432,10 +432,7 @@ def run_harvest(args: argparse.Namespace) -> None:
         rcon = RconClient(args.host, args.rcon_port, args.password, timeout=15.0)
         rcon.connect()
     except RconError as e:
-        msg = (
-            f"Cannot connect to RCON: {e}\n"
-            "Make sure the server is running with enable-rcon=true."
-        )
+        msg = f"Cannot connect to RCON: {e}\nMake sure the server is running with enable-rcon=true."
         raise RuntimeError(msg) from e
 
     try:
@@ -528,7 +525,7 @@ def run_harvest(args: argparse.Namespace) -> None:
             total = get_db_size(dbs)
             print(f"\n{sep}")
             print("  HARVEST COMPLETE")
-            print(f"  Voxy DB size: {total / (1024*1024):.1f} MB")
+            print(f"  Voxy DB size: {total / (1024 * 1024):.1f} MB")
             print("  DB locations:")
             for db in dbs:
                 print(f"    {db}")
@@ -576,12 +573,18 @@ def main(argv: list[str] | None = None) -> None:
 
     # Area
     parser.add_argument(
-        "--radius", type=int, default=2048, help="Harvest radius in blocks (default: 2048)"
+        "--radius",
+        type=int,
+        default=2048,
+        help="Harvest radius in blocks (default: 2048)",
     )
     parser.add_argument("--center-x", type=int, default=0, help="Center X coordinate (default: 0)")
     parser.add_argument("--center-z", type=int, default=0, help="Center Z coordinate (default: 0)")
     parser.add_argument(
-        "--step", type=int, default=256, help="Teleport step size in blocks (default: 256)"
+        "--step",
+        type=int,
+        default=256,
+        help="Teleport step size in blocks (default: 256)",
     )
     parser.add_argument(
         "--dwell",
@@ -611,7 +614,10 @@ def main(argv: list[str] | None = None) -> None:
         help="Chunky pregen timeout in seconds (default: 7200)",
     )
     parser.add_argument(
-        "--player-timeout", type=int, default=600, help="Wait for player timeout (default: 600)"
+        "--player-timeout",
+        type=int,
+        default=600,
+        help="Wait for player timeout (default: 600)",
     )
     parser.add_argument(
         "--voxy-timeout",
@@ -642,10 +648,14 @@ def main(argv: list[str] | None = None) -> None:
         help="Use teleport spiral instead of /ingestall (slower, for debugging)",
     )
     parser.add_argument(
-        "--monitor-only", action="store_true", help="Only monitor Voxy DB growth, no RCON"
+        "--monitor-only",
+        action="store_true",
+        help="Only monitor Voxy DB growth, no RCON",
     )
     parser.add_argument(
-        "--force", action="store_true", help="Continue even if pregen appears incomplete"
+        "--force",
+        action="store_true",
+        help="Continue even if pregen appears incomplete",
     )
 
     args = parser.parse_args(argv)

@@ -48,8 +48,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
-import torch.nn as nn
-import torch.optim as optim
+from torch import nn, optim
 from torch.utils.data import DataLoader, TensorDataset
 
 from voxel_tree.utils.progress import report as _report_progress
@@ -63,10 +62,10 @@ except ImportError:
 # Architecture
 # ---------------------------------------------------------------------------
 
-INPUT_SIZE = 6 * 4 * 4    # 96: 6 climate channels × 4×4 quart grid
+INPUT_SIZE = 6 * 4 * 4  # 96: 6 climate channels × 4×4 quart grid
 HIDDEN_1 = 128
 HIDDEN_2 = 64
-OUTPUT_SIZE = 2 * 4 * 4   # 32: 2 height types × 4×4 quart grid
+OUTPUT_SIZE = 2 * 4 * 4  # 32: 2 height types × 4×4 quart grid
 
 CLIMATE_INDICES = sorted(CLIMATE_FIELDS)  # [0, 1, 2, 3, 4, 5]
 
@@ -120,17 +119,15 @@ def load_data(npz_path: Path) -> tuple[torch.Tensor, torch.Tensor]:
     """
     print(f"  Loading {npz_path} ...")
     with np.load(npz_path) as data:
-        noise_3d = data["noise_3d"]                        # (N, C, qx, qy, qz)
-        hm_surface = data["heightmap_surface"]             # (N, 16, 16)
-        hm_ocean = data["heightmap_ocean_floor"]           # (N, 16, 16)
+        noise_3d = data["noise_3d"]  # (N, C, qx, qy, qz)
+        hm_surface = data["heightmap_surface"]  # (N, 16, 16)
+        hm_ocean = data["heightmap_ocean_floor"]  # (N, 16, 16)
 
     n = noise_3d.shape[0]
     n_ch = noise_3d.shape[1]
     # Need at least 6 channels for input (indices 0-5).
     # v7 dumps have 13 cave-density channels; legacy had 15 RouterField channels.
-    assert n_ch >= 6, (
-        f"Need >= 6 noise channels for climate input, got {n_ch}"
-    )
+    assert n_ch >= 6, f"Need >= 6 noise channels for climate input, got {n_ch}"
 
     # Extract climate channels and average across Y axis → (N, 6, 4, 4)
     clim = noise_3d[:, CLIMATE_INDICES, :, :, :]  # (N, 6, qx, qy, qz)
@@ -138,14 +135,17 @@ def load_data(npz_path: Path) -> tuple[torch.Tensor, torch.Tensor]:
     clim_flat = clim_2d.reshape(n, -1)  # (N, 96)
 
     # Downsample heightmaps from 16×16 to 4×4
-    surf_4x4 = _downsample_heightmap(hm_surface)    # (N, 4, 4)
-    ocean_4x4 = _downsample_heightmap(hm_ocean)     # (N, 4, 4)
+    surf_4x4 = _downsample_heightmap(hm_surface)  # (N, 4, 4)
+    ocean_4x4 = _downsample_heightmap(hm_ocean)  # (N, 4, 4)
 
     # Concatenate: (N, 4, 4) + (N, 4, 4) → (N, 32)
-    targets_arr = np.concatenate([
-        surf_4x4.reshape(n, -1),
-        ocean_4x4.reshape(n, -1),
-    ], axis=1)  # (N, 32)
+    targets_arr = np.concatenate(
+        [
+            surf_4x4.reshape(n, -1),
+            ocean_4x4.reshape(n, -1),
+        ],
+        axis=1,
+    )  # (N, 32)
 
     # Heightmaps are per-column, shared across all sections in the same column.
     # The NPZ has duplicates (same heightmap for all 24 sectionY).  Deduplicate
@@ -187,16 +187,27 @@ def train(
 
     train_ds = TensorDataset(inputs[train_idx], targets[train_idx])
     val_ds = TensorDataset(inputs[val_idx], targets[val_idx])
-    train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=True,
-                          pin_memory=(dev.type == "cuda"), num_workers=0)
-    val_dl = DataLoader(val_ds, batch_size=batch_size * 2, shuffle=False,
-                        pin_memory=(dev.type == "cuda"), num_workers=0)
+    train_dl = DataLoader(
+        train_ds,
+        batch_size=batch_size,
+        shuffle=True,
+        pin_memory=(dev.type == "cuda"),
+        num_workers=0,
+    )
+    val_dl = DataLoader(
+        val_ds,
+        batch_size=batch_size * 2,
+        shuffle=False,
+        pin_memory=(dev.type == "cuda"),
+        num_workers=0,
+    )
 
     model = HeightmapPredictor().to(dev)
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=lr)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="min", factor=0.5, patience=10, min_lr=1e-6)
+        optimizer, mode="min", factor=0.5, patience=10, min_lr=1e-6
+    )
 
     best_val = float("inf")
     best_epoch = -1
@@ -242,40 +253,49 @@ def train(
         if avg_val < best_val:
             best_val = avg_val
             best_epoch = epoch
-            torch.save({
-                "epoch": epoch,
-                "model_state_dict": model.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
-                "val_loss": avg_val,
-                "input_size": INPUT_SIZE,
-                "hidden_1": HIDDEN_1,
-                "hidden_2": HIDDEN_2,
-                "output_size": OUTPUT_SIZE,
-                "climate_indices": CLIMATE_INDICES,
-            }, ckpt_path)
+            torch.save(
+                {
+                    "epoch": epoch,
+                    "model_state_dict": model.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "val_loss": avg_val,
+                    "input_size": INPUT_SIZE,
+                    "hidden_1": HIDDEN_1,
+                    "hidden_2": HIDDEN_2,
+                    "output_size": OUTPUT_SIZE,
+                    "climate_indices": CLIMATE_INDICES,
+                },
+                ckpt_path,
+            )
 
         _report_progress(epoch, epochs)
         if epoch % 10 == 0 or epoch == 1:
             elapsed = time.time() - t0
             cur_lr = optimizer.param_groups[0]["lr"]
             # Compute RMSE for interpretability (units: blocks)
-            rmse = avg_val ** 0.5
-            print(f"  Epoch {epoch:4d}/{epochs}  "
-                  f"train_mse={avg_train:.2f}  val_mse={avg_val:.2f}  "
-                  f"rmse={rmse:.2f}blocks  best={best_val:.2f}@{best_epoch}  "
-                  f"lr={cur_lr:.1e}  [{elapsed:.0f}s]")
+            rmse = avg_val**0.5
+            print(
+                f"  Epoch {epoch:4d}/{epochs}  "
+                f"train_mse={avg_train:.2f}  val_mse={avg_val:.2f}  "
+                f"rmse={rmse:.2f}blocks  best={best_val:.2f}@{best_epoch}  "
+                f"lr={cur_lr:.1e}  [{elapsed:.0f}s]"
+            )
 
     elapsed = time.time() - t0
-    best_rmse = best_val ** 0.5
-    print(f"\n  Training complete in {elapsed:.1f}s — "
-          f"best val_mse={best_val:.2f} (rmse={best_rmse:.2f} blocks) @ epoch {best_epoch}")
+    best_rmse = best_val**0.5
+    print(
+        f"\n  Training complete in {elapsed:.1f}s — "
+        f"best val_mse={best_val:.2f} (rmse={best_rmse:.2f} blocks) @ epoch {best_epoch}"
+    )
 
     # --- export ONNX ---
     model.load_state_dict(torch.load(ckpt_path, weights_only=True)["model_state_dict"])
     model.eval().cpu()
     dummy = torch.randn(1, INPUT_SIZE)
     torch.onnx.export(
-        model, dummy, str(onnx_path),
+        model,
+        dummy,
+        str(onnx_path),
         input_names=["climate_grid"],
         output_names=["heightmap_output"],
         dynamic_axes={"climate_grid": {0: "batch"}, "heightmap_output": {0: "batch"}},
@@ -296,9 +316,12 @@ def main(argv: list[str] | None = None) -> None:
         description="Train HeightmapPredictor: 6×4×4 climate → 2×4×4 heights",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--data", type=Path,
-                        default=Path("noise_training_data/voxy_pairs_v7.npz"),
-                        help="v7 training data NPZ file")
+    parser.add_argument(
+        "--data",
+        type=Path,
+        default=Path("noise_training_data/voxy_pairs_v7.npz"),
+        help="v7 training data NPZ file",
+    )
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--batch-size", type=int, default=512)
     parser.add_argument("--lr", type=float, default=1e-3)
@@ -315,9 +338,15 @@ def main(argv: list[str] | None = None) -> None:
     print("=" * 62)
 
     inputs, targets = load_data(args.data)
-    train(inputs, targets,
-          epochs=args.epochs, batch_size=args.batch_size,
-          lr=args.lr, out_dir=args.out_dir, device=args.device)
+    train(
+        inputs,
+        targets,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        lr=args.lr,
+        out_dir=args.out_dir,
+        device=args.device,
+    )
 
     print("=" * 62)
     print("  DONE")

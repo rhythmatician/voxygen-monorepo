@@ -42,8 +42,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
-import torch.nn as nn
-import torch.optim as optim
+from torch import nn, optim
 from torch.utils.data import DataLoader, TensorDataset
 
 from voxel_tree.utils.progress import report as _report_progress
@@ -118,9 +117,7 @@ def load_data(npz_path: Path) -> tuple[torch.Tensor, torch.Tensor]:
     n_ch = noise_3d.shape[1]
     # Need at least 8 channels: 0-5 for input, 6-7 for targets.
     # v7 dumps have 13 cave-density channels; legacy had 15 RouterField channels.
-    assert n_ch >= 8, (
-        f"Need >= 8 noise channels (6 input + 2 target), got {n_ch}"
-    )
+    assert n_ch >= 8, f"Need >= 8 noise channels (6 input + 2 target), got {n_ch}"
 
     # Extract climate (input) and density (target) channels
     clim = noise_3d[:, CLIMATE_INDICES, :, :, :]  # (N, 6, qx, qy, qz)

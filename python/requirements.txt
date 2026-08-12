@@ -26,11 +26,9 @@ pytest-cov
 psutil                # Memory usage monitoring
 types-psutil   # type stubs for psutil
 
-# === Linting / Formatting / Type Checking (for CI) ===
-black
-flake8
-autoflake
-mypy
+# === Linting / Type Checking via qgate (ruff + pyright) ===
+# Quality gates: uv run qgate --fix / uv run --locked qgate --ci
+# (dev deps in pyproject.toml [dependency-groups].dev via uv.lock)
 
 # === Optional: Seed-based Input Generator ===
 noise                 # Perlin/Simplex for river/biome simulation (Python)

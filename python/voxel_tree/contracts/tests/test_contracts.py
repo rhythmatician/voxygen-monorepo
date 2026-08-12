@@ -7,7 +7,6 @@ import json
 import pytest
 import torch
 
-from voxel_tree.contracts.spec import ContractViolation, ModelContract, TensorSpec
 from voxel_tree.contracts.registry import (
     CONTRACTS,
     get_contract,
@@ -15,7 +14,7 @@ from voxel_tree.contracts.registry import (
     list_models,
     validate_checkpoint_contract,
 )
-
+from voxel_tree.contracts.spec import ContractViolation, ModelContract, TensorSpec
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  TensorSpec
@@ -410,4 +409,3 @@ class TestTrackAlignment:
         assert errors == [], f"Broken track bindings: {errors}"
         # No stale tracks — all tracks are pinned to current revisions
         assert stale == [], f"Stale tracks (update contract_revision): {stale}"
-

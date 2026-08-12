@@ -22,17 +22,17 @@ from pathlib import Path
 import torch
 
 try:
-    from voxel_tree.utils.router_field import RouterField, CLIMATE_FIELDS
     from voxel_tree.utils.biome_mapping import OVERWORLD_BIOMES
+    from voxel_tree.utils.router_field import CLIMATE_FIELDS, RouterField
 except ImportError:
     CLIMATE_FIELDS = frozenset(range(6))
     OVERWORLD_BIOMES = [f"biome_{i}" for i in range(54)]
 
 from voxel_tree.tasks.biome.train_biome_classifier import (
-    BiomeClassifier,
+    CLIMATE_INDICES,
     INPUT_SIZE,
     NUM_BIOMES,
-    CLIMATE_INDICES,
+    BiomeClassifier,
 )
 
 # ---------------------------------------------------------------------------
@@ -83,7 +83,14 @@ def export(checkpoint_path: Path, out_dir: Path) -> None:
     try:
         input_names = [RouterField.by_index(i).lower_name for i in CLIMATE_INDICES]
     except Exception:
-        input_names = ["temperature", "vegetation", "continents", "erosion", "depth", "ridges"]
+        input_names = [
+            "temperature",
+            "vegetation",
+            "continents",
+            "erosion",
+            "depth",
+            "ridges",
+        ]
 
     biome_names = [b.replace("minecraft:", "") for b in OVERWORLD_BIOMES]
 

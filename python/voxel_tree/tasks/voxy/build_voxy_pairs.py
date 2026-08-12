@@ -249,7 +249,11 @@ class _DumpSourceSQLite:
     def _where_clause(self) -> str:
         clauses: list[str] = []
         if self._bounds:
-            for col, dbcol in [("cx", "chunk_x"), ("sy", "section_y"), ("cz", "chunk_z")]:
+            for col, dbcol in [
+                ("cx", "chunk_x"),
+                ("sy", "section_y"),
+                ("cz", "chunk_z"),
+            ]:
                 if col in self._bounds:
                     lo, hi = self._bounds[col]
                     clauses.append(f"{dbcol} BETWEEN {lo} AND {hi}")
@@ -604,8 +608,8 @@ def build_pairs_db(
     voxy_cache: dict[tuple[int, tuple[int, int, int]], np.ndarray] = {}
 
     # ── Stream matching rows ────────────────────────────────────────────
-    select_cols = "s.chunk_x, s.section_y, s.chunk_z, " "s.noise_data, s.biome_ids"
-    data_sql = f"SELECT {select_cols} {join_clause} " f"ORDER BY s.chunk_x, s.chunk_z, s.section_y"
+    select_cols = "s.chunk_x, s.section_y, s.chunk_z, s.noise_data, s.biome_ids"
+    data_sql = f"SELECT {select_cols} {join_clause} ORDER BY s.chunk_x, s.chunk_z, s.section_y"
     cursor = src.execute(data_sql)
 
     sample_id = 0

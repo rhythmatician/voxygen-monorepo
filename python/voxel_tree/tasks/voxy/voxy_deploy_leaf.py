@@ -1,4 +1,5 @@
 """Deploy stub for voxy_leaf sub-model."""
+
 from __future__ import annotations
 
 

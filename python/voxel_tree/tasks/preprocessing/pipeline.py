@@ -233,7 +233,7 @@ def phase4_deploy(
     def _deploy_model(model_name: str) -> None:
         module_name = f"voxel_tree.tasks.voxy.voxy_deploy_{model_name}"
         module = __import__(module_name, fromlist=["main"])
-        deploy_main = getattr(module, "main")
+        deploy_main = module.main
 
         args: list[str] = [str(export_dir)]
         if dest is not None:
@@ -415,7 +415,7 @@ def main(argv: list[str] | None = None) -> None:
         phase3_export(
             args.checkpoint,
             args.export_dir,
-            checkpoint_dir=getattr(args, "checkpoint_dir", None),
+            checkpoint_dir=vars(args).get("checkpoint_dir"),
             models=args.models,
         )
 

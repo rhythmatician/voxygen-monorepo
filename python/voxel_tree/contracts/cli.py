@@ -23,7 +23,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from typing import Sequence
+from collections.abc import Sequence
 
 
 def _fmt_shape(shape: tuple) -> str:
@@ -60,7 +60,7 @@ def _print_table(models: list[dict]) -> None:
         print("  ".join(cell.ljust(widths[i]) for i, cell in enumerate(row)))
 
 
-def _print_contract_detail(contract) -> None:  # noqa: ANN001
+def _print_contract_detail(contract) -> None:
     """Print detailed view of one contract."""
     print(f"\n{'═' * 62}")
     print(f"  {contract.model_name} revision {contract.revision}")
@@ -104,7 +104,7 @@ def _print_contract_detail(contract) -> None:  # noqa: ANN001
     print()
 
 
-def _diff_revisions(contract_a, contract_b) -> None:  # noqa: ANN001
+def _diff_revisions(contract_a, contract_b) -> None:
     """Print a human-readable diff between two contract revisions."""
     print(f"\n{'═' * 62}")
     print(f"  DIFF: {contract_a.model_name} rev {contract_a.revision} → rev {contract_b.revision}")
@@ -188,7 +188,12 @@ def _diff_revisions(contract_a, contract_b) -> None:  # noqa: ANN001
 
 def run_contracts_cli(argv: Sequence[str] | None = None) -> None:
     """Entry point for ``voxel-tree contracts`` sub-command."""
-    from voxel_tree.contracts import CONTRACTS, get_contract, latest_revision, list_models
+    from voxel_tree.contracts import (
+        CONTRACTS,
+        get_contract,
+        latest_revision,
+        list_models,
+    )
 
     parser = argparse.ArgumentParser(
         prog="voxel-tree contracts",
@@ -211,7 +216,10 @@ def run_contracts_cli(argv: Sequence[str] | None = None) -> None:
     )
     parser.add_argument("--sidecar", action="store_true", help="Dump sidecar JSON to stdout")
     parser.add_argument(
-        "--all-revisions", "-a", action="store_true", help="Show all revisions for a model"
+        "--all-revisions",
+        "-a",
+        action="store_true",
+        help="Show all revisions for a model",
     )
     parser.add_argument(
         "--check",

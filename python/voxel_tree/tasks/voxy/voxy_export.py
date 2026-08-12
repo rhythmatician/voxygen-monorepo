@@ -23,11 +23,11 @@ import json
 import logging
 import subprocess
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
 import numpy as np
 import torch
-import torch.nn as nn
+from torch import nn
 
 from voxel_tree.tasks.voxy.voxy_models import (
     BIOME_SHAPES,
@@ -66,7 +66,7 @@ ROUTER_FIELD_NAMES = [
 ]
 
 # Per-level noise channel selection (RouterField ordinals)
-LEVEL_NOISE_CHANNELS: Dict[int, List[int]] = {
+LEVEL_NOISE_CHANNELS: dict[int, list[int]] = {
     0: list(range(15)),  # all 15
     1: list(range(15)),  # all 15
     2: L2_NOISE_CHANNELS,  # [0,1,2,3,4,5,7]
@@ -78,9 +78,9 @@ LEVEL_NOISE_CHANNELS: Dict[int, List[int]] = {
 # ─── Provenance helpers ─────────────────────────────────────────────
 
 
-def collect_export_provenance() -> Dict[str, Any]:
+def collect_export_provenance() -> dict[str, Any]:
     """Collect git commit, branch, and working-tree status."""
-    prov: Dict[str, Any] = {}
+    prov: dict[str, Any] = {}
     try:
         sha = (
             subprocess.check_output(["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL)
@@ -112,7 +112,7 @@ def collect_export_provenance() -> Dict[str, Any]:
     return prov
 
 
-def embed_block_mapping(config_dict: Dict[str, Any]) -> Dict[str, Any]:
+def embed_block_mapping(config_dict: dict[str, Any]) -> dict[str, Any]:
     """Embed Voxy vocabulary into a config dict for self-contained export."""
     vocab_path = Path(__file__).resolve().parent.parent.parent / "config" / "voxy_vocab.json"
     if vocab_path.exists():
@@ -257,7 +257,7 @@ ADAPTER_CLASSES = {
 # ─── Dummy input generation ─────────────────────────────────────────
 
 
-def _make_dummy_inputs(level: int, cfg: VoxyModelConfig) -> Tuple[tuple, List[str], Dict[str, str]]:
+def _make_dummy_inputs(level: int, cfg: VoxyModelConfig) -> tuple[tuple, list[str], dict[str, str]]:
     """Build dummy inputs, input names, and dtype map for a level.
 
     Returns (dummy_tuple, input_names, input_dtypes).
@@ -342,7 +342,7 @@ def export_level(
     output_names = ["block_logits"]
 
     # Dynamic batch axes
-    dynamic_axes: Dict[str, Dict[int, str]] = {}
+    dynamic_axes: dict[str, dict[int, str]] = {}
     for name in input_names:
         dynamic_axes[name] = {0: "batch"}
     for name in output_names:
@@ -375,17 +375,17 @@ def export_level(
     noise_channels = LEVEL_NOISE_CHANNELS[level]
     is_3d = level <= 1
 
-    input_shapes: Dict[str, List[int]] = {}
+    input_shapes: dict[str, list[int]] = {}
     for name, tensor in zip(input_names, dummy):
         input_shapes[name] = list(tensor.shape)
 
-    output_shapes: Dict[str, List[int]] = {
+    output_shapes: dict[str, list[int]] = {
         "block_logits": list(block_logits.shape),
     }
     if occ_logits is not None:
         output_shapes["occ_logits"] = list(occ_logits.shape)
 
-    model_config: Dict[str, Any] = {
+    model_config: dict[str, Any] = {
         "version": "6.0.0",
         "contract": "lodiffusion.v6.voxy",
         "model": f"voxy_l{level}",
@@ -412,7 +412,7 @@ def export_level(
         "assumptions": {
             "y_position_range": [0, cfg.y_vocab_size - 1],
             "parent_blocks": (
-                ("int64 block IDs [0, block_vocab_size); " "embedding is baked into ONNX graph")
+                ("int64 block IDs [0, block_vocab_size); embedding is baked into ONNX graph")
                 if level < 4
                 else None
             ),
@@ -441,7 +441,7 @@ def export_level(
     LOGGER.info("Sidecar config: %s", config_path)
 
     # ── Test vectors ──────────────────────────────────────────────
-    vectors: Dict[str, np.ndarray] = {}
+    vectors: dict[str, np.ndarray] = {}
     for name, tensor in zip(input_names, dummy):
         vectors[name] = tensor.numpy()
     vectors["block_logits"] = block_logits.numpy()
@@ -477,7 +477,7 @@ def _validate_onnx(onnx_path: Path, test_vectors_path: Path) -> bool:
     vectors = np.load(test_vectors_path)
     session = ort.InferenceSession(str(onnx_path))
 
-    feed: Dict[str, np.ndarray] = {}
+    feed: dict[str, np.ndarray] = {}
     for inp in session.get_inputs():
         name = inp.name
         if name in vectors:
@@ -517,7 +517,7 @@ def _validate_onnx(onnx_path: Path, test_vectors_path: Path) -> bool:
 
 def load_voxy_checkpoint(
     checkpoint_path: Path,
-) -> Tuple[int, VoxyModelConfig, nn.Module]:
+) -> tuple[int, VoxyModelConfig, nn.Module]:
     """Load a per-level Voxy checkpoint.
 
     Returns ``(level, config, model)`` with weights loaded.

@@ -56,9 +56,10 @@ from __future__ import annotations
 import importlib
 import sys
 import types
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 # ---------------------------------------------------------------------------
 # StepDef — one node in the pipeline DAG
@@ -295,7 +296,7 @@ def _wire_prereqs(steps: list[StepDef]) -> None:
         for art in step.produces:
             if art in producers:
                 raise ValueError(
-                    f"Artifact '{art}' produced by both " f"'{producers[art]}' and '{step.id}'"
+                    f"Artifact '{art}' produced by both '{producers[art]}' and '{step.id}'"
                 )
             producers[art] = step.id
 
@@ -306,7 +307,7 @@ def _wire_prereqs(steps: list[StepDef]) -> None:
         for art in sorted(step.consumes):  # sorted for determinism
             pid = producers.get(art)
             if pid is None:
-                raise ValueError(f"Step '{step.id}' consumes '{art}' " f"but no step produces it")
+                raise ValueError(f"Step '{step.id}' consumes '{art}' but no step produces it")
             if pid != step.id and pid not in computed:
                 computed.append(pid)
         step.prereqs = computed
@@ -345,11 +346,11 @@ def _wire_prereqs(steps: list[StepDef]) -> None:
 
 
 def _dumpnoise_run(p: dict[str, Any]) -> None:
-    import shutil  # noqa: PLC0415
+    import shutil
 
-    from voxel_tree.gui.server_manager import get_rcon_settings  # noqa: PLC0415
-    from voxel_tree.preprocessing.cli import DEFAULT_SERVER_DIR  # noqa: PLC0415
-    from voxel_tree.preprocessing.cli import main as cli_main  # noqa: PLC0415
+    from voxel_tree.gui.server_manager import get_rcon_settings
+    from voxel_tree.preprocessing.cli import DEFAULT_SERVER_DIR
+    from voxel_tree.preprocessing.cli import main as cli_main
 
     world = p.get("world", {})
     data = p.get("data", {})
@@ -389,7 +390,7 @@ def _dumpnoise_run(p: dict[str, Any]) -> None:
 
 
 def _extract_octree_run(p: dict[str, Any]) -> None:
-    from voxel_tree.preprocessing.cli import main as cli_main  # noqa: PLC0415
+    from voxel_tree.preprocessing.cli import main as cli_main
 
     data = p.get("data", {})
     argv = [
@@ -414,7 +415,7 @@ def _extract_octree_run(p: dict[str, Any]) -> None:
 
 
 def _column_heights_run(p: dict[str, Any]) -> None:
-    from voxel_tree.preprocessing.cli import main as cli_main  # noqa: PLC0415
+    from voxel_tree.preprocessing.cli import main as cli_main
 
     data = p.get("data", {})
     argv = ["dataprep", "--from-step", "column-heights-octree"]
@@ -431,8 +432,8 @@ def _column_heights_run(p: dict[str, Any]) -> None:
 
 def _pregen_run(p: dict[str, Any]) -> None:
     """Chunky pregeneration — generates chunks on the server."""
-    from voxel_tree.gui.server_manager import get_rcon_settings  # noqa: PLC0415
-    from voxel_tree.preprocessing.harvest import main as harvest_main  # noqa: PLC0415
+    from voxel_tree.gui.server_manager import get_rcon_settings
+    from voxel_tree.preprocessing.harvest import main as harvest_main
 
     world = p.get("world", {})
     rcon = get_rcon_settings()
@@ -464,8 +465,8 @@ def _harvest_run(p: dict[str, Any]) -> None:
     from voxel_tree.gui.server_manager import (
         get_rcon_settings,
         read_server_property,
-    )  # noqa: PLC0415
-    from voxel_tree.preprocessing.harvest import main as harvest_main  # noqa: PLC0415
+    )
+    from voxel_tree.preprocessing.harvest import main as harvest_main
 
     world = p.get("world", {})
     data = p.get("data", {})
@@ -488,7 +489,9 @@ def _harvest_run(p: dict[str, Any]) -> None:
     if not voxy_dir:
         server_port = read_server_property("server-port", "25565")
         if server_port:
-            from voxel_tree.preprocessing.harvest import MODRINTH_VOXY_SAVES  # noqa: PLC0415
+            from voxel_tree.preprocessing.harvest import (
+                MODRINTH_VOXY_SAVES,
+            )
 
             voxy_dir = str(MODRINTH_VOXY_SAVES / f"localhost_{server_port}")
 
@@ -504,7 +507,7 @@ def _harvest_run(p: dict[str, Any]) -> None:
 
 def _export_octree_run(p: dict[str, Any], model: str) -> None:
     """Export a single octree submodel via the octree export script."""
-    from voxel_tree.preprocessing.pipeline import phase3_export  # noqa: PLC0415
+    from voxel_tree.preprocessing.pipeline import phase3_export
 
     train = p.get("train", {})
     export = p.get("export", {})
@@ -519,7 +522,7 @@ def _export_octree_run(p: dict[str, Any], model: str) -> None:
 
 def _deploy_octree_run(p: dict[str, Any], model: str) -> None:
     """Deploy a single octree submodel via the deploy_models script."""
-    from voxel_tree.preprocessing.pipeline import phase4_deploy  # noqa: PLC0415
+    from voxel_tree.preprocessing.pipeline import phase4_deploy
 
     export = p.get("export", {})
     deploy = p.get("deploy", {})
@@ -612,7 +615,7 @@ _VOXY_CHECKPOINT = "voxy_model.pt"
 def _build_pairs_voxy_run(p: dict[str, Any]) -> None:
     from voxel_tree.tasks.octree.build_pairs import (
         main as pairs_main,
-    )  # noqa: PLC0415
+    )
 
     data = p.get("data", {})
     argv = ["--sparse-octree", "--val-split", str(data.get("val_split", 0.1))]
@@ -624,18 +627,18 @@ def _build_pairs_voxy_run(p: dict[str, Any]) -> None:
 def _resolve_device(raw: str) -> str:
     """Resolve 'auto' to 'cuda' or 'cpu'; pass other values through."""
     if raw == "auto":
-        import torch  # noqa: PLC0415
+        import torch
 
         return "cuda" if torch.cuda.is_available() else "cpu"
     return raw
 
 
 def _train_voxy_run(p: dict[str, Any]) -> None:
-    import json  # noqa: PLC0415
-    import sqlite3  # noqa: PLC0415
+    import json
+    import sqlite3
 
-    from voxel_tree.tasks.voxy.voxy_train import train_voxy_level  # noqa: PLC0415
-    from voxel_tree.utils.progress import report as _report_progress  # noqa: PLC0415
+    from voxel_tree.tasks.voxy.voxy_train import train_voxy_level
+    from voxel_tree.utils.progress import report as _report_progress
 
     data = p.get("data", {})
     train = p.get("train", {})
@@ -741,13 +744,13 @@ def _deploy_voxy_run(p: dict[str, Any]) -> None:
 
 def _continue_train_voxy_level_run(p: dict[str, Any], level: int, additional: int) -> None:
     """Run continue-training for exactly one Voxy level in-process."""
-    import json  # noqa: PLC0415
-    import sqlite3  # noqa: PLC0415
+    import json
+    import sqlite3
 
-    import torch  # noqa: PLC0415
+    import torch
 
-    from voxel_tree.tasks.voxy.voxy_train import train_voxy_level  # noqa: PLC0415
-    from voxel_tree.utils.progress import report as _report_progress  # noqa: PLC0415
+    from voxel_tree.tasks.voxy.voxy_train import train_voxy_level
+    from voxel_tree.utils.progress import report as _report_progress
 
     data = p.get("data", {})
     train = p.get("train", {})
@@ -836,8 +839,8 @@ def _continue_train_voxy_run(p: dict[str, Any]) -> None:
       p["_continue_epochs"]    : int        — additional epochs to run
       p["_continue_inprocess"] : bool       — force legacy single-process mode
     """
-    import json  # noqa: PLC0415
-    import subprocess  # noqa: PLC0415
+    import json
+    import subprocess
 
     levels: list[int] = p.get("_continue_levels", [])
     additional: int = int(p.get("_continue_epochs", 5))
@@ -894,10 +897,12 @@ def _make_train_voxy_l_run(level: int) -> Callable[[dict[str, Any]], None]:
     """Return a runner that trains exactly one Voxy level."""
 
     def _run(p: dict[str, Any]) -> None:
-        import sqlite3  # noqa: PLC0415
+        import sqlite3
 
-        from voxel_tree.tasks.voxy.voxy_train import train_voxy_level  # noqa: PLC0415
-        from voxel_tree.utils.progress import report as _report_progress  # noqa: PLC0415
+        from voxel_tree.tasks.voxy.voxy_train import train_voxy_level
+        from voxel_tree.utils.progress import (
+            report as _report_progress,
+        )
 
         data = p.get("data", {})
         train = p.get("train", {})
@@ -960,7 +965,7 @@ def _make_train_voxy_l_run(level: int) -> Callable[[dict[str, Any]], None]:
             allow_overwrite_without_resume=bool(train.get("force_retrain", False)),
             progress_callback=lambda epoch, total, _m: _report_progress(epoch, total),
         )
-        import json as _json_  # noqa: PLC0415
+        import json as _json_
 
         print("[STEP_RESULT]" + _json_.dumps(result, sort_keys=True))
 
@@ -993,7 +998,7 @@ def _import_voxy_run(p: dict[str, Any]) -> None:
     Creates a ``voxy_sections`` table so that training data can be assembled
     via a single SQL JOIN — no ``build_v7_pairs`` step needed.
     """
-    from voxel_tree.tasks.voxy.import_voxy_to_db import import_voxy  # noqa: PLC0415
+    from voxel_tree.tasks.voxy.import_voxy_to_db import import_voxy
 
     data = p.get("data", {})
     db_path = data.get("v7_dumps_db")
@@ -1033,12 +1038,12 @@ def _build_v7_pairs_run(p: dict[str, Any]) -> None:
     That directory must exist and contain ``level_0/`` … ``level_4/``
     sub-directories before this step is run.
     """
-    import json  # noqa: PLC0415
+    import json
 
-    from voxel_tree.tasks.voxy.build_voxy_pairs import (  # noqa: PLC0415
+    from voxel_tree.tasks.voxy.build_voxy_pairs import (
+        _build_remap_lut,
         _DumpSourceJSON,
         _DumpSourceSQLite,
-        _build_remap_lut,
         build_pairs,
         build_pairs_db,
     )
@@ -1122,7 +1127,9 @@ def _build_pairs_density_run(p: dict[str, Any]) -> None:
 
 
 def _train_density_run(p: dict[str, Any]) -> None:
-    from voxel_tree.tasks.density.train_density import main as train_main  # noqa: PLC0415
+    from voxel_tree.tasks.density.train_density import (
+        main as train_main,
+    )
 
     data = p.get("data", {})
     train = p.get("train", {})
@@ -1141,7 +1148,9 @@ def _train_density_run(p: dict[str, Any]) -> None:
 
 
 def _export_density_run(p: dict[str, Any]) -> None:
-    from voxel_tree.tasks.density.export_density import main as export_main  # noqa: PLC0415
+    from voxel_tree.tasks.density.export_density import (
+        main as export_main,
+    )
 
     train = p.get("train", {})
     export = p.get("export", {})
@@ -1153,7 +1162,9 @@ def _export_density_run(p: dict[str, Any]) -> None:
 
 def _deploy_density_run(p: dict[str, Any]) -> None:
     """Deploy density (re-export directly into the deploy target dir)."""
-    from voxel_tree.tasks.density.export_density import main as export_main  # noqa: PLC0415
+    from voxel_tree.tasks.density.export_density import (
+        main as export_main,
+    )
 
     train = p.get("train", {})
     deploy = p.get("deploy", {})
@@ -1180,7 +1191,9 @@ def _build_pairs_biome_run(p: dict[str, Any]) -> None:
 
 
 def _train_biome_classifier_run(p: dict[str, Any]) -> None:
-    from voxel_tree.tasks.biome.train_biome_classifier import main as train_main  # noqa: PLC0415
+    from voxel_tree.tasks.biome.train_biome_classifier import (
+        main as train_main,
+    )
 
     data = p.get("data", {})
     train = p.get("train", {})
@@ -1199,7 +1212,7 @@ def _train_biome_classifier_run(p: dict[str, Any]) -> None:
 
 
 def _export_biome_classifier_run(p: dict[str, Any]) -> None:
-    from voxel_tree.tasks.biome.export_biome import main as export_main  # noqa: PLC0415
+    from voxel_tree.tasks.biome.export_biome import main as export_main
 
     train = p.get("train", {})
     export = p.get("export", {})
@@ -1211,7 +1224,7 @@ def _export_biome_classifier_run(p: dict[str, Any]) -> None:
 
 def _deploy_biome_classifier_run(p: dict[str, Any]) -> None:
     """Deploy biome_classifier (re-export directly into the deploy target dir)."""
-    from voxel_tree.tasks.biome.export_biome import main as export_main  # noqa: PLC0415
+    from voxel_tree.tasks.biome.export_biome import main as export_main
 
     train = p.get("train", {})
     deploy = p.get("deploy", {})
@@ -1238,7 +1251,9 @@ def _build_pairs_heightmap_run(p: dict[str, Any]) -> None:
 
 
 def _train_heightmap_run(p: dict[str, Any]) -> None:
-    from voxel_tree.tasks.heightmap.train_heightmap import main as train_main  # noqa: PLC0415
+    from voxel_tree.tasks.heightmap.train_heightmap import (
+        main as train_main,
+    )
 
     data = p.get("data", {})
     train = p.get("train", {})
@@ -1257,7 +1272,9 @@ def _train_heightmap_run(p: dict[str, Any]) -> None:
 
 
 def _export_heightmap_run(p: dict[str, Any]) -> None:
-    from voxel_tree.tasks.heightmap.export_heightmap import main as export_main  # noqa: PLC0415
+    from voxel_tree.tasks.heightmap.export_heightmap import (
+        main as export_main,
+    )
 
     train = p.get("train", {})
     export = p.get("export", {})
@@ -1269,7 +1286,9 @@ def _export_heightmap_run(p: dict[str, Any]) -> None:
 
 def _deploy_heightmap_run(p: dict[str, Any]) -> None:
     """Deploy heightmap_predictor (re-export directly into the deploy target dir)."""
-    from voxel_tree.tasks.heightmap.export_heightmap import main as export_main  # noqa: PLC0415
+    from voxel_tree.tasks.heightmap.export_heightmap import (
+        main as export_main,
+    )
 
     train = p.get("train", {})
     deploy = p.get("deploy", {})

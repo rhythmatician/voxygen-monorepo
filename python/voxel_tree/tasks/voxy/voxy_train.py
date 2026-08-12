@@ -24,12 +24,13 @@ from __future__ import annotations
 import json
 import os
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any
 
 import torch
 import torch.nn.functional as F
-import torch.optim as optim
+from torch import optim
 from torch.utils.data import DataLoader
 
 from .voxy_dataset import (
@@ -73,13 +74,16 @@ def _compute_surface_weights(
     padded = F.pad(is_air.float(), (1, 1, 1, 1, 1, 1), value=1.0)
     # Check 6-connected neighbours for air
     has_air_neighbour = (
-        padded[:, :-2, 1:-1, 1:-1]  # Y-1
-        + padded[:, 2:, 1:-1, 1:-1]  # Y+1
-        + padded[:, 1:-1, :-2, 1:-1]  # Z-1
-        + padded[:, 1:-1, 2:, 1:-1]  # Z+1
-        + padded[:, 1:-1, 1:-1, :-2]  # X-1
-        + padded[:, 1:-1, 1:-1, 2:]  # X+1
-    ) > 0  # [B, Y, Z, X]
+        (
+            padded[:, :-2, 1:-1, 1:-1]  # Y-1
+            + padded[:, 2:, 1:-1, 1:-1]  # Y+1
+            + padded[:, 1:-1, :-2, 1:-1]  # Z-1
+            + padded[:, 1:-1, 2:, 1:-1]  # Z+1
+            + padded[:, 1:-1, 1:-1, :-2]  # X-1
+            + padded[:, 1:-1, 1:-1, 2:]  # X+1
+        )
+        > 0
+    )  # [B, Y, Z, X]
 
     # Weight: 1.0 for air blocks and visible solid blocks, interior_weight otherwise
     weights = torch.where(is_air | has_air_neighbour, 1.0, interior_weight)
@@ -147,7 +151,7 @@ def _resolve_loss_schedule_for_epoch(
     level: int,
     epoch: int,
     total_epochs: int,
-    loss_schedule: Optional[Any],
+    loss_schedule: Any | None,
 ) -> dict[str, float]:
     """Resolve dynamic alpha/occ schedule for the current epoch.
 
@@ -157,7 +161,7 @@ def _resolve_loss_schedule_for_epoch(
     - ``{"mode": "default_by_level"}``
     - ``{"phases_by_level": {"0": [...], "1": [...], ...}}``
     """
-    phases: Optional[list[dict[str, float]]] = None
+    phases: list[dict[str, float]] | None = None
 
     if loss_schedule is None:
         return {"alpha": 1.0, "occ_scale": 1.0}
@@ -213,7 +217,7 @@ def _build_semantic_class_weights(
     air_water_weight: float = 1.7,
     surface_veg_weight: float = 3.0,
     stone_ore_weight: float = 0.35,
-) -> tuple[torch.Tensor, Dict[str, int]]:
+) -> tuple[torch.Tensor, dict[str, int]]:
     """Build per-class semantic loss weights from vocab metadata.
 
     Priority policy:
@@ -308,15 +312,15 @@ def _voxy_level_loss(
     block_logits: torch.Tensor,
     labels: torch.Tensor,
     *,
-    occ_logits: Optional[torch.Tensor] = None,
-    occ_target: Optional[torch.Tensor] = None,
+    occ_logits: torch.Tensor | None = None,
+    occ_target: torch.Tensor | None = None,
     ignore_index: int = -1,
     label_smoothing: float = 0.02,
     occ_weight: float = 1.0,
     interior_weight: float = 1.0,
-    semantic_class_weights: Optional[torch.Tensor] = None,
+    semantic_class_weights: torch.Tensor | None = None,
     priority_threshold: float = 1.0,
-) -> Dict[str, torch.Tensor]:
+) -> dict[str, torch.Tensor]:
     """Compute per-level training loss.
 
     Args:
@@ -399,7 +403,7 @@ def _voxy_level_loss(
         surface_frac = 1.0
         priority_frac = 0.0
 
-    result: Dict[str, torch.Tensor] = {
+    result: dict[str, torch.Tensor] = {
         "block_loss": block_loss,
         "surface_frac": torch.tensor(surface_frac),
         "priority_frac": torch.tensor(priority_frac),
@@ -465,9 +469,9 @@ def _compute_block_accuracy(
     block_logits: torch.Tensor,
     labels: torch.Tensor,
     ignore_index: int = -1,
-    semantic_class_weights: Optional[torch.Tensor] = None,
+    semantic_class_weights: torch.Tensor | None = None,
     priority_threshold: float = 1.0,
-) -> Dict[str, float]:
+) -> dict[str, float]:
     """Compute block-type prediction accuracy."""
     preds = block_logits.argmax(dim=1)  # [B, Y, Z, X]
     # Trim labels Y-dim to match model output (L4 outputs Y=24, labels are Y=32)
@@ -515,9 +519,9 @@ def train_voxy_level(
     label_smoothing: float = 0.02,
     occ_weight: float = 1.0,
     min_coverage: float = 1.0,
-    resume_from: Optional[Path] = None,
-    max_samples: Optional[int] = None,
-    num_workers: Optional[int] = None,
+    resume_from: Path | None = None,
+    max_samples: int | None = None,
+    num_workers: int | None = None,
     channels_last: bool = True,
     cache_dataset: bool = True,
     interior_weight: float = 0.1,
@@ -525,11 +529,11 @@ def train_voxy_level(
     air_water_weight: float = 1.7,
     surface_veg_weight: float = 3.0,
     stone_ore_weight: float = 0.35,
-    holdout_db_path: Optional[Path] = None,
-    loss_schedule: Optional[Any] = None,
+    holdout_db_path: Path | None = None,
+    loss_schedule: Any | None = None,
     allow_overwrite_without_resume: bool = False,
-    progress_callback: Optional[Callable[[int, int, Dict[str, float]], None]] = None,
-) -> Dict[str, Any]:
+    progress_callback: Callable[[int, int, dict[str, float]], None] | None = None,
+) -> dict[str, Any]:
     """Train a single Voxy-level model.
 
     Args:
@@ -588,7 +592,7 @@ def train_voxy_level(
     _cfg_dir = Path(__file__).resolve().parents[2] / "config"
     _vocab_remap_path = _cfg_dir / "vocab_remap.json"
     num_classes = 513  # default: 512 block types + air=0
-    _vocab_remap: Optional[Dict[int, int]] = None
+    _vocab_remap: dict[int, int] | None = None
     if _vocab_remap_path.exists():
         try:
             remap = json.loads(_vocab_remap_path.read_text(encoding="utf-8"))
@@ -621,7 +625,10 @@ def train_voxy_level(
         print(f"[L{level}] Dynamic loss schedule enabled: {loss_schedule}")
 
     # ── Dataset ───────────────────────────────────────────────────
-    print(f"[L{level}] Loading dataset from {db_path} (this may take a while)...", flush=True)
+    print(
+        f"[L{level}] Loading dataset from {db_path} (this may take a while)...",
+        flush=True,
+    )
     if level == 4:
         ds: VoxyLevelDataset | VoxyLevelWithParentDataset = VoxyLevelDataset(
             db_path, level, min_coverage, vocab_remap=_vocab_remap, cache=cache_dataset
@@ -648,7 +655,7 @@ def train_voxy_level(
     model = create_model(level, cfg).to(_device)
 
     # ── Channels-last 3D memory format (CPU speedup) ─────────
-    unet = getattr(model, "unet", None)
+    unet = model.unet if hasattr(model, "unet") else None
     if channels_last and isinstance(unet, UNet3D32):
         unet.channels_last_3d = True
         print(f"[L{level}] Using channels-last-3d memory format")
@@ -676,16 +683,24 @@ def train_voxy_level(
     print(f"[L{level}] DataLoader: num_workers={_nw}")
 
     # ── Optional holdout loader (separate world/seed) ─────────────────
-    holdout_loader: Optional[DataLoader[Any]] = None
+    holdout_loader: DataLoader[Any] | None = None
     if holdout_db_path is not None and Path(holdout_db_path).exists():
         holdout_db_path = Path(holdout_db_path)
         if level == 4:
             holdout_ds: VoxyLevelDataset | VoxyLevelWithParentDataset = VoxyLevelDataset(
-                holdout_db_path, level, min_coverage, vocab_remap=_vocab_remap, cache=cache_dataset
+                holdout_db_path,
+                level,
+                min_coverage,
+                vocab_remap=_vocab_remap,
+                cache=cache_dataset,
             )
         else:
             holdout_ds = VoxyLevelWithParentDataset(
-                holdout_db_path, level, min_coverage, vocab_remap=_vocab_remap, cache=cache_dataset
+                holdout_db_path,
+                level,
+                min_coverage,
+                vocab_remap=_vocab_remap,
+                cache=cache_dataset,
             )
         if len(holdout_ds) > 0:
             holdout_loader = DataLoader(
@@ -704,7 +719,7 @@ def train_voxy_level(
     # ── Resume ────────────────────────────────────────────────────
     start_epoch = 1
     best_loss = float("inf")
-    best_state: Optional[Dict[str, Any]] = None
+    best_state: dict[str, Any] | None = None
 
     if resume_from is not None and Path(resume_from).exists():
         ckpt = torch.load(resume_from, map_location=_device, weights_only=False)
@@ -741,14 +756,17 @@ def train_voxy_level(
         return {"checkpoint": str(out_path), "best_loss": best_loss, "history": []}
 
     # ── Training ──────────────────────────────────────────────────
-    history: List[Dict[str, float]] = []
+    history: list[dict[str, float]] = []
     n_batches = (len(ds) + batch_size - 1) // batch_size
     _log_interval = max(1, min(n_batches // 10, 50))
     has_parent = level < 4
 
     for epoch in range(start_epoch, epochs + 1):
         model.train()
-        print(f"[L{level}] Starting epoch {epoch}/{epochs} ({n_batches} batches)", flush=True)
+        print(
+            f"[L{level}] Starting epoch {epoch}/{epochs} ({n_batches} batches)",
+            flush=True,
+        )
         sched = _resolve_loss_schedule_for_epoch(
             level=level,
             epoch=epoch,
@@ -1029,7 +1047,9 @@ def main() -> None:
     )
     parser.add_argument("--resume", type=Path, default=None)
     parser.add_argument(
-        "--no-channels-last", action="store_true", help="Disable channels-last-3d memory format"
+        "--no-channels-last",
+        action="store_true",
+        help="Disable channels-last-3d memory format",
     )
     parser.add_argument(
         "--no-cache", action="store_true", help="Disable pre-loading dataset into RAM"

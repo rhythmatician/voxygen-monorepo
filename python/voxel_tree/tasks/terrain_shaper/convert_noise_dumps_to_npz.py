@@ -98,7 +98,7 @@ def trilinear_upsample_cell_grid_to_blocks(cell_grid: np.ndarray) -> np.ndarray:
     # Precompute clamped indices for the `+1` offsets.
     # This mirrors Minecraft's behaviour which clamps at the chunk boundary.
     def clamp_axis(idx, max_idx):
-        return idx if idx < max_idx else max_idx
+        return min(max_idx, idx)
 
     for bx in range(BX):
         cx = bx // cell_width

@@ -40,7 +40,7 @@ import sys
 import zlib
 from collections import Counter
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
 import numpy as np
 
@@ -142,7 +142,7 @@ def tile_noise(
     ws_y: int,
     ws_z: int,
     level: int,
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray]:
     """Tile noise + biome at quart-cell resolution.
 
     Returns:
@@ -381,13 +381,13 @@ def r_squared_by_resolution(
     hm_blocks: np.ndarray,
     label_surface: np.ndarray,
     voxel_size_blocks: int,
-    strategies: List[str] = ["mean", "center", "corner", "max", "min"],
-) -> Dict[str, float]:
+    strategies: list[str] = ["mean", "center", "corner", "max", "min"],
+) -> dict[str, float]:
     """Compute R² for each heightmap subsampling strategy.
 
     Returns dict mapping strategy → R² value.
     """
-    results: Dict[str, float] = {}
+    results: dict[str, float] = {}
     for strat in strategies:
         sub = subsample_heightmap(hm_blocks, voxel_size_blocks, 32, strat)
         r = correlation_with_surface(sub, label_surface)
@@ -427,8 +427,8 @@ def multi_sample_r_squared(
     hm_blocks: np.ndarray,
     label_surface: np.ndarray,
     voxel_size_blocks: int,
-    n_samples_per_axis: List[int] = [1, 2, 4, 8, 16],
-) -> Dict[int, float]:
+    n_samples_per_axis: list[int] = [1, 2, 4, 8, 16],
+) -> dict[int, float]:
     """Test how R² improves as we increase heightmap samples per voxel.
 
     For N samples-per-voxel-axis, we take N×N evenly spaced samples
@@ -436,7 +436,7 @@ def multi_sample_r_squared(
 
     Returns: dict mapping n_samples → R².
     """
-    results: Dict[int, float] = {}
+    results: dict[int, float] = {}
     for n in n_samples_per_axis:
         if n > voxel_size_blocks:
             continue
@@ -465,7 +465,7 @@ def variance_decomposition(
     hm_blocks: np.ndarray,
     voxel_size_blocks: int,
     grid_size: int = 32,
-) -> Dict[str, float]:
+) -> dict[str, float]:
     """Decompose heightmap variance into within-voxel and between-voxel.
 
     If between / total ≈ 1.0, one sample per voxel captures nearly all
@@ -517,8 +517,8 @@ def reconstruction_rmse_sweep(
     hm_blocks: np.ndarray,
     voxel_size_blocks: int,
     grid_size: int = 32,
-    n_samples_list: List[int] | None = None,
-) -> Dict[int, float]:
+    n_samples_list: list[int] | None = None,
+) -> dict[int, float]:
     """Measure reconstruction RMSE at different subsampling rates.
 
     For each N (samples per voxel axis), subsample the heightmap to
@@ -530,7 +530,7 @@ def reconstruction_rmse_sweep(
     if n_samples_list is None:
         n_samples_list = [n for n in [1, 2, 4, 8, 16] if n <= voxel_size_blocks]
 
-    results: Dict[int, float] = {}
+    results: dict[int, float] = {}
 
     for n in n_samples_list:
         if n > voxel_size_blocks:
@@ -567,7 +567,7 @@ def reconstruction_rmse_sweep(
     return results
 
 
-def completeness_check(labels32: np.ndarray) -> Dict[str, float]:
+def completeness_check(labels32: np.ndarray) -> dict[str, float]:
     """Check how 'partial' a WorldSection is.
 
     Returns:
@@ -605,7 +605,7 @@ def completeness_check(labels32: np.ndarray) -> Dict[str, float]:
 def noise_variance_decomposition(
     noise_3d: np.ndarray,
     level: int,
-) -> Dict[str, Dict[str, float]]:
+) -> dict[str, dict[str, float]]:
     """Variance decomposition for noise channels.
 
     At each level, noise is at quart-cell resolution (4×2×4 per section).
@@ -622,7 +622,7 @@ def noise_variance_decomposition(
     selected = noise_3d[channels]  # [C, Nx, Ny, Nz]
     y_avg = selected.mean(axis=2)  # [C, Nx, Nz]
 
-    results: Dict[str, Dict[str, float]] = {}
+    results: dict[str, dict[str, float]] = {}
 
     for ci, ch_idx in enumerate(channels):
         ch_data = y_avg[ci]  # [Nx, Nz]
@@ -669,8 +669,8 @@ def noise_resolution_sweep(
     noise_3d: np.ndarray,
     labels32: np.ndarray,
     level: int,
-    out_sizes: List[int] = [4, 8, 16, 32],
-) -> Dict[str, Dict[str, float]]:
+    out_sizes: list[int] = [4, 8, 16, 32],
+) -> dict[str, dict[str, float]]:
     """Test noise at different XZ output grid sizes.
 
     For each output size, compute correlation between each noise channel
@@ -687,7 +687,7 @@ def noise_resolution_sweep(
             col = labels32[:, z, x]
             air_frac[x, z] = (col == 0).sum() / len(col)
 
-    results: Dict[str, Dict[str, float]] = {}
+    results: dict[str, dict[str, float]] = {}
     for out_size in out_sizes:
         for strategy in ["mean", "stride"]:
             sub = subsample_noise_xz(noise_3d, level, out_size, strategy)
@@ -723,7 +723,7 @@ def noise_resolution_sweep(
 # ── Main analysis ───────────────────────────────────────────────────
 
 
-def _hm_chunk_range(conn: sqlite3.Connection) -> Tuple[int, int, int, int]:
+def _hm_chunk_range(conn: sqlite3.Connection) -> tuple[int, int, int, int]:
     """Return (x_min, x_max, z_min, z_max) of heightmap chunk coordinates."""
     row = conn.execute(
         "SELECT MIN(chunk_x), MAX(chunk_x), MIN(chunk_z), MAX(chunk_z) FROM heightmaps"
@@ -736,8 +736,8 @@ def find_samples(
     level: int,
     max_samples: int = 200,
     *,
-    surface_y_range: Tuple[int, int] = (40, 200),
-) -> List[Tuple[int, int, int]]:
+    surface_y_range: tuple[int, int] = (40, 200),
+) -> list[tuple[int, int, int]]:
     """Find WorldSections that contain the surface and have heightmap data.
 
     Filters for:
@@ -802,12 +802,12 @@ def run_heightmap_analysis(conn: sqlite3.Connection, level: int, max_samples: in
     shift = level + 1
     voxel_size_blocks = 1 << level  # 1 for L0, 2 for L1, 4 for L2, 8 for L3, 16 for L4
 
-    print(f"\n{'='*72}")
+    print(f"\n{'=' * 72}")
     print(f"  HEIGHTMAP RESOLUTION ANALYSIS — Level {level}")
     print(f"  Voxel size: {voxel_size_blocks} blocks")
     print(f"  Vanilla HM cells per voxel: {voxel_size_blocks}×{voxel_size_blocks}")
-    print(f"  Full HM grid: {32*voxel_size_blocks}×{32*voxel_size_blocks} blocks")
-    print(f"{'='*72}")
+    print(f"  Full HM grid: {32 * voxel_size_blocks}×{32 * voxel_size_blocks} blocks")
+    print(f"{'=' * 72}")
 
     samples = find_samples(conn, level, max_samples)
     print(f"  Found {len(samples)} labeled WorldSections")
@@ -816,9 +816,9 @@ def run_heightmap_analysis(conn: sqlite3.Connection, level: int, max_samples: in
 
     # Accumulate results
     all_variance: list[dict] = []
-    all_rmse: Dict[int, List[float]] = {}
-    all_strategy_r2: Dict[str, List[float]] = {}
-    all_multi_r2: Dict[int, List[float]] = {}
+    all_rmse: dict[int, list[float]] = {}
+    all_strategy_r2: dict[str, list[float]] = {}
+    all_multi_r2: dict[int, list[float]] = {}
     all_completeness: list[dict] = []
 
     for i, (ws_x, ws_y, ws_z) in enumerate(samples):
@@ -867,7 +867,7 @@ def run_heightmap_analysis(conn: sqlite3.Connection, level: int, max_samples: in
                 all_multi_r2.setdefault(k, []).append(v)
 
         if (i + 1) % 20 == 0:
-            print(f"  ... processed {i+1}/{len(samples)} samples")
+            print(f"  ... processed {i + 1}/{len(samples)} samples")
 
     # ── Report ─────────────────────────────────────────────────────
     if all_completeness:
@@ -887,9 +887,7 @@ def run_heightmap_analysis(conn: sqlite3.Connection, level: int, max_samples: in
         within_stds = [v["within_std"] for v in all_variance]
         between_stds = [v["between_std"] for v in all_variance]
         print("\n-- PRIMARY: Heightmap variance decomposition --")
-        print(
-            f"  Between-voxel / total ratio: {np.mean(ratios):.4f} " f"(std {np.std(ratios):.4f})"
-        )
+        print(f"  Between-voxel / total ratio: {np.mean(ratios):.4f} (std {np.std(ratios):.4f})")
         print(
             f"  Within-voxel std:  {np.mean(within_stds):.2f} blocks "
             f"(std {np.std(within_stds):.2f})"
@@ -898,8 +896,8 @@ def run_heightmap_analysis(conn: sqlite3.Connection, level: int, max_samples: in
             f"  Between-voxel std: {np.mean(between_stds):.2f} blocks "
             f"(std {np.std(between_stds):.2f})"
         )
-        print(f"  ==> Ratio ~1.0 means ONE sample per voxel suffices.")
-        print(f"  ==> Within-voxel std tells how much info is lost per sample.")
+        print("  ==> Ratio ~1.0 means ONE sample per voxel suffices.")
+        print("  ==> Within-voxel std tells how much info is lost per sample.")
 
     if all_rmse:
         print("\n-- Reconstruction RMSE at different subsampling rates --")
@@ -936,11 +934,11 @@ def run_noise_analysis(conn: sqlite3.Connection, level: int, max_samples: int = 
         )
         return
 
-    print(f"\n{'='*72}")
+    print(f"\n{'=' * 72}")
     print(f"  NOISE RESOLUTION ANALYSIS -- Level {level}")
     print(f"  Quart-cells per voxel XZ: {quarts_per_voxel}")
-    print(f"  Full noise grid: {32*quarts_per_voxel}x{32*quarts_per_voxel} quarts XZ")
-    print(f"{'='*72}")
+    print(f"  Full noise grid: {32 * quarts_per_voxel}x{32 * quarts_per_voxel} quarts XZ")
+    print(f"{'=' * 72}")
 
     samples = find_samples(conn, level, max_samples)
     if not samples:
@@ -948,8 +946,8 @@ def run_noise_analysis(conn: sqlite3.Connection, level: int, max_samples: int = 
         return
 
     # Accumulate variance decomposition AND resolution sweep
-    all_var_decomp: Dict[str, list[dict]] = {}
-    all_results: Dict[str, List[Dict[str, Any]]] = {}
+    all_var_decomp: dict[str, list[dict]] = {}
+    all_results: dict[str, list[dict[str, Any]]] = {}
 
     for i, (ws_x, ws_y, ws_z) in enumerate(samples):
         labels = get_voxy_labels(conn, level, ws_x, ws_y, ws_z)
@@ -969,14 +967,15 @@ def run_noise_analysis(conn: sqlite3.Connection, level: int, max_samples: int = 
             all_results.setdefault(key, []).append(val)
 
         if (i + 1) % 20 == 0:
-            print(f"  ... processed {i+1}/{len(samples)} samples")
+            print(f"  ... processed {i + 1}/{len(samples)} samples")
 
     # Report: variance decomposition
     if all_var_decomp:
         print("\n-- PRIMARY: Noise variance decomposition (between / total) --")
         print(f"  {'Channel':<30} {'Ratio':>8} {'Within std':>12} {'Between std':>12}")
         for ch_name in sorted(
-            all_var_decomp.keys(), key=lambda k: -np.mean([v["ratio"] for v in all_var_decomp[k]])
+            all_var_decomp.keys(),
+            key=lambda k: -np.mean([v["ratio"] for v in all_var_decomp[k]]),
         ):
             ratios = [v["ratio"] for v in all_var_decomp[ch_name]]
             w_stds = [np.sqrt(v["within_var"]) for v in all_var_decomp[ch_name]]
@@ -999,7 +998,10 @@ def run_noise_analysis(conn: sqlite3.Connection, level: int, max_samples: int = 
 def main():
     parser = argparse.ArgumentParser(description="Spatial resolution analysis for Voxy LOD")
     parser.add_argument(
-        "--db", type=str, default=None, help="Path to v7_dumps.db (auto-detects if not given)"
+        "--db",
+        type=str,
+        default=None,
+        help="Path to v7_dumps.db (auto-detects if not given)",
     )
     parser.add_argument(
         "--samples", type=int, default=100, help="Max WorldSections to sample per level"

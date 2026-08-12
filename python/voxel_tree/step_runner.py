@@ -46,7 +46,7 @@ def main() -> None:
     repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
     os.chdir(repo_root)
 
-    from voxel_tree.gui.step_definitions import STEP_BY_ID  # noqa: PLC0415
+    from voxel_tree.gui.step_definitions import STEP_BY_ID
 
     step = STEP_BY_ID.get(step_id)
     if step is None:
@@ -58,8 +58,8 @@ def main() -> None:
     # available) print a warning but allow the run to proceed.
     if step.track:
         try:
-            from voxel_tree.contracts import check_track_alignment  # noqa: PLC0415
-            from voxel_tree.gui.step_definitions import TRACK_BY_ID  # noqa: PLC0415
+            from voxel_tree.contracts import check_track_alignment
+            from voxel_tree.gui.step_definitions import TRACK_BY_ID
 
             track = TRACK_BY_ID.get(step.track)
             if track is not None:
@@ -77,7 +77,10 @@ def main() -> None:
         run_fn = cast(Any, step.run_fn)
         result = run_fn(profile)  # type: ignore[func-returns-value]
         if result is not None:
-            print(f"[STEP_RESULT]{json.dumps(_json_safe(result), sort_keys=True)}", flush=True)
+            print(
+                f"[STEP_RESULT]{json.dumps(_json_safe(result), sort_keys=True)}",
+                flush=True,
+            )
     except SystemExit as exc:
         sys.exit(exc.code if exc.code is not None else 0)
     except Exception:

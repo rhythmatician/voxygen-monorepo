@@ -29,7 +29,6 @@ from pathlib import Path
 
 import numpy as np
 
-
 # ── Schema ───────────────────────────────────────────────────────────────
 
 _VOXY_TABLE_SQL = """\
@@ -44,7 +43,9 @@ CREATE TABLE IF NOT EXISTS voxy_sections (
 """
 
 
-def _read_and_compress(args: tuple[int, int, int, int, str, int]) -> tuple[int, int, int, int, bytes]:
+def _read_and_compress(
+    args: tuple[int, int, int, int, str, int],
+) -> tuple[int, int, int, int, bytes]:
     """Read one NPZ file and zlib-compress its labels32 array.
 
     Designed to run in a ThreadPoolExecutor — I/O-bound, releases GIL.
@@ -128,7 +129,7 @@ def import_voxy(
             continue
 
         print(
-            f"  level_{level}: importing {len(files):,} files " f"({num_workers} workers) ...",
+            f"  level_{level}: importing {len(files):,} files ({num_workers} workers) ...",
             flush=True,
         )
 
@@ -152,8 +153,7 @@ def import_voxy(
                         rate = level_count / max(elapsed, 0.01)
                         eta = (len(files) - level_count) / max(rate, 1)
                         print(
-                            f"    {level_count:>9,}/{len(files):,} "
-                            f"({rate:,.0f}/s, ETA {eta:.0f}s)",
+                            f"    {level_count:>9,}/{len(files):,} ({rate:,.0f}/s, ETA {eta:.0f}s)",
                             flush=True,
                         )
                     batch.clear()

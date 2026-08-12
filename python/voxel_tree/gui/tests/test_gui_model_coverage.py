@@ -13,8 +13,6 @@ no cycles) and snapshot the expected DAG for regression detection.
 
 from __future__ import annotations
 
-import pytest
-
 from voxel_tree.gui.step_definitions import (
     MODEL_TRACKS,
     PIPELINE_STEPS,
@@ -36,17 +34,17 @@ class TestModelTrackCoverage:
         # We check for the core models currently in active development.
         required_tracks = {"voxy", "density"}
         found_tracks = set(track_ids)
-        assert required_tracks.issubset(
-            found_tracks
-        ), f"Missing required tracks. Expected {required_tracks}, got {found_tracks}"
+        assert required_tracks.issubset(found_tracks), (
+            f"Missing required tracks. Expected {required_tracks}, got {found_tracks}"
+        )
 
     def test_all_tracks_have_label(self):
         """Each track must have a descriptive label."""
         for track in MODEL_TRACKS:
             assert track.label, f"Track '{track.track_id}' missing label"
-            assert isinstance(
-                track.label, str
-            ), f"Track '{track.track_id}' label must be string, got {type(track.label)}"
+            assert isinstance(track.label, str), (
+                f"Track '{track.track_id}' label must be string, got {type(track.label)}"
+            )
 
     def test_all_tracks_have_swim_lane_color(self):
         """Each track must have a swim_lane_color for GUI rendering."""
@@ -73,15 +71,13 @@ class TestModelTrackCoverage:
             step_ids = [s.id for s in steps]
             for step_id in step_ids:
                 assert step_id in STEP_BY_ID, (
-                    f"Step '{step_id}' from track '{track.track_id}' " "not found in STEP_BY_ID"
+                    f"Step '{step_id}' from track '{track.track_id}' not found in STEP_BY_ID"
                 )
 
     def test_all_steps_have_callable_factories(self):
         """Every step must have a callable run_fn."""
         for step in PIPELINE_STEPS:
-            assert callable(step.run_fn), (
-                f"Step '{step.id}' run_fn is not callable: " f"{step.run_fn}"
-            )
+            assert callable(step.run_fn), f"Step '{step.id}' run_fn is not callable: {step.run_fn}"
 
     def test_no_orphaned_steps(self):
         """Ensure all steps in PIPELINE_STEPS correspond to registered tracks."""
@@ -99,7 +95,7 @@ class TestModelTrackCoverage:
         for step in PIPELINE_STEPS:
             for prereq in step.prereqs:
                 assert prereq in step_ids, (
-                    f"Step '{step.id}' prereq '{prereq}' not found in " f"PIPELINE_STEPS"
+                    f"Step '{step.id}' prereq '{prereq}' not found in PIPELINE_STEPS"
                 )
 
 
@@ -132,9 +128,7 @@ class TestArtifactGraph:
         for step in PIPELINE_STEPS:
             missing = step.consumes - all_produced
             if missing:
-                failures.append(
-                    f"Step '{step.id}' consumes {missing} " f"but no step produces them"
-                )
+                failures.append(f"Step '{step.id}' consumes {missing} but no step produces them")
         assert not failures, "Broken artifact edges:\n" + "\n".join(failures)
 
     def test_auto_wired_prereqs_match_expected(self):

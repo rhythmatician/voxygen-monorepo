@@ -21,8 +21,12 @@ import warnings
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
-from voxel_tree.contracts.spec import ContractViolation, ModelContract, TensorSpec, compare_specs
-
+from voxel_tree.contracts.spec import (
+    ContractViolation,
+    ModelContract,
+    TensorSpec,
+    compare_specs,
+)
 
 # ---------------------------------------------------------------------------
 # Protocol for anything that carries contract binding info (e.g. ModelTrack)
@@ -143,8 +147,7 @@ def validate_checkpoint_contract(
     if meta is None:
         if strict:
             raise ContractViolation(
-                f"Checkpoint has no contract_meta — cannot verify against "
-                f"{expected.contract_id}"
+                f"Checkpoint has no contract_meta — cannot verify against {expected.contract_id}"
             )
         warnings.warn(
             f"Checkpoint has no contract_meta — skipping contract validation "
@@ -204,7 +207,7 @@ def _load_output_spec(dotted_fn: str) -> tuple[TensorSpec, ...] | None:
         mod = importlib.import_module(module_path)
     except Exception:
         return None
-    spec = getattr(mod, "OUTPUT_SPEC", None)
+    spec = mod.OUTPUT_SPEC if hasattr(mod, "OUTPUT_SPEC") else None
     if spec is not None and isinstance(spec, tuple):
         return spec
     return None
@@ -323,9 +326,7 @@ def check_track_alignment(
                 f"Changelog: {new_contract.changelog or '(none)'}"
             )
             if upgrade_mismatches:
-                msg += (
-                    f"\n  ⚠ build_pairs would be INCOMPATIBLE with rev {latest}:"
-                )
+                msg += f"\n  ⚠ build_pairs would be INCOMPATIBLE with rev {latest}:"
                 for m in upgrade_mismatches:
                     msg += f"\n    • {m}"
 
@@ -374,4 +375,3 @@ def _ensure_catalog_loaded() -> None:
 
 # Eagerly load on module import so CONTRACTS is always populated.
 _ensure_catalog_loaded()
-

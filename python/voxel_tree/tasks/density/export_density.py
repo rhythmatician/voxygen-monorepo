@@ -25,17 +25,21 @@ from pathlib import Path
 import torch
 
 try:
-    from voxel_tree.utils.router_field import RouterField, CLIMATE_FIELDS, DENSITY_FIELDS
+    from voxel_tree.utils.router_field import (
+        CLIMATE_FIELDS,
+        DENSITY_FIELDS,
+        RouterField,
+    )
 except ImportError:
     CLIMATE_FIELDS = frozenset(range(6))
     DENSITY_FIELDS = frozenset({6, 7})
 
 from voxel_tree.tasks.density.train_density import (
-    DensityMLP,
+    CLIMATE_INDICES,
     INPUT_SIZE,
     OUTPUT_SIZE,
-    CLIMATE_INDICES,
     TARGET_INDICES,
+    DensityMLP,
 )
 
 # ---------------------------------------------------------------------------
@@ -108,7 +112,14 @@ def export(checkpoint_path: Path, out_dir: Path) -> None:
             input_names = [RouterField.by_index(i).lower_name for i in CLIMATE_INDICES]
             output_names = [RouterField.by_index(i).lower_name for i in TARGET_INDICES]
         except Exception:
-            input_names = ["temperature", "vegetation", "continents", "erosion", "depth", "ridges"]
+            input_names = [
+                "temperature",
+                "vegetation",
+                "continents",
+                "erosion",
+                "depth",
+                "ridges",
+            ]
             output_names = ["preliminary_surface_level", "final_density"]
         sidecar = {
             "contract": MODEL_CONTRACT,

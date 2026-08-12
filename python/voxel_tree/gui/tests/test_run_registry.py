@@ -10,8 +10,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-
-import pytest  # noqa: E402
+import pytest
 
 from voxel_tree.gui import run_registry
 
@@ -271,7 +270,9 @@ def test_server_session_queues_stale(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert server_step in pending
 
 
-def test_mark_started_preserves_epoch_target(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_mark_started_preserves_epoch_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.chdir(tmp_path)
     reg = RunRegistry("keep_target")
     step_id = "train_voxy_l0"
@@ -283,7 +284,9 @@ def test_mark_started_preserves_epoch_target(tmp_path: Path, monkeypatch: pytest
     assert reg.get_metadata(step_id, "epochs_target") == 3
 
 
-def test_reset_step_keeps_epoch_target_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_reset_step_keeps_epoch_target_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.chdir(tmp_path)
     reg = RunRegistry("keep_target_reset")
     step_id = "train_voxy_l1"

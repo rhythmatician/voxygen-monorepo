@@ -165,7 +165,7 @@ def biome_to_surface_type_table(vocab_size: int = 256) -> torch.LongTensor:
 
 
 __all__ = [
-    "SurfaceType",
     "NUM_SURFACE_TYPES",
+    "SurfaceType",
     "biome_to_surface_type_table",
 ]
