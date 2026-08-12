@@ -31,3 +31,4 @@ python/artifacts/
 # Generic
 *.log
 *.tmp
+tmp/

@@ -2,8 +2,6 @@ package net.lodiffusion.mixin.voxy;
 
 import com.rhythmatician.lodiffusion.voxy.VoxyProcessingAPI;
 import com.rhythmatician.lodiffusion.voxy.VoxelizedSectionSnapshot;
-import me.cortex.voxy.common.world.WorldEngine;
-import me.cortex.voxy.common.voxelization.VoxelizedSection;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
@@ -50,7 +48,7 @@ public class VoxelizedSectionCaptureMixin {
         at = @At("HEAD"),
         cancellable = false
     )
-    private static void captureSection(WorldEngine worldEngine, VoxelizedSection section, CallbackInfo ci) {
+    private static void captureSection(Object worldEngine, Object section, CallbackInfo ci) {
         try {
             // Only capture if there are active listeners
             if (VoxyProcessingAPI.getListenerCount() == 0) {
@@ -83,7 +81,7 @@ public class VoxelizedSectionCaptureMixin {
      * @param worldEngine The WorldEngine object (for world ID mapping)
      * @return A VoxelizedSectionSnapshot, or null if extraction fails
      */
-    private static VoxelizedSectionSnapshot extractSnapshot(VoxelizedSection section, WorldEngine worldEngine) {
+    private static VoxelizedSectionSnapshot extractSnapshot(Object section, Object worldEngine) {
         try {
             // Get VoxelizedSection fields: x, y, z, section (long[])
             int cx = (int) getField(section, "x");
@@ -112,7 +110,7 @@ public class VoxelizedSectionCaptureMixin {
      * @param worldEngine The WorldEngine object
      * @return A world identifier string (e.g., "minecraft:overworld" or "unknown")
      */
-    private static String deriveWorldId(WorldEngine worldEngine) {
+    private static String deriveWorldId(Object worldEngine) {
         try {
             // Try to get the worldId field if it exists in WorldEngine
             Object worldIdObj = getField(worldEngine, "worldId");

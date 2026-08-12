@@ -1,6 +1,7 @@
 package com.rhythmatician.lodiffusion.world;
 
 import fixtures.TestWorldFixtures;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.io.TempDir;
@@ -37,7 +38,8 @@ public class ChunkDataExtractorTest {
         // Create mock region file
         Files.createFile(testRegionPath.resolve("r.0.0.mca"));
 
-        // Test with real test-data from VoxelTree training data
+        // Test with real test-data from VoxelTree training data -- skip if fixture not present (fixture is external, gitignored)
+        Assumptions.assumeTrue(TestWorldFixtures.isTestDataAvailable(), "Test data not available at " + TestWorldFixtures.TEST_DATA_PATH.toAbsolutePath() + " -- skipping (requires external test_world fixture)");
         assertTrue(TestWorldFixtures.isTestDataAvailable(),
             "Test data should be available at " + TestWorldFixtures.TEST_DATA_PATH.toAbsolutePath());
     }

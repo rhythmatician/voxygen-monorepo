@@ -27,12 +27,23 @@ public class TestWorldFixtures {
      * Falls back to local test-data/ if VoxelTree is not available.
      */
     private static Path resolveTestDataPath() {
-        // Primary: VoxelTree training data in the parent workspace
+        // Primary: VoxelTree training data in the parent workspace (legacy standalone repo)
         Path voxelTreeData = Paths.get("..", "VoxelTree", "data", "test_world");
         if (voxelTreeData.toFile().exists()) {
             return voxelTreeData;
         }
-        // Fallback: local test-data directory
+        // Monorepo: python/data/test_world (when running from java/ in monorepo)
+        Path monorepoData = Paths.get("..", "python", "data", "test_world");
+        if (monorepoData.toFile().exists()) {
+            File regionDir = monorepoData.resolve("region").toFile();
+            if (regionDir.exists() && regionDir.isDirectory()) {
+                File[] mcas = regionDir.listFiles((dir, name) -> name.endsWith(".mca"));
+                if (mcas != null && mcas.length > 0) {
+                    return monorepoData;
+                }
+            }
+        }
+        // Fallback: local test-data directory (synthetic fixtures: java/test-data)
         return Paths.get("test-data");
     }
 
