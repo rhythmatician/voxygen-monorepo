@@ -36,4 +36,18 @@ public interface VoxelVolumeWriter {
      * @throws VolumeUnavailableException if backend is not available
      */
     WriteOutcome writeRegion(SectionPos origin, Level level, VoxelVolume volume);
-}
+    /**
+     * Returns save-queue depth for backpressure, or 0 if unavailable.
+     * Default returns 0 (no backpressure signal).
+     */
+    default int saveQueueDepth() {
+        return 0;
+    }
+
+    /**
+     * True if region already fully populated (0xFF nonEmptyChildren).
+     * Origin is the L0 SectionPos aligned to level. Default returns false.
+     */
+    default boolean isRegionFullyPopulated(SectionPos origin, Level level) {
+        return false;
+    }}
