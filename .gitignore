@@ -1,3 +1,33 @@
 # .gitignore
 
 graphify-out/
+
+# --- Java Gradle build (java/) ---
+java/.gradle/
+java/build/
+# keep wrapper jar
+!java/gradle/wrapper/gradle-wrapper.jar
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+# Minecraft run outputs (java/run)
+java/run/mods/
+java/run/logs/
+java/run/crash-reports/
+java/run/screenshots/
+java/run/saves/
+java/run/resourcepacks/
+java/run/shaderpacks/
+
+# Python artifacts (python/)
+python/__pycache__/
+python/.pytest_cache/
+python/.mypy_cache/
+python/*.egg-info/
+python/.venv/
+python/runs/
+python/artifacts/
+
+# Generic
+*.log
+*.tmp
