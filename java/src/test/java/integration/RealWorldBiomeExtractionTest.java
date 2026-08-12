@@ -1,48 +1,36 @@
 package integration;
 
 import com.rhythmatician.lodiffusion.world.ChunkDataExtractor;
-import org.junit.jupiter.api.Assumptions;
+import fixtures.SyntheticChunkFixtures;
+import org.jglrxavpok.hephaistos.nbt.NBTCompound;
 import org.junit.jupiter.api.Test;
-
-import java.io.File;
-import java.io.IOException;
-
 import static org.junit.jupiter.api.Assertions.*;
 
-import fixtures.TestWorldFixtures;
-
+/**
+ * Behaviour tests for biome extraction via the pure-NBT seam.
+ * No committed .mca needed — uses in-memory Fake compounds (tmp/on_mocking.md: Fake).
+ */
 public class RealWorldBiomeExtractionTest {
 
     @Test
-    public void testRegionFileAccess() throws IOException {
-        File regionFilePath = TestWorldFixtures.getTestRegionFile("r.-1.0.mca");
-        Assumptions.assumeTrue(regionFilePath.exists(), "Region file not available at " + regionFilePath.getAbsolutePath() + " -- skipping integration test (requires external test_world fixture)");
-        assertTrue(regionFilePath.exists(), "Region file should exist at " + regionFilePath.getAbsolutePath());
-        assertTrue(regionFilePath.canRead(), "Region file should be readable");
-        assertTrue(regionFilePath.length() > 0, "Region file should not be empty");
-        
-        // Test if we can parse region coordinates
-        int[] coords = ChunkDataExtractor.parseRegionCoordinates(regionFilePath);
-        assertNotNull(coords, "Should be able to parse region coordinates");
-        assertEquals(-1, coords[0], "Region X should be -1");
-        assertEquals(0, coords[1], "Region Z should be 0");
+    public void testParseRegionCoordinates() {
+        // Behaviour assertion, not file existence — parse is pure.
+        java.io.File f = new java.io.File("r.-1.0.mca");
+        int[] coords = ChunkDataExtractor.parseRegionCoordinates(f);
+        assertNotNull(coords);
+        assertEquals(-1, coords[0]);
+        assertEquals(0, coords[1]);
     }
 
     @Test
-    public void testExtractBiomesFromRealChunk() throws IOException {
-        File regionFilePath = TestWorldFixtures.getTestRegionFile("r.-1.0.mca");
-        Assumptions.assumeTrue(regionFilePath.exists(), "Region file not available at " + regionFilePath.getAbsolutePath() + " -- skipping integration test (requires external test_world fixture)");
-        assertTrue(regionFilePath.exists(), "Region file should exist at " + regionFilePath.getAbsolutePath());
-
-        // Find a valid chunk in the region instead of hardcoding coordinates
-        int[] validChunk = ChunkDataExtractor.findValidChunk(regionFilePath);
-        assertNotNull(validChunk, "Should find at least one valid chunk in the region");
-
-        String[] biomes = ChunkDataExtractor.extractBiomesFromChunk(regionFilePath, validChunk[0], validChunk[1]);
-
-        assertNotNull(biomes, "Biome array should not be null");
+    public void testExtractBiomesFromFakeChunk() {
+        int[][] hm = new int[16][16];
+        for (int x = 0; x < 16; x++) for (int z = 0; z < 16; z++) hm[x][z] = 64;
+        NBTCompound chunk = SyntheticChunkFixtures.chunkWithBiomes(hm);
+        String[] biomes = ChunkDataExtractor.extractBiomesFromChunkTag(chunk);
+        assertNotNull(biomes, "Fake chunk should yield biome array");
         assertTrue(biomes.length == 256 || biomes.length == 1024,
-            "Expected 256 or 1024 biome entries, got " + biomes.length);
-        assertTrue(biomes[0].startsWith("minecraft:"), "Expected Minecraft biome namespace");
+                "Expected 256 or 1024 entries, got " + biomes.length);
+        assertTrue(biomes[0].startsWith("minecraft:"), "Expected minecraft: namespace");
     }
 }
