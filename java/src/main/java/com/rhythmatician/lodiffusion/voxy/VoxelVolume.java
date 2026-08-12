@@ -62,6 +62,27 @@ public final class VoxelVolume {
         return new VoxelVolume(extent, blocks.clone(), biomes.clone());
     }
 
+    /** Returns true if every blockId is air (0). Centralized to deduplicate writer loops. */
+    public boolean isAllAir() {
+        for (int v : blocks) {
+            if (v != 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** Counts non-air blockIds (blockId != 0). Centralized to deduplicate writer loops. */
+    public int countNonAir() {
+        int c = 0;
+        for (int v : blocks) {
+            if (v != 0) {
+                c++;
+            }
+        }
+        return c;
+    }
+
     // ------------------------------------------------------------------
     // Builder -- mutable only before build()
     // ------------------------------------------------------------------

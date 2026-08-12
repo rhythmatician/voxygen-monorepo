@@ -25,6 +25,10 @@ import org.slf4j.LoggerFactory;
  * <p>{@link VoxyDetection} handles the classpath availability check.
  * {@link VoxyWorldBinding} handles direct {@code WorldSection} field writes and voxel encoding.
  */
+/**
+ * Internal reflection layer behind the {@link VoxelVolumeWriter} seam.
+ * Retained for {@link RealVoxyVolumeWriter} delegation; not part of the public seam.
+ */
 public final class VoxyEngine {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(VoxyEngine.class);
@@ -330,6 +334,30 @@ public final class VoxyEngine {
      * @param worldEngine the Voxy WorldEngine instance
      * @return number of pending save tasks, or {@code -1} if unavailable
      */
+    /**
+     * Acquire a WorldSection if it exists, or null otherwise.
+     * Wraps {@code WorldEngine.acquireIfExists(lvl,x,y,z)} reflection.
+     */
+    public static Object acquireIfExists(Object worldEngine, int lvl, int wsX, int wsY, int wsZ) throws Exception {
+        ensureEngineBindings();
+        return acquireIfExistsMethod.invoke(worldEngine, lvl, wsX, wsY, wsZ);
+    }
+
+    /**
+     * Release a WorldSection acquired via {@link #acquireIfExists}.
+     */
+    public static void releaseSection(Object section) throws Exception {
+        worldSectionReleaseMethod.invoke(section);
+    }
+
+    /**
+     * True if section''s {@code nonEmptyChildren == 0xFF} (all 8 octants populated).
+     */
+    public static boolean isNonEmptyChildrenFull(Object section) throws Exception {
+        java.lang.reflect.Field f = section.getClass().getDeclaredField("nonEmptyChildren");
+        f.setAccessible(true);
+        return f.getByte(section) == (byte) 0xFF;
+    }
     public static int getSaveQueueDepth(Object worldEngine) {
         try {
             ensureSaveQueueBindings();

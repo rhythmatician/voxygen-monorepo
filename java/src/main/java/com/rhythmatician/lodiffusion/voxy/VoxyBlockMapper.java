@@ -76,29 +76,6 @@ public class VoxyBlockMapper {
             LOGGER.info("[VoxyBlockMapper] {} / {} model indices mapped to Voxy IDs " +
                     "({} mapped to 0=air)", resolved, vocab.size(), zeroMapped);
 
-            int stoneId = 0;
-            for (int i = 0; i < vocab.size(); i++) {
-                if ("minecraft:stone".equals(vocab.getName(i))) {
-                    stoneId = mapping[i];
-                    break;
-                }
-            }
-
-            if (stoneId != 0) {
-                int remappedDoors = 0;
-                for (int i = 0; i < vocab.size(); i++) {
-                    String name = vocab.getName(i);
-                    if (name != null && name.contains("_door")) {
-                        mapping[i] = stoneId;
-                        remappedDoors++;
-                    }
-                }
-                if (remappedDoors > 0) {
-                    LOGGER.warn("[VoxyBlockMapper] Remapped {} door states to stone (voxyId={}) "
-                            + "for terrain stability", remappedDoors, stoneId);
-                }
-            }
-
             // Check a few key blocks
             for (int i = 0; i < Math.min(vocab.size(), 10); i++) {
                 LOGGER.info("[VoxyBlockMapper] Summary idx={}: '{}' → voxyId={}",
@@ -132,8 +109,7 @@ public class VoxyBlockMapper {
      * @param biomeRegistry  the game's biome registry ({@code world.getRegistryManager()
      *                       .getOrThrow(RegistryKeys.BIOME)})
      */
-    private static int[] resolveBiomeMappings(Object voxyMapper,
-                                               Registry<Biome> biomeRegistry) {
+    public static int[] resolveBiomeMappings(Object voxyMapper, Registry<Biome> biomeRegistry) {
         int[] map = new int[BiomeMapping.size()];
         try {
             // Find Mapper.getIdForBiome(RegistryEntry) via reflection.

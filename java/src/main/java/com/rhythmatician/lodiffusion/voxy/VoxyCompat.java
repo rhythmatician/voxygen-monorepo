@@ -19,6 +19,10 @@ package com.rhythmatician.lodiffusion.voxy;
  * <p>This facade exists solely so that all existing callers ({@code VoxySectionWriter},
  * {@code LodGenerationService}, etc.) continue to compile and run without modification.
  */
+/**
+ * Internal reflection facade behind the {@link VoxelVolumeWriter} seam.
+ * Retained for {@link RealVoxyVolumeWriter} delegation; not part of the public seam.
+ */
 public final class VoxyCompat {
 
     private VoxyCompat() {}
@@ -138,42 +142,10 @@ public final class VoxyCompat {
         return VoxyWorldBinding.writeFullWorldSection(worldEngine, lvl, wsX, wsY, wsZ, voxels);
     }
 
-    /** @see VoxyWorldBinding#writeFullWorldSection(Object, int, int, int, int, long[], byte) */
-    public static int writeFullWorldSection(Object worldEngine, int lvl,
-                                             int wsX, int wsY, int wsZ,
-                                             long[] voxels,
-                                             byte preserveOctantsMask) {
-        return VoxyWorldBinding.writeFullWorldSection(
-                worldEngine, lvl, wsX, wsY, wsZ, voxels, preserveOctantsMask);
-    }
-
     /** @see VoxyWorldBinding#sectionExistsAtLevel(Object, int, int, int, int) */
     public static boolean sectionExistsAtLevel(Object worldEngine, int lvl,
                                                 int wsX, int wsY, int wsZ) {
         return VoxyWorldBinding.sectionExistsAtLevel(worldEngine, lvl, wsX, wsY, wsZ);
-    }
-
-    /** @see VoxyWorldBinding#readWorldSectionBlocks(Object, int, int, int, int) */
-    public static int[][][] readWorldSectionBlocks(Object worldEngine, int lvl,
-                                                   int wsX, int wsY, int wsZ) {
-        return VoxyWorldBinding.readWorldSectionBlocks(worldEngine, lvl, wsX, wsY, wsZ);
-    }
-
-    /** @see VoxyWorldBinding#extractOctantAndUpsample(int[][][], int) */
-    public static long[] extractOctantAndUpsample(int[][][] parent32, int octant) {
-        return VoxyWorldBinding.extractOctantAndUpsample(parent32, octant);
-    }
-
-    /** @see VoxyWorldBinding#getChildExistenceMask(Object, int, int, int, int) */
-    public static byte getChildExistenceMask(Object worldEngine, int lvl,
-                                              int wsX, int wsY, int wsZ) {
-        return VoxyWorldBinding.getChildExistenceMask(worldEngine, lvl, wsX, wsY, wsZ);
-    }
-
-    /** @see VoxyWorldBinding#getOccupiedOctantMask(Object, int, int, int, int) */
-    public static byte getOccupiedOctantMask(Object worldEngine, int lvl,
-                                             int wsX, int wsY, int wsZ) {
-        return VoxyWorldBinding.getOccupiedOctantMask(worldEngine, lvl, wsX, wsY, wsZ);
     }
 
     /**

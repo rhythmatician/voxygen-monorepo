@@ -25,22 +25,12 @@ public enum Level {
         return value;
     }
 
-    /** Voxel size in blocks at this level (1 << value). */
-    public int voxelSize() {
-        return 1 << value;
-    }
-
     /**
      * Region size in L0 sections (16-block units) for a 32^3 volume at this level.
-     * Equals (32 * voxelSize) / 16 = 2 << value = 1 << (value + 1).
+     * Equals 1 << (value + 1).
      */
     public int regionSections() {
         return 1 << (value + 1);
-    }
-
-    /** Region size in blocks for a 32^3 volume at this level (32 << value). */
-    public int regionBlocks() {
-        return 32 << value;
     }
 
     /** True if origin is aligned to the region grid at this level. */
