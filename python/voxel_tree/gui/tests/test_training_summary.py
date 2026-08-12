@@ -136,9 +136,9 @@ def test_build_pairs_summary_with_failures_shows_breakdown() -> None:
 
     assert summary is not None
     assert "Failures" in summary["text"]
-    assert "40" in summary["text"]       # total_skipped
-    assert "25" in summary["text"]       # skipped_no_voxy
-    assert "15" in summary["text"]       # skipped_no_dump
+    assert "40" in summary["text"]  # total_skipped
+    assert "25" in summary["text"]  # skipped_no_voxy
+    assert "15" in summary["text"]  # skipped_no_dump
     assert "Missing Voxy section" in summary["text"]
     assert "Missing dump file" in summary["text"]
 

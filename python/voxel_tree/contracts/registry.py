@@ -23,7 +23,6 @@ from typing import Any, Protocol, runtime_checkable
 
 from voxel_tree.contracts.spec import ContractViolation, ModelContract, TensorSpec, compare_specs
 
-
 # ---------------------------------------------------------------------------
 # Protocol for anything that carries contract binding info (e.g. ModelTrack)
 # ---------------------------------------------------------------------------
@@ -323,9 +322,7 @@ def check_track_alignment(
                 f"Changelog: {new_contract.changelog or '(none)'}"
             )
             if upgrade_mismatches:
-                msg += (
-                    f"\n  ⚠ build_pairs would be INCOMPATIBLE with rev {latest}:"
-                )
+                msg += f"\n  ⚠ build_pairs would be INCOMPATIBLE with rev {latest}:"
                 for m in upgrade_mismatches:
                     msg += f"\n    • {m}"
 
@@ -374,4 +371,3 @@ def _ensure_catalog_loaded() -> None:
 
 # Eagerly load on module import so CONTRACTS is always populated.
 _ensure_catalog_loaded()
-

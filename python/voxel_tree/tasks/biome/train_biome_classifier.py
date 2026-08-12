@@ -61,7 +61,7 @@ except ImportError:
 # Architecture
 # ---------------------------------------------------------------------------
 
-INPUT_SIZE = 6        # 6 climate RouterField channels
+INPUT_SIZE = 6  # 6 climate RouterField channels
 HIDDEN_SIZE = 64
 NUM_BIOMES = len(OVERWORLD_BIOMES)  # 54
 
@@ -117,16 +117,14 @@ def load_data(npz_path: Path) -> tuple[torch.Tensor, torch.Tensor]:
     """
     print(f"  Loading {npz_path} ...")
     with np.load(npz_path) as data:
-        noise_3d = data["noise_3d"]      # (N, C, qx, qy, qz) float32
-        biome_ids = data["biome_ids"]    # (N, qx, qy, qz) int32
+        noise_3d = data["noise_3d"]  # (N, C, qx, qy, qz) float32
+        biome_ids = data["biome_ids"]  # (N, qx, qy, qz) int32
 
     n = noise_3d.shape[0]
     n_ch = noise_3d.shape[1]
     # Need at least 6 channels for input (indices 0-5).
     # v7 dumps have 13 cave-density channels; legacy had 15 RouterField channels.
-    assert n_ch >= 6, (
-        f"Need >= 6 noise channels for climate input, got {n_ch}"
-    )
+    assert n_ch >= 6, f"Need >= 6 noise channels for climate input, got {n_ch}"
 
     # Extract climate channels → (N, 6, qx, qy, qz) → (N*S, 6)
     clim = noise_3d[:, CLIMATE_INDICES, :, :, :]
@@ -143,8 +141,10 @@ def load_data(npz_path: Path) -> tuple[torch.Tensor, torch.Tensor]:
     n_total = n * 64
     n_valid = len(biome_flat)
     n_dropped = n_total - n_valid
-    print(f"  Extracted {n_valid:,} valid samples ({n_dropped:,} dropped as unknown) "
-          f"from {n:,} sections")
+    print(
+        f"  Extracted {n_valid:,} valid samples ({n_dropped:,} dropped as unknown) "
+        f"from {n:,} sections"
+    )
 
     return torch.from_numpy(clim_flat), torch.from_numpy(biome_flat)
 
@@ -179,16 +179,27 @@ def train(
 
     train_ds = TensorDataset(inputs[train_idx], targets[train_idx])
     val_ds = TensorDataset(inputs[val_idx], targets[val_idx])
-    train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=True,
-                          pin_memory=(dev.type == "cuda"), num_workers=0)
-    val_dl = DataLoader(val_ds, batch_size=batch_size * 2, shuffle=False,
-                        pin_memory=(dev.type == "cuda"), num_workers=0)
+    train_dl = DataLoader(
+        train_ds,
+        batch_size=batch_size,
+        shuffle=True,
+        pin_memory=(dev.type == "cuda"),
+        num_workers=0,
+    )
+    val_dl = DataLoader(
+        val_ds,
+        batch_size=batch_size * 2,
+        shuffle=False,
+        pin_memory=(dev.type == "cuda"),
+        num_workers=0,
+    )
 
     model = BiomeClassifier().to(dev)
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=lr)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="min", factor=0.5, patience=10, min_lr=1e-6)
+        optimizer, mode="min", factor=0.5, patience=10, min_lr=1e-6
+    )
 
     best_val = float("inf")
     best_acc = 0.0
@@ -241,37 +252,46 @@ def train(
             best_val = avg_val
             best_acc = val_acc
             best_epoch = epoch
-            torch.save({
-                "epoch": epoch,
-                "model_state_dict": model.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
-                "val_loss": avg_val,
-                "val_accuracy": val_acc,
-                "num_classes": NUM_BIOMES,
-                "input_size": INPUT_SIZE,
-                "hidden_size": HIDDEN_SIZE,
-                "climate_indices": CLIMATE_INDICES,
-            }, ckpt_path)
+            torch.save(
+                {
+                    "epoch": epoch,
+                    "model_state_dict": model.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "val_loss": avg_val,
+                    "val_accuracy": val_acc,
+                    "num_classes": NUM_BIOMES,
+                    "input_size": INPUT_SIZE,
+                    "hidden_size": HIDDEN_SIZE,
+                    "climate_indices": CLIMATE_INDICES,
+                },
+                ckpt_path,
+            )
 
         _report_progress(epoch, epochs)
         if epoch % 10 == 0 or epoch == 1:
             elapsed = time.time() - t0
             cur_lr = optimizer.param_groups[0]["lr"]
-            print(f"  Epoch {epoch:4d}/{epochs}  "
-                  f"train_ce={avg_train:.4f}  val_ce={avg_val:.4f}  "
-                  f"val_acc={val_acc:.3f}  best={best_val:.4f}@{best_epoch}  "
-                  f"lr={cur_lr:.1e}  [{elapsed:.0f}s]")
+            print(
+                f"  Epoch {epoch:4d}/{epochs}  "
+                f"train_ce={avg_train:.4f}  val_ce={avg_val:.4f}  "
+                f"val_acc={val_acc:.3f}  best={best_val:.4f}@{best_epoch}  "
+                f"lr={cur_lr:.1e}  [{elapsed:.0f}s]"
+            )
 
     elapsed = time.time() - t0
-    print(f"\n  Training complete in {elapsed:.1f}s — "
-          f"best val_ce={best_val:.4f} acc={best_acc:.3f} @ epoch {best_epoch}")
+    print(
+        f"\n  Training complete in {elapsed:.1f}s — "
+        f"best val_ce={best_val:.4f} acc={best_acc:.3f} @ epoch {best_epoch}"
+    )
 
     # --- export ONNX ---
     model.load_state_dict(torch.load(ckpt_path, weights_only=True)["model_state_dict"])
     model.eval().cpu()
     dummy = torch.randn(1, INPUT_SIZE)
     torch.onnx.export(
-        model, dummy, str(onnx_path),
+        model,
+        dummy,
+        str(onnx_path),
         input_names=["climate_input"],
         output_names=["biome_logits"],
         dynamic_axes={"climate_input": {0: "batch"}, "biome_logits": {0: "batch"}},
@@ -292,9 +312,12 @@ def main(argv: list[str] | None = None) -> None:
         description="Train BiomeClassifier: 6 climate → 54-class MLP",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--data", type=Path,
-                        default=Path("noise_training_data/voxy_pairs_v7.npz"),
-                        help="v7 training data NPZ file")
+    parser.add_argument(
+        "--data",
+        type=Path,
+        default=Path("noise_training_data/voxy_pairs_v7.npz"),
+        help="v7 training data NPZ file",
+    )
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--batch-size", type=int, default=4096)
     parser.add_argument("--lr", type=float, default=1e-3)
@@ -311,9 +334,15 @@ def main(argv: list[str] | None = None) -> None:
     print("=" * 62)
 
     inputs, targets = load_data(args.data)
-    train(inputs, targets,
-          epochs=args.epochs, batch_size=args.batch_size,
-          lr=args.lr, out_dir=args.out_dir, device=args.device)
+    train(
+        inputs,
+        targets,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        lr=args.lr,
+        out_dir=args.out_dir,
+        device=args.device,
+    )
 
     print("=" * 62)
     print("  DONE")

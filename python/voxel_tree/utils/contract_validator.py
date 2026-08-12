@@ -71,9 +71,7 @@ def validate_router_contract(contract_path: Optional[pathlib.Path] = None) -> Di
 
     fields: List[Dict[str, Any]] = contract.get("fields", [])
     if len(fields) != COUNT:
-        raise ContractViolation(
-            f"Contract declares {len(fields)} fields, Python has {COUNT}"
-        )
+        raise ContractViolation(f"Contract declares {len(fields)} fields, Python has {COUNT}")
 
     for field_def in fields:
         idx = field_def["index"]

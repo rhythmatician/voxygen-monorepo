@@ -237,7 +237,8 @@ def _cmd_server(action: str, role: str | None) -> None:
             )
             sys.exit(1)
         _JVM_FLAGS = [
-            "-Xmx12g", "-Xms4g",
+            "-Xmx12g",
+            "-Xms4g",
             "-XX:+UseG1GC",
             "-XX:+ParallelRefProcEnabled",
             "-XX:MaxGCPauseMillis=200",

@@ -11,7 +11,13 @@ from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QMenu, QPushButton, QSizePolicy, QWidget
 
 from voxel_tree.gui.run_registry import RunRegistry
-from voxel_tree.gui.step_definitions import PIPELINE_STEPS, STEP_BY_ID, TRACK_BY_ID, TRACK_ORDER, StepDef
+from voxel_tree.gui.step_definitions import (
+    PIPELINE_STEPS,
+    STEP_BY_ID,
+    TRACK_BY_ID,
+    TRACK_ORDER,
+    StepDef,
+)
 from voxel_tree.gui.step_node_widget import StepNodeWidget
 
 _NODE_W = 52

@@ -24,7 +24,6 @@ import sys
 import zlib
 from pathlib import Path
 
-
 # ── Minimal NBT reader (just enough to walk chunk data) ─────────────────
 
 TAG_END = 0

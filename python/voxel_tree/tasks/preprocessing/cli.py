@@ -363,9 +363,7 @@ def cmd_dumpnoise(cfg: PipelineConfig) -> None:
     total_sections = total_chunks * 24  # 24 sections per chunk column
     print("\n  Consolidating training noise dumps:")
     print(f"    TerrainShaper:    {total_chunks:,} chunks @ 4×48×4 resolution")
-    print(
-        f"    RouterField v7:  {total_sections:,} sections @ 4×2×4 + biome_ids + heightmaps"
-    )
+    print(f"    RouterField v7:  {total_sections:,} sections @ 4×2×4 + biome_ids + heightmaps")
 
     timeout = cfg.voxy_import_timeout
     interval = 5
@@ -859,16 +857,14 @@ def build_parser() -> argparse.ArgumentParser:
         prog="data-cli",
         description="LODiffusion freeze + pregen pipeline orchestrator.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=textwrap.dedent(
-            """
+        epilog=textwrap.dedent("""
             Quickstart (development / dry-run):
               python data-cli.py info
               python data-cli.py pregen --radius 512 --dry-run
 
             Quickstart (live server with RCON):
               python data-cli.py pregen --password secret --radius 2048
-        """
-        ),
+        """),
     )
     sub = parser.add_subparsers(dest="subcommand", required=True)
 
@@ -951,8 +947,7 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[shared, pregen_args],
         help="Automated Voxy import: pregen + RCON teleport spiral + DB monitoring",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=textwrap.dedent(
-            """\
+        epilog=textwrap.dedent("""\
             Automates the voxy-import step by:
               1. (Optional) Running Chunky pregeneration
               2. Waiting for a player/bot to connect
@@ -961,8 +956,7 @@ def build_parser() -> argparse.ArgumentParser:
 
             Requires the DataHarvester mod installed on the client, or a
             manually-connected player. See: VoxelTree/tools/data-harvester/
-        """
-        ),
+        """),
     )
     p_hv.add_argument(
         "--step",
@@ -1034,8 +1028,7 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[shared, pregen_args],
         help="Run the full data-preparation pipeline (pregen → build-octree-pairs)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=textwrap.dedent(
-            """\
+        epilog=textwrap.dedent("""\
             Pipeline steps:
               pregen                 RCON — freeze world + Chunky pregeneration
               voxy-import            RCON — /voxy import world <name>
@@ -1057,8 +1050,7 @@ def build_parser() -> argparse.ArgumentParser:
               # Just rebuild octree pairs:
               python data-cli.py dataprep --from-step build-octree-pairs \\
                      --data-dir data/voxy_octree
-            """
-        ),
+            """),
     )
     p_dp.add_argument(
         "--from-step",
@@ -1168,4 +1160,3 @@ def main(argv: list[str] | None = None) -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -186,11 +186,7 @@ class DagEditorDialog(QDialog):
 
     def _build_current_dag(self) -> ProfileDag:
         """Assemble a ProfileDag from the current UI state."""
-        ordered = [
-            DagStepEntry(id=s.id)
-            for s in PIPELINE_STEPS
-            if s.id in self._active
-        ]
+        ordered = [DagStepEntry(id=s.id) for s in PIPELINE_STEPS if s.id in self._active]
         return ProfileDag(entries=ordered)
 
     def _on_accept(self) -> None:

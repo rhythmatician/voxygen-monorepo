@@ -26,7 +26,6 @@ from typing import Any, Sequence
 
 import torch
 
-
 # ---------------------------------------------------------------------------
 # TensorSpec — one named tensor in a contract
 # ---------------------------------------------------------------------------
@@ -327,13 +326,9 @@ def compare_specs(
             missing = sorted(req_set - prod_set)
             extra = sorted(prod_set - req_set)
             if missing:
-                mismatches.append(
-                    f"'{req.name}' missing channels: {missing}"
-                )
+                mismatches.append(f"'{req.name}' missing channels: {missing}")
             if extra:
-                mismatches.append(
-                    f"'{req.name}' has extra channels not in contract: {extra}"
-                )
+                mismatches.append(f"'{req.name}' has extra channels not in contract: {extra}")
             # Check channel ordering if sets match
             if not missing and not extra and prod.channels != req.channels:
                 mismatches.append(
@@ -357,4 +352,3 @@ def compare_specs(
 
 class ContractViolation(Exception):
     """Raised when live tensors don't match the declared contract."""
-

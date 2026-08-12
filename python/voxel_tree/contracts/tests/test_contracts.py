@@ -16,7 +16,6 @@ from voxel_tree.contracts.registry import (
     validate_checkpoint_contract,
 )
 
-
 # ═══════════════════════════════════════════════════════════════════════════
 #  TensorSpec
 # ═══════════════════════════════════════════════════════════════════════════
@@ -410,4 +409,3 @@ class TestTrackAlignment:
         assert errors == [], f"Broken track bindings: {errors}"
         # No stale tracks — all tracks are pinned to current revisions
         assert stale == [], f"Stale tracks (update contract_revision): {stale}"
-

@@ -34,7 +34,9 @@ def _load_checkpoint_info(path: Path) -> dict[str, Any] | None:
 
         # Average block_acc over the last min(5, n) epochs
         recent = history[-5:] if len(history) >= 5 else history
-        avg_acc = sum(r.get("block_acc", 0.0) for r in recent) / len(recent) if recent else float("nan")
+        avg_acc = (
+            sum(r.get("block_acc", 0.0) for r in recent) / len(recent) if recent else float("nan")
+        )
 
         # Average elapsed_seconds → minutes/epoch
         times = [r["elapsed_seconds"] for r in recent if "elapsed_seconds" in r]
@@ -138,8 +140,13 @@ class ContinueTrainingDialog(QDialog):
                 acc_str = "—"
                 time_str = "—"
 
-            cols = [lv_item, QTableWidgetItem(epochs_str), QTableWidgetItem(loss_str),
-                    QTableWidgetItem(acc_str), QTableWidgetItem(time_str)]
+            cols = [
+                lv_item,
+                QTableWidgetItem(epochs_str),
+                QTableWidgetItem(loss_str),
+                QTableWidgetItem(acc_str),
+                QTableWidgetItem(time_str),
+            ]
             for col, item in enumerate(cols):
                 if col > 0:
                     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)

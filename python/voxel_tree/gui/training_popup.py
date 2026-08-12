@@ -66,8 +66,7 @@ class TrainingResultsPopup(QDialog):
 
         summary_label = QLabel(summary_text)
         summary_label.setWordWrap(True)
-        summary_label.setStyleSheet(
-            """
+        summary_label.setStyleSheet("""
             QLabel {
                 font-family: monospace;
                 font-size: 10pt;
@@ -75,8 +74,7 @@ class TrainingResultsPopup(QDialog):
                 background-color: #f5f5f5;
                 border-radius: 4px;
             }
-        """
-        )
+        """)
 
         left_layout.addWidget(summary_label)
         left_layout.addStretch()

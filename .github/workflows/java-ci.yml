@@ -45,12 +45,12 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path "mods" -Force
-          Invoke-WebRequest -Uri "https://gitlab.com/distant-horizons-team/distant-horizons/-/jobs/artifacts/main/download?job=build:%20[1.21.4]" -OutFile "dh-main-artifacts.zip"
-          Expand-Archive -Path "dh-main-artifacts.zip" -DestinationPath "." -Force
+          try { Invoke-WebRequest -Uri "https://gitlab.com/distant-horizons-team/distant-horizons/-/jobs/artifacts/main/download?job=build:%20[1.21.4]" -OutFile "dh-main-artifacts.zip" } catch { Write-Host "DH main download failed - will use dummy jar: $_" }
+          if (Test-Path "dh-main-artifacts.zip") { Expand-Archive -Path "dh-main-artifacts.zip" -DestinationPath "." -Force } else { Write-Host "no main zip to expand" }
           $mainJar = Get-ChildItem -Filter "DistantHorizons-fabric-*.jar" | Select-Object -First 1
           if ($mainJar) { Copy-Item $mainJar.FullName "mods/DistantHorizons-fabric-2.3.5-b-dev-1.21.4.jar" }
-          Invoke-WebRequest -Uri "https://gitlab.com/distant-horizons-team/distant-horizons/-/jobs/artifacts/main/download?job=api" -OutFile "dh-api-artifacts.zip"
-          Expand-Archive -Path "dh-api-artifacts.zip" -DestinationPath "." -Force
+          try { Invoke-WebRequest -Uri "https://gitlab.com/distant-horizons-team/distant-horizons/-/jobs/artifacts/main/download?job=api" -OutFile "dh-api-artifacts.zip" } catch { Write-Host "DH api download failed - will use dummy jar: $_" }
+          if (Test-Path "dh-api-artifacts.zip") { Expand-Archive -Path "dh-api-artifacts.zip" -DestinationPath "." -Force } else { Write-Host "no api zip to expand" }
           $apiJar = Get-ChildItem -Filter "DistantHorizonsApi-*.jar" | Select-Object -First 1
           if ($apiJar) { Copy-Item $apiJar.FullName "mods/DistantHorizonsApi-4.0.0.jar" }
           if (!(Test-Path "mods/DistantHorizons-fabric-2.3.5-b-dev-1.21.4.jar")) { jar cf mods/DistantHorizons-fabric-2.3.5-b-dev-1.21.4.jar -C . README.md }
@@ -93,12 +93,12 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path "mods" -Force
-          Invoke-WebRequest -Uri "https://gitlab.com/distant-horizons-team/distant-horizons/-/jobs/artifacts/main/download?job=build:%20[1.21.4]" -OutFile "dh-main-artifacts.zip"
-          Expand-Archive -Path "dh-main-artifacts.zip" -DestinationPath "." -Force
+          try { Invoke-WebRequest -Uri "https://gitlab.com/distant-horizons-team/distant-horizons/-/jobs/artifacts/main/download?job=build:%20[1.21.4]" -OutFile "dh-main-artifacts.zip" } catch { Write-Host "DH main download failed - will use dummy jar: $_" }
+          if (Test-Path "dh-main-artifacts.zip") { Expand-Archive -Path "dh-main-artifacts.zip" -DestinationPath "." -Force } else { Write-Host "no main zip to expand" }
           $mainJar = Get-ChildItem -Filter "DistantHorizons-fabric-*.jar" | Select-Object -First 1
           if ($mainJar) { Copy-Item $mainJar.FullName "mods/DistantHorizons-fabric-2.3.5-b-dev-1.21.4.jar" }
-          Invoke-WebRequest -Uri "https://gitlab.com/distant-horizons-team/distant-horizons/-/jobs/artifacts/main/download?job=api" -OutFile "dh-api-artifacts.zip"
-          Expand-Archive -Path "dh-api-artifacts.zip" -DestinationPath "." -Force
+          try { Invoke-WebRequest -Uri "https://gitlab.com/distant-horizons-team/distant-horizons/-/jobs/artifacts/main/download?job=api" -OutFile "dh-api-artifacts.zip" } catch { Write-Host "DH api download failed - will use dummy jar: $_" }
+          if (Test-Path "dh-api-artifacts.zip") { Expand-Archive -Path "dh-api-artifacts.zip" -DestinationPath "." -Force } else { Write-Host "no api zip to expand" }
           $apiJar = Get-ChildItem -Filter "DistantHorizonsApi-*.jar" | Select-Object -First 1
           if ($apiJar) { Copy-Item $apiJar.FullName "mods/DistantHorizonsApi-4.0.0.jar" }
           if (!(Test-Path "mods/DistantHorizons-fabric-2.3.5-b-dev-1.21.4.jar")) { jar cf mods/DistantHorizons-fabric-2.3.5-b-dev-1.21.4.jar -C . README.md }
@@ -152,12 +152,12 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path "mods" -Force
-          Invoke-WebRequest -Uri "https://gitlab.com/distant-horizons-team/distant-horizons/-/jobs/artifacts/main/download?job=build:%20[1.21.4]" -OutFile "dh-main-artifacts.zip"
-          Expand-Archive -Path "dh-main-artifacts.zip" -DestinationPath "." -Force
+          try { Invoke-WebRequest -Uri "https://gitlab.com/distant-horizons-team/distant-horizons/-/jobs/artifacts/main/download?job=build:%20[1.21.4]" -OutFile "dh-main-artifacts.zip" } catch { Write-Host "DH main download failed - will use dummy jar: $_" }
+          if (Test-Path "dh-main-artifacts.zip") { Expand-Archive -Path "dh-main-artifacts.zip" -DestinationPath "." -Force } else { Write-Host "no main zip to expand" }
           $mainJar = Get-ChildItem -Filter "DistantHorizons-fabric-*.jar" | Select-Object -First 1
           if ($mainJar) { Copy-Item $mainJar.FullName "mods/DistantHorizons-fabric-2.3.5-b-dev-1.21.4.jar" }
-          Invoke-WebRequest -Uri "https://gitlab.com/distant-horizons-team/distant-horizons/-/jobs/artifacts/main/download?job=api" -OutFile "dh-api-artifacts.zip"
-          Expand-Archive -Path "dh-api-artifacts.zip" -DestinationPath "." -Force
+          try { Invoke-WebRequest -Uri "https://gitlab.com/distant-horizons-team/distant-horizons/-/jobs/artifacts/main/download?job=api" -OutFile "dh-api-artifacts.zip" } catch { Write-Host "DH api download failed - will use dummy jar: $_" }
+          if (Test-Path "dh-api-artifacts.zip") { Expand-Archive -Path "dh-api-artifacts.zip" -DestinationPath "." -Force } else { Write-Host "no api zip to expand" }
           $apiJar = Get-ChildItem -Filter "DistantHorizonsApi-*.jar" | Select-Object -First 1
           if ($apiJar) { Copy-Item $apiJar.FullName "mods/DistantHorizonsApi-4.0.0.jar" }
           if (!(Test-Path "mods/DistantHorizons-fabric-2.3.5-b-dev-1.21.4.jar")) { jar cf mods/DistantHorizons-fabric-2.3.5-b-dev-1.21.4.jar -C . README.md }
@@ -203,11 +203,11 @@ jobs:
         run: |
           mkdir -p java/mods
           echo "Downloading real DistantHorizons JARs for CodeQL analysis..."
-          curl -L "https://gitlab.com/distant-horizons-team/distant-horizons/-/jobs/artifacts/main/download?job=build:%20[1.21.4]" -o "dh-main-artifacts.zip"
-          unzip -q "dh-main-artifacts.zip"
+          curl -L "https://gitlab.com/distant-horizons-team/distant-horizons/-/jobs/artifacts/main/download?job=build:%20[1.21.4]" -o "dh-main-artifacts.zip" || echo "DH main download failed - will use dummy jar"
+          unzip -q "dh-main-artifacts.zip" || echo "no main zip to unzip"
           find . -name "DistantHorizons-fabric-*.jar" -exec cp {} "java/mods/DistantHorizons-fabric-2.3.5-b-dev-1.21.4.jar" \; -quit
-          curl -L "https://gitlab.com/distant-horizons-team/distant-horizons/-/jobs/artifacts/main/download?job=api" -o "dh-api-artifacts.zip"
-          unzip -q "dh-api-artifacts.zip"
+          curl -L "https://gitlab.com/distant-horizons-team/distant-horizons/-/jobs/artifacts/main/download?job=api" -o "dh-api-artifacts.zip" || echo "DH api download failed - will use dummy jar"
+          unzip -q "dh-api-artifacts.zip" || echo "no api zip to unzip"
           find . -name "DistantHorizonsApi-*.jar" -exec cp {} "java/mods/DistantHorizonsApi-4.0.0.jar" \; -quit
           if [ ! -f "java/mods/DistantHorizons-fabric-2.3.5-b-dev-1.21.4.jar" ]; then jar cf java/mods/DistantHorizons-fabric-2.3.5-b-dev-1.21.4.jar -C java README.md; fi
           if [ ! -f "java/mods/DistantHorizonsApi-4.0.0.jar" ]; then jar cf java/mods/DistantHorizonsApi-4.0.0.jar -C java README.md; fi

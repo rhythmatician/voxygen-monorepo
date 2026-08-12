@@ -29,7 +29,6 @@ from pathlib import Path
 
 import numpy as np
 
-
 # ── Schema ───────────────────────────────────────────────────────────────
 
 _VOXY_TABLE_SQL = """\
@@ -44,7 +43,9 @@ CREATE TABLE IF NOT EXISTS voxy_sections (
 """
 
 
-def _read_and_compress(args: tuple[int, int, int, int, str, int]) -> tuple[int, int, int, int, bytes]:
+def _read_and_compress(
+    args: tuple[int, int, int, int, str, int],
+) -> tuple[int, int, int, int, bytes]:
     """Read one NPZ file and zlib-compress its labels32 array.
 
     Designed to run in a ThreadPoolExecutor — I/O-bound, releases GIL.

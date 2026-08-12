@@ -84,13 +84,11 @@ def summarize_build_pairs_run(
         lines.append(f"Failures ({total_skipped:,} total):")
         if skipped_no_voxy > 0:
             lines.append(
-                f"  Missing Voxy section:  {skipped_no_voxy:,}"
-                "  (dump exists, no Voxy NPZ)"
+                f"  Missing Voxy section:  {skipped_no_voxy:,}" "  (dump exists, no Voxy NPZ)"
             )
         if skipped_no_dump > 0:
             lines.append(
-                f"  Missing dump file:     {skipped_no_dump:,}"
-                "  (Voxy exists, no noise dump)"
+                f"  Missing dump file:     {skipped_no_dump:,}" "  (Voxy exists, no noise dump)"
             )
     else:
         lines.append("")
@@ -107,7 +105,7 @@ def _parse_last_build_pairs_result(lines: Sequence[str]) -> dict[str, Any] | Non
     for line in reversed(lines):
         stripped = line.strip()
         if stripped.startswith("[STEP_RESULT]"):
-            payload = stripped[len("[STEP_RESULT]"):]
+            payload = stripped[len("[STEP_RESULT]") :]
             try:
                 parsed = json.loads(payload)
             except (ValueError, json.JSONDecodeError):
@@ -267,4 +265,3 @@ def _summarize_octree_style(lines: Sequence[str]) -> list[str]:
 
 def _format_float(value: Any, precision: int = 4) -> str:
     return f"{float(value):.{precision}f}"
-

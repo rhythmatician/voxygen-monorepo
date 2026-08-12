@@ -264,8 +264,10 @@ def build_multilevel_voxy_targets(
                 [1 << i for i in range(8)], dtype=np.uint8
             )  # [1, 2, 4, 8, 16, 32, 64, 128]
             mask = (
-                non_air * bit_weights[np.newaxis, np.newaxis, np.newaxis, :]
-            ).sum(axis=-1).astype(np.uint8)
+                (non_air * bit_weights[np.newaxis, np.newaxis, np.newaxis, :])
+                .sum(axis=-1)
+                .astype(np.uint8)
+            )
             child_mask = np.where(homogeneous, np.uint8(0), mask)
 
         result[level] = VoxyLevelTargets(
@@ -305,4 +307,3 @@ def iter_voxy_nodes(
                         is_leaf=is_leaf,
                         child_mask=child_mask,
                     )
-

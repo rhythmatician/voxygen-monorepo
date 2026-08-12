@@ -93,37 +93,45 @@ _BY_INDEX: dict[int, RouterField] = {f.value: f for f in RouterField}
 # ── Semantic field groups ──────────────────────────────────────────────────
 # These mirror the Java-side ``RouterField.isClimate()`` etc. helpers.
 
-CLIMATE_FIELDS: FrozenSet[int] = frozenset({
-    RouterField.TEMPERATURE.index,
-    RouterField.VEGETATION.index,
-    RouterField.CONTINENTS.index,
-    RouterField.EROSION.index,
-    RouterField.DEPTH.index,
-    RouterField.RIDGES.index,
-})
+CLIMATE_FIELDS: FrozenSet[int] = frozenset(
+    {
+        RouterField.TEMPERATURE.index,
+        RouterField.VEGETATION.index,
+        RouterField.CONTINENTS.index,
+        RouterField.EROSION.index,
+        RouterField.DEPTH.index,
+        RouterField.RIDGES.index,
+    }
+)
 """Indices of the 6 climate/shape fields used by the biome classifier and
 density predictor.  These are exactly the inputs to vanilla's
 ``MultiNoiseBiomeSource.getBiome()``."""
 
-DENSITY_FIELDS: FrozenSet[int] = frozenset({
-    RouterField.PRELIMINARY_SURFACE_LEVEL.index,
-    RouterField.FINAL_DENSITY.index,
-})
+DENSITY_FIELDS: FrozenSet[int] = frozenset(
+    {
+        RouterField.PRELIMINARY_SURFACE_LEVEL.index,
+        RouterField.FINAL_DENSITY.index,
+    }
+)
 """Indices of the 2 density-related fields (expensive to compute)."""
 
-AQUIFER_FIELDS: FrozenSet[int] = frozenset({
-    RouterField.BARRIER.index,
-    RouterField.FLUID_LEVEL_FLOODEDNESS.index,
-    RouterField.FLUID_LEVEL_SPREAD.index,
-    RouterField.LAVA.index,
-})
+AQUIFER_FIELDS: FrozenSet[int] = frozenset(
+    {
+        RouterField.BARRIER.index,
+        RouterField.FLUID_LEVEL_FLOODEDNESS.index,
+        RouterField.FLUID_LEVEL_SPREAD.index,
+        RouterField.LAVA.index,
+    }
+)
 """Indices of the 4 aquifer noise fields."""
 
-ORE_FIELDS: FrozenSet[int] = frozenset({
-    RouterField.VEIN_TOGGLE.index,
-    RouterField.VEIN_RIDGED.index,
-    RouterField.VEIN_GAP.index,
-})
+ORE_FIELDS: FrozenSet[int] = frozenset(
+    {
+        RouterField.VEIN_TOGGLE.index,
+        RouterField.VEIN_RIDGED.index,
+        RouterField.VEIN_GAP.index,
+    }
+)
 """Indices of the 3 ore-vein noise fields."""
 
 # ── Ordered lists for slicing convenience ──────────────────────────────────

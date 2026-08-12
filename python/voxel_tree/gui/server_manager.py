@@ -333,7 +333,8 @@ class ServerManager(QObject):
 
         self._set_status("starting")
         _JVM_FLAGS = [
-            "-Xmx12g", "-Xms4g",
+            "-Xmx12g",
+            "-Xms4g",
             "-XX:+UseG1GC",
             "-XX:+ParallelRefProcEnabled",
             "-XX:MaxGCPauseMillis=200",
