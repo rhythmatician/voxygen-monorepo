@@ -1,7 +1,34 @@
 package com.rhythmatician.lodiffusion.voxy;
 
 /**
- * Deep module seam between generation and storage.
+ * Deep module seam between generation and storage — the test surface for all Voxy writes.
+ *
+ * <p><b>Spec seam:</b> No caller sees reflection. Implementations are two adapters:
+ * <ul>
+ *   <li>{@code RealVoxyVolumeWriter} — production, reflection-backed (MethodHandle/VarHandle where
+ * feasible; see its class Javadoc for reflection vs MethodHandle trade-off);</li>
+ *   <li>{@code InMemoryVolumeWriter} — tests, no Voxy jar required.</li>
+ * </ul>
+ *
+ * <p><b>Hidden details:</b> All Voxy-specific mechanics are owned by the writer
+ * implementation and never leak through this interface: axis order (YZX ↔ model XYZ
+ * transpose), scale clamp ({@code Math.min(coord/scale, nativeRes-1)} / {@code clampToNativeRes}),
+ * packed 64-bit voxel layout (block/biome/light bits), light defaults,
+ * {@code WorldSection} 32&sup3; mapping, CAS via {@link java.lang.invoke.VarHandle}
+ * on {@code nonEmptyChildren}, {@code markDirty} lifecycle, mip/update handling.
+ * Callers work only with semantic types {@link SectionPos}, {@link Level},
+ * {@link VoxelVolume}, {@link WriteOutcome}, {@link CanonicalRegistries},
+ * {@link WorldSectionCoord}.
+ *
+ * <p><b>Spec extension &mdash; new types not in original scope:</b> The 4 shallow modules
+ * ({@code VoxyCompat}, {@code VoxyEngine}, {@code VoxyWorldBinding}, {@code VoxySectionWriter})
+ * are retained as a migration facade (package-private after follow-up PR). The new
+ * semantic types added alongside this seam ({@link VoxelVolume}, {@link SectionPos},
+ * {@link Level}, {@link WriteOutcome}, {@link CanonicalRegistries},
+ * {@link WorldSectionCoord}) are a spec extension that makes the seam type-safe and
+ * testable without Voxy on the classpath.
+ *
+ * <p>
  *
  * <p>Two explicit operations:
  * <ul>
@@ -39,6 +66,11 @@ public interface VoxelVolumeWriter {
     /**
      * Returns save-queue depth for backpressure, or 0 if unavailable.
      * Default returns 0 (no backpressure signal).
+     *
+     * <p><b>YAGNI note (Fowler Speculative Generality):</b> only
+     * {@link RealVoxyVolumeWriter} overrides this; {@link InMemoryVolumeWriter}
+     * keeps the default. The default is intentional — callers that do not
+     * need backpressure should not be forced to implement it.
      */
     default int saveQueueDepth() {
         return 0;
@@ -46,8 +78,11 @@ public interface VoxelVolumeWriter {
 
     /**
      * True if region already fully populated (0xFF nonEmptyChildren).
-     * Origin is the L0 SectionPos aligned to level. Default returns false.
-     */
+     * Origin is the L0 SectionPos aligned to level. Default returns false.     *
+     * <p><b>YAGNI note (Fowler Speculative Generality):</b> only
+     * {@link RealVoxyVolumeWriter} overrides this. The default keeps the
+     * seam minimal for test doubles; adding complexity here would be
+     * speculative until a second production writer needs it.     */
     default boolean isRegionFullyPopulated(SectionPos origin, Level level) {
         return false;
     }}

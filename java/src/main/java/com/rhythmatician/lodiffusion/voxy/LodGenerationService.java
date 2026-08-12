@@ -15,13 +15,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 import com.rhythmatician.lodiffusion.Config;
 import com.rhythmatician.lodiffusion.HelloTerrainMod;
 import com.rhythmatician.lodiffusion.onnx.VoxyModelRunner;
-import com.rhythmatician.lodiffusion.voxy.Level;
-import com.rhythmatician.lodiffusion.voxy.SectionPos;
-import com.rhythmatician.lodiffusion.voxy.VolumeUnavailableException;
-import com.rhythmatician.lodiffusion.voxy.VoxelPredictionDecoder;
-import com.rhythmatician.lodiffusion.voxy.VoxelVolume;
-import com.rhythmatician.lodiffusion.voxy.VoxelVolumeWriter;
-import com.rhythmatician.lodiffusion.voxy.WriteOutcome;
 import com.rhythmatician.lodiffusion.world.noise.BiomeProvider;
 import com.rhythmatician.lodiffusion.world.noise.RouterField;
 import com.rhythmatician.lodiffusion.world.noise.HeightmapData;
@@ -50,6 +43,7 @@ import net.minecraft.world.chunk.ChunkStatus;
  *
  * <p>Sections are prioritised by Manhattan distance from the player.
  */
+@SuppressWarnings("deprecation")
 public final class LodGenerationService {
 
     /** How many sections of Y range to generate (from y=-64 upward). */
@@ -131,6 +125,13 @@ public final class LodGenerationService {
 
             private static final int NEAR_SEED_L0_RADIUS =
                 Math.max(1, Config.getInt("nearSeedL0Radius", NEAR_SEED_L4_RADIUS));
+
+    /**
+     * Mysterious-Name fix: {@code +4} is the voxel-center offset.
+     * One WorldSection is 32 blocks; L0 is 16 blocks. Centering the sample
+     * avoids seam bias. Named to replace magic {@code +4} in yPosition calc.
+     */
+    private static final int VOXEL_CENTER_OFFSET = 4;
 
             private static final int[] L2_CLIMATE_CHANNELS = {
                 RouterField.TEMPERATURE.ordinal(),
@@ -509,8 +510,9 @@ public final class LodGenerationService {
                 int[] canonicalBiomeToVoxy = RealVoxyVolumeWriter.buildBiomeMap(voxyMapper, biomeRegistry);
                 int[] canonicalBlockToVoxy = RealVoxyVolumeWriter.buildBlockMap(
                         voxyModelRunner.vocabulary(), voxyMapper);
-                VoxelVolumeWriter writer = new RealVoxyVolumeWriter(
-                        worldEngine, voxyMapper, canonicalBiomeToVoxy, canonicalBlockToVoxy);
+                VoxyIdMaps idMaps = new VoxyIdMaps(canonicalBiomeToVoxy, canonicalBlockToVoxy);
+                // Message-Chains fix: factory encapsulates VoxyCompat.getMapper chain.
+                VoxelVolumeWriter writer = RealVoxyVolumeWriter.create(worldEngine, idMaps);
 
                 waitForPlayerPosition();
                 if (stopRequested.get()) return;
@@ -546,8 +548,8 @@ public final class LodGenerationService {
             int[] fallbackBiomeMappings =
                     HeightmapFallbackGenerator.resolveBiomeMappings(voxyMapper, biomeRegistry);
             int[] fallbackBlockMap = RealVoxyVolumeWriter.buildFallbackBlockMap(fallbackBlocks);
-            VoxelVolumeWriter fallbackWriter = new RealVoxyVolumeWriter(
-                    worldEngine, voxyMapper, fallbackBiomeMappings, fallbackBlockMap);
+            VoxyIdMaps fallbackMaps = new VoxyIdMaps(fallbackBiomeMappings, fallbackBlockMap);
+            VoxelVolumeWriter fallbackWriter = RealVoxyVolumeWriter.create(worldEngine, fallbackMaps);
 
             waitForPlayerPosition();
             if (stopRequested.get()) return;
@@ -1281,6 +1283,16 @@ public final class LodGenerationService {
                 ShadowRouterJobQueue.inFlightSize(), elapsedMs / 1000);
     }
 
+    /**
+     * Orchestrator for one demand request. Reaches into {@link VoxyCompat}
+     * / {@link VoxyWorldBinding} intentionally — this is the demand
+     * pipeline coordinator, not Feature Envy. Fine-grained helpers
+     * ({@code isRegionReady}, {@code computeOccupancy}) live on the
+     * binding; this method sequences them. Mask/octant logic stays on
+     * {@code VoxyWorldBinding} (see {@code computeChildExistenceMask},
+     * {@code computeOccupiedOctantMask}); this method only decides
+     * skip/defer/write.
+     */
     private DemandProcessResult processDemandRequest(World world,
                                                      VoxelVolumeWriter writer,
                                                      VoxyRequestDecoder.VoxyNodeRequest req) {
@@ -1314,17 +1326,17 @@ public final class LodGenerationService {
                 return DemandProcessResult.DEFERRED;
             }
 
-            int[][][] parentBlocks = VoxyCompat.readWorldSectionBlocks(
-                    worldEngine, parentLevel, pX, pY, pZ);
-            if (parentBlocks == null) {
+            int octant = (wsX & 1) | ((wsZ & 1) << 1) | ((wsY & 1) << 2);
+            parentInput = VoxyWorldBinding.readAndUpsampleParentOctant(
+                    worldEngine, parentLevel, pX, pY, pZ, octant);
+            if (parentInput == null) {
                 enqueueParentRequest(parentLevel, pX, pY, pZ);
                 return DemandProcessResult.DEFERRED;
             }
-            int octant = (wsX & 1) | ((wsZ & 1) << 1) | ((wsY & 1) << 2);
-            parentInput = VoxyCompat.extractOctantAndUpsample(parentBlocks, octant);
         }
 
-        int yPosition = (wsY << (level + 1)) + 4;
+        // +4 voxel-center offset (see VOXEL_CENTER_OFFSET): centers sample in 32^3 WorldSection
+        int yPosition = (wsY << (level + 1)) + VOXEL_CENTER_OFFSET;
         VoxyModelRunner.LevelResult modelOut = null;
         int[][] biome32;
         long inferStartNs;
@@ -1578,18 +1590,6 @@ public final class LodGenerationService {
         return out;
     }
 
-    private int[][][] padYTo32(int[][][] blocks, int dimY) {
-        if (dimY >= 32) {
-            return blocks;
-        }
-        int[][][] out = new int[32][32][32];
-        for (int y = 0; y < dimY; y++) {
-            for (int z = 0; z < 32; z++) {
-                System.arraycopy(blocks[y][z], 0, out[y][z], 0, 32);
-            }
-        }
-        return out;
-    }
 
     private void enqueueParentRequest(int parentLevel, int pX, int pY, int pZ) {
         VoxyRequestDecoder.VoxyNodeRequest parentReq = new VoxyRequestDecoder.VoxyNodeRequest();

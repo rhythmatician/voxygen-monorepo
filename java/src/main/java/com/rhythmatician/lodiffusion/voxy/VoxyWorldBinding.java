@@ -24,10 +24,14 @@ import org.slf4j.LoggerFactory;
  *       {@link #isAir}, {@link #l0Index}).</li>
  * </ul>
  *
+ * <p><b>Internal — do not use outside {@code voxy}; use {@link VoxelVolumeWriter}.</b>
+ * YZX order, scale-clamp, CAS + markDirty are hidden details owned by the writer seam.
+ * This class will become package-private once the migration facade ({@link VoxyCompat}) is removed.
+ *
  * <p>Detection logic lives in {@link VoxyDetection}.
  * Engine-level reflection setup and operations live in {@link VoxyEngine}.
  */
-public final class VoxyWorldBinding {
+final class VoxyWorldBinding {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(VoxyWorldBinding.class);
 
@@ -224,6 +228,16 @@ public final class VoxyWorldBinding {
         return (y << 8) | (z << 4) | x;
     }
 
+    /**
+     * Scale-clamp helper that encapsulates the native-resolution clamp
+     * ({@code Math.min(coord / scale, nativeRes - 1)}) previously duplicated
+     * in {@code VoxySectionWriter.writeUpsampledSection()} and
+     * {@code writeLodSection()}. Centralizes the hidden clamp detail.
+     */
+    static int clampToNativeRes(int coord, int scale, int nativeRes) {
+        return Math.min(coord / scale, nativeRes - 1);
+    }
+
     // ------------------------------------------------------------------ //
     //  Direct WorldSection level writes  (bypass insertUpdate)
     // ------------------------------------------------------------------ //
@@ -320,16 +334,7 @@ public final class VoxyWorldBinding {
 
             // Set the nonEmptyChildren bit for the octant we just wrote to.
             if (nonAir > 0) {
-                if (worldSectionNecVarHandle != null) {
-                    byte prev, next;
-                    do {
-                        prev = (byte)(Byte) worldSectionNecVarHandle.get(worldSection);
-                        next = (byte) (prev | childBit);
-                    } while (!worldSectionNecVarHandle.compareAndSet(worldSection, prev, next));
-                } else {
-                    byte current = worldSectionNonEmptyChildrenField.getByte(worldSection);
-                    worldSectionNonEmptyChildrenField.setByte(worldSection, (byte)(current | childBit));
-                }
+                mergeNonEmptyChildren(worldSection, childBit);
             }
 
             // Mark dirty → triggers save + mesh rebuild
@@ -406,30 +411,9 @@ public final class VoxyWorldBinding {
                 // This mirrors WorldSection.updateEmptyChildState()'s own CAS loop,
                 // making it safe against concurrent Voxy write paths (e.g. a vanilla
                 // chunk arriving while we are propagating existence bits upward).
-                if (worldSectionNecVarHandle != null) {
-                    byte prev, next;
-                    boolean didChange = false;
-                    do {
-                        prev = (byte)(Byte) worldSectionNecVarHandle.get(parentSection);
-                        next = (byte) (prev | childBit);
-                        if (next == prev) break; // bit already set — nothing to do
-                        didChange = true;
-                    } while (!worldSectionNecVarHandle.compareAndSet(parentSection, prev, next));
-                    if (didChange) {
-                        VoxyEngine.markDirtyMethod.invoke(worldEngine, parentSection);
-                    }
-                } else {
-                    // Fallback: non-atomic read-modify-write (best-effort when VarHandle
-                    // is unavailable).  A lost-update here is non-fatal: the bit will
-                    // be re-set on the next LODiffusion write pass.
-                    byte current = worldSectionNonEmptyChildrenField.getByte(parentSection);
-                    byte updated = (byte) (current | childBit);
-                    if (updated != current) {
-                        worldSectionNonEmptyChildrenField.setByte(parentSection, updated);
-                        VoxyEngine.markDirtyMethod.invoke(worldEngine, parentSection);
-                    }
+                if (mergeNonEmptyChildren(parentSection, childBit)) {
+                    VoxyEngine.markDirtyMethod.invoke(worldEngine, parentSection);
                 }
-
                 VoxyEngine.worldSectionReleaseMethod.invoke(parentSection);
             }
         } catch (Exception e) {
@@ -686,6 +670,46 @@ public final class VoxyWorldBinding {
         } else {
             return worldSectionNonEmptyChildrenField.getByte(worldSection);
         }
+    }
+
+    /**
+     * Duplicated-Code fix: centralize CAS on {@code nonEmptyChildren} (NEC).
+     * Mirrors {@code WorldSection.updateEmptyChildState()} — VarHandle CAS
+     * loop with fallback to reflective Field. Returns true if bit was newly set.
+     * Caller is responsible for {@code markDirty(worldEngine, section)} when true.
+     */
+    static boolean mergeNonEmptyChildren(Object worldSection, byte childBit) {
+        if (worldSection == null || childBit == 0) return false;
+        if (worldSectionNecVarHandle != null) {
+            byte prev;
+            byte next;
+            do {
+                prev = (byte) worldSectionNecVarHandle.getVolatile(worldSection);
+                if ((prev & childBit) == childBit) return false;
+                next = (byte) (prev | childBit);
+            } while (!worldSectionNecVarHandle.compareAndSet(worldSection, prev, next));
+            return (prev & childBit) == 0;
+        }
+        try {
+            if (worldSectionNonEmptyChildrenField != null) {
+                byte prev = worldSectionNonEmptyChildrenField.getByte(worldSection);
+                if ((prev & childBit) == childBit) return false;
+                worldSectionNonEmptyChildrenField.setByte(worldSection, (byte) (prev | childBit));
+                return true;
+            }
+        } catch (IllegalAccessException e) {
+            LOGGER.debug("[VoxyWorldBinding] mergeNonEmptyChildren failed", e);
+        }
+        return false;
+    }
+
+    /**
+     * Feature-Envy fix: parent octant extract+upsample lives on the binding.
+     */
+    static long[] readAndUpsampleParentOctant(Object worldEngine, int parentLevel, int pX, int pY, int pZ, int octant) {
+        int[][][] blocks = readWorldSectionBlocks(worldEngine, parentLevel, pX, pY, pZ);
+        if (blocks == null) return null;
+        return extractOctantAndUpsample(blocks, octant);
     }
 
     /**

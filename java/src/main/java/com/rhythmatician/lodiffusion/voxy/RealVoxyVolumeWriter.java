@@ -15,13 +15,30 @@ import org.slf4j.LoggerFactory;
  *
  * <p>Public API never exposes Voxy types: only {@link SectionPos}, {@link Level},
  * {@link VoxelVolume}, {@link WriteOutcome}.
+ *
+ * <p><b>Primitive Obsession note (Fowler):</b> {@code worldEngine} and
+ * {@code voxyMapper} are typed as {@code Object} intentionally — Voxy's
+ * {@code WorldEngine} and {@code Mapper} are not on the compile classpath.
+ * This is a <em>deep-module seam</em>: production types are erased to
+ * {@code Object} at the boundary and accessed only via reflection in
+ * {@link VoxyEngine}/{@link VoxyWorldBinding}. A wrapper like
+ * {@code WorldEngineHandle} would add indirection without safety (still
+ * reflection underneath). The erasure is intentional; see
+ * {@link VoxyCompat#getMapper(Object)} and {@link VoxyEngine#ensureEngineBindings()}.
+ * Type aliases:
+ * <ul>
+ *   <li>{@code Object worldEngine} — Voxy {@code WorldEngine} handle (WorldEngineHandle)</li>
+ *   <li>{@code Object voxyMapper} — Voxy {@code Mapper} handle (VoxyMapperHandle)</li>
+ * </ul>
  */
+@SuppressWarnings("deprecation")
 public final class RealVoxyVolumeWriter implements VoxelVolumeWriter {
     private static final Logger LOGGER = LoggerFactory.getLogger(RealVoxyVolumeWriter.class);
     private static final int DEFAULT_LIGHT = 0x0F;
 
     private final Object worldEngine;
     private final Object voxyMapper;
+    // Data Clumps fix: two maps travel together — grouped as VoxyIdMaps (see below).
     private final int[] canonicalBiomeToVoxy;
     private final int[] canonicalBlockToVoxy;
 
@@ -47,6 +64,36 @@ public final class RealVoxyVolumeWriter implements VoxelVolumeWriter {
             throw new IllegalArgumentException(
                     "canonicalBlockToVoxy must be size " + CanonicalRegistries.BLOCK_COUNT);
         }
+    }
+
+    /**
+     * Convenience overload that accepts grouped {@link VoxyIdMaps}.
+     */
+    public RealVoxyVolumeWriter(Object worldEngine, Object voxyMapper, VoxyIdMaps idMaps) {
+        this(worldEngine, voxyMapper, idMaps.biomeMapRaw().clone(), idMaps.blockMapRaw().clone());
+    }
+
+    /**
+     * Factory that hides the {@code VoxyCompat.getMapper(worldEngine) -> VoxyEngine -> reflection}
+     * chain (Fowler Message Chains). Callers no longer navigate {@code VoxyCompat -> VoxyEngine -> reflection}.
+     * This is the preferred creation path for demand/fallback pipelines.
+     *
+     * @param worldEngine Voxy WorldEngine handle (WorldEngineHandle typedef — {@code Object} erasure intentional)
+     * @param idMaps grouped canonical-to-Voxy ID maps
+     * @return ready-to-write {@link RealVoxyVolumeWriter}
+     */
+    public static RealVoxyVolumeWriter create(Object worldEngine, VoxyIdMaps idMaps) {
+        java.util.Objects.requireNonNull(worldEngine, "worldEngine");
+        java.util.Objects.requireNonNull(idMaps, "idMaps");
+        Object mapper = VoxyCompat.getMapper(worldEngine);
+        return new RealVoxyVolumeWriter(worldEngine, mapper, idMaps);
+    }
+
+    /**
+     * Overload for callers that have not yet grouped maps into {@link VoxyIdMaps}.
+     */
+    public static RealVoxyVolumeWriter create(Object worldEngine, int[] canonicalBiomeToVoxy, int[] canonicalBlockToVoxy) {
+        return create(worldEngine, new VoxyIdMaps(canonicalBiomeToVoxy, canonicalBlockToVoxy));
     }
 
     /**

@@ -29,7 +29,7 @@ import org.slf4j.LoggerFactory;
  * Internal reflection layer behind the {@link VoxelVolumeWriter} seam.
  * Retained for {@link RealVoxyVolumeWriter} delegation; not part of the public seam.
  */
-public final class VoxyEngine {
+final class VoxyEngine {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(VoxyEngine.class);
 

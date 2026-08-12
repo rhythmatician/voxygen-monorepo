@@ -18,6 +18,31 @@ package com.rhythmatician.lodiffusion.voxy;
  *
  * <p>This facade exists solely so that all existing callers ({@code VoxySectionWriter},
  * {@code LodGenerationService}, etc.) continue to compile and run without modification.
+ *
+ * <p><b>Seam boundary — internal migration facade.</b> The intended deep module seam is
+ * {@link VoxelVolumeWriter}; new code must use that interface. This facade is retained
+ * solely for backwards compatibility during migration ( {@code LoDiffusionClient},
+ * {@code ShaderSectionWriter}, {@code WorldGenEventHandler} and the in-package
+ * {@code VoxySectionWriter} / {@code LodGenerationService} still call through here).
+ * It will be reduced to package-private / removed in a follow-up PR once all callers
+ * are funneled through {@link RealVoxyVolumeWriter} / {@link VoxelVolumeWriter}.
+ *
+ * <p><b>Internal — do not use outside {@code com.rhythmatician.lodiffusion.voxy};
+ * use {@link VoxelVolumeWriter}.</b> Direct use of reflection helpers
+ * ({@code l0Index}, {@code composeVoxel}, {@code writeAtLevel}, etc.) leaks
+ * storage details (YZX order, nativeRes clamp, CAS + markDirty) that the seam hides.
+ * If you need a Voxy write from outside the package, obtain a {@link VoxelVolumeWriter}
+ * via {@link RealVoxyVolumeWriter} construction (see {@code LodGenerationService}).
+ *
+ * <p><b>Middle-Man justification (Fowler):</b> this class is pure delegation by design.
+ * It is the <em>seam boundary</em> between the {@code voxy} deep module and the rest of
+ * the codebase. Voxy types are not on the compile classpath; all Voxy access is via
+ * reflection ({@link VoxyEngine}/{@link VoxyWorldBinding}). Keeping a single facade
+ * entry-point preserves the deep-module abstraction and allows migration off Voxy
+ * without touching callers. Not speculative - retained intentionally.
+ *
+ * <p>Direct use is discouraged outside the {@code voxy} package; prefer
+ * {@link VoxelVolumeWriter} or the underlying focused classes.
  */
 public final class VoxyCompat {
 
@@ -36,27 +61,47 @@ public final class VoxyCompat {
     //  Engine operations
     // ------------------------------------------------------------------ //
 
-    /** @see VoxyEngine#createEmptySection() */
+    /**
+     * @deprecated Internal section lifecycle — use {@link VoxelVolumeWriter#writeSection}.
+     * @see VoxyEngine#createEmptySection()
+     */
+    @Deprecated
     public static Object createEmptySection() {
         return VoxyEngine.createEmptySection();
     }
 
-    /** @see VoxyEngine#getMapper(Object) */
+    /**
+     * @deprecated Internal mapper access — hidden behind {@link RealVoxyVolumeWriter} canonical translation.
+     * @see VoxyEngine#getMapper(Object)
+     */
+    @Deprecated
     public static Object getMapper(Object worldEngine) {
         return VoxyEngine.getMapper(worldEngine);
     }
 
-    /** @see VoxyEngine#mipSection(Object, Object) */
+    /**
+     * @deprecated Internal mip lifecycle — hidden behind {@link VoxelVolumeWriter}.
+     * @see VoxyEngine#mipSection(Object, Object)
+     */
+    @Deprecated
     public static void mipSection(Object section, Object mapper) {
         VoxyEngine.mipSection(section, mapper);
     }
 
-    /** @see VoxyEngine#insertUpdate(Object, Object) */
+    /**
+     * @deprecated Internal insert path — use {@link VoxelVolumeWriter#writeSection}.
+     * @see VoxyEngine#insertUpdate(Object, Object)
+     */
+    @Deprecated
     public static void insertUpdate(Object worldEngine, Object section) {
         VoxyEngine.insertUpdate(worldEngine, section);
     }
 
-    /** @see VoxyEngine#sectionExists(Object, int, int, int) */
+    /**
+     * @deprecated Internal existence check — use {@link VoxelVolumeWriter#isRegionFullyPopulated} / writer backpressure.
+     * @see VoxyEngine#sectionExists(Object, int, int, int)
+     */
+    @Deprecated
     public static boolean sectionExists(Object worldEngine,
                                          int sectionX, int sectionY, int sectionZ) {
         return VoxyEngine.sectionExists(worldEngine, sectionX, sectionY, sectionZ);
@@ -76,17 +121,29 @@ public final class VoxyCompat {
     //  VoxelizedSection field access
     // ------------------------------------------------------------------ //
 
-    /** @see VoxyWorldBinding#setSectionPosition(Object, int, int, int) */
+    /**
+     * @deprecated Internal {@code VoxelizedSection} field access — use {@link VoxelVolumeWriter}.
+     * @see VoxyWorldBinding#setSectionPosition(Object, int, int, int)
+     */
+    @Deprecated
     public static void setSectionPosition(Object section, int x, int y, int z) {
         VoxyWorldBinding.setSectionPosition(section, x, y, z);
     }
 
-    /** @see VoxyWorldBinding#getSectionData(Object) */
+    /**
+     * @deprecated Internal storage array access — hidden behind {@link VoxelVolumeWriter}.
+     * @see VoxyWorldBinding#getSectionData(Object)
+     */
+    @Deprecated
     public static long[] getSectionData(Object section) {
         return VoxyWorldBinding.getSectionData(section);
     }
 
-    /** @see VoxyWorldBinding#setNonAirCount(Object, int) */
+    /**
+     * @deprecated Internal — use {@link VoxelVolumeWriter}.
+     * @see VoxyWorldBinding#setNonAirCount(Object, int)
+     */
+    @Deprecated
     public static void setNonAirCount(Object section, int count) {
         VoxyWorldBinding.setNonAirCount(section, count);
     }
@@ -105,17 +162,31 @@ public final class VoxyCompat {
 
     public static final int  LIGHT_SHIFT    = VoxyWorldBinding.LIGHT_SHIFT;
 
-    /** @see VoxyWorldBinding#composeVoxel(int, int, int) */
+    /**
+     * @deprecated Internal packed-voxel encoding hidden behind {@link RealVoxyVolumeWriter};
+     * new code works with canonical IDs via {@link VoxelVolume}.
+     * @see VoxyWorldBinding#composeVoxel(int, int, int)
+     */
+    @Deprecated
     public static long composeVoxel(int blockId, int biomeId, int light) {
         return VoxyWorldBinding.composeVoxel(blockId, biomeId, light);
     }
 
-    /** @see VoxyWorldBinding#isAir(long) */
+    /**
+     * @deprecated Internal voxel-air test hidden behind {@link VoxelVolume#isAllAir()} / writer logic.
+     * @see VoxyWorldBinding#isAir(long)
+     */
+    @Deprecated
     public static boolean isAir(long voxel) {
         return VoxyWorldBinding.isAir(voxel);
     }
 
-    /** @see VoxyWorldBinding#l0Index(int, int, int) */
+    /**
+     * @deprecated Internal storage order YZX — hidden behind {@link VoxelVolumeWriter};
+     * use {@link VoxelVolume} XYZ access. Internal use only.
+     * @see VoxyWorldBinding#l0Index(int, int, int)
+     */
+    @Deprecated
     public static int l0Index(int x, int y, int z) {
         return VoxyWorldBinding.l0Index(x, y, z);
     }
@@ -124,21 +195,34 @@ public final class VoxyCompat {
     //  Direct WorldSection level writes
     // ------------------------------------------------------------------ //
 
-    /** @see VoxyWorldBinding#writeAtLevel(Object, int, int, int, int, long[]) */
+    /**
+     * @deprecated Migration facade — new code use {@link VoxelVolumeWriter#writeRegion};
+     * internal YZX/scale-clamp/CAS detail hidden behind {@link RealVoxyVolumeWriter}.
+     * @see VoxyWorldBinding#writeAtLevel(Object, int, int, int, int, long[])
+     */
+    @Deprecated
     public static int writeAtLevel(Object worldEngine, int lvl,
                                     int sectionX, int sectionY, int sectionZ,
                                     long[] voxels) {
         return VoxyWorldBinding.writeAtLevel(worldEngine, lvl, sectionX, sectionY, sectionZ, voxels);
     }
 
-    /** @see VoxyWorldBinding#writeFullWorldSection(Object, int, int, int, int, long[]) */
+    /**
+     * @deprecated Migration facade — new code use {@link VoxelVolumeWriter#writeRegion}.
+     * @see VoxyWorldBinding#writeFullWorldSection(Object, int, int, int, int, long[])
+     */
+    @Deprecated
     public static int writeFullWorldSection(Object worldEngine, int lvl,
                                              int wsX, int wsY, int wsZ,
                                              long[] voxels) {
         return VoxyWorldBinding.writeFullWorldSection(worldEngine, lvl, wsX, wsY, wsZ, voxels);
     }
 
-    /** @see VoxyWorldBinding#writeFullWorldSection(Object, int, int, int, int, long[], byte) */
+    /**
+     * @deprecated Migration facade — new code use {@link VoxelVolumeWriter#writeRegion}.
+     * @see VoxyWorldBinding#writeFullWorldSection(Object, int, int, int, int, long[], byte)
+     */
+    @Deprecated
     public static int writeFullWorldSection(Object worldEngine, int lvl,
                                              int wsX, int wsY, int wsZ,
                                              long[] voxels,
@@ -147,30 +231,50 @@ public final class VoxyCompat {
                 worldEngine, lvl, wsX, wsY, wsZ, voxels, preserveOctantsMask);
     }
 
-    /** @see VoxyWorldBinding#sectionExistsAtLevel(Object, int, int, int, int) */
+    /**
+     * @deprecated Internal octree existence — hidden behind writer seam.
+     * @see VoxyWorldBinding#sectionExistsAtLevel(Object, int, int, int, int)
+     */
+    @Deprecated
     public static boolean sectionExistsAtLevel(Object worldEngine, int lvl,
                                                 int wsX, int wsY, int wsZ) {
         return VoxyWorldBinding.sectionExistsAtLevel(worldEngine, lvl, wsX, wsY, wsZ);
     }
 
-    /** @see VoxyWorldBinding#readWorldSectionBlocks(Object, int, int, int, int) */
+    /**
+     * @deprecated Internal WorldSection read — hidden behind writer seam.
+     * @see VoxyWorldBinding#readWorldSectionBlocks(Object, int, int, int, int)
+     */
+    @Deprecated
     public static int[][][] readWorldSectionBlocks(Object worldEngine, int lvl,
                                                    int wsX, int wsY, int wsZ) {
         return VoxyWorldBinding.readWorldSectionBlocks(worldEngine, lvl, wsX, wsY, wsZ);
     }
 
-    /** @see VoxyWorldBinding#extractOctantAndUpsample(int[][][], int) */
+    /**
+     * @deprecated Internal octant upsample — hidden behind writer seam.
+     * @see VoxyWorldBinding#extractOctantAndUpsample(int[][][], int)
+     */
+    @Deprecated
     public static long[] extractOctantAndUpsample(int[][][] parent32, int octant) {
         return VoxyWorldBinding.extractOctantAndUpsample(parent32, octant);
     }
 
-    /** @see VoxyWorldBinding#getChildExistenceMask(Object, int, int, int, int) */
+    /**
+     * @deprecated Internal NEC child mask — hidden behind writer seam.
+     * @see VoxyWorldBinding#getChildExistenceMask(Object, int, int, int, int)
+     */
+    @Deprecated
     public static byte getChildExistenceMask(Object worldEngine, int lvl,
                                               int wsX, int wsY, int wsZ) {
         return VoxyWorldBinding.getChildExistenceMask(worldEngine, lvl, wsX, wsY, wsZ);
     }
 
-    /** @see VoxyWorldBinding#getOccupiedOctantMask(Object, int, int, int, int) */
+    /**
+     * @deprecated Internal occupancy scan — hidden behind writer seam.
+     * @see VoxyWorldBinding#getOccupiedOctantMask(Object, int, int, int, int)
+     */
+    @Deprecated
     public static byte getOccupiedOctantMask(Object worldEngine, int lvl,
                                              int wsX, int wsY, int wsZ) {
         return VoxyWorldBinding.getOccupiedOctantMask(worldEngine, lvl, wsX, wsY, wsZ);
@@ -184,6 +288,7 @@ public final class VoxyCompat {
      *
      * @see VoxyWorldBinding#allOctantsPopulated(Object, int, int, int, int)
      */
+    @Deprecated
     public static boolean allOctantsPopulated(Object worldEngine, int lvl,
                                                int wsX, int wsY, int wsZ) {
         return VoxyWorldBinding.allOctantsPopulated(worldEngine, lvl, wsX, wsY, wsZ);

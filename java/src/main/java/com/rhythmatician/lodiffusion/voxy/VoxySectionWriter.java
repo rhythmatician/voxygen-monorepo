@@ -328,9 +328,9 @@ public final class VoxySectionWriter {
         for (int x = 0; x < 16; x++) {
             for (int y = 0; y < 16; y++) {
                 for (int z = 0; z < 16; z++) {
-                    int nx = Math.min(x / scale, nativeRes - 1);
-                    int ny = Math.min(y / scale, nativeRes - 1);
-                    int nz = Math.min(z / scale, nativeRes - 1);
+                    int nx = VoxyWorldBinding.clampToNativeRes(x, scale, nativeRes);
+                    int ny = VoxyWorldBinding.clampToNativeRes(y, scale, nativeRes);
+                    int nz = VoxyWorldBinding.clampToNativeRes(z, scale, nativeRes);
 
                     // Argmax: model d0=Y, d1=Z, d2=X
                     int bestIdx = 0;
