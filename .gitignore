@@ -33,3 +33,4 @@ python/artifacts/
 *.tmp
 .dmypy.json
 tmp/
+node_modules/

@@ -1,0 +1,16 @@
+{
+  "devDependencies": {
+    "@ai-hero/sandcastle": "file:../../sandcastle",
+    "@types/node": "^26.2.0",
+    "tsx": "^4.23.12",
+    "typescript": "^7.0.2"
+  },
+  "scripts": {
+    "sandcastle": "npx tsx .sandcastle/main.mts",
+    "sandcastle:heavy": "npx tsx .sandcastle/main.heavy.mts",
+    "sandcastle:docker:build": "npx sandcastle docker build-image"
+  },
+  "dependencies": {
+    "zod": "^4.4.3"
+  }
+}
