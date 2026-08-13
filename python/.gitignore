@@ -12,6 +12,7 @@ artifacts/
 
 # Test and temporary files
 check_*.py
+!voxel_tree/tasks/data_acq/check_flowing_liquids.py
 inspect_*.py
 eval_*.py
 _smoke_test.py
@@ -59,6 +60,10 @@ data/test_world/region/*
 # Pipeline run state (generated)
 runs/
 data/*
+!data/test_world/
+!data/test_world/level.dat
+!data/test_world/level.dat_old
+!data/test_world/.gitkeep
 training_run.txt
 *.npz
 VoxelTree/data/

@@ -290,7 +290,74 @@ public class ChunkDataExtractor {    private static final Logger LOGGER = Logger
      * @param packedLongs The packed long array from NBT heightmap data
      * @return 16x16 array of height values
      */
-    private static int[][] decodeHeightmapFromLongArray(long[] packedLongs) {
+    /**
+     * Encode a 16x16 heightmap into the packed long array format used by Minecraft
+     * NBT MOTION_BLOCKING. Inverse of {@link #decodeHeightmapFromLongArray(long[])}.
+     * Uses 9 bits per value, 7 values per long (1 bit padding per long), matching
+     * the project's decoder. Returns 37 longs (ceil(256/7)) to hold 256 values;
+     * callers that need exactly 36 may truncate; decoder tolerates either length
+     * and defaults missing values to 64.
+     *
+     * @param heightmap 16x16 array
+     * @return packed long array (length 37)
+     */
+    public static long[] encodeHeightmapToLongArray(int[][] heightmap) {
+        if (heightmap == null || heightmap.length != 16) {
+            throw new IllegalArgumentException("heightmap must be 16x16");
+        }
+        int bitsPerValue = 9;
+        int valuesPerLong = 64 / bitsPerValue;
+        int longsNeeded = (256 + valuesPerLong - 1) / valuesPerLong;
+        long[] packed = new long[longsNeeded];
+        long mask = (1L << bitsPerValue) - 1;
+        for (int index = 0; index < 256; index++) {
+            int x = index & 15;
+            int z = index >> 4;
+            if (heightmap[x] == null || heightmap[x].length != 16) {
+                throw new IllegalArgumentException("heightmap must be 16x16");
+            }
+            int height = heightmap[x][z] & (int) mask;
+            int longIndex = index / valuesPerLong;
+            int bitOffset = (index % valuesPerLong) * bitsPerValue;
+            packed[longIndex] |= ((long) height & mask) << bitOffset;
+        }
+        return packed;
+    }
+
+    /**
+     * Pure-NBT seam: extract heightmap from an already-parsed chunk NBT compound
+     * without touching the filesystem. Handles both 1.18+ (top-level Heightmaps) and
+     * pre-1.18 (Level.Heightmaps) layouts.
+     *
+     * @param chunkTag NBT compound for a single chunk
+     * @return 16x16 heightmap or null if no MOTION_BLOCKING tag present
+     */
+    public static int[][] extractHeightmapFromChunkTag(org.jglrxavpok.hephaistos.nbt.NBTCompound chunkTag) {
+        if (chunkTag == null) {
+            return null;
+        }
+        org.jglrxavpok.hephaistos.nbt.NBTCompound heightmapsTag = null;
+        if (chunkTag.containsKey("Heightmaps")) {
+            heightmapsTag = chunkTag.getCompound("Heightmaps");
+        } else if (chunkTag.containsKey("Level")) {
+            org.jglrxavpok.hephaistos.nbt.NBTCompound levelTag = chunkTag.getCompound("Level");
+            if (levelTag != null && levelTag.containsKey("Heightmaps")) {
+                heightmapsTag = levelTag.getCompound("Heightmaps");
+            }
+        }
+        if (heightmapsTag == null || !heightmapsTag.containsKey("MOTION_BLOCKING")) {
+            return null;
+        }
+        org.jglrxavpok.hephaistos.nbt.NBTLongArray motionBlockingTag =
+                (org.jglrxavpok.hephaistos.nbt.NBTLongArray) heightmapsTag.get("MOTION_BLOCKING");
+        if (motionBlockingTag == null) {
+            return null;
+        }
+        long[] heightData = motionBlockingTag.getValue().copyArray();
+        return decodeHeightmapFromLongArray(java.util.Arrays.copyOf(heightData, heightData.length));
+    }
+
+    public static int[][] decodeHeightmapFromLongArray(long[] packedLongs) {
         int[][] heightmap = new int[16][16];
         int bitsPerValue = 9; // Minecraft uses 9 bits per height value (max height 512)
         int valuesPerLong = 64 / bitsPerValue; // How many height values fit in one long
@@ -478,7 +545,7 @@ public class ChunkDataExtractor {    private static final Logger LOGGER = Logger
      * Extract biome data from chunk NBT tag, handling version differences.
      * @param chunkTag The chunk's NBT data
      * @return Array of biome identifiers for 16x16 surface positions
-     */    private static String[] extractBiomesFromChunkTag(NBTCompound chunkTag) {
+     */    public static String[] extractBiomesFromChunkTag(NBTCompound chunkTag) {
         // Debug logging to understand chunk structure
         LOGGER.debug("Chunk NBT keys: {}", chunkTag.getKeys());        // Try 1.18+ format first - sections is a ListTag, not a CompoundTag
         if (chunkTag.containsKey("sections")) {

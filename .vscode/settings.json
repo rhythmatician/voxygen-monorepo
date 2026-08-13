@@ -10,5 +10,7 @@
     },
     "[java]": {
         "editor.formatOnSave": true
-    }
+    },
+    "java.import.gradle.enabled": true,
+    "java.import.gradle.wrapper.enabled": true
 }
