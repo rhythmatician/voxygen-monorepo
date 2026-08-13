@@ -51,7 +51,7 @@
 | **ONNX** | Latest | PyPI | Export validation |
 | **ONNX Runtime** | Latest | PyPI | Export validation |
 
-See `requirements.txt` for complete Python dependency list.
+See `pyproject.toml` for complete Python dependency list (managed via `uv`).
 
 ## World Generation Tools
 
@@ -74,7 +74,7 @@ See `requirements.txt` for complete Python dependency list.
 
 1. **Pin exact versions** in build files (Gradle `build.gradle.kts` for mod)
 2. **Document in this file** with commit hashes/branch names where applicable
-3. **Lock Python dependencies** via `requirements.txt` with version pins
+3. **Lock Python dependencies** via `uv.lock` (generated from `pyproject.toml`)
 4. **Test compatibility matrix** before proceeding to next milestone
 
 ## Next Steps
@@ -87,7 +87,7 @@ See `requirements.txt` for complete Python dependency list.
 6. [ ] Research and pin DJL version (latest stable)
 7. [ ] Research and pin ONNX Runtime version (CPU backend)
 8. [ ] Create `mods.lock.json` or equivalent for Java dependencies
-9. [ ] Update `requirements.txt` with pinned Python versions
+9. [ ] Update `pyproject.toml` with pinned Python versions and run `uv lock`
 
 ## Compatibility Notes
 

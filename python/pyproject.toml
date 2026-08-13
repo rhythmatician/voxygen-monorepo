@@ -16,6 +16,31 @@ dependencies = [
     "scipy",
     "pyside6>=6.6",
     "onnx",
+    "h5py",
+    "joblib",
+    "anvil-parser2",
+    "matplotlib",
+    "seaborn",
+    "plotly",
+    "psutil",
+    "onnxruntime",
+    "noise",
+    "TensorBoard",
+    "optuna",
+    "threadpoolctl",
+    "scikit-learn",
+    "deepdiff",
+    "onnxscript",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "pytest-cov",
+]
+type_stubs = [
+    "types-PyYAML",
+    "types-psutil",
 ]
 
 [project.scripts]

@@ -43,7 +43,7 @@ source venv/Scripts/activate  # Windows
 source venv/bin/activate      # macOS/Linux
 
 # Install Python packages
-pip install -r requirements.txt
+uv sync --group dev
 
 # Run tests
 pytest
