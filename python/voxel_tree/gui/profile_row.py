@@ -8,10 +8,23 @@ from pathlib import Path
 from PySide6.QtCore import QByteArray, QMimeData, QPoint, Qt, Signal
 from PySide6.QtGui import QColor, QCursor, QDrag, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtSvg import QSvgRenderer
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QMenu, QPushButton, QSizePolicy, QWidget
+from PySide6.QtWidgets import (
+    QHBoxLayout,
+    QLabel,
+    QMenu,
+    QPushButton,
+    QSizePolicy,
+    QWidget,
+)
 
 from voxel_tree.gui.run_registry import RunRegistry
-from voxel_tree.gui.step_definitions import PIPELINE_STEPS, STEP_BY_ID, TRACK_BY_ID, TRACK_ORDER, StepDef
+from voxel_tree.gui.step_definitions import (
+    PIPELINE_STEPS,
+    STEP_BY_ID,
+    TRACK_BY_ID,
+    TRACK_ORDER,
+    StepDef,
+)
 from voxel_tree.gui.step_node_widget import StepNodeWidget
 
 _NODE_W = 52
@@ -450,7 +463,7 @@ class _NodesWidget(QWidget):
             node.move(x, y)
             node.show()
 
-    def paintEvent(self, _event) -> None:  # noqa: N802
+    def paintEvent(self, _event) -> None:
         """Draw background fill and Bezier edges between connected nodes."""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)

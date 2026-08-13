@@ -36,9 +36,9 @@ class TestSpiralPositions:
         radius = 512
         positions = spiral_positions(radius_blocks=radius, step_blocks=256)
         for x, z in positions:
-            assert (
-                abs(x) <= radius and abs(z) <= radius
-            ), f"Position ({x}, {z}) outside radius {radius}"
+            assert abs(x) <= radius and abs(z) <= radius, (
+                f"Position ({x}, {z}) outside radius {radius}"
+            )
 
     def test_spiral_respects_step(self):
         """Successive spiral positions should be step_blocks apart (Manhattan distance)."""
@@ -50,7 +50,9 @@ class TestSpiralPositions:
             dz = abs(positions[i][1] - positions[i - 1][1])
             dist = (dx**2 + dz**2) ** 0.5
             # Allow small tolerance
-            assert dist <= step * 1.5, f"Jump from {positions[i-1]} to {positions[i]} is too large"
+            assert dist <= step * 1.5, (
+                f"Jump from {positions[i - 1]} to {positions[i]} is too large"
+            )
 
     def test_spiral_custom_center(self):
         """Spiral should be offset by custom center coordinates."""

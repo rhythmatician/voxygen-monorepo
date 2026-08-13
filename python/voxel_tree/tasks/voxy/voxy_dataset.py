@@ -33,7 +33,7 @@ import sqlite3
 import threading
 import zlib
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import numpy as np
 import torch
@@ -85,7 +85,7 @@ def _unpack_voxy_blob(blob: bytes) -> np.ndarray:
     return np.frombuffer(raw, dtype=np.int32).reshape(32, 32, 32).copy()
 
 
-def _build_remap_array(vocab_remap: Dict[int, int]) -> np.ndarray:
+def _build_remap_array(vocab_remap: dict[int, int]) -> np.ndarray:
     remap_arr = np.zeros(max(vocab_remap.keys()) + 1, dtype=np.int32)
     for src, dst in vocab_remap.items():
         remap_arr[src] = max(dst, 0)
@@ -111,7 +111,7 @@ def _discover_complete_world_sections(
     conn: sqlite3.Connection,
     level: int,
     min_coverage: float = 1.0,
-) -> List[Tuple[int, int, int]]:
+) -> list[tuple[int, int, int]]:
     """Find all WorldSection coordinates at ``level`` with sufficient noise-DB coverage.
 
     A WorldSection at level L tiles ``T × T × T`` sections where ``T = 2^(L+1)``.
@@ -195,7 +195,7 @@ def _tile_noise_and_biome(
     ws_y: int,
     ws_z: int,
     level: int,
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray]:
     """Tile noise and biome from constituent sections into WorldSection tensors.
 
     Args:
@@ -255,7 +255,7 @@ def _select_climate_2d(
     noise_3d: np.ndarray,
     biome_3d: np.ndarray,
     level: int,
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray]:
     """Feature-select and collapse 3D noise/biome to 2D for L2–L4.
 
     1. Select only the relevant noise channels for this level.
@@ -319,7 +319,7 @@ class VoxyLevelDataset(Dataset):  # type: ignore[type-arg]
         db_path: str | Path,
         level: int,
         min_coverage: float = 1.0,
-        vocab_remap: Optional[Dict[int, int]] = None,
+        vocab_remap: dict[int, int] | None = None,
         cache: bool = False,
     ) -> None:
         self.db_path = str(db_path)
@@ -343,7 +343,7 @@ class VoxyLevelDataset(Dataset):  # type: ignore[type-arg]
         )
 
         # In-memory cache: pre-load all samples to eliminate per-batch SQLite I/O
-        self._cache: Optional[List[Dict[str, Any]]] = None
+        self._cache: list[dict[str, Any]] | None = None
         if cache:
             self._preload_cache()
 
@@ -353,13 +353,13 @@ class VoxyLevelDataset(Dataset):  # type: ignore[type-arg]
             self._local.conn = sqlite3.connect(self.db_path)
         return self._local.conn
 
-    def __getstate__(self) -> Dict[str, Any]:
+    def __getstate__(self) -> dict[str, Any]:
         """Exclude unpicklable threading.local from serialization."""
         state = self.__dict__.copy()
         state.pop("_local", None)
         return state
 
-    def __setstate__(self, state: Dict[str, Any]) -> None:
+    def __setstate__(self, state: dict[str, Any]) -> None:
         """Restore threading.local after deserialization."""
         self.__dict__.update(state)
         self._local = threading.local()
@@ -408,7 +408,7 @@ class VoxyLevelDataset(Dataset):  # type: ignore[type-arg]
             mem_bytes / 1e6,
         )
 
-    def _load_one(self, conn: sqlite3.Connection, idx: int) -> Dict[str, Any]:
+    def _load_one(self, conn: sqlite3.Connection, idx: int) -> dict[str, Any]:
         """Load a single sample from SQLite.  Used by both __getitem__ and _preload_cache."""
         ws_x, ws_y, ws_z = self.samples[idx]
 
@@ -439,7 +439,7 @@ class VoxyLevelDataset(Dataset):  # type: ignore[type-arg]
             labels32 = self._remap_arr[np.clip(labels32, 0, len(self._remap_arr) - 1)]
 
         # ── Pack as tensors ───────────────────────────────────────
-        result: Dict[str, Any] = {
+        result: dict[str, Any] = {
             "y_position": torch.tensor(y_position, dtype=torch.long),
             "labels32": _compact_block_tensor(labels32),  # [32, 32, 32]
             "block_y_min": torch.tensor(block_y_min, dtype=torch.long),
@@ -457,7 +457,7 @@ class VoxyLevelDataset(Dataset):  # type: ignore[type-arg]
 
         return result
 
-    def __getitem__(self, idx: int) -> Dict[str, Any]:
+    def __getitem__(self, idx: int) -> dict[str, Any]:
         if self._cache is not None:
             return self._cache[idx]
         return self._load_one(self._get_conn(), idx)
@@ -469,13 +469,13 @@ class VoxyLevelDataset(Dataset):  # type: ignore[type-arg]
 
 
 def voxy_level_collate(
-    batch: List[Dict[str, Any]],
-) -> Dict[str, torch.Tensor]:
+    batch: list[dict[str, Any]],
+) -> dict[str, torch.Tensor]:
     """Collate a batch of VoxyLevelDataset samples into stacked tensors.
 
     Works for both 3D (L0/L1) and 2D (L2-L4) input schemas.
     """
-    result: Dict[str, torch.Tensor] = {
+    result: dict[str, torch.Tensor] = {
         "y_position": torch.stack([s["y_position"] for s in batch]),
         "labels32": torch.stack([s["labels32"] for s in batch]),
         "block_y_min": torch.stack([s["block_y_min"] for s in batch]),
@@ -561,7 +561,7 @@ class VoxyLevelWithParentDataset(Dataset):  # type: ignore[type-arg]
         db_path: str | Path,
         level: int,
         min_coverage: float = 1.0,
-        vocab_remap: Optional[Dict[int, int]] = None,
+        vocab_remap: dict[int, int] | None = None,
         cache: bool = False,
     ) -> None:
         assert 0 <= level <= 3, "VoxyLevelWithParentDataset: level must be 0–3 (L4 has no parent)"
@@ -603,7 +603,7 @@ class VoxyLevelWithParentDataset(Dataset):  # type: ignore[type-arg]
             )
 
         # In-memory cache: pre-load all samples to eliminate per-batch SQLite I/O
-        self._cache: Optional[List[Dict[str, Any]]] = None
+        self._cache: list[dict[str, Any]] | None = None
         if cache:
             self._preload_cache()
 
@@ -612,12 +612,12 @@ class VoxyLevelWithParentDataset(Dataset):  # type: ignore[type-arg]
             self._local.conn = sqlite3.connect(self.db_path)
         return self._local.conn
 
-    def __getstate__(self) -> Dict[str, Any]:
+    def __getstate__(self) -> dict[str, Any]:
         state = self.__dict__.copy()
         state.pop("_local", None)
         return state
 
-    def __setstate__(self, state: Dict[str, Any]) -> None:
+    def __setstate__(self, state: dict[str, Any]) -> None:
         self.__dict__.update(state)
         self._local = threading.local()
 
@@ -664,7 +664,7 @@ class VoxyLevelWithParentDataset(Dataset):  # type: ignore[type-arg]
             mem_bytes / 1e6,
         )
 
-    def _load_one(self, conn: sqlite3.Connection, idx: int) -> Dict[str, Any]:
+    def _load_one(self, conn: sqlite3.Connection, idx: int) -> dict[str, Any]:
         """Load a single sample (base + parent) from SQLite."""
         sample = self.base._load_one(conn, idx)
         ws_x, ws_y, ws_z = self.base.samples[idx]
@@ -698,7 +698,7 @@ class VoxyLevelWithParentDataset(Dataset):  # type: ignore[type-arg]
         sample["parent_blocks"] = _compact_block_tensor(parent_blocks)
         return sample
 
-    def __getitem__(self, idx: int) -> Dict[str, Any]:
+    def __getitem__(self, idx: int) -> dict[str, Any]:
         if self._cache is not None:
             return self._cache[idx]
         return self._load_one(self._get_conn(), idx)
@@ -707,6 +707,6 @@ class VoxyLevelWithParentDataset(Dataset):  # type: ignore[type-arg]
 __all__ = [
     "VoxyLevelDataset",
     "VoxyLevelWithParentDataset",
-    "voxy_level_collate",
     "extract_parent_from_coarser",
+    "voxy_level_collate",
 ]

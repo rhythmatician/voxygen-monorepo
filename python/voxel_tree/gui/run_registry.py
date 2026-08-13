@@ -18,12 +18,12 @@ Schema:
 
 from __future__ import annotations
 
+import importlib
 import json
 import os
 import sys
 import types
-import importlib
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -53,7 +53,7 @@ _RUNS_ROOT = _find_project_root(Path(__file__).resolve().parent) / "runs"
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _read_checkpoint_epoch(checkpoint_path: Path) -> int | None:
@@ -63,7 +63,7 @@ def _read_checkpoint_epoch(checkpoint_path: Path) -> int | None:
     checkpoint does not contain an integer-like ``epoch`` field.
     """
     try:
-        import torch  # noqa: PLC0415
+        import torch
     except Exception:
         return None
 
@@ -316,7 +316,13 @@ class RunRegistry:
             # If we can see Voxy train checkpoints, upstream data-acquisition
             # must have completed at least once. Mark these done to avoid
             # stale propagation that would otherwise hide green train nodes.
-            for sid in ("pregen", "harvest", "extract_octree", "dumpnoise", "import_voxy"):
+            for sid in (
+                "pregen",
+                "harvest",
+                "extract_octree",
+                "dumpnoise",
+                "import_voxy",
+            ):
                 _set_success(sid)
 
     # ------------------------------------------------------------------

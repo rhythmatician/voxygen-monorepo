@@ -21,11 +21,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any, Sequence
+from typing import Any
 
 import torch
-
 
 # ---------------------------------------------------------------------------
 # TensorSpec — one named tensor in a contract
@@ -74,7 +74,7 @@ class TensorSpec:
         """Return a human-readable mismatch message, or None if OK."""
         if self.matches_tensor(t):
             return None
-        return f"Tensor '{self.name}': expected shape {self.shape}, " f"got {tuple(t.shape)}"
+        return f"Tensor '{self.name}': expected shape {self.shape}, got {tuple(t.shape)}"
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a JSON-friendly dict (for sidecar files)."""
@@ -92,7 +92,7 @@ class TensorSpec:
         return d
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "TensorSpec":
+    def from_dict(cls, d: dict[str, Any]) -> TensorSpec:
         """Deserialize from a sidecar dict."""
         return cls(
             name=d["name"],
@@ -193,11 +193,11 @@ class ModelContract:
         """
         if len(inputs) != len(self.inputs):
             raise ContractViolation(
-                f"[{self.contract_id}] Expected {len(self.inputs)} inputs, " f"got {len(inputs)}"
+                f"[{self.contract_id}] Expected {len(self.inputs)} inputs, got {len(inputs)}"
             )
         if len(outputs) != len(self.outputs):
             raise ContractViolation(
-                f"[{self.contract_id}] Expected {len(self.outputs)} outputs, " f"got {len(outputs)}"
+                f"[{self.contract_id}] Expected {len(self.outputs)} outputs, got {len(outputs)}"
             )
         errors: list[str] = []
         for spec, t in zip(self.inputs, inputs):
@@ -249,7 +249,7 @@ class ModelContract:
         }
 
     @classmethod
-    def from_sidecar(cls, d: dict[str, Any]) -> "ModelContract":
+    def from_sidecar(cls, d: dict[str, Any]) -> ModelContract:
         """Reconstruct a (partial) contract from a sidecar JSON dict."""
         return cls(
             model_name=d.get("model_name", "unknown"),
@@ -327,13 +327,9 @@ def compare_specs(
             missing = sorted(req_set - prod_set)
             extra = sorted(prod_set - req_set)
             if missing:
-                mismatches.append(
-                    f"'{req.name}' missing channels: {missing}"
-                )
+                mismatches.append(f"'{req.name}' missing channels: {missing}")
             if extra:
-                mismatches.append(
-                    f"'{req.name}' has extra channels not in contract: {extra}"
-                )
+                mismatches.append(f"'{req.name}' has extra channels not in contract: {extra}")
             # Check channel ordering if sets match
             if not missing and not extra and prod.channels != req.channels:
                 mismatches.append(
@@ -357,4 +353,3 @@ def compare_specs(
 
 class ContractViolation(Exception):
     """Raised when live tensors don't match the declared contract."""
-

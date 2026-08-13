@@ -18,10 +18,9 @@ See Also
 - ``voxel_tree.contracts.catalog``   — all contract revisions, one per model family
 """
 
-from voxel_tree.contracts.spec import ModelContract, TensorSpec
 from voxel_tree.contracts.registry import (
-    AlignmentIssue,
     CONTRACTS,
+    AlignmentIssue,
     check_track_alignment,
     get_contract,
     latest_revision,
@@ -29,10 +28,11 @@ from voxel_tree.contracts.registry import (
     register,
     validate_checkpoint_contract,
 )
+from voxel_tree.contracts.spec import ModelContract, TensorSpec
 
 __all__ = [
-    "AlignmentIssue",
     "CONTRACTS",
+    "AlignmentIssue",
     "ModelContract",
     "TensorSpec",
     "check_track_alignment",

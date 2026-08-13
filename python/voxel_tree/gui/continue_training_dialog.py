@@ -25,7 +25,7 @@ def _load_checkpoint_info(path: Path) -> dict[str, Any] | None:
     if not path.exists():
         return None
     try:
-        import torch  # noqa: PLC0415
+        import torch
 
         ckpt = torch.load(str(path), map_location="cpu", weights_only=False)
         history: list[dict[str, Any]] = ckpt.get("history", [])
@@ -34,7 +34,9 @@ def _load_checkpoint_info(path: Path) -> dict[str, Any] | None:
 
         # Average block_acc over the last min(5, n) epochs
         recent = history[-5:] if len(history) >= 5 else history
-        avg_acc = sum(r.get("block_acc", 0.0) for r in recent) / len(recent) if recent else float("nan")
+        avg_acc = (
+            sum(r.get("block_acc", 0.0) for r in recent) / len(recent) if recent else float("nan")
+        )
 
         # Average elapsed_seconds → minutes/epoch
         times = [r["elapsed_seconds"] for r in recent if "elapsed_seconds" in r]
@@ -96,7 +98,13 @@ class ContinueTrainingDialog(QDialog):
         # ── Table ──
         self._table = QTableWidget(5, 5)
         self._table.setHorizontalHeaderLabels(
-            ["Level", "Epochs Trained", "Best Loss", "Avg Acc (last 5)", "Avg min/epoch"]
+            [
+                "Level",
+                "Epochs Trained",
+                "Best Loss",
+                "Avg Acc (last 5)",
+                "Avg min/epoch",
+            ]
         )
         self._table.verticalHeader().setVisible(False)
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -138,8 +146,13 @@ class ContinueTrainingDialog(QDialog):
                 acc_str = "—"
                 time_str = "—"
 
-            cols = [lv_item, QTableWidgetItem(epochs_str), QTableWidgetItem(loss_str),
-                    QTableWidgetItem(acc_str), QTableWidgetItem(time_str)]
+            cols = [
+                lv_item,
+                QTableWidgetItem(epochs_str),
+                QTableWidgetItem(loss_str),
+                QTableWidgetItem(acc_str),
+                QTableWidgetItem(time_str),
+            ]
             for col, item in enumerate(cols):
                 if col > 0:
                     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)

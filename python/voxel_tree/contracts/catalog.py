@@ -25,12 +25,10 @@ to revision 1 here (the first contract-tracked revision).
 
 from __future__ import annotations
 
-from voxel_tree.contracts.spec import ModelContract, TensorSpec
-
 # We import register locally to avoid circular import issues.
 # It's fine — this module is loaded by registry._ensure_catalog_loaded().
 from voxel_tree.contracts.registry import register as _register
-
+from voxel_tree.contracts.spec import ModelContract, TensorSpec
 
 # ══════════════════════════════════════════════════════════════════════════
 #  DENSITY
@@ -391,5 +389,3 @@ _register(
         export_fn="voxel_tree.tasks.voxy.voxy_train:train_voxy_level",  # TODO: add per-level ONNX export
     )
 )
-
-

@@ -194,7 +194,11 @@ class ProfileDeleteDialog(QDialog):
             self._checkboxes.append((chk, path))
 
         # Always-present items
-        _add_item("Profile YAML", _PROFILES_DIR / f"{profile_name}.yaml", exists_required=False)
+        _add_item(
+            "Profile YAML",
+            _PROFILES_DIR / f"{profile_name}.yaml",
+            exists_required=False,
+        )
         _add_item("Run state", _RUNS_DIR / profile_name, exists_required=False)
 
         # Per-profile directories derived from the profile YAML
@@ -313,12 +317,16 @@ class ProfileEditorDialog(QDialog):
         form_layout.addWidget(meta_box)
 
         # ── Server (read-only — values come from server.properties) ──
-        from voxel_tree.gui.server_manager import get_rcon_settings  # noqa: PLC0415
+        from voxel_tree.gui.server_manager import get_rcon_settings
 
         srv = get_rcon_settings()
         s_box = self._group("Server (from server.properties)")
         s_form = QFormLayout(s_box)
-        for key, label in [("host", "Host"), ("port", "Port"), ("password", "Password")]:
+        for key, label in [
+            ("host", "Host"),
+            ("port", "Port"),
+            ("password", "Password"),
+        ]:
             lbl = QLabel(str(srv[key]))
             lbl.setStyleSheet("color:#888;")
             s_form.addRow(label, lbl)
@@ -331,12 +339,25 @@ class ProfileEditorDialog(QDialog):
         d_box = self._group("Data")
         d_form = QFormLayout(d_box)
         self._add_str(
-            d_form, "data.voxy_dir", "Voxy Dir", data.get("voxy_dir", "../LODiffusion/run/saves")
+            d_form,
+            "data.voxy_dir",
+            "Voxy Dir",
+            data.get("voxy_dir", "../LODiffusion/run/saves"),
         )
-        self._add_str(d_form, "data.data_dir", "Data Dir", data.get("data_dir", "data/voxy_octree"))
+        self._add_str(
+            d_form,
+            "data.data_dir",
+            "Data Dir",
+            data.get("data_dir", "data/voxy_octree"),
+        )
         self._add_int_opt(d_form, "data.max_sections", "Max Sections", data.get("max_sections"))
         self._add_float(
-            d_form, "data.min_solid", "Min Solid Frac", data.get("min_solid", 0.02), 0.0, 1.0
+            d_form,
+            "data.min_solid",
+            "Min Solid Frac",
+            data.get("min_solid", 0.02),
+            0.0,
+            1.0,
         )
         self._add_float(d_form, "data.val_split", "Val Split", data.get("val_split", 0.1), 0.0, 0.5)
         form_layout.addWidget(d_box)
@@ -346,13 +367,22 @@ class ProfileEditorDialog(QDialog):
         t_box = self._group("Training")
         t_form = QFormLayout(t_box)
         self._add_str(
-            t_form, "train.output_dir", "Output Dir", train.get("output_dir", "models/new_profile")
+            t_form,
+            "train.output_dir",
+            "Output Dir",
+            train.get("output_dir", "models/new_profile"),
         )
         self._add_int_opt(t_form, "train.max_samples", "Max Samples", train.get("max_samples"))
         self._add_int(t_form, "train.epochs", "Epochs", train.get("epochs", 20), 1, 10000)
         self._add_int(t_form, "train.batch_size", "Batch Size", train.get("batch_size", 4), 1, 512)
         self._add_float(
-            t_form, "train.lr", "Learning Rate", train.get("lr", 0.0001), 1e-6, 0.1, decimals=6
+            t_form,
+            "train.lr",
+            "Learning Rate",
+            train.get("lr", 0.0001),
+            1e-6,
+            0.1,
+            decimals=6,
         )
         self._add_float(
             t_form,
@@ -442,7 +472,13 @@ class ProfileEditorDialog(QDialog):
         self._fields[key] = w
 
     def _add_int(
-        self, form: QFormLayout, key: str, label: str, value: int, mn: int = 0, mx: int = 999999
+        self,
+        form: QFormLayout,
+        key: str,
+        label: str,
+        value: int,
+        mn: int = 0,
+        mx: int = 999999,
     ) -> None:
         w = QSpinBox()
         w.setRange(mn, mx)
@@ -537,9 +573,7 @@ class ProfileEditorDialog(QDialog):
         for key, widget in self._fields.items():
             if isinstance(widget, QLineEdit):
                 _set(self._data, key, widget.text().strip())
-            elif isinstance(widget, QSpinBox):
-                _set(self._data, key, widget.value())
-            elif isinstance(widget, QDoubleSpinBox):
+            elif isinstance(widget, QSpinBox) or isinstance(widget, QDoubleSpinBox):
                 _set(self._data, key, widget.value())
             elif hasattr(widget, "_spin") and hasattr(widget, "_chk"):
                 # Optional int widget

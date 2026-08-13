@@ -46,9 +46,9 @@ from typing import Any
 
 import numpy as np
 import numpy.typing as npt
-from voxel_tree.utils.biome_mapping import BIOME_NAME_TO_ID, UNKNOWN_BIOME_ID
 from tqdm import tqdm
 
+from voxel_tree.utils.biome_mapping import BIOME_NAME_TO_ID, UNKNOWN_BIOME_ID
 from voxel_tree.utils.progress import report as _report_progress
 
 # ---------------------------------------------------------------------------
@@ -124,9 +124,7 @@ def parse_biome_names(flat_names: list[str]) -> npt.NDArray[np.int32]:
     ids = np.array(
         [BIOME_NAME_TO_ID.get(name, UNKNOWN_BIOME_ID) for name in flat_names],
         dtype=np.int32,
-    ).reshape(
-        16, 16
-    )  # (x, z)
+    ).reshape(16, 16)  # (x, z)
     return ids.T  # → (z, x)
 
 
@@ -308,9 +306,9 @@ def run_octree(args: argparse.Namespace) -> None:
     total_skipped = 0
     total_missing = 0
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("  VoxelTree — Add Column Heights to NPZs")
-    print(f"{'='*60}\n")
+    print(f"{'=' * 60}\n")
 
     for level in range(max_level + 1):
         level_dir = data_dir / f"level_{level}"
@@ -323,11 +321,11 @@ def run_octree(args: argparse.Namespace) -> None:
             print(f"  L{level}: no NPZ files, skipping")
             continue
 
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print(f"  L{level}: Processing {len(files):,} files")
         print(f"  Section footprint: {32 * 2**level}×{32 * 2**level} blocks")
-        print(f"  Chunks per section axis: {2**(level+1)}")
-        print(f"{'='*60}")
+        print(f"  Chunks per section axis: {2 ** (level + 1)}")
+        print(f"{'=' * 60}")
 
         updated = 0
         skipped_nocoord = 0
@@ -378,12 +376,12 @@ def run_octree(args: argparse.Namespace) -> None:
         total_skipped += skipped_nocoord
         total_missing += skipped_nodata
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("  OCTREE COLUMN-HEIGHTS COMPLETE")
     print(f"  Updated:      {total_updated:,}")
     print(f"  Missing data: {total_missing:,}")
     print(f"  Bad coords:   {total_skipped:,}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
     if total_updated == 0:
         print("\nERROR: No files were updated — check noise dump coverage")
@@ -407,9 +405,7 @@ def run_octree(args: argparse.Namespace) -> None:
                 if hm is None:
                     raise ValueError("heightmap32 is None")
                 print(f"\n  Verification L{level} ({sf.name}):")
-                print(
-                    f"    heightmap32: shape={hm.shape} " f"min={hm.min():.3f} max={hm.max():.3f}"
-                )
+                print(f"    heightmap32: shape={hm.shape} min={hm.min():.3f} max={hm.max():.3f}")
                 labels = ["surface", "ocean_floor", "slope_x", "slope_z", "curvature"]
                 for i, lbl in enumerate(labels):
                     plane = hm[i]
@@ -438,7 +434,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "data_dir",
         type=Path,
-        help="Directory containing NPZ files " "(level_N/ subdirs).",
+        help="Directory containing NPZ files (level_N/ subdirs).",
     )
     parser.add_argument(
         "--noise-dump-dir",
@@ -455,7 +451,6 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     run_octree(args)
-    return
 
 
 if __name__ == "__main__":

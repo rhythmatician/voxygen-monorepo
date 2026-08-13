@@ -52,7 +52,7 @@ To prevent API hallucination and version drift, abide by the repository's pinned
 * **Java Environment:** Pinned JDK version declared in `java/gradle.properties`.
 * **Mod Loader:** Fabric Loom as configured in `java/build.gradle`. Do NOT assume NeoForge or Forge APIs exist.
 * **Mappings:** Official / Yarn mappings as declared in `java/gradle.properties`.
-* **Dependencies:** Use ONLY libraries imported in `java/build.gradle` and `python/requirements.txt`. Do NOT invent unapproved third-party imports.
+* **Dependencies:** Use ONLY libraries imported in `java/build.gradle` and `python/pyproject.toml`. Do NOT invent unapproved third-party imports.
 
 ---
 

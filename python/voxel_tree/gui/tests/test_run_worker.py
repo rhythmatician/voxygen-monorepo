@@ -25,9 +25,7 @@ def test_vt_root_points_to_repo_root() -> None:
     # The package directory moved from `VoxelTree/` to `voxel_tree/` as part of
     # the new-architecture refactor. Accept either layout for backwards
     # compatibility.
-    assert (expected / "VoxelTree").is_dir() or (
-        expected / "voxel_tree"
-    ).is_dir(), (
+    assert (expected / "VoxelTree").is_dir() or (expected / "voxel_tree").is_dir(), (
         "repo root missing VoxelTree package directory (expected either VoxelTree/ or voxel_tree/)"
     )
 
@@ -58,7 +56,9 @@ def test_progress_signal_parsed(monkeypatch):
 
             self.stdout = FakeStdout(lines)
             self.stdin = type(
-                "FakeStdin", (), {"write": lambda self, x: None, "close": lambda self: None}
+                "FakeStdin",
+                (),
+                {"write": lambda self, x: None, "close": lambda self: None},
             )()
             self.returncode = 0
 

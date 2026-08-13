@@ -39,10 +39,11 @@ import net.minecraft.world.chunk.ChunkStatus;
  *
  * <h3>Architecture — Demand-driven Voxy Pipeline</h3>
  * <p>Generates sections from demand requests around the player. Results are
- * written to Voxy through {@link VoxySectionWriter}.
+ * written to Voxy through {@link VoxelVolumeWriter}.
  *
  * <p>Sections are prioritised by Manhattan distance from the player.
  */
+@SuppressWarnings("deprecation")
 public final class LodGenerationService {
 
     /** How many sections of Y range to generate (from y=-64 upward). */
@@ -124,6 +125,13 @@ public final class LodGenerationService {
 
             private static final int NEAR_SEED_L0_RADIUS =
                 Math.max(1, Config.getInt("nearSeedL0Radius", NEAR_SEED_L4_RADIUS));
+
+    /**
+     * Mysterious-Name fix: {@code +4} is the voxel-center offset.
+     * One WorldSection is 32 blocks; L0 is 16 blocks. Centering the sample
+     * avoids seam bias. Named to replace magic {@code +4} in yPosition calc.
+     */
+    private static final int VOXEL_CENTER_OFFSET = 4;
 
             private static final int[] L2_CLIMATE_CHANNELS = {
                 RouterField.TEMPERATURE.ordinal(),
@@ -499,9 +507,12 @@ public final class LodGenerationService {
 
                     if (voxyModelRunner != null && noiseAccess != null
                         && voxyModelRunner.vocabulary() != null) {
-                VoxyBlockMapper blockMapper = VoxyBlockMapper.build(
-                    voxyModelRunner.vocabulary(), voxyMapper, biomeRegistry);
-                VoxySectionWriter writer = new VoxySectionWriter(worldEngine, blockMapper);
+                int[] canonicalBiomeToVoxy = RealVoxyVolumeWriter.buildBiomeMap(voxyMapper, biomeRegistry);
+                int[] canonicalBlockToVoxy = RealVoxyVolumeWriter.buildBlockMap(
+                        voxyModelRunner.vocabulary(), voxyMapper);
+                VoxyIdMaps idMaps = new VoxyIdMaps(canonicalBiomeToVoxy, canonicalBlockToVoxy);
+                // Message-Chains fix: factory encapsulates VoxyCompat.getMapper chain.
+                VoxelVolumeWriter writer = RealVoxyVolumeWriter.create(worldEngine, idMaps);
 
                 waitForPlayerPosition();
                 if (stopRequested.get()) return;
@@ -513,7 +524,7 @@ public final class LodGenerationService {
                         ? voxyModelRunner.vocabulary().size() : "none",
                     ShadowRouterJobQueue.inFlightSize());
 
-                boolean produced = runDemandVoxyPipeline(world, worldEngine, writer, blockMapper);
+                boolean produced = runDemandVoxyPipeline(world, writer);
                 if (produced) return;
 
                 HelloTerrainMod.LOGGER.warn(
@@ -536,6 +547,9 @@ public final class LodGenerationService {
                     HeightmapFallbackGenerator.resolveBlockIds(voxyMapper);
             int[] fallbackBiomeMappings =
                     HeightmapFallbackGenerator.resolveBiomeMappings(voxyMapper, biomeRegistry);
+            int[] fallbackBlockMap = RealVoxyVolumeWriter.buildFallbackBlockMap(fallbackBlocks);
+            VoxyIdMaps fallbackMaps = new VoxyIdMaps(fallbackBiomeMappings, fallbackBlockMap);
+            VoxelVolumeWriter fallbackWriter = RealVoxyVolumeWriter.create(worldEngine, fallbackMaps);
 
             waitForPlayerPosition();
             if (stopRequested.get()) return;
@@ -544,8 +558,7 @@ public final class LodGenerationService {
                     "[LodGen] Starting FALLBACK generation from player section ({}, {})",
                     playerSectionX, playerSectionZ);
 
-            runFallbackPipeline(world, worldEngine, voxyMapper,
-                    fallbackBlocks, fallbackBiomeMappings);
+            runFallbackPipeline(world, fallbackWriter);
 
         } catch (Exception e) {
             if (!stopRequested.get()) {
@@ -863,10 +876,8 @@ public final class LodGenerationService {
      * <p>Reuses all existing infrastructure: spiral ordering, column context
      * caching, surface Y-range filtering, and deduplication.
      */
-    private void runFallbackPipeline(World world, Object worldEngine,
-                                      Object voxyMapper,
-                                      HeightmapFallbackGenerator.FallbackBlockIds blockIds,
-                                      int[] biomeVoxyMappings) {
+    private void runFallbackPipeline(World world, VoxelVolumeWriter writer) {
+        Object worldEngine = (writer instanceof RealVoxyVolumeWriter r) ? r.getWorldEngine() : null;
         int totalSections = 0;
         int skippedAir = 0;
         int skippedExisting = 0;
@@ -906,15 +917,6 @@ public final class LodGenerationService {
                 // Get or build column context (cached across Y sections)
                 ColumnContext ctx = getOrBuildColumnContext(world, sx, sz);
 
-                // Build per-column Voxy biome IDs
-                int[][] biomeVoxyIds = new int[16][16];
-                for (int lx = 0; lx < 16; lx++) {
-                    for (int lz = 0; lz < 16; lz++) {
-                        int canonical = ctx.biomeIdx()[lx][lz];
-                        biomeVoxyIds[lx][lz] = (canonical >= 0 && canonical < biomeVoxyMappings.length)
-                                ? biomeVoxyMappings[canonical] : 0;
-                    }
-                }
 
                 // Compute Y range from surface heightmap
                 float minH = Float.MAX_VALUE, maxH = -Float.MAX_VALUE;
@@ -958,25 +960,33 @@ public final class LodGenerationService {
                         continue;
                     }
 
-                    Object section = HeightmapFallbackGenerator.generateSection(
-                            sx, sy, sz, ctx.rawHm(), ctx.oceanFloorHm(),
-                            ctx.biomeIdx(), biomeVoxyIds, blockIds, voxyMapper);
-
-                    if (section == null) {
-                        skippedAir++;
-                    } else {
-                        // Double-check before write to avoid races with real chunk ingestion.
-                        if (VoxyCompat.sectionExists(worldEngine, sx, sy, sz)) {
+                    VoxelVolume vol = VoxelPredictionDecoder.fromFallback(
+                            sy, ctx.rawHm(), ctx.oceanFloorHm(), ctx.biomeIdx());
+                    SectionPos pos = new SectionPos(sx, sy, sz);
+                    WriteOutcome outcome;
+                    try {
+                        outcome = writer.writeSection(pos, vol);
+                    } catch (VolumeUnavailableException e) {
+                        HelloTerrainMod.LOGGER.warn("[LodGen] Fallback write unavailable: {}", e.getMessage());
+                        generatedSections.add(key);
+                        continue;
+                    }
+                    switch (outcome.status()) {
+                        case WRITTEN -> {
+                            totalSections++;
+                            anyNew = true;
+                            generatedSections.add(key);
+                        }
+                        case SKIPPED_AIR -> {
+                            skippedAir++;
+                            generatedSections.add(key);
+                        }
+                        case SKIPPED_EXISTS -> {
                             skippedExisting++;
                             generatedSections.add(key);
-                            continue;
                         }
-                        VoxyCompat.insertUpdate(worldEngine, section);
-                        totalSections++;
-                        anyNew = true;
+                        default -> throw new IllegalStateException("Unknown outcome: " + outcome.status());
                     }
-
-                    generatedSections.add(key);
                 }
 
                 columnsProcessed++;
@@ -1043,9 +1053,8 @@ public final class LodGenerationService {
      * Demand-driven runtime pipeline consuming Voxy traversal requests from
      * ShadowRouterJobQueue and servicing them through VoxyModelRunner.
      */
-    private boolean runDemandVoxyPipeline(World world, Object worldEngine,
-                                          VoxySectionWriter writer,
-                                          VoxyBlockMapper blockMapper) {
+    private boolean runDemandVoxyPipeline(World world, VoxelVolumeWriter writer) {
+        Object worldEngine = (writer instanceof RealVoxyVolumeWriter r) ? r.getWorldEngine() : null;
         int dequeued = 0;
         int written = 0;
         int skipped = 0;
@@ -1092,7 +1101,7 @@ public final class LodGenerationService {
             boolean requeued = false;
             try {
                 DemandProcessResult result =
-                        processDemandRequest(world, worldEngine, writer, blockMapper, req);
+                        processDemandRequest(world, writer, req);
                 switch (result) {
                     case WRITTEN -> written++;
                     case SKIPPED -> skipped++;
@@ -1274,10 +1283,20 @@ public final class LodGenerationService {
                 ShadowRouterJobQueue.inFlightSize(), elapsedMs / 1000);
     }
 
-    private DemandProcessResult processDemandRequest(World world, Object worldEngine,
-                                                     VoxySectionWriter writer,
-                                                     VoxyBlockMapper blockMapper,
+    /**
+     * Orchestrator for one demand request. Reaches into {@link VoxyCompat}
+     * / {@link VoxyWorldBinding} intentionally — this is the demand
+     * pipeline coordinator, not Feature Envy. Fine-grained helpers
+     * ({@code isRegionReady}, {@code computeOccupancy}) live on the
+     * binding; this method sequences them. Mask/octant logic stays on
+     * {@code VoxyWorldBinding} (see {@code computeChildExistenceMask},
+     * {@code computeOccupiedOctantMask}); this method only decides
+     * skip/defer/write.
+     */
+    private DemandProcessResult processDemandRequest(World world,
+                                                     VoxelVolumeWriter writer,
                                                      VoxyRequestDecoder.VoxyNodeRequest req) {
+        Object worldEngine = (writer instanceof RealVoxyVolumeWriter r) ? r.getWorldEngine() : null;
         if (req == null || voxyModelRunner == null || samplerFactory == null) {
             return DemandProcessResult.FAILED;
         }
@@ -1307,17 +1326,17 @@ public final class LodGenerationService {
                 return DemandProcessResult.DEFERRED;
             }
 
-            int[][][] parentBlocks = VoxyCompat.readWorldSectionBlocks(
-                    worldEngine, parentLevel, pX, pY, pZ);
-            if (parentBlocks == null) {
+            int octant = (wsX & 1) | ((wsZ & 1) << 1) | ((wsY & 1) << 2);
+            parentInput = VoxyWorldBinding.readAndUpsampleParentOctant(
+                    worldEngine, parentLevel, pX, pY, pZ, octant);
+            if (parentInput == null) {
                 enqueueParentRequest(parentLevel, pX, pY, pZ);
                 return DemandProcessResult.DEFERRED;
             }
-            int octant = (wsX & 1) | ((wsZ & 1) << 1) | ((wsY & 1) << 2);
-            parentInput = VoxyCompat.extractOctantAndUpsample(parentBlocks, octant);
         }
 
-        int yPosition = (wsY << (level + 1)) + 4;
+        // +4 voxel-center offset (see VOXEL_CENTER_OFFSET): centers sample in 32^3 WorldSection
+        int yPosition = (wsY << (level + 1)) + VOXEL_CENTER_OFFSET;
         VoxyModelRunner.LevelResult modelOut = null;
         int[][] biome32;
         long inferStartNs;
@@ -1362,15 +1381,24 @@ public final class LodGenerationService {
         // Do not skip writing the requested level when occupancy predicts no child expansion.
         // Voxy can still render this coarse level as fallback while finer children are absent.
 
-        byte preserveOctantsMask = loadedChunkOctantMask(world, level, wsX, wsY, wsZ);
-        if (preserveOctantsMask == (byte) 0xFF) {
+        byte preserveMask = loadedChunkOctantMask(world, level, wsX, wsY, wsZ);
+        if (preserveMask == (byte) 0xFF) {
             return DemandProcessResult.SKIPPED;
         }
-
-        int[][][] writeBlocks = padYTo32(modelOut.blocks(), modelOut.dimY());
-        int nonAir = writer.writeOctreeToLevel(
-                writeBlocks, biome32, level, wsX, wsY, wsZ, preserveOctantsMask);
-        return nonAir > 0 ? DemandProcessResult.WRITTEN : DemandProcessResult.SKIPPED;
+        VoxelVolume vol = VoxelPredictionDecoder.fromOctreeArgmax(modelOut.blocks(), biome32);
+        int sx0 = WorldSectionCoord.worldSectionToBlockMin(wsX, level) >> 4;
+        int sy0 = WorldSectionCoord.worldSectionToBlockMin(wsY, level) >> 4;
+        int sz0 = WorldSectionCoord.worldSectionToBlockMin(wsZ, level) >> 4;
+        SectionPos origin = new SectionPos(sx0, sy0, sz0);
+        Level lvl = Level.values()[level];
+        WriteOutcome outcome;
+        try {
+            outcome = writer.writeRegion(origin, lvl, vol);
+        } catch (VolumeUnavailableException e) {
+            HelloTerrainMod.LOGGER.warn("[LodGen] Octree write unavailable: {}", e.getMessage());
+            return DemandProcessResult.SKIPPED;
+        }
+        return outcome.status() == WriteOutcome.Status.WRITTEN ? DemandProcessResult.WRITTEN : DemandProcessResult.SKIPPED;
     }
 
     private void logInferenceStart(int level, int wsX, int wsY, int wsZ, int yPosition) {
@@ -1562,18 +1590,6 @@ public final class LodGenerationService {
         return out;
     }
 
-    private int[][][] padYTo32(int[][][] blocks, int dimY) {
-        if (dimY >= 32) {
-            return blocks;
-        }
-        int[][][] out = new int[32][32][32];
-        for (int y = 0; y < dimY; y++) {
-            for (int z = 0; z < 32; z++) {
-                System.arraycopy(blocks[y][z], 0, out[y][z], 0, 32);
-            }
-        }
-        return out;
-    }
 
     private void enqueueParentRequest(int parentLevel, int pX, int pY, int pZ) {
         VoxyRequestDecoder.VoxyNodeRequest parentReq = new VoxyRequestDecoder.VoxyNodeRequest();

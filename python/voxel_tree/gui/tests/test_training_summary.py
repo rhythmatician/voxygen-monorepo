@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from voxel_tree.gui.step_definitions import StepDef
-from voxel_tree.gui.training_summary import summarize_build_pairs_run, summarize_training_run
+from voxel_tree.gui.training_summary import (
+    summarize_build_pairs_run,
+    summarize_training_run,
+)
 
 
 def _step(track: str) -> StepDef:
@@ -136,9 +139,9 @@ def test_build_pairs_summary_with_failures_shows_breakdown() -> None:
 
     assert summary is not None
     assert "Failures" in summary["text"]
-    assert "40" in summary["text"]       # total_skipped
-    assert "25" in summary["text"]       # skipped_no_voxy
-    assert "15" in summary["text"]       # skipped_no_dump
+    assert "40" in summary["text"]  # total_skipped
+    assert "25" in summary["text"]  # skipped_no_voxy
+    assert "15" in summary["text"]  # skipped_no_dump
     assert "Missing Voxy section" in summary["text"]
     assert "Missing dump file" in summary["text"]
 

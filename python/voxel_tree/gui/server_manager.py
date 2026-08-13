@@ -297,7 +297,7 @@ class ServerManager(QObject):
 
     # Legacy shim — old callers may still call configure_rcon(); this now
     # reads/writes server.properties instead of storing state in-memory.
-    def configure_rcon(self, host: str, port: int, password: str = "") -> None:  # noqa: D401
+    def configure_rcon(self, host: str, port: int, password: str = "") -> None:
         """Deprecated — prefer :meth:`configure_for_profile`.
 
         Kept for backward compatibility.  Updates server.properties directly.
@@ -333,7 +333,8 @@ class ServerManager(QObject):
 
         self._set_status("starting")
         _JVM_FLAGS = [
-            "-Xmx12g", "-Xms4g",
+            "-Xmx12g",
+            "-Xms4g",
             "-XX:+UseG1GC",
             "-XX:+ParallelRefProcEnabled",
             "-XX:MaxGCPauseMillis=200",
@@ -378,7 +379,7 @@ class ServerManager(QObject):
         password = str(rcon["password"])
 
         try:
-            from voxel_tree.utils.rcon import RconClient  # noqa: PLC0415
+            from voxel_tree.utils.rcon import RconClient
 
             with RconClient(host, port, password, timeout=3.0) as rc:
                 rc.command("stop")

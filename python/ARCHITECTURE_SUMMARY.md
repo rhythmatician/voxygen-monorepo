@@ -117,8 +117,8 @@ LODiffusion/
 └── src/test/java/                        # JUnit 5 tests
 VoxelTree/ (Python ML Training)
 VoxelTree/
-├── pyproject.toml                        # Python 3.11+, torch>=2.0, onnx
-├── requirements.txt                      # Full deps incl. onnxruntime
+├── pyproject.toml                        # Python 3.12+, torch>=2.0, onnx + all deps (managed via uv)
+├── uv.lock                               # Locked dependencies
 ├── README.md
 ├── conversation.md
 ├── data/                                 # Git-ignored training data

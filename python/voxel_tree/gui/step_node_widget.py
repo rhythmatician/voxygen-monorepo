@@ -146,7 +146,7 @@ class StepNodeWidget(QWidget):
         _, border = _COLORS.get(self._status, _COLORS["not_run"])
         return QColor(border)
 
-    def paintEvent(self, _event) -> None:  # noqa: N802
+    def paintEvent(self, _event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
@@ -227,7 +227,7 @@ class StepNodeWidget(QWidget):
     def sizeHint(self) -> QSize:
         return QSize(_DIAMETER, _DIAMETER)
 
-    def mousePressEvent(self, event) -> None:  # noqa: N802
+    def mousePressEvent(self, event) -> None:
         # Only treat left-clicks as normal clicks.  ``event.Button`` was a
         # typo; ``button()`` returns a Qt.MouseButton enum value.
         from PySide6.QtCore import Qt
@@ -236,7 +236,7 @@ class StepNodeWidget(QWidget):
             self.clicked.emit(self.step_id)
         super().mousePressEvent(event)
 
-    def contextMenuEvent(self, event) -> None:  # noqa: N802
+    def contextMenuEvent(self, event) -> None:
         """Show a context menu for the node.
 
         The widget itself merely notifies its parent that a menu was requested;

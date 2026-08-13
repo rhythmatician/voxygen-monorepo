@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-from typing import Any, List
+from typing import Any
 
 import pytest
 from PySide6.QtCore import QEvent
 
 from voxel_tree.gui import app as gui_app
+from voxel_tree.gui import step_definitions
 from voxel_tree.gui.detail_panel import DetailPanel
 from voxel_tree.gui.run_registry import RunRegistry
-from voxel_tree.gui import step_definitions
 from voxel_tree.gui.step_node_widget import StepNodeWidget
 
 
@@ -83,7 +83,7 @@ def test_detailpanel_on_progress_updates_registry_and_parent(monkeypatch):
     class Parent(QWidget):
         def __init__(self):
             super().__init__()
-            self.calls: List[Any] = []
+            self.calls: list[Any] = []
 
         def on_step_progress(self, profile, step):
             self.calls.append((profile, step))
@@ -115,7 +115,7 @@ def test_detailpanel_parses_voxy_epoch_log_and_refreshes_parent():
     class Parent(QWidget):
         def __init__(self):
             super().__init__()
-            self.calls: List[Any] = []
+            self.calls: list[Any] = []
 
         def on_step_progress(self, profile, step):
             self.calls.append((profile, step))
@@ -141,7 +141,7 @@ def test_detailpanel_parses_voxy_epoch_summary_style_log():
     class Parent(QWidget):
         def __init__(self):
             super().__init__()
-            self.calls: List[Any] = []
+            self.calls: list[Any] = []
 
         def on_step_progress(self, profile, step):
             self.calls.append((profile, step))
@@ -167,7 +167,7 @@ def test_detailpanel_continue_training_routes_epochs_to_level_node():
     class Parent(QWidget):
         def __init__(self):
             super().__init__()
-            self.calls: List[Any] = []
+            self.calls: list[Any] = []
 
         def on_step_progress(self, profile, step):
             self.calls.append((profile, step))
@@ -358,6 +358,7 @@ def test_dashboard_table_forwards_row_signals():
 
 def test_main_window_handles_dashboard_run_from_and_cancel(monkeypatch):
     from PySide6.QtCore import QObject, Signal
+
     from voxel_tree.gui import main_window as main_window_module
 
     class DummyServerManager(QObject):
@@ -389,11 +390,15 @@ def test_main_window_handles_dashboard_run_from_and_cancel(monkeypatch):
     events: list[tuple[str, str | None]] = []
 
     monkeypatch.setattr(
-        window, "_on_details_clicked", lambda profile: events.append(("details", profile))
+        window,
+        "_on_details_clicked",
+        lambda profile: events.append(("details", profile)),
     )
     monkeypatch.setattr(window, "_queue_clear", lambda: events.append(("queue_clear", None)))
     monkeypatch.setattr(
-        window._detail, "run_from_step", lambda step_id: events.append(("from", step_id))
+        window._detail,
+        "run_from_step",
+        lambda step_id: events.append(("from", step_id)),
     )
     monkeypatch.setattr(window._detail, "cancel", lambda: events.append(("cancel", None)))
 
