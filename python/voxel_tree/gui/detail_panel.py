@@ -27,7 +27,10 @@ from voxel_tree.gui.step_definitions import (
     TRACK_ORDER,
     StepDef,
 )
-from voxel_tree.gui.training_summary import summarize_build_pairs_run, summarize_training_run
+from voxel_tree.gui.training_summary import (
+    summarize_build_pairs_run,
+    summarize_training_run,
+)
 
 
 class _ParentInterface(Protocol):
@@ -343,7 +346,7 @@ class DetailPanel(QDockWidget):
         """
         profile_dict = self._get_profile_dict()
         if profile_dict is not None:
-            from voxel_tree.gui.dag_definition import ProfileDag  # noqa: PLC0415
+            from voxel_tree.gui.dag_definition import ProfileDag
 
             dag = ProfileDag.from_profile_dict(profile_dict)
             if dag is not None:
@@ -378,7 +381,6 @@ class DetailPanel(QDockWidget):
 
     def _auto_advance(self, completed_step_id: str, exit_code: int) -> None:
         """Superseded by _run_from_targets logic in _on_step_finished.  Kept for safety."""
-        pass
 
     def _launch_worker(self, step_id: str, profile: dict[str, Any]) -> None:
         assert self._registry is not None
@@ -386,9 +388,9 @@ class DetailPanel(QDockWidget):
         self._refresh_buttons()
 
         ts = datetime.now().strftime("%H:%M:%S")
-        self.append_log(f"\n{'─'*60}")
+        self.append_log(f"\n{'─' * 60}")
         self.append_log(f"[{ts}] Starting: {step_id}")
-        self.append_log(f"{'─'*60}")
+        self.append_log(f"{'─' * 60}")
 
         worker = RunWorker(step_id, profile)
         worker.log_line.connect(self._on_log_line)

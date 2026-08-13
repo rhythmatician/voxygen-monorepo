@@ -15,15 +15,15 @@ Correctly ports TerrainProvider.java + CubicSpline.java logic to Python:
 Input layout: [continents, erosion, ridges, weirdness]  (all in roughly [-1, 1])
 """
 
-import sys
 import datetime
+import json
+import sys
+from pathlib import Path
+
 import numpy as np
 import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import TensorDataset, DataLoader
-from pathlib import Path
-import json
+from torch import nn, optim
+from torch.utils.data import DataLoader, TensorDataset
 
 # ============================================================================
 # Minecraft CubicSpline — exact port of CubicSpline.java (Multipoint + Constant)
@@ -568,7 +568,7 @@ def generate_training_data(num_samples=500_000):
 
     for i in range(num_samples):
         if (i + 1) % 50_000 == 0:
-            print(f"  {i+1:,}/{num_samples:,}")
+            print(f"  {i + 1:,}/{num_samples:,}")
         c = inputs[i]  # [continents, erosion, ridges, weirdness]
         outputs[i, 0] = offset_spline.apply(c)
         outputs[i, 1] = factor_spline.apply(c)
@@ -697,13 +697,13 @@ def train_model(
                 pct = (prev - val_loss) / prev * 100
                 pct_str = f" | pct_improve={pct:.4f}%"
             print(
-                f"Epoch {epoch+1}/{epochs}: "
+                f"Epoch {epoch + 1}/{epochs}: "
                 f"train_loss={train_loss:.5e}, val_loss={val_loss:.5e}  "
                 f"w_norm={weight_norm:.3f}{pct_str}"
             )
 
         if val_loss < target_loss:
-            print(f"\n[DONE] Target loss {target_loss:.1e} reached at epoch {epoch+1}!")
+            print(f"\n[DONE] Target loss {target_loss:.1e} reached at epoch {epoch + 1}!")
             if checkpoint_path is not None:
                 save_checkpoint(
                     checkpoint_path,
@@ -734,7 +734,7 @@ def train_model(
         else:
             epochs_without_improvement += 1
             if epochs_without_improvement >= early_stopping_patience:
-                print(f"\nEarly stopping at epoch {epoch+1} (best val_loss: {best_val_loss:.2e})")
+                print(f"\nEarly stopping at epoch {epoch + 1} (best val_loss: {best_val_loss:.2e})")
                 break
 
         if checkpoint_path is not None and (epoch + 1) % checkpoint_interval == 0:
@@ -955,7 +955,11 @@ def _main():
             "ridges": [-1.0, 1.0],
             "weirdness": [-1.0, 1.0],
         },
-        "output_ranges": {"offset": [-0.5, 1.0], "factor": [0.625, 6.3], "jaggedness": [0.0, 2.0]},
+        "output_ranges": {
+            "offset": [-0.5, 1.0],
+            "factor": [0.625, 6.3],
+            "jaggedness": [0.0, 2.0],
+        },
         "hidden_size": 128,
         "layers": "4->128->128->64->3",
         "training_samples": 500_000,

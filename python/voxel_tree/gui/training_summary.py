@@ -84,11 +84,11 @@ def summarize_build_pairs_run(
         lines.append(f"Failures ({total_skipped:,} total):")
         if skipped_no_voxy > 0:
             lines.append(
-                f"  Missing Voxy section:  {skipped_no_voxy:,}" "  (dump exists, no Voxy NPZ)"
+                f"  Missing Voxy section:  {skipped_no_voxy:,}  (dump exists, no Voxy NPZ)"
             )
         if skipped_no_dump > 0:
             lines.append(
-                f"  Missing dump file:     {skipped_no_dump:,}" "  (Voxy exists, no noise dump)"
+                f"  Missing dump file:     {skipped_no_dump:,}  (Voxy exists, no noise dump)"
             )
     else:
         lines.append("")

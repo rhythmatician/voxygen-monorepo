@@ -9,8 +9,9 @@ import yaml  # noqa: F401  (reserved for future profile migrations)
 from PySide6.QtCore import Qt, QTimer, Slot
 from PySide6.QtWidgets import QMainWindow, QMessageBox, QVBoxLayout, QWidget
 
-from voxel_tree.gui.dashboard_table import DashboardTable
+from voxel_tree.gui.continue_training_dialog import ContinueTrainingDialog
 from voxel_tree.gui.dag_definition import ProfileDag
+from voxel_tree.gui.dashboard_table import DashboardTable
 from voxel_tree.gui.detail_panel import DetailPanel
 from voxel_tree.gui.profile_editor import (
     ProfileEditorDialog,
@@ -24,7 +25,6 @@ from voxel_tree.gui.server_manager import ServerManager
 from voxel_tree.gui.server_status_bar import ServerStatusBar
 from voxel_tree.gui.step_definitions import PIPELINE_STEPS, StepDef
 from voxel_tree.gui.training_popup import TrainingResultsPopup
-from voxel_tree.gui.continue_training_dialog import ContinueTrainingDialog
 
 # same logic as profile_editor: we want the workspace/project root, not the
 # interior Python package folder.  ``parents[2]`` handles both development and
@@ -53,7 +53,7 @@ class MainWindow(QMainWindow):
         self.resize(1100, 460)
         print("[MW.init.3] Stylesheet...", flush=True)
         self.setStyleSheet(
-            "QMainWindow { background: #1a1a1a; }" "QMenuBar { background: #252525; color: #ccc; }"
+            "QMainWindow { background: #1a1a1a; }QMenuBar { background: #252525; color: #ccc; }"
         )
 
         print("[MW.init.4] Cache dicts...", flush=True)

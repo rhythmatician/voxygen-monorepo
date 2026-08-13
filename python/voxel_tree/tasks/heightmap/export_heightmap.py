@@ -18,15 +18,15 @@ from pathlib import Path
 import torch
 
 try:
-    from voxel_tree.utils.router_field import RouterField, CLIMATE_FIELDS
+    from voxel_tree.utils.router_field import CLIMATE_FIELDS, RouterField
 except ImportError:
     CLIMATE_FIELDS = frozenset(range(6))
 
 from voxel_tree.tasks.heightmap.train_heightmap import (
-    HeightmapPredictor,
+    CLIMATE_INDICES,
     INPUT_SIZE,
     OUTPUT_SIZE,
-    CLIMATE_INDICES,
+    HeightmapPredictor,
 )
 
 MODEL_CONTRACT = "lodiffusion.v7.heightmap_predictor"
@@ -71,7 +71,14 @@ def export(checkpoint_path: Path, out_dir: Path) -> None:
     try:
         input_names = [RouterField.by_index(i).lower_name for i in CLIMATE_INDICES]
     except Exception:
-        input_names = ["temperature", "vegetation", "continents", "erosion", "depth", "ridges"]
+        input_names = [
+            "temperature",
+            "vegetation",
+            "continents",
+            "erosion",
+            "depth",
+            "ridges",
+        ]
 
     sidecar = {
         "contract": MODEL_CONTRACT,

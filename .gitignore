@@ -31,4 +31,5 @@ python/artifacts/
 # Generic
 *.log
 *.tmp
+.dmypy.json
 tmp/

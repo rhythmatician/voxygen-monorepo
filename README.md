@@ -48,8 +48,7 @@ The old `java/.github/workflows/ci.yml` and `python/.github/workflows/ci.yml` ar
 ## Python from the monorepo root
 
 ```powershell
-pip install -r python/requirements.txt
-pip install -e python          # or: uv pip install -e python
+pip install -e python          # editable install from pyproject.toml (or: uv pip install -e python)
 pytest python -k "not integration"
 python python/scripts/build_voxy_pairs.py --help
 ```

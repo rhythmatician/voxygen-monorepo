@@ -129,7 +129,7 @@ def import_voxy(
             continue
 
         print(
-            f"  level_{level}: importing {len(files):,} files " f"({num_workers} workers) ...",
+            f"  level_{level}: importing {len(files):,} files ({num_workers} workers) ...",
             flush=True,
         )
 
@@ -153,8 +153,7 @@ def import_voxy(
                         rate = level_count / max(elapsed, 0.01)
                         eta = (len(files) - level_count) / max(rate, 1)
                         print(
-                            f"    {level_count:>9,}/{len(files):,} "
-                            f"({rate:,.0f}/s, ETA {eta:.0f}s)",
+                            f"    {level_count:>9,}/{len(files):,} ({rate:,.0f}/s, ETA {eta:.0f}s)",
                             flush=True,
                         )
                     batch.clear()

@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from voxel_tree.gui.step_definitions import StepDef
-from voxel_tree.gui.training_summary import summarize_build_pairs_run, summarize_training_run
+from voxel_tree.gui.training_summary import (
+    summarize_build_pairs_run,
+    summarize_training_run,
+)
 
 
 def _step(track: str) -> StepDef:

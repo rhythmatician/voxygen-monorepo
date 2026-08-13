@@ -91,13 +91,13 @@ class _RowsContainer(QWidget):
     # Drag-and-drop
     # ------------------------------------------------------------------
 
-    def dragEnterEvent(self, event) -> None:  # noqa: N802
+    def dragEnterEvent(self, event) -> None:
         if event.mimeData().hasFormat(MIME_TYPE_PROFILE):
             event.acceptProposedAction()
         else:
             event.ignore()
 
-    def dragMoveEvent(self, event) -> None:  # noqa: N802
+    def dragMoveEvent(self, event) -> None:
         if event.mimeData().hasFormat(MIME_TYPE_PROFILE):
             drop_idx = self._find_drop_index(event.pos().y())
             self._drop_line_y = self._y_for_drop_index(drop_idx)
@@ -106,11 +106,11 @@ class _RowsContainer(QWidget):
         else:
             event.ignore()
 
-    def dragLeaveEvent(self, event) -> None:  # noqa: N802
+    def dragLeaveEvent(self, event) -> None:
         self._drop_line_y = None
         self.update()
 
-    def dropEvent(self, event) -> None:  # noqa: N802
+    def dropEvent(self, event) -> None:
         self._drop_line_y = None
         self.update()
 
@@ -162,7 +162,7 @@ class _RowsContainer(QWidget):
                 return w.y() + w.height() + 1
         return 4
 
-    def paintEvent(self, event) -> None:  # noqa: N802
+    def paintEvent(self, event) -> None:
         super().paintEvent(event)
         if self._drop_line_y is None:
             return

@@ -31,7 +31,9 @@ def main() -> None:
     repo_root = Path(__file__).resolve().parents[2]
     os.chdir(repo_root)
 
-    from voxel_tree.gui.step_definitions import _continue_train_voxy_level_run  # noqa: PLC0415
+    from voxel_tree.gui.step_definitions import (
+        _continue_train_voxy_level_run,
+    )
 
     _continue_train_voxy_level_run(profile, level, additional)
 

@@ -1,6 +1,10 @@
 package net.lodiffusion.shadow;
 
-import java.util.*;
+import java.util.Comparator;
+import java.util.HashSet;
+import java.util.PriorityQueue;
+import java.util.Queue;
+import java.util.Set;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**

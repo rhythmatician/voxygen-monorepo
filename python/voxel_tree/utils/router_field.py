@@ -22,7 +22,7 @@ Usage
 from __future__ import annotations
 
 import enum
-from typing import FrozenSet, List, Sequence
+from collections.abc import Sequence
 
 
 class RouterField(enum.Enum):
@@ -63,22 +63,22 @@ class RouterField(enum.Enum):
     # -- lookup helpers --
 
     @classmethod
-    def by_index(cls, idx: int) -> "RouterField":
+    def by_index(cls, idx: int) -> RouterField:
         """Look up a field by its ordinal index."""
         return _BY_INDEX[idx]
 
     @classmethod
-    def by_name(cls, name: str) -> "RouterField":
+    def by_name(cls, name: str) -> RouterField:
         """Look up a field by its lowercase name (case-insensitive)."""
         return cls[name.upper()]
 
     @classmethod
-    def names(cls) -> List[str]:
+    def names(cls) -> list[str]:
         """Return all 15 lowercase field names in index order."""
         return [f.lower_name for f in cls]
 
     @classmethod
-    def indices(cls) -> List[int]:
+    def indices(cls) -> list[int]:
         """Return ``[0, 1, ..., 14]``."""
         return list(range(COUNT))
 
@@ -93,7 +93,7 @@ _BY_INDEX: dict[int, RouterField] = {f.value: f for f in RouterField}
 # ── Semantic field groups ──────────────────────────────────────────────────
 # These mirror the Java-side ``RouterField.isClimate()`` etc. helpers.
 
-CLIMATE_FIELDS: FrozenSet[int] = frozenset(
+CLIMATE_FIELDS: frozenset[int] = frozenset(
     {
         RouterField.TEMPERATURE.index,
         RouterField.VEGETATION.index,
@@ -107,7 +107,7 @@ CLIMATE_FIELDS: FrozenSet[int] = frozenset(
 density predictor.  These are exactly the inputs to vanilla's
 ``MultiNoiseBiomeSource.getBiome()``."""
 
-DENSITY_FIELDS: FrozenSet[int] = frozenset(
+DENSITY_FIELDS: frozenset[int] = frozenset(
     {
         RouterField.PRELIMINARY_SURFACE_LEVEL.index,
         RouterField.FINAL_DENSITY.index,
@@ -115,7 +115,7 @@ DENSITY_FIELDS: FrozenSet[int] = frozenset(
 )
 """Indices of the 2 density-related fields (expensive to compute)."""
 
-AQUIFER_FIELDS: FrozenSet[int] = frozenset(
+AQUIFER_FIELDS: frozenset[int] = frozenset(
     {
         RouterField.BARRIER.index,
         RouterField.FLUID_LEVEL_FLOODEDNESS.index,
@@ -125,7 +125,7 @@ AQUIFER_FIELDS: FrozenSet[int] = frozenset(
 )
 """Indices of the 4 aquifer noise fields."""
 
-ORE_FIELDS: FrozenSet[int] = frozenset(
+ORE_FIELDS: frozenset[int] = frozenset(
     {
         RouterField.VEIN_TOGGLE.index,
         RouterField.VEIN_RIDGED.index,
@@ -136,21 +136,21 @@ ORE_FIELDS: FrozenSet[int] = frozenset(
 
 # ── Ordered lists for slicing convenience ──────────────────────────────────
 
-CLIMATE_INDICES: List[int] = sorted(CLIMATE_FIELDS)
+CLIMATE_INDICES: list[int] = sorted(CLIMATE_FIELDS)
 """Climate field indices in ascending order: [0, 1, 2, 3, 4, 5]."""
 
-DENSITY_INDICES: List[int] = sorted(DENSITY_FIELDS)
+DENSITY_INDICES: list[int] = sorted(DENSITY_FIELDS)
 """Density field indices in ascending order: [6, 7]."""
 
-AQUIFER_INDICES: List[int] = sorted(AQUIFER_FIELDS)
+AQUIFER_INDICES: list[int] = sorted(AQUIFER_FIELDS)
 """Aquifer field indices in ascending order: [8, 9, 10, 11]."""
 
-ORE_INDICES: List[int] = sorted(ORE_FIELDS)
+ORE_INDICES: list[int] = sorted(ORE_FIELDS)
 """Ore vein field indices in ascending order: [12, 13, 14]."""
 
 # ── NoiseRouter accessor names (for Java DensityFunction binding) ──────────
 
-ROUTER_ACCESSOR_NAMES: List[str] = [
+ROUTER_ACCESSOR_NAMES: list[str] = [
     "temperature",
     "vegetation",
     "continents",
@@ -175,22 +175,22 @@ each field index to its vanilla ``DensityFunction`` accessor."""
 assert len(ROUTER_ACCESSOR_NAMES) == COUNT
 
 
-def extract_climate(all_fields: "Sequence[float]") -> "List[float]":
+def extract_climate(all_fields: Sequence[float]) -> list[float]:
     """Extract the 6 climate values from a flat 15-element field array."""
     return [all_fields[i] for i in CLIMATE_INDICES]
 
 
 __all__ = [
-    "RouterField",
-    "COUNT",
-    "CLIMATE_FIELDS",
-    "CLIMATE_INDICES",
-    "DENSITY_FIELDS",
-    "DENSITY_INDICES",
     "AQUIFER_FIELDS",
     "AQUIFER_INDICES",
+    "CLIMATE_FIELDS",
+    "CLIMATE_INDICES",
+    "COUNT",
+    "DENSITY_FIELDS",
+    "DENSITY_INDICES",
     "ORE_FIELDS",
     "ORE_INDICES",
     "ROUTER_ACCESSOR_NAMES",
+    "RouterField",
     "extract_climate",
 ]

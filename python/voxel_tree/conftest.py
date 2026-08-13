@@ -12,7 +12,7 @@ if str(ROOT) not in sys.path:
 
 # If voxel_tree is installed as a namespace package that points to the outer
 # folder, ensure the real package directory is included so imports work.
-import voxel_tree as _VT  # noqa: E402
+import voxel_tree as _VT
 
 if hasattr(_VT, "__path__"):
     pkg_path = str(Path(__file__).resolve().parent)

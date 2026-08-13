@@ -11,7 +11,7 @@
 | **World Tools**     | `anvil-parser2`, `cubiomes` (built manually, CLI stored in tools/) |
 | **Chunk Gen**       | Fabric server + Chunky mod (stored in `tools/`)        |
 | **Testing**         | `pytest`, `pytest-cov`                                 |
-| **Linting/Type**    | `black`, `flake8`, `mypy`, `autoflake`                 |
+| **Linting/Type**    | `ruff` (format+lint) + `pyright` via `qgate`            |
 | **Pre-Commit**      | `pre-commit` with automated formatting and cleanup     |
 | **Visualization**   | `matplotlib`, `plotly`                                 |
 
@@ -23,11 +23,8 @@ These are **run automatically before each commit**:
 
 | Hook        | What It Does                              |
 | ----------- | ----------------------------------------- |
-| `black`     | Formats code (max line length = 100)      |
-| `autoflake` | Removes unused imports and variables      |
-| `flake8`    | Lints with `.flake8` rules (E501 ignored) |
-| `mypy`      | Static type checks                        |
-| `pytest`    | Runs unit tests (quick validation gate)   |
+| `qgate` | Format+lint+type (ruff+pyright via dmypy, line-length 100, changed Gate Targets) |
+
 
 To set it up:
 
@@ -46,22 +43,16 @@ source venv/Scripts/activate  # Windows
 source venv/bin/activate      # macOS/Linux
 
 # Install Python packages
-pip install -r requirements.txt
+uv sync --group dev
 
 # Run tests
 pytest
 
-# Type-check with mypy
-mypy train scripts tests
+# Quality gate (changed files)
+uv run qgate --fix
 
-# Lint manually (if needed)
-flake8
-
-# Format with black
-black .
-
-# Run autoflake manually
-autoflake --remove-all-unused-imports --remove-unused-variables --in-place --recursive .
+# Quality gate (full CI)
+uv run --locked qgate --ci
 
 # Deactivate
 deactivate
@@ -71,9 +62,9 @@ deactivate
 
 ### 📂 Requirements File Structure
 
-* `requirements.txt` → base install
-* `.pre-commit-config.yaml` → hooks
-* `.flake8` → linting rules
+* `pyproject.toml` + `uv.lock` → deps (qgate/ruff/pyright)
+* `.pre-commit-config.yaml` → qgate hook (changed files)
+
 
 ---
 

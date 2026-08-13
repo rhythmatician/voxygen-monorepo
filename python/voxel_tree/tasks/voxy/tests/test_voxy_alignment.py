@@ -30,16 +30,16 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from voxel_tree.tasks.voxy.build_voxy_pairs import (
+    build_voxy_indices,
+    extract_section_subcube,
+)
 from voxel_tree.utils.coords import (
     child_x,
     child_y,
     child_z,
     section_to_world_section,
     world_section_to_block_min,
-)
-from voxel_tree.tasks.voxy.build_voxy_pairs import (
-    build_voxy_indices,
-    extract_section_subcube,
 )
 
 # ── Data directory discovery ──────────────────────────────────────────────
@@ -257,7 +257,7 @@ class TestSubchunkAlignment:
                     )
                 if sub.min() < 0:
                     errors.append(
-                        f"Section ({sx},{sy},{sz}) L{level}: " f"negative block ID {sub.min()}"
+                        f"Section ({sx},{sy},{sz}) L{level}: negative block ID {sub.min()}"
                     )
 
         assert not errors, f"{len(errors)} extraction errors:\n" + "\n".join(errors[:10])
@@ -617,7 +617,11 @@ def main() -> None:
                     section_to_world_section(sz, level),
                 )
                 with np.load(indices[level][ws]) as data:
-                    meta = (int(data["section_x"]), int(data["section_y"]), int(data["section_z"]))
+                    meta = (
+                        int(data["section_x"]),
+                        int(data["section_y"]),
+                        int(data["section_z"]),
+                    )
                     if meta != ws:
                         errors_1a.append(f"({sx},{sy},{sz}) L{level}: ws={ws} meta={meta}")
         print(
@@ -690,7 +694,9 @@ def main() -> None:
                         for cx in range(nc):
                             total_checks += 1
                             fine_region = fine[
-                                cy * 2 : cy * 2 + 2, cz * 2 : cz * 2 + 2, cx * 2 : cx * 2 + 2
+                                cy * 2 : cy * 2 + 2,
+                                cz * 2 : cz * 2 + 2,
+                                cx * 2 : cx * 2 + 2,
                             ]
                             if np.any(fine_region != 0) and coarse[cy, cz, cx] == 0:
                                 inconsistent += 1
@@ -752,8 +758,7 @@ def main() -> None:
     total_miss = total_flagged - total_found
     total_rate = total_miss / max(total_flagged, 1)
     print(
-        f"\n  Overall: {total_found}/{total_flagged} found, "
-        f"{total_miss} missing ({total_rate:.1%})"
+        f"\n  Overall: {total_found}/{total_flagged} found, {total_miss} missing ({total_rate:.1%})"
     )
     if missing:
         print("\n  First missing children:")

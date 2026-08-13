@@ -48,8 +48,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
-import torch.nn as nn
-import torch.optim as optim
+from torch import nn, optim
 from torch.utils.data import DataLoader, TensorDataset
 
 from voxel_tree.utils.progress import report as _report_progress

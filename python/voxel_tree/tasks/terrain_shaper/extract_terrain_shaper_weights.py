@@ -9,10 +9,11 @@ Post-extraction, the binary weights are automatically copied to the LODiffusion 
 assets directory so they're available at runtime.
 """
 
-import torch
-import numpy as np
 import shutil
 from pathlib import Path
+
+import numpy as np
+import torch
 
 
 class TerrainShaperMLP(torch.nn.Module):

@@ -10,8 +10,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-
-import pytest  # noqa: E402
+import pytest
 
 from voxel_tree.gui import run_registry
 

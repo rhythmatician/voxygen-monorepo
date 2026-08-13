@@ -15,7 +15,7 @@ Usage
 from __future__ import annotations
 
 import pathlib
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import yaml
 
@@ -30,7 +30,7 @@ class ContractViolation(Exception):
 _DEFAULT_CONTRACT_PATH = pathlib.Path(__file__).resolve().parents[3] / "router_field_contract.yaml"
 
 
-def _load_contract(path: Optional[pathlib.Path] = None) -> Dict[str, Any]:
+def _load_contract(path: pathlib.Path | None = None) -> dict[str, Any]:
     """Load and parse the YAML contract file."""
     p = path or _DEFAULT_CONTRACT_PATH
     if not p.exists():
@@ -47,7 +47,9 @@ def _load_contract(path: Optional[pathlib.Path] = None) -> Dict[str, Any]:
         return yaml.safe_load(f)
 
 
-def validate_router_contract(contract_path: Optional[pathlib.Path] = None) -> Dict[str, Any]:
+def validate_router_contract(
+    contract_path: pathlib.Path | None = None,
+) -> dict[str, Any]:
     """Validate the contract against the Python RouterField enum.
 
     Checks:
@@ -69,7 +71,7 @@ def validate_router_contract(contract_path: Optional[pathlib.Path] = None) -> Di
     if not version:
         raise ContractViolation("Contract missing 'version' field")
 
-    fields: List[Dict[str, Any]] = contract.get("fields", [])
+    fields: list[dict[str, Any]] = contract.get("fields", [])
     if len(fields) != COUNT:
         raise ContractViolation(f"Contract declares {len(fields)} fields, Python has {COUNT}")
 
@@ -109,7 +111,7 @@ def validate_router_contract(contract_path: Optional[pathlib.Path] = None) -> Di
     return contract
 
 
-def validate_normalization_method(contract: Dict[str, Any]) -> None:
+def validate_normalization_method(contract: dict[str, Any]) -> None:
     """Verify all fields use 'none' normalization (raw pass-through).
 
     This is the current contract: router fields are passed through raw

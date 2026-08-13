@@ -24,8 +24,8 @@ has been satisfied.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Dict, Iterator
 
 import numpy as np
 import numpy.typing as npt
@@ -122,7 +122,7 @@ def build_voxy_targets(
     *,
     air_id: int = 0,
     split_label: int = -1,
-) -> Dict[int, VoxyLevelTargets]:
+) -> dict[int, VoxyLevelTargets]:
     """Build voxy-hierarchy supervision from a dense voxel cube.
 
     .. note::
@@ -146,7 +146,7 @@ def build_voxy_targets(
     size = _require_power_of_two_cube(blocks)
     max_level = int(np.log2(size))
 
-    result: Dict[int, VoxyLevelTargets] = {}
+    result: dict[int, VoxyLevelTargets] = {}
     for level in range(max_level, -1, -1):
         side = 2 ** (max_level - level)
         result[level] = VoxyLevelTargets(
@@ -192,11 +192,11 @@ def build_voxy_targets(
 
 
 def build_multilevel_voxy_targets(
-    level_grids: Dict[int, npt.NDArray[np.int32]],
+    level_grids: dict[int, npt.NDArray[np.int32]],
     *,
     air_id: int = 0,
     split_label: int = -1,
-) -> Dict[int, VoxyLevelTargets]:
+) -> dict[int, VoxyLevelTargets]:
     """Build voxy-hierarchy targets using multi-level Voxy ground truth.
 
     Unlike :func:`build_voxy_targets` which recursively subdivides a
@@ -220,7 +220,7 @@ def build_multilevel_voxy_targets(
         Dict mapping level → :class:`VoxyLevelTargets`.
         Only levels present in *level_grids* are included.
     """
-    result: Dict[int, VoxyLevelTargets] = {}
+    result: dict[int, VoxyLevelTargets] = {}
     available = sorted(level_grids.keys(), reverse=True)  # e.g. [4, 3, 2, 1, 0]
     if not available:
         return result
@@ -280,7 +280,7 @@ def build_multilevel_voxy_targets(
 
 
 def iter_voxy_nodes(
-    targets: Dict[int, VoxyLevelTargets],
+    targets: dict[int, VoxyLevelTargets],
     *,
     skip_empty_leaves: bool = True,
     air_id: int = 0,

@@ -25,7 +25,7 @@ def _load_checkpoint_info(path: Path) -> dict[str, Any] | None:
     if not path.exists():
         return None
     try:
-        import torch  # noqa: PLC0415
+        import torch
 
         ckpt = torch.load(str(path), map_location="cpu", weights_only=False)
         history: list[dict[str, Any]] = ckpt.get("history", [])
@@ -98,7 +98,13 @@ class ContinueTrainingDialog(QDialog):
         # ── Table ──
         self._table = QTableWidget(5, 5)
         self._table.setHorizontalHeaderLabels(
-            ["Level", "Epochs Trained", "Best Loss", "Avg Acc (last 5)", "Avg min/epoch"]
+            [
+                "Level",
+                "Epochs Trained",
+                "Best Loss",
+                "Avg Acc (last 5)",
+                "Avg min/epoch",
+            ]
         )
         self._table.verticalHeader().setVisible(False)
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)

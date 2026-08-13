@@ -43,11 +43,10 @@ Architecture
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
+from torch import nn
 
 # ══════════════════════════════════════════════════════════════════════
 #  Feature selection constants (from feature_selection_analysis.py)
@@ -61,9 +60,9 @@ import torch.nn.functional as F
 # See docs/FEATURE_SELECTION_RESULTS.md for the full analysis.
 
 # Channel indices kept at each level (RouterField ordinals)
-L2_NOISE_CHANNELS: List[int] = [0, 1, 2, 3, 4, 5, 7]  # 6 climate + final_density
-L3_NOISE_CHANNELS: List[int] = [0, 1, 2, 3, 4, 5]  # 6 climate
-L4_NOISE_CHANNELS: List[int] = [0, 1, 2, 3, 4, 5]  # 6 climate (all including depth)
+L2_NOISE_CHANNELS: list[int] = [0, 1, 2, 3, 4, 5, 7]  # 6 climate + final_density
+L3_NOISE_CHANNELS: list[int] = [0, 1, 2, 3, 4, 5]  # 6 climate
+L4_NOISE_CHANNELS: list[int] = [0, 1, 2, 3, 4, 5]  # 6 climate (all including depth)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -99,11 +98,11 @@ class VoxyModelConfig:
     climate_encoder_out: int = 24
 
     # Per-level U-Net channel widths (C₀, C₁, C₂)
-    l0_channels: Tuple[int, int, int] = (48, 96, 192)
-    l1_channels: Tuple[int, int, int] = (48, 96, 192)
-    l2_channels: Tuple[int, int, int] = (32, 64, 128)
-    l3_channels: Tuple[int, int, int] = (24, 48, 96)
-    l4_channels: Tuple[int, int, int] = (24, 48, 96)
+    l0_channels: tuple[int, int, int] = (48, 96, 192)
+    l1_channels: tuple[int, int, int] = (48, 96, 192)
+    l2_channels: tuple[int, int, int] = (32, 64, 128)
+    l3_channels: tuple[int, int, int] = (24, 48, 96)
+    l4_channels: tuple[int, int, int] = (24, 48, 96)
 
     # Feature-selected noise channel counts per level
     l2_noise_ch: int = 7  # 6 climate + final_density
@@ -330,7 +329,7 @@ class UNet3D32(nn.Module):
     def __init__(
         self,
         in_channels: int,
-        channels: Tuple[int, int, int],
+        channels: tuple[int, int, int],
         bottleneck_extra_depth: int = 0,
     ) -> None:
         super().__init__()
@@ -357,7 +356,7 @@ class UNet3D32(nn.Module):
         self.up2 = nn.Upsample(scale_factor=2, mode="nearest")
         self.dec2 = DoubleConv3d(c1 + c0, c0)
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Forward: input ``[B, in, 32³]`` → ``(features [B, C₀, 32³], bottleneck [B, C₂, 8³])``."""
         if self.channels_last_3d:
             x = x.to(memory_format=torch.channels_last_3d)
@@ -462,7 +461,7 @@ class VoxyL0Model(nn.Module):
         biome_3d: torch.Tensor,
         y_position: torch.Tensor,
         parent_blocks: torch.Tensor,
-    ) -> Dict[str, torch.Tensor]:
+    ) -> dict[str, torch.Tensor]:
         """Forward pass.
 
         Args:
@@ -521,7 +520,7 @@ class VoxyL1Model(nn.Module):
         biome_3d: torch.Tensor,
         y_position: torch.Tensor,
         parent_blocks: torch.Tensor,
-    ) -> Dict[str, torch.Tensor]:
+    ) -> dict[str, torch.Tensor]:
         noise_feat = self.noise_encoder(noise_3d, biome_3d)
         parent_feat = self.parent_encoder(parent_blocks)
         y_feat = self.y_encoder(y_position)
@@ -581,7 +580,7 @@ class VoxyL2Model(nn.Module):
         biome_2d: torch.Tensor,
         y_position: torch.Tensor,
         parent_blocks: torch.Tensor,
-    ) -> Dict[str, torch.Tensor]:
+    ) -> dict[str, torch.Tensor]:
         climate_feat = self.climate_encoder(climate_2d, biome_2d)
         parent_feat = self.parent_encoder(parent_blocks)
         y_feat = self.y_encoder(y_position)
@@ -640,7 +639,7 @@ class VoxyL3Model(nn.Module):
         biome_2d: torch.Tensor,
         y_position: torch.Tensor,
         parent_blocks: torch.Tensor,
-    ) -> Dict[str, torch.Tensor]:
+    ) -> dict[str, torch.Tensor]:
         climate_feat = self.climate_encoder(climate_2d, biome_2d)
         parent_feat = self.parent_encoder(parent_blocks)
         y_feat = self.y_encoder(y_position)
@@ -702,7 +701,7 @@ class VoxyL4Model(nn.Module):
         climate_2d: torch.Tensor,
         biome_2d: torch.Tensor,
         y_position: torch.Tensor,
-    ) -> Dict[str, torch.Tensor]:
+    ) -> dict[str, torch.Tensor]:
         climate_feat = self.climate_encoder(climate_2d, biome_2d)
         y_feat = self.y_encoder(y_position)
 
@@ -728,7 +727,7 @@ LEVEL_MODEL_CLASSES = {
 }
 
 
-def create_model(level: int, cfg: Optional[VoxyModelConfig] = None) -> nn.Module:
+def create_model(level: int, cfg: VoxyModelConfig | None = None) -> nn.Module:
     """Create the Voxy model for a given LOD level.
 
     Args:
@@ -769,22 +768,22 @@ BIOME_SHAPES = {
 
 
 __all__ = [
-    "VoxyModelConfig",
+    "BIOME_SHAPES",
+    "L2_NOISE_CHANNELS",
+    "L3_NOISE_CHANNELS",
+    "L4_NOISE_CHANNELS",
+    "LEVEL_MODEL_CLASSES",
+    "NOISE_SHAPES",
+    "ClimateEncoder2D",
+    "NoiseEncoder3D",
+    "ParentEncoder",
+    "UNet3D32",
     "VoxyL0Model",
     "VoxyL1Model",
     "VoxyL2Model",
     "VoxyL3Model",
     "VoxyL4Model",
-    "NoiseEncoder3D",
-    "ClimateEncoder2D",
-    "UNet3D32",
-    "ParentEncoder",
+    "VoxyModelConfig",
     "YPositionEncoder",
     "create_model",
-    "LEVEL_MODEL_CLASSES",
-    "NOISE_SHAPES",
-    "BIOME_SHAPES",
-    "L2_NOISE_CHANNELS",
-    "L3_NOISE_CHANNELS",
-    "L4_NOISE_CHANNELS",
 ]

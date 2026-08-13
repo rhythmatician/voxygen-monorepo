@@ -165,7 +165,10 @@ class PipelineConfig:
 FREEZE_COMMANDS: list[tuple[str, str]] = [
     # Carpet: stops ALL game ticks — blocks fluid flow, lava spread, block updates.
     # This MUST be first; gamerule commands alone do NOT stop lava from flowing.
-    ("/tick freeze", "Carpet: freeze all game ticks (stops lava, fluid flow, block updates)"),
+    (
+        "/tick freeze",
+        "Carpet: freeze all game ticks (stops lava, fluid flow, block updates)",
+    ),
     (
         "/carpet randomTickSpeed 0",
         "Disable random block ticks (crops, fire spread, etc.)",
@@ -197,9 +200,9 @@ def _run_commands(
 ) -> None:
     """Send a list of (command, description) pairs, or print them in dry-run mode."""
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"  {section}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
     if cfg.dry_run:
         print("  [DRY-RUN] Commands that would be sent:\n")
@@ -535,11 +538,11 @@ def _check_prerequisites(from_step: str, args: argparse.Namespace) -> bool:
     Returns True if everything looks good, False with a diagnostic message
     if a prerequisite is missing.
     """
-    data_dir: Path = getattr(args, "data_dir", DEFAULT_DATA_DIR)
+    data_dir: Path = vars(args).get("data_dir", DEFAULT_DATA_DIR)  # type: ignore[arg-type]
 
     # extract-octree → evidence that voxy-import ran: Voxy databases exist
     if from_step == "extract-octree":
-        voxy_dir: Path | None = getattr(args, "voxy_dir", None) or DEFAULT_VOXY_DIR
+        voxy_dir: Path | None = vars(args).get("voxy_dir") or DEFAULT_VOXY_DIR
         dbs = _find_voxy_databases(voxy_dir)
         if not dbs:
             print(f"ERROR: No Voxy databases found under {voxy_dir}")
@@ -568,7 +571,7 @@ def _check_prerequisites(from_step: str, args: argparse.Namespace) -> bool:
             f"  {_safe_unicode('✓', '[OK]')} {total_npz:,} octree NPZ files across level_N/ directories"
         )
 
-        noise_dump_dir = getattr(args, "noise_dump_dir", DEFAULT_NOISE_DUMP_DIR)
+        noise_dump_dir = vars(args).get("noise_dump_dir", DEFAULT_NOISE_DUMP_DIR)
         jsons = list(noise_dump_dir.glob("chunk_*.json")) if noise_dump_dir.is_dir() else []
         if not jsons:
             print(f"ERROR: No noise dump JSON files in {noise_dump_dir}")
@@ -630,13 +633,13 @@ def _step_extract_octree(args: argparse.Namespace) -> bool:
     print("=" * 70)
     print()
 
-    voxy_dir: Path = getattr(args, "voxy_dir", None) or DEFAULT_VOXY_DIR
+    voxy_dir: Path = vars(args).get("voxy_dir") or DEFAULT_VOXY_DIR  # type: ignore[assignment]
     dbs = _find_voxy_databases(voxy_dir)
     if not dbs:
         print(f"ERROR: No Voxy databases found under {voxy_dir}")
         return False
 
-    data_dir: Path = getattr(args, "data_dir", DEFAULT_DATA_DIR)
+    data_dir: Path = vars(args).get("data_dir", DEFAULT_DATA_DIR)  # type: ignore[arg-type]
     print(f"Found {len(dbs)} Voxy database(s), output \u2192 {data_dir}")
 
     from voxel_tree.tasks.octree.extract_octree_data import main as _extract_main
@@ -650,7 +653,7 @@ def _step_extract_octree(args: argparse.Namespace) -> bool:
         "--min-solid",
         str(getattr(args, "min_solid", 0.02)),
     ]
-    max_sections = getattr(args, "max_sections", None)
+    max_sections = vars(args).get("max_sections")
     if max_sections is not None:
         extract_args.extend(["--max-sections", str(max_sections)])
 
@@ -669,7 +672,7 @@ def _step_column_heights_octree(args: argparse.Namespace) -> bool:
     print("=" * 70)
     print()
 
-    data_dir: Path = getattr(args, "data_dir", DEFAULT_DATA_DIR)
+    data_dir: Path = vars(args).get("data_dir", DEFAULT_DATA_DIR)  # type: ignore[arg-type]
     noise_dump_dir: Path = getattr(args, "noise_dump_dir", DEFAULT_NOISE_DUMP_DIR)
 
     from voxel_tree.tasks.add_column_heights import main as _heights_main
@@ -690,7 +693,7 @@ def _step_build_octree_pairs(args: argparse.Namespace) -> bool:
     print("=" * 70)
     print()
 
-    data_dir: Path = getattr(args, "data_dir", DEFAULT_DATA_DIR)
+    data_dir: Path = vars(args).get("data_dir", DEFAULT_DATA_DIR)  # type: ignore[arg-type]
 
     from voxel_tree.tasks.octree.build_pairs import main as _build_main
 

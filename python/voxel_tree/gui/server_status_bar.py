@@ -198,7 +198,7 @@ class ServerStatusBar(QWidget):
             from voxel_tree.gui.server_manager import (
                 get_rcon_settings,
                 read_server_property,
-            )  # noqa: PLC0415
+            )
 
             game_port = read_server_property("server-port", "25565")
             rcon_port = int(get_rcon_settings()["port"])

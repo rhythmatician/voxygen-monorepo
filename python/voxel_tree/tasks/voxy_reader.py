@@ -31,16 +31,15 @@ SaveLoadSystem3 decompressed layout:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import gzip
-from pathlib import Path
 import struct
-from typing import Any, Dict, Generator, List, Literal, Optional, Tuple, Union, overload
+from collections.abc import Generator
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Literal, overload
 
 import numpy as np
-
 import rocksdict
-
 import zstandard
 
 # ---------------------------------------------------------------------------
@@ -68,7 +67,7 @@ def _sign_extend(val: int, bits: int) -> int:
     return val
 
 
-def decode_section_key(key_bytes: Union[bytes, bytearray]) -> Tuple[int, int, int, int]:
+def decode_section_key(key_bytes: bytes | bytearray) -> tuple[int, int, int, int]:
     """Decode an 8-byte big-endian section key → (level, x, y, z).
 
     Accept either ``bytes`` or ``bytearray`` since RocksDB keys may come as
@@ -162,7 +161,7 @@ def decode_section(data: bytes) -> WorldSection:
 # ---------------------------------------------------------------------------
 
 
-def _parse_nbt_name(nbt_data: bytes) -> Optional[str]:
+def _parse_nbt_name(nbt_data: bytes) -> str | None:
     """Extract the 'Name' string from a gzipped NBT block-state entry."""
     idx = 0
     while idx < len(nbt_data) - 10:
@@ -177,9 +176,9 @@ def _parse_nbt_name(nbt_data: bytes) -> Optional[str]:
     return None
 
 
-def _parse_nbt_properties(nbt_data: bytes) -> Dict[str, str]:
+def _parse_nbt_properties(nbt_data: bytes) -> dict[str, str]:
     """Extract block state properties from NBT.  Returns dict of name→value."""
-    props: Dict[str, str] = {}
+    props: dict[str, str] = {}
     # Find TAG_Compound named "Properties"
     target = b"\x0a\x00\x0aProperties"  # TAG_Compound, name len=10, "Properties"
     idx = nbt_data.find(target)
@@ -282,9 +281,9 @@ class VoxyReader:
         self._dctx = zstandard.ZstdDecompressor()
 
         # Decode id mappings
-        self._block_names: Dict[int, str] = {0: "minecraft:air"}
-        self._block_properties: Dict[int, Dict[str, str]] = {}
-        self._biome_names: Dict[int, str] = {0: "unknown"}
+        self._block_names: dict[int, str] = {0: "minecraft:air"}
+        self._block_properties: dict[int, dict[str, str]] = {}
+        self._biome_names: dict[int, str] = {0: "unknown"}
         self._decode_id_mappings()
 
     # ------------------------------------------------------------------
@@ -292,17 +291,17 @@ class VoxyReader:
     # ------------------------------------------------------------------
 
     @property
-    def block_names(self) -> Dict[int, str]:
+    def block_names(self) -> dict[int, str]:
         """Mapping from Voxy block-state ID → Minecraft block name (e.g. ``minecraft:stone``)."""
         return self._block_names
 
     @property
-    def block_properties(self) -> Dict[int, Dict[str, str]]:
+    def block_properties(self) -> dict[int, dict[str, str]]:
         """Mapping from Voxy block-state ID → block state properties dict."""
         return self._block_properties
 
     @property
-    def biome_names(self) -> Dict[int, str]:
+    def biome_names(self) -> dict[int, str]:
         """Mapping from Voxy biome ID → Minecraft biome name."""
         return self._biome_names
 
@@ -326,7 +325,7 @@ class VoxyReader:
     @overload
     def iter_sections(  # noqa: E704
         self,
-        level: Optional[int] = None,
+        level: int | None = None,
         *,
         decode: Literal[True] = True,
     ) -> Generator[WorldSection, None, None]: ...
@@ -334,14 +333,14 @@ class VoxyReader:
     @overload
     def iter_sections(  # noqa: E704
         self,
-        level: Optional[int] = None,
+        level: int | None = None,
         *,
         decode: Literal[False],
-    ) -> Generator[Tuple[bytes, bytes], None, None]: ...
+    ) -> Generator[tuple[bytes, bytes], None, None]: ...
 
     def iter_sections(
         self,
-        level: Optional[int] = None,
+        level: int | None = None,
         *,
         decode: bool = True,
     ):
@@ -367,9 +366,9 @@ class VoxyReader:
             else:
                 yield key_bytes, compressed
 
-    def count_sections(self) -> Dict[int, int]:
+    def count_sections(self) -> dict[int, int]:
         """Count sections per LOD level.  Returns ``{level: count}``."""
-        counts: Dict[int, int] = {}
+        counts: dict[int, int] = {}
         for key in self._ws_cf.keys():
             if isinstance(key, (bytes, bytearray)):
                 key_bytes = key
@@ -399,7 +398,7 @@ class VoxyReader:
     # Section → 16³ sub-blocks (for training data extraction)
     # ------------------------------------------------------------------
 
-    def section_to_subblocks(self, section: WorldSection) -> List[Dict[str, Any]]:
+    def section_to_subblocks(self, section: WorldSection) -> list[dict[str, Any]]:
         """Split a 32×32×32 WorldSection into eight 16×16×16 sub-blocks.
 
         Each sub-block corresponds to a VoxelizedSection at this LOD level.
@@ -452,8 +451,8 @@ class VoxyReader:
 
     def build_voxy_to_voxeltree_map(
         self,
-        voxeltree_mapping: Dict[str, int],
-    ) -> Dict[int, int]:
+        voxeltree_mapping: dict[str, int],
+    ) -> dict[int, int]:
         """Build a mapping from Voxy block IDs to VoxelTree block IDs.
 
         Args:
@@ -464,7 +463,7 @@ class VoxyReader:
             Dict mapping Voxy block-state ID → VoxelTree block ID.
             Unmapped block states map to 0 (air).
         """
-        result: Dict[int, int] = {0: 0}  # air → air
+        result: dict[int, int] = {0: 0}  # air → air
         for voxy_id, mc_name in self._block_names.items():
             if mc_name in voxeltree_mapping:
                 result[voxy_id] = voxeltree_mapping[mc_name]
@@ -519,7 +518,7 @@ class VoxyReader:
             self._db.close()
             self._db = None  # type: ignore[assignment]
 
-    def __enter__(self) -> "VoxyReader":
+    def __enter__(self) -> VoxyReader:
         return self
 
     def __exit__(self, *args) -> None:

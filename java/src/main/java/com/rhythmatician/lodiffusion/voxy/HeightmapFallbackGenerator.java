@@ -26,10 +26,10 @@ import net.minecraft.world.biome.Biome;
  *   <li>Above surface, at or above sea level → air</li>
  * </ul>
  *
- * <p>This bypasses the entire ONNX pipeline and {@link VoxySectionWriter},
- * composing 64-bit Voxy voxels directly via {@link VoxyCompat#composeVoxel}
- * for maximum throughput.  With no compute bottleneck, performance is
- * limited only by Voxy I/O ({@code insertUpdate}).
+ * <p>This bypasses the entire ONNX pipeline, producing semantic
+ * {@link VoxelVolume} (extent 16) decoded via {@link VoxelPredictionDecoder}
+ * and written through {@link VoxelVolumeWriter#writeSection}. No Voxy
+ * packing is performed here; that is owned by the writer adapter.
  *
  * <p>The generator is stateless — all mutable state (block IDs, biome IDs)
  * is held externally in {@link FallbackBlockIds} and passed per call.
@@ -40,9 +40,6 @@ public final class HeightmapFallbackGenerator {
 
     /** Minecraft sea level in block Y coordinates. */
     static final int SEA_LEVEL = 63;
-
-    /** Default light value: full sky light, no block light → 0x0F. */
-    private static final int DEFAULT_LIGHT = 0x0F;
 
     private HeightmapFallbackGenerator() {}
 
@@ -235,95 +232,6 @@ public final class HeightmapFallbackGenerator {
     // ------------------------------------------------------------------ //
     //  Section generation
     // ------------------------------------------------------------------ //
-
-    /**
-     * Generate a single 16³ section filled according to the heightmap rules.
-     *
-     * <p>This method creates a {@code VoxelizedSection}, fills its L0 data,
-     * computes the mip pyramid, and is ready for {@link VoxyCompat#insertUpdate}.
-     *
-     * <p>When {@code oceanFloorHm} is provided (non-null), it is used as the
-     * real solid ground surface for columns where water is present.  Water is
-     * placed between the ocean/river floor and the water surface ({@code rawHm}).
-     * The top 3 solid blocks are placed relative to the floor, not the water
-     * surface, so riverbeds get sand/dirt/grass correctly.
-     *
-     * @param sectionX      section X coordinate (blockX / 16)
-     * @param sectionY      section Y coordinate (blockY / 16)
-     * @param sectionZ      section Z coordinate (blockZ / 16)
-     * @param rawHm         [16][16] surface heightmap (water surface) in block Y, indexed [x][z]
-     * @param oceanFloorHm  [16][16] ocean/river floor heightmap in block Y, or null
-     * @param biomeIdx      [16][16] canonical biome indices, indexed [x][z]
-     * @param biomeVoxyIds  [16][16] Voxy biome IDs, indexed [x][z]
-     * @param blockIds      pre-resolved Voxy block IDs
-     * @param voxyMapper    Voxy Mapper for mip computation
-     * @return the filled and mipped {@code VoxelizedSection}, or {@code null}
-     *         if the section is entirely air (skip insertion)
-     */
-    public static Object generateSection(int sectionX, int sectionY, int sectionZ,
-                                          float[][] rawHm, float[][] oceanFloorHm,
-                                          int[][] biomeIdx,
-                                          int[][] biomeVoxyIds,
-                                          FallbackBlockIds blockIds,
-                                          Object voxyMapper) {
-        int baseY = sectionY * 16;
-
-        // Quick check: if the entire section is above the max heightmap AND
-        // above sea level, it's all air — skip it.
-        if (baseY >= SEA_LEVEL) {
-            boolean allAboveSurface = true;
-            for (int lx = 0; lx < 16 && allAboveSurface; lx++) {
-                for (int lz = 0; lz < 16 && allAboveSurface; lz++) {
-                    if (baseY < rawHm[lx][lz]) {
-                        allAboveSurface = false;
-                    }
-                }
-            }
-            if (allAboveSurface) return null;
-        }
-
-        Object section = VoxyCompat.createEmptySection();
-        VoxyCompat.setSectionPosition(section, sectionX, sectionY, sectionZ);
-        long[] data = VoxyCompat.getSectionData(section);
-
-        int nonAir = 0;
-
-        for (int lx = 0; lx < 16; lx++) {
-            for (int lz = 0; lz < 16; lz++) {
-                float waterSurfaceY = rawHm[lx][lz];
-                // If ocean floor data is available, use it as the solid ground.
-                // Otherwise, fall back to the surface heightmap (no water distinction).
-                float groundY = oceanFloorHm != null ? oceanFloorHm[lx][lz] : waterSurfaceY;
-                int waterSurfaceBlockY = (int) Math.floor(waterSurfaceY);
-                int groundBlockY = (int) Math.floor(groundY);
-
-                int canonBiome = biomeIdx[lx][lz];
-                int voxyBiome = biomeVoxyIds[lx][lz];
-
-                SurfaceType surfaceType = surfaceTypeForBiome(canonBiome);
-
-                for (int ly = 0; ly < 16; ly++) {
-                    int worldY = baseY + ly;
-                    int idx = VoxyCompat.l0Index(lx, ly, lz);
-
-                    int blockId = pickBlockId(worldY, groundBlockY,
-                            waterSurfaceBlockY, surfaceType, blockIds);
-
-                    data[idx] = VoxyCompat.composeVoxel(blockId, voxyBiome, DEFAULT_LIGHT);
-
-                    if (blockId != blockIds.air()) {
-                        nonAir++;
-                    }
-                }
-            }
-        }
-
-        if (nonAir == 0) return null;
-
-        VoxyCompat.setNonAirCount(section, nonAir);
-        VoxyCompat.mipSection(section, voxyMapper);
-        return section;
-    }
 
     /**
      * Map a canonical biome index to a {@link SurfaceType} for the top 3 solid blocks.

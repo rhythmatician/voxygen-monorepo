@@ -1,7 +1,7 @@
-import os
 import json
-from collections import Counter
+import os
 import sys
+from collections import Counter
 
 # Add VoxelTree/scripts to sys.path for direct import
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../scripts")))

@@ -1,0 +1,9 @@
+{
+  "hooks": [
+    {
+      "name": "quality-gate",
+      "event": "PostToolUse",
+      "command": "uv run qgate --codex-stdin --fix"
+    }
+  ]
+}

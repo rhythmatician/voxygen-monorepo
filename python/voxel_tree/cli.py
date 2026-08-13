@@ -48,7 +48,7 @@ def _repo_root() -> Path:
 
 
 def _load_profile(name: str) -> dict[str, Any]:
-    import yaml  # noqa: PLC0415
+    import yaml
 
     profiles = _profiles_dir()
     # Try ``profiles/<name>.yaml`` first, then treat *name* as a raw path.
@@ -98,7 +98,7 @@ def _default_profile_dict(name: str) -> dict[str, Any]:
 def _cmd_new_profile(name: str, overwrite: bool = False) -> None:
     """Create a new profile YAML file, formatted consistently for git commits."""
 
-    import yaml  # noqa: PLC0415
+    import yaml
 
     profiles = _profiles_dir()
     profiles.mkdir(parents=True, exist_ok=True)
@@ -119,8 +119,8 @@ def _cmd_new_profile(name: str, overwrite: bool = False) -> None:
 
 
 def _launch_gui() -> None:
-    from voxel_tree.gui.app import create_app  # noqa: PLC0415
-    from voxel_tree.gui.main_window import MainWindow  # noqa: PLC0415
+    from voxel_tree.gui.app import create_app
+    from voxel_tree.gui.main_window import MainWindow
 
     app = create_app()
     window = MainWindow()
@@ -130,7 +130,7 @@ def _launch_gui() -> None:
 
 def _cmd_list_steps() -> None:
     """Print all registered step IDs with their flags."""
-    from voxel_tree.gui.step_definitions import PIPELINE_STEPS  # noqa: PLC0415
+    from voxel_tree.gui.step_definitions import PIPELINE_STEPS
 
     print("Registered pipeline steps:")
     print(f"  {'Step ID':<32} {'Label':<12} {'Flags':<18} Notes")
@@ -151,7 +151,7 @@ def _cmd_list_steps() -> None:
 
 def _cmd_show_step(step_id: str) -> None:
     """Print metadata for one step."""
-    from voxel_tree.gui.step_definitions import STEP_BY_ID  # noqa: PLC0415
+    from voxel_tree.gui.step_definitions import STEP_BY_ID
 
     step = STEP_BY_ID.get(step_id)
     if step is None:
@@ -174,9 +174,9 @@ def _cmd_show_step(step_id: str) -> None:
 
 def _cmd_run_step(step_id: str, profile_name: str | None) -> None:
     """Run a pipeline step directly by calling its run_fn."""
-    import os  # noqa: PLC0415
+    import os
 
-    from voxel_tree.gui.step_definitions import STEP_BY_ID  # noqa: PLC0415
+    from voxel_tree.gui.step_definitions import STEP_BY_ID
 
     step = STEP_BY_ID.get(step_id)
     if step is None:
@@ -203,10 +203,10 @@ def _cmd_run_step(step_id: str, profile_name: str | None) -> None:
 
 def _cmd_server(action: str, role: str | None) -> None:
     """Start or stop the Fabric server from the command line (no Qt required)."""
-    import subprocess  # noqa: PLC0415
+    import subprocess
 
-    from voxel_tree.gui.server_config import get_role  # noqa: PLC0415
-    from voxel_tree.gui.server_manager import (  # noqa: PLC0415
+    from voxel_tree.gui.server_config import get_role
+    from voxel_tree.gui.server_manager import (
         _JAR_PATH,
         _RUNTIME_DIR,
         _patch_server_properties,
@@ -261,7 +261,7 @@ def _cmd_server(action: str, role: str | None) -> None:
         sys.exit(result.returncode)
 
     elif action == "stop":
-        from voxel_tree.utils.rcon import RconClient  # noqa: PLC0415
+        from voxel_tree.utils.rcon import RconClient
 
         rcon = get_rcon_settings()
         print(f"[server] Sending /stop via RCON ({rcon['host']}:{rcon['port']})…")
@@ -285,7 +285,7 @@ def _cmd_server(action: str, role: str | None) -> None:
 
 def main(argv: list[str] | None = None) -> None:
     """Parse args and dispatch; no args → GUI."""
-    import argparse  # noqa: PLC0415
+    import argparse
 
     if argv is None:
         argv = sys.argv[1:]
@@ -350,7 +350,7 @@ def main(argv: list[str] | None = None) -> None:
     args, remaining = parser.parse_known_args(argv)
 
     if args.subcommand == "contracts":
-        from voxel_tree.contracts.cli import run_contracts_cli  # noqa: PLC0415
+        from voxel_tree.contracts.cli import run_contracts_cli
 
         run_contracts_cli(remaining)
     elif args.list_steps:

@@ -22,7 +22,8 @@ The printed lines look like ``"[PROGRESS] 42%"`` which is recognised by
 
 from __future__ import annotations
 
-from typing import Iterable, Iterator, TypeVar
+from collections.abc import Iterable, Iterator
+from typing import TypeVar
 
 T = TypeVar("T")
 

@@ -106,7 +106,7 @@ class RconClient:
     # Context-manager protocol
     # ------------------------------------------------------------------
 
-    def __enter__(self) -> "RconClient":
+    def __enter__(self) -> RconClient:
         self.connect()
         return self
 

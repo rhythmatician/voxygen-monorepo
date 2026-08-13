@@ -43,15 +43,14 @@ from pathlib import Path
 
 import numpy as np
 import torch
-import torch.nn as nn
-import torch.optim as optim
+from torch import nn, optim
 from torch.utils.data import DataLoader, TensorDataset
 
 from voxel_tree.utils.progress import report as _report_progress
 
 try:
-    from voxel_tree.utils.router_field import CLIMATE_FIELDS
     from voxel_tree.utils.biome_mapping import OVERWORLD_BIOMES, UNKNOWN_BIOME_ID
+    from voxel_tree.utils.router_field import CLIMATE_FIELDS
 except ImportError:
     CLIMATE_FIELDS = frozenset(range(6))
     UNKNOWN_BIOME_ID = 255

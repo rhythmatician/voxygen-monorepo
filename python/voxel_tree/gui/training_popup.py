@@ -110,7 +110,7 @@ class TrainingResultsPopup(QDialog):
             canvas = FigureCanvas(fig)
             layout.addWidget(canvas)
         except Exception as e:
-            error_label = QLabel(f"Could not plot graph:\n{str(e)}")
+            error_label = QLabel(f"Could not plot graph:\n{e!s}")
             error_label.setStyleSheet("color: red;")
             layout.addWidget(error_label)
 
@@ -135,7 +135,14 @@ class TrainingResultsPopup(QDialog):
         # 1. Loss
         if has_loss:
             ax = axes[0, 0]
-            ax.plot(df["epoch"], df["loss"], "o-", linewidth=1.5, markersize=3, color="#d62728")
+            ax.plot(
+                df["epoch"],
+                df["loss"],
+                "o-",
+                linewidth=1.5,
+                markersize=3,
+                color="#d62728",
+            )
             ax.set_xlabel("Epoch", fontsize=9)
             ax.set_ylabel("Loss", fontsize=9)
             ax.set_title("Training Loss", fontweight="bold", fontsize=10)
@@ -144,9 +151,21 @@ class TrainingResultsPopup(QDialog):
         # 2. Split F1
         if has_split_f1:
             ax = axes[0, 1]
-            ax.plot(df["epoch"], df["split_f1"], "o-", linewidth=1.5, markersize=3, color="#2ca02c")
+            ax.plot(
+                df["epoch"],
+                df["split_f1"],
+                "o-",
+                linewidth=1.5,
+                markersize=3,
+                color="#2ca02c",
+            )
             ax.axhline(
-                0.90, color="green", linestyle="--", alpha=0.4, linewidth=1, label="Target: 0.90"
+                0.90,
+                color="green",
+                linestyle="--",
+                alpha=0.4,
+                linewidth=1,
+                label="Target: 0.90",
             )
             ax.set_xlabel("Epoch", fontsize=9)
             ax.set_ylabel("Split F1", fontsize=9)
@@ -158,7 +177,14 @@ class TrainingResultsPopup(QDialog):
         # 3. Leaf Accuracy
         if has_leaf_acc:
             ax = axes[1, 0]
-            ax.plot(df["epoch"], df["leaf_acc"], "s-", linewidth=1.5, markersize=3, color="#1f77b4")
+            ax.plot(
+                df["epoch"],
+                df["leaf_acc"],
+                "s-",
+                linewidth=1.5,
+                markersize=3,
+                color="#1f77b4",
+            )
             ax.set_xlabel("Epoch", fontsize=9)
             ax.set_ylabel("Leaf Accuracy", fontsize=9)
             ax.set_title("Leaf Classification Accuracy", fontweight="bold", fontsize=10)
@@ -176,7 +202,12 @@ class TrainingResultsPopup(QDialog):
                 color="#ff7f0e",
             )
             ax.axhline(
-                1.0, color="green", linestyle="--", alpha=0.4, linewidth=1, label="Target: 1.0"
+                1.0,
+                color="green",
+                linestyle="--",
+                alpha=0.4,
+                linewidth=1,
+                label="Target: 1.0",
             )
             ax.set_xlabel("Epoch", fontsize=9)
             ax.set_ylabel("Leaf Node Ratio", fontsize=9)

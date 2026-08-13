@@ -190,9 +190,9 @@ def run_v7_dump(radius: int) -> None:
 
 def rebuild_npz() -> None:
     """Run build_voxy_pairs on the v7 dumps."""
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("  Rebuilding NPZ from v7 dumps")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
     n_dumps = len(list(V7_DUMPS_DIR.glob("section_*.json")))
     print(f"  v7 dumps: {n_dumps:,} files in {V7_DUMPS_DIR}")
@@ -222,14 +222,14 @@ def verify_npz() -> None:
     """Quick sanity check on the rebuilt NPZ."""
     import numpy as np
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"  Verifying {NPZ_OUTPUT.name}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
     npz = np.load(NPZ_OUTPUT)
     for key in sorted(npz.files):
         a = npz[key]
-        print(f"  {key:20s}  shape={str(a.shape):25s}  range=[{a.min():.3f}, {a.max():.3f}]")
+        print(f"  {key:20s}  shape={a.shape!s:25s}  range=[{a.min():.3f}, {a.max():.3f}]")
 
     n3d = npz["noise_3d"]
     n_ch = n3d.shape[1]
@@ -253,7 +253,10 @@ def main() -> None:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument(
-        "--radius", type=int, default=4, help="Chunk radius for /dumpnoise v7 (default: 4)"
+        "--radius",
+        type=int,
+        default=4,
+        help="Chunk radius for /dumpnoise v7 (default: 4)",
     )
     parser.add_argument(
         "--skip-server",
@@ -262,7 +265,9 @@ def main() -> None:
     )
     parser.add_argument("--jvm-xmx", default="12g", help="JVM max heap size (default: 12g)")
     parser.add_argument(
-        "--verify-only", action="store_true", help="Only verify existing NPZ — no dump or rebuild"
+        "--verify-only",
+        action="store_true",
+        help="Only verify existing NPZ — no dump or rebuild",
     )
     args = parser.parse_args()
 

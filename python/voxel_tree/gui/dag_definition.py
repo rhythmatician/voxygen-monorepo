@@ -123,7 +123,10 @@ class ProfileDag:
         can include them explicitly, but they do not appear in freshly-created
         or reset profiles.
         """
-        from voxel_tree.gui.step_definitions import PIPELINE_STEPS, TRACK_BY_ID  # late import
+        from voxel_tree.gui.step_definitions import (  # late import
+            PIPELINE_STEPS,
+            TRACK_BY_ID,
+        )
 
         excluded_tracks: set[str] = {
             tid for tid, track in TRACK_BY_ID.items() if not track.in_default_dag
