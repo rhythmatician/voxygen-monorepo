@@ -17,9 +17,13 @@ const execFileAsync = promisify(execFile);
 // Configuration
 // ---------------------------------------------------------------------------
 const MAX_ITERATIONS = 10;
+const REASON_TRUNCATE = 800;
+const MERGER_REASON_TRUNCATE = 1000;
+const WORKER_REASON_TRUNCATE = 2000;
+
 const hooks = {
   sandbox: { onSandboxReady: [{ command: "npm install" }] },
-};
+} as const;
 const copyToWorktree: string[] = [];
 
 const planSchema = z.object({
@@ -28,19 +32,22 @@ const planSchema = z.object({
   ),
 });
 
+type PlannedIssue = z.infer<typeof planSchema>["issues"][number];
+
 // ---------------------------------------------------------------------------
-// GH helpers (host-side only) -- sandbox/Docker side must use bare `gh` on PATH
+// GH helpers -- host-side only
 // ---------------------------------------------------------------------------
-// ghBinary() is host-only: it resolves the host's `gh` for runGh() which is
-// executed on the host. Inside the Docker sandbox (`node:22-bookworm` via
-// .sandcastle/Dockerfile), `gh` is installed at /usr/bin/gh and is on PATH,
-// so prompts and docker() commands must use bare `gh` and never call
-// ghBinary() -- otherwise a host Windows path (C:\\Program Files\\...) would
-// leak into the sandbox where only /usr/bin/gh exists.
-// Probe /usr/bin/gh first so a container/host Linux run never returns a
-// Windows path.
+// runGh() executes on the host, so ghBinary() resolves the host `gh`.
+// Inside the Docker sandbox (node:22-bookworm via .sandcastle/Dockerfile),
+// `gh` is at /usr/bin/gh on PATH. Prompts and docker() commands must use
+// bare `gh` and never call ghBinary() -- otherwise a host Windows path
+// (C:\Program Files\...) would leak into the container where only
+// /usr/bin/gh exists.
+
 function ghBinary(): string {
-  if (fs.existsSync("/usr/bin/gh")) return "/usr/bin/gh"; // inside container / Linux -- must be first
+  // Probe /usr/bin/gh first so a container or Linux host run never returns
+  // a Windows path.
+  if (fs.existsSync("/usr/bin/gh")) return "/usr/bin/gh";
   const winPath = "C:\\Program Files\\GitHub CLI\\gh.exe";
   if (fs.existsSync(winPath)) return winPath;
   const wslPath = "/mnt/c/Program Files/GitHub CLI/gh.exe";
@@ -48,11 +55,29 @@ function ghBinary(): string {
   return "gh";
 }
 
-// muse binary: intentionally not hardcoded. Host has `muse` via ~/.local/bin
-// (added to PATH), sandbox has it via Dockerfile `ENV PATH="/home/agent/.local/bin:$PATH"`
-// after `curl ... | bash`. All sandcastle.muse() invocations rely on `muse`
-// on PATH -- do not introduce a host absolute path here (same host-only
-// principle as ghBinary()).
+// muse binary: intentionally not hardcoded -- host and sandbox both expose
+// `muse` on PATH (host via ~/.local/bin, sandbox via Dockerfile
+// ENV PATH="/home/agent/.local/bin:$PATH" after install.sh).
+// Do not introduce a host absolute path (same host-only principle as ghBinary).
+
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return String(error);
+}
+
+function getGhErrorDetails(error: unknown): string {
+  if (error !== null && typeof error === "object" && "stderr" in error) {
+    const stderr = (error as { stderr?: unknown }).stderr;
+    if (stderr !== undefined && stderr !== null) return String(stderr);
+  }
+  return getErrorMessage(error);
+}
+
+async function safeRunGh(args: string[]): Promise<void> {
+  try {
+    await runGh(args);
+  } catch {}
+}
 
 function ghToken(): string {
   if (process.env.GH_TOKEN) return process.env.GH_TOKEN;
@@ -73,9 +98,8 @@ async function runGh(args: string[]): Promise<string> {
   try {
     const { stdout } = await execFileAsync(bin, args, { env, maxBuffer: 10 * 1024 * 1024 });
     return stdout.trim();
-  } catch (e: any) {
-    const stderr = e.stderr?.toString() ?? e.message;
-    throw new Error(`gh ${args.join(" ")} failed: ${stderr}`);
+  } catch (error: unknown) {
+    throw new Error(`gh ${args.join(" ")} failed: ${getGhErrorDetails(error)}`);
   }
 }
 
@@ -169,41 +193,29 @@ async function claimIssue(issue: IssueInput): Promise<boolean> {
     }
     console.log(`  Claimed #${id} → ${branch}`);
     return true;
-  } catch (e: any) {
-    console.warn(`  Claim failed for #${id}: ${e.message}`);
+  } catch (error: unknown) {
+    console.warn(`  Claim failed for #${id}: ${getErrorMessage(error)}`);
     return false;
   }
 }
 
 async function markBlocked(issueId: string, branch: string, reason: string): Promise<void> {
-  const shortReason = reason.slice(0, 800);
-  try {
-    await runGh(["issue", "edit", issueId, "--remove-label", "agent:in-progress"]);
-  } catch {}
-  try {
-    await runGh(["issue", "edit", issueId, "--add-label", "agent:blocked"]);
-  } catch {}
-  try {
-    await runGh([
-      "issue",
-      "comment",
-      issueId,
-      "--body",
-      `Sandcastle failed on \`${branch}\` -- not merged. Preserved branch for inspection.\n\n**Reason:** ${shortReason}\n\nBranch: \`${branch}\`\n\nTo retry: remove \`agent:blocked\`, ensure \`agent:implement\` is still present, and re-run factory.`,
-    ]);
-  } catch {}
+  const shortReason = reason.slice(0, REASON_TRUNCATE);
+  await safeRunGh(["issue", "edit", issueId, "--remove-label", "agent:in-progress"]);
+  await safeRunGh(["issue", "edit", issueId, "--add-label", "agent:blocked"]);
+  await safeRunGh([
+    "issue",
+    "comment",
+    issueId,
+    "--body",
+    `Sandcastle failed on \`${branch}\` -- not merged. Preserved branch for inspection.\n\n**Reason:** ${shortReason}\n\nBranch: \`${branch}\`\n\nTo retry: remove \`agent:blocked\`, ensure \`agent:implement\` is still present, and re-run factory.`,
+  ]);
 }
 
 async function markIntegrated(issueId: string, branch: string): Promise<void> {
-  try {
-    await runGh(["issue", "edit", issueId, "--remove-label", "agent:in-progress"]);
-  } catch {}
-  try {
-    await runGh(["issue", "edit", issueId, "--remove-label", "agent:implement"]);
-  } catch {}
-  try {
-    await runGh(["issue", "edit", issueId, "--remove-label", "agent:blocked"]);
-  } catch {}
+  for (const label of ["agent:in-progress", "agent:implement", "agent:blocked"]) {
+    await safeRunGh(["issue", "edit", issueId, "--remove-label", label]);
+  }
   // Close with audit comment
   try {
     await runGh([
@@ -232,8 +244,8 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   let allCandidates: IssueInput[] = [];
   try {
     allCandidates = await fetchOpenImplementIssues();
-  } catch (e: any) {
-    console.error(`Failed to fetch issues: ${e.message}`);
+  } catch (error: unknown) {
+    console.error(`Failed to fetch issues: ${getErrorMessage(error)}`);
     break;
   }
 
@@ -241,7 +253,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   for (const c of allCandidates) {
     const r = isEligible(c);
     if (!r.eligible) {
-      console.log(`  - #${c.number} "${c.title}" → SKIP (${(r as any).reason})`);
+      console.log(`  - #${c.number} "${c.title}" → SKIP (${r.reason})`);
     } else {
       console.log(`  - #${c.number} "${c.title}" → ELIGIBLE`);
     }
@@ -267,7 +279,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     2,
   );
 
-  let plannedIssues: Array<{ id: string; title: string; branch: string }> = [];
+  let plannedIssues: PlannedIssue[] = [];
   if (eligible.length === 1) {
     // Single issue -- no need to invoke LLM
     plannedIssues = [{ id: String(eligible[0].number), title: eligible[0].title, branch: branchForIssue(eligible[0].number) }];
@@ -284,10 +296,10 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
         promptArgs: { ISSUES_JSON: issuesJson },
         output: sandcastle.Output.object({ tag: "plan", schema: planSchema }),
       });
-      const rawPlanned = plan.output.issues;
+      const rawPlanned = plan.output.issues as PlannedIssue[];
       // Enforce subset of eligible -- drop any hallucinated IDs
       const eligibleIds = new Set(eligible.map((e) => String(e.number)));
-      plannedIssues = rawPlanned.filter((p: { id: string }) => eligibleIds.has(p.id));
+      plannedIssues = rawPlanned.filter((p) => eligibleIds.has(p.id));
       if (plannedIssues.length !== rawPlanned.length) {
         console.warn(`Planner returned ${rawPlanned.length - plannedIssues.length} ineligible hallucinated issue(s) -- dropped`);
       }
@@ -298,8 +310,8 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
       }
       console.log(`Planner selected ${plannedIssues.length}/${eligible.length} issue(s) to run now:`);
       for (const p of plannedIssues) console.log(`  ${p.id}: ${p.title} → ${p.branch}`);
-    } catch (e: any) {
-      console.error(`Planner failed: ${e.message} -- falling back to direct dispatch of all eligible`);
+    } catch (error: unknown) {
+      console.error(`Planner failed: ${getErrorMessage(error)} -- falling back to direct dispatch of all eligible`);
       plannedIssues = eligible.map((i) => ({ id: String(i.number), title: i.title, branch: branchForIssue(i.number) }));
     }
   }
@@ -363,7 +375,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   const failedIndices: number[] = [];
   for (const [i, outcome] of settled.entries()) {
     if (outcome.status === "rejected") {
-      const reason = String(outcome.reason ?? "unknown error").slice(0, 2000);
+      const reason = String(outcome.reason ?? "unknown error").slice(0, WORKER_REASON_TRUNCATE);
       console.error(`  ✗ ${claimedIssues[i]!.id} (${claimedIssues[i]!.branch}) failed: ${reason}`);
       failedIndices.push(i);
       await markBlocked(claimedIssues[i]!.id, claimedIssues[i]!.branch, reason);
@@ -411,11 +423,11 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
       },
     });
     console.log("\nBranches merged locally via merger agent.");
-  } catch (e: any) {
-    console.error(`Merger failed: ${e.message}`);
+  } catch (error: unknown) {
+    console.error(`Merger failed: ${getErrorMessage(error)}`);
     // Mark all completed as blocked since integration failed
     for (const iss of completedIssues) {
-      await markBlocked(iss.id, iss.branch, `Merger failed: ${String(e.message).slice(0, 1000)} -- branch preserved`);
+      await markBlocked(iss.id, iss.branch, `Merger failed: ${String(getErrorMessage(error)).slice(0, MERGER_REASON_TRUNCATE)} -- branch preserved`);
     }
     continue;
   }
@@ -463,11 +475,11 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
                 await runGh(["pr", "merge", prNumber, "--auto", "--merge"]);
                 console.log(`Auto-merge enabled for PR #${prNumber}`);
               }
-            } catch (e: any) {
-              console.warn(`Auto-merge not enabled: ${e.message}`);
+            } catch (error: unknown) {
+              console.warn(`Auto-merge not enabled: ${getErrorMessage(error)}`);
             }
-          } catch (e: any) {
-            console.warn(`PR creation skipped: ${e.message}`);
+          } catch (error: unknown) {
+            console.warn(`PR creation skipped: ${getErrorMessage(error)}`);
           }
         } else {
           console.log(`PR #${existingPr} already exists for ${currentBranch}`);
@@ -475,12 +487,12 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
             execSync(`git push origin HEAD`, { stdio: "ignore" });
           } catch {}
         }
-      } catch (e: any) {
-        console.warn(`PR handling failed: ${e.message}`);
+      } catch (error: unknown) {
+        console.warn(`PR handling failed: ${getErrorMessage(error)}`);
       }
     }
-  } catch (e: any) {
-    console.warn(`Post-merge PR handling failed (non-fatal): ${e.message}`);
+  } catch (error: unknown) {
+    console.warn(`Post-merge PR handling failed (non-fatal): ${getErrorMessage(error)}`);
   }
 
   // Close issues after successful local integration (audit trail)
