@@ -126,7 +126,7 @@ async function fetchOpenImplementIssues(): Promise<IssueInput[]> {
       return {
         number: r.number,
         title: r.title,
-        state: r.state as "open" | "closed",
+        state: r.state.toLowerCase() as "open" | "closed",
         labels: r.labels.map((l) => l.name),
         assignees: r.assignees.map((a) => a.login),
         blockedByCount,
