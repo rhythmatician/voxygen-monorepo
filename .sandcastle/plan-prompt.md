@@ -1,37 +1,28 @@
-# ISSUES
+# ELIGIBLE ISSUES
 
-Here are the open issues in the repo:
+The following issues have **already passed deterministic eligibility checks** host-side
+(open, has `agent:implement`, not claimed/in-progress, no open native blockers,
+not a forbidden Wayfinder workflow type). Do not re-check those gates — they are authoritative.
 
 <issues-json>
-
-!`gh issue list --state open --label "ready-for-agent" --limit 100 --json number,title,body,labels,comments --jq '[.[] | {number, title, body, labels: [.labels[].name], comments: [.comments[].body]}]'`
-
+{{ISSUES_JSON}}
 </issues-json>
-
-The list above has already been filtered to issues ready for work.
 
 # TASK
 
-Analyze the open issues and build a dependency graph. For each issue, determine whether it **blocks** or **is blocked by** any other open issue.
+You are the overlap/serialization advisor, not the eligibility gate.
 
-An issue B is **blocked by** issue A if:
+- If the eligible issues touch disjoint files/modules and can safely run in parallel, include all of them.
+- If two or more issues are likely to edit overlapping files/modules or produce merge conflicts, serialize: include only the subset that can run safely now and defer the rest to the next factory iteration. Explain your reasoning briefly.
+- Never invent eligibility. Never override a real blocker (already filtered). Never execute a Wayfinder `research`/`prototype`/`grilling` ticket — those are already excluded.
+- If every issue is blocked, you would have received an empty list (already handled host-side). Do not force execution of a blocked issue.
 
-- B requires code or infrastructure that A introduces
-- B and A modify overlapping files or modules, making concurrent work likely to produce merge conflicts
-- B's requirements depend on a decision or API shape that A will establish
-
-An issue is **unblocked** if it has zero blocking dependencies on other open issues.
-
-For each unblocked issue, assign a branch name using the exact format `sandcastle/issue-{id}` (no slug or other suffix). This must be deterministic so that re-planning the same issue always produces the same branch name and accumulated progress is preserved.
+For each issue you include, assign branch `sandcastle/issue-{id}` deterministically.
 
 # OUTPUT
 
-Output your plan as a JSON object wrapped in `<plan>` tags:
+Output your plan as JSON inside <plan> tags:
 
-<plan>
-{"issues": [{"id": "42", "title": "Fix auth bug", "branch": "sandcastle/issue-42"}]}
-</plan>
+<plan>{"issues": [{"id": "42", "title": "Fix auth bug", "branch": "sandcastle/issue-42"}]}</plan>
 
-Include only unblocked issues. If every issue is blocked, include the single highest-priority candidate (the one with the fewest or weakest dependencies).
-
-Always emit the `<plan>` tags, even when there is nothing to do. If there are no issues to work on at all, output `<plan>{"issues": []}</plan>` so the run can exit cleanly.
+Include only the issues you advise to run **now** (subset of the eligible list). If none can run concurrently due to overlap, include the single safest candidate. Always emit <plan> tags. If the input list is empty, emit `<plan>{"issues": []}</plan>`.

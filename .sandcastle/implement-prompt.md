@@ -2,61 +2,36 @@
 
 Fix issue {{TASK_ID}}: {{ISSUE_TITLE}}
 
-Pull in the issue using `gh issue view <ID>`. If it has a parent PRD, pull that in too.
+Pull the issue with `gh issue view {{TASK_ID}} --comments`. Verify labels: it must have `agent:implement` and must NOT have a forbidden Wayfinder type (`wayfinder:research`, `wayfinder:prototype`, `wayfinder:grilling`, `wayfinder:map`, `wayfinder:preserve-futures`). If it does, stop and output <promise>COMPLETE</promise> without making changes — the host misrouted a HITL ticket.
 
-Only work on the issue specified.
-
-Work on branch {{BRANCH}}. Make commits and run tests.
+Only work on the issue specified. Work on branch {{BRANCH}}. Make commits and run tests.
 
 # CONTEXT
 
-Here are the last 10 commits:
+Last 10 commits:
 
 <recent-commits>
-
 !`git log -n 10 --format="%H%n%ad%n%B---" --date=short`
-
 </recent-commits>
-
-# EXPLORATION
-
-Explore the repo and fill your context window with relevant information that will allow you to complete the task.
-
-Pay extra attention to test files that touch the relevant parts of the code.
 
 # EXECUTION
 
-If applicable, use RGR to complete the task.
+Explore the repo and fill context with relevant code and tests. Pay attention to contract tests under `java/src/contractTest/` and schemas under `spec/` — they are immutable oracles, never edit them to make tests pass.
 
-1. RED: write one test
-2. GREEN: write the implementation to pass that test
-3. REPEAT until done
-4. REFACTOR the code
+Use Red-Green-Refactor where applicable.
 
-# FEEDBACK LOOPS
-
-Before committing, run `npm run typecheck` and `npm run test` to ensure the tests pass.
+Before committing, run `npm run typecheck` and `npm run test` (or the narrowest applicable gate `./dev/verify-all` when touching Java/Python oracles).
 
 # COMMIT
 
-Make a git commit. The commit message must:
+Commit message must start with `RALPH:` and concisely record task + key decisions + files changed + blockers.
 
-1. Start with `RALPH:` prefix
-2. Include task completed + PRD reference
-3. Key decisions made
-4. Files changed
-5. Blockers or notes for next iteration
+# COMPLETION
 
-Keep it concise.
-
-# THE ISSUE
-
-If the task is not complete, leave a comment on the issue with what was done.
-
-Do not close the issue - this will be done later.
+If task is incomplete, leave a comment on the issue with progress and what remains. Do NOT close the issue — the factory merger closes it after integration.
 
 Once complete, output <promise>COMPLETE</promise>.
 
 # FINAL RULES
 
-ONLY WORK ON A SINGLE TASK.
+ONLY WORK ON A SINGLE TASK. Do not touch unrelated issues. Respect `AGENT_RULES.md` — never weaken oracles or fixtures to make tests green.
