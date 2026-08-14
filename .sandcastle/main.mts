@@ -18,7 +18,12 @@ const execFileAsync = promisify(execFile);
 // ---------------------------------------------------------------------------
 const MAX_ITERATIONS = 10;
 const hooks = {
-  sandbox: { onSandboxReady: [{ command: "npm install" }] },
+  sandbox: {
+    onSandboxReady: [
+      { command: 'for s in .muse/skills/*; do muse skills install "$s" --scope user 2>&1 | head -5; done' },
+      { command: "npm install" },
+    ],
+  },
 };
 const copyToWorktree: string[] = [];
 

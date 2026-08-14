@@ -6,6 +6,8 @@ Pull the issue with `gh issue view {{TASK_ID}} --comments`. Verify labels: it mu
 
 Only work on the issue specified. Work on branch {{BRANCH}}. Make commits and run tests.
 
+You have the wayfinder skill installed. Invoke it with /wayfinder or follow .muse/skills/wayfinder/SKILL.md directly. The vendored skills at .muse/skills/* are installed via `muse skills install --scope user` in the sandbox ready hook.
+
 # CONTEXT
 
 Last 10 commits:
