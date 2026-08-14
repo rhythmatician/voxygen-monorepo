@@ -1,4 +1,4 @@
-// Factory v0 — deterministic eligibility, claim-before-work, failure visibility,
+// Factory v0 -- deterministic eligibility, claim-before-work, failure visibility,
 // batch integration with audit trail. Preserves parallel isolated workers,
 // review, and merger topology.
 
@@ -29,17 +29,30 @@ const planSchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
-// GH helpers (host-side)
+// GH helpers (host-side only) -- sandbox/Docker side must use bare `gh` on PATH
 // ---------------------------------------------------------------------------
+// ghBinary() is host-only: it resolves the host's `gh` for runGh() which is
+// executed on the host. Inside the Docker sandbox (`node:22-bookworm` via
+// .sandcastle/Dockerfile), `gh` is installed at /usr/bin/gh and is on PATH,
+// so prompts and docker() commands must use bare `gh` and never call
+// ghBinary() -- otherwise a host Windows path (C:\\Program Files\\...) would
+// leak into the sandbox where only /usr/bin/gh exists.
+// Probe /usr/bin/gh first so a container/host Linux run never returns a
+// Windows path.
 function ghBinary(): string {
-  // Windows host has gh at "C:\Program Files\GitHub CLI\gh.exe"
+  if (fs.existsSync("/usr/bin/gh")) return "/usr/bin/gh"; // inside container / Linux -- must be first
   const winPath = "C:\\Program Files\\GitHub CLI\\gh.exe";
   if (fs.existsSync(winPath)) return winPath;
-  // Also check WSL mount
   const wslPath = "/mnt/c/Program Files/GitHub CLI/gh.exe";
   if (fs.existsSync(wslPath)) return wslPath;
   return "gh";
 }
+
+// muse binary: intentionally not hardcoded. Host has `muse` via ~/.local/bin
+// (added to PATH), sandbox has it via Dockerfile `ENV PATH="/home/agent/.local/bin:$PATH"`
+// after `curl ... | bash`. All sandcastle.muse() invocations rely on `muse`
+// on PATH -- do not introduce a host absolute path here (same host-only
+// principle as ghBinary()).
 
 function ghToken(): string {
   if (process.env.GH_TOKEN) return process.env.GH_TOKEN;
@@ -120,7 +133,7 @@ async function fetchOpenImplementIssues(): Promise<IssueInput[]> {
           const n = parseInt(summary.trim(), 10);
           if (!isNaN(n)) blockedByCount = n;
         } catch {
-          // ignore — fallback to undefined (treated as unblocked)
+          // ignore -- fallback to undefined (treated as unblocked)
         }
       }
       return {
@@ -149,7 +162,7 @@ async function claimIssue(issue: IssueInput): Promise<boolean> {
         "comment",
         id,
         "--body",
-        `Sandcastle claiming #${id} for AFK implementation on \`${branch}\` — \`${issue.title}\``,
+        `Sandcastle claiming #${id} for AFK implementation on \`${branch}\` -- \`${issue.title}\``,
       ]);
     } catch {
       // comment is best-effort
@@ -176,7 +189,7 @@ async function markBlocked(issueId: string, branch: string, reason: string): Pro
       "comment",
       issueId,
       "--body",
-      `Sandcastle failed on \`${branch}\` — not merged. Preserved branch for inspection.\n\n**Reason:** ${shortReason}\n\nBranch: \`${branch}\`\n\nTo retry: remove \`agent:blocked\`, ensure \`agent:implement\` is still present, and re-run factory.`,
+      `Sandcastle failed on \`${branch}\` -- not merged. Preserved branch for inspection.\n\n**Reason:** ${shortReason}\n\nBranch: \`${branch}\`\n\nTo retry: remove \`agent:blocked\`, ensure \`agent:implement\` is still present, and re-run factory.`,
     ]);
   } catch {}
 }
@@ -198,12 +211,12 @@ async function markIntegrated(issueId: string, branch: string): Promise<void> {
       "close",
       issueId,
       "--comment",
-      `Completed by Sandcastle — branch \`${branch}\` merged and integrated. Auto-merged to main after verification.`,
+      `Completed by Sandcastle -- branch \`${branch}\` merged and integrated. Auto-merged to main after verification.`,
     ]);
   } catch {
     // fallback: comment then close
     try {
-      await runGh(["issue", "comment", issueId, "--body", `Completed by Sandcastle — branch \`${branch}\` integrated.`]);
+      await runGh(["issue", "comment", issueId, "--body", `Completed by Sandcastle -- branch \`${branch}\` integrated.`]);
       await runGh(["issue", "close", issueId]);
     } catch {}
   }
@@ -256,9 +269,9 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
 
   let plannedIssues: Array<{ id: string; title: string; branch: string }> = [];
   if (eligible.length === 1) {
-    // Single issue — no need to invoke LLM
+    // Single issue -- no need to invoke LLM
     plannedIssues = [{ id: String(eligible[0].number), title: eligible[0].title, branch: branchForIssue(eligible[0].number) }];
-    console.log(`Single eligible issue — skipping LLM planner, direct dispatch #${plannedIssues[0].id}`);
+    console.log(`Single eligible issue -- skipping LLM planner, direct dispatch #${plannedIssues[0].id}`);
   } else {
     try {
       const plan = await sandcastle.run({
@@ -272,11 +285,11 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
         output: sandcastle.Output.object({ tag: "plan", schema: planSchema }),
       });
       const rawPlanned = plan.output.issues;
-      // Enforce subset of eligible — drop any hallucinated IDs
+      // Enforce subset of eligible -- drop any hallucinated IDs
       const eligibleIds = new Set(eligible.map((e) => String(e.number)));
-      plannedIssues = rawPlanned.filter((p) => eligibleIds.has(p.id));
+      plannedIssues = rawPlanned.filter((p: { id: string }) => eligibleIds.has(p.id));
       if (plannedIssues.length !== rawPlanned.length) {
-        console.warn(`Planner returned ${rawPlanned.length - plannedIssues.length} ineligible hallucinated issue(s) — dropped`);
+        console.warn(`Planner returned ${rawPlanned.length - plannedIssues.length} ineligible hallucinated issue(s) -- dropped`);
       }
       if (plannedIssues.length === 0) {
         console.log("Planner advised to defer all eligible issues due to overlap risk. Will retry next iteration.");
@@ -286,7 +299,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
       console.log(`Planner selected ${plannedIssues.length}/${eligible.length} issue(s) to run now:`);
       for (const p of plannedIssues) console.log(`  ${p.id}: ${p.title} → ${p.branch}`);
     } catch (e: any) {
-      console.error(`Planner failed: ${e.message} — falling back to direct dispatch of all eligible`);
+      console.error(`Planner failed: ${e.message} -- falling back to direct dispatch of all eligible`);
       plannedIssues = eligible.map((i) => ({ id: String(i.number), title: i.title, branch: branchForIssue(i.number) }));
     }
   }
@@ -298,11 +311,11 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     if (!src) continue;
     const ok = await claimIssue(src);
     if (ok) claimedIssues.push(p);
-    else console.warn(`  Skipping #${p.id} — claim failed, likely raced`);
+    else console.warn(`  Skipping #${p.id} -- claim failed, likely raced`);
   }
 
   if (claimedIssues.length === 0) {
-    console.log("No issues claimed — nothing to execute this iteration.");
+    console.log("No issues claimed -- nothing to execute this iteration.");
     continue;
   }
 
@@ -355,9 +368,9 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
       failedIndices.push(i);
       await markBlocked(claimedIssues[i]!.id, claimedIssues[i]!.branch, reason);
     } else if (outcome.value.commits.length === 0) {
-      // No commits — treat as no-op, not failure, but remove in-progress so it can be retried?
+      // No commits -- treat as no-op, not failure, but remove in-progress so it can be retried?
       // Spec says failure must leave blocked; no-op we treat as blocked with diagnostics.
-      console.warn(`  ⚠ ${claimedIssues[i]!.id} produced no commits — marking blocked for inspection`);
+      console.warn(`  ⚠ ${claimedIssues[i]!.id} produced no commits -- marking blocked for inspection`);
       await markBlocked(claimedIssues[i]!.id, claimedIssues[i]!.branch, "Implementer produced no commits (no work or error without throw). Branch preserved.");
       failedIndices.push(i);
     }
@@ -402,13 +415,13 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     console.error(`Merger failed: ${e.message}`);
     // Mark all completed as blocked since integration failed
     for (const iss of completedIssues) {
-      await markBlocked(iss.id, iss.branch, `Merger failed: ${String(e.message).slice(0, 1000)} — branch preserved`);
+      await markBlocked(iss.id, iss.branch, `Merger failed: ${String(e.message).slice(0, 1000)} -- branch preserved`);
     }
     continue;
   }
 
   // Host-side: push + PR + auto-merge is handled by merger prompt's host?
-  // For v0, attempt to push and create a batch PR. Failures are non-fatal — work is already merged locally.
+  // For v0, attempt to push and create a batch PR. Failures are non-fatal -- work is already merged locally.
   // Attempt host-side audit-close only after local merge succeeded.
   // The PR creation is best-effort; closing issues indicates integration on current branch.
   try {
@@ -416,7 +429,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     const currentBranch = execSync("git branch --show-current", { encoding: "utf8" }).trim();
     console.log(`Current branch after merge: ${currentBranch}`);
 
-    // Attempt to create/update PR for batch — best effort
+    // Attempt to create/update PR for batch -- best effort
     const ownerRepo = parseOwnerRepo();
     if (ownerRepo) {
       try {
@@ -431,7 +444,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
             execSync(`git push origin HEAD`, { stdio: "ignore" });
           } catch {}
           try {
-            const prBody = `Sandcastle batch integration — branches:\n${completedBranches.map((b) => `- \`${b}\``).join("\n")}\n\nIssues:\n${completedIssues.map((i) => `- #${i.id} ${i.title}`).join("\n")}`;
+            const prBody = `Sandcastle batch integration -- branches:\n${completedBranches.map((b) => `- \`${b}\``).join("\n")}\n\nIssues:\n${completedIssues.map((i) => `- #${i.id} ${i.title}`).join("\n")}`;
             const prUrl = await runGh([
               "pr",
               "create",
@@ -473,10 +486,10 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   // Close issues after successful local integration (audit trail)
   for (const iss of completedIssues) {
     await markIntegrated(iss.id, iss.branch);
-    console.log(`  Closed #${iss.id} — integrated via ${iss.branch}`);
+    console.log(`  Closed #${iss.id} -- integrated via ${iss.branch}`);
   }
 
-  console.log("\nBatch complete — issues closed and transient labels cleared.");
+  console.log("\nBatch complete -- issues closed and transient labels cleared.");
 }
 
 console.log("\nAll done.");
