@@ -34,3 +34,6 @@ python/artifacts/
 .dmypy.json
 tmp/
 node_modules/
+
+# VS Code internal diagnostics
+.vscode/prompt-diagnostics.json
