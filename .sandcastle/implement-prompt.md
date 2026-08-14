@@ -4,6 +4,8 @@ Fix issue {{TASK_ID}}: {{ISSUE_TITLE}}
 
 Pull the issue with `gh issue view {{TASK_ID}} --comments`. Verify labels: it must have `agent:implement` and must NOT have a forbidden Wayfinder type (`wayfinder:research`, `wayfinder:prototype`, `wayfinder:grilling`, `wayfinder:map`, `wayfinder:preserve-futures`). If it does, stop and output <promise>COMPLETE</promise> without making changes — the host misrouted a HITL ticket.
 
+Defense-in-depth second guard (triple-signal for `wayfinder:task`): after `gh issue view {{TASK_ID}} --comments` re-check, also verify that if the issue has both `wayfinder:task` and `agent:implement` but the body does NOT contain `Execution is carried into this map`, then log `SKIP(wayfinder:task: map Notes does not authorize AFK execution)` and output <promise>COMPLETE</promise> without making changes. This covers host misroute and encodes labels + map Notes as the only durable AFK signal (v0 proxy via ticket body; v1 can fetch map body via `gh api`).
+
 Only work on the issue specified. Work on branch {{BRANCH}}. Make commits and run tests.
 
 # CONTEXT

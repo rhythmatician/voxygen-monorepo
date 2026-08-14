@@ -137,6 +137,9 @@ async function fetchOpenImplementIssues(): Promise<IssueInput[]> {
   return issues;
 }
 
+// Phase 0.5 claim — host-side, sequential, before createSandbox (single-host v0).
+// Unified host claim: gh issue edit --add-assignee @me --add-label agent:in-progress + comment.
+// Stale release is manual per #18: gh issue edit <id> --remove-label agent:in-progress --remove-assignee @me; do not auto-expire.
 async function claimIssue(issue: IssueInput): Promise<boolean> {
   const id = String(issue.number);
   const branch = branchForIssue(issue.number);
@@ -182,6 +185,8 @@ async function markBlocked(issueId: string, branch: string, reason: string): Pro
 }
 
 async function markIntegrated(issueId: string, branch: string): Promise<void> {
+  // TODO(factory-v1): Wayfinder close ownership — host markIntegrated() still closes ordinary impl;
+  // Wayfinder skill will own Wayfinder ticket close when v1 ships. Host merger does not close Wayfinder tickets.
   try {
     await runGh(["issue", "edit", issueId, "--remove-label", "agent:in-progress"]);
   } catch {}
@@ -274,7 +279,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
       const rawPlanned = plan.output.issues;
       // Enforce subset of eligible — drop any hallucinated IDs
       const eligibleIds = new Set(eligible.map((e) => String(e.number)));
-      plannedIssues = rawPlanned.filter((p) => eligibleIds.has(p.id));
+      plannedIssues = rawPlanned.filter((p: { id: string }) => eligibleIds.has(p.id));
       if (plannedIssues.length !== rawPlanned.length) {
         console.warn(`Planner returned ${rawPlanned.length - plannedIssues.length} ineligible hallucinated issue(s) — dropped`);
       }

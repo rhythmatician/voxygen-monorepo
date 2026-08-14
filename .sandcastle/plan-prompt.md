@@ -2,7 +2,7 @@
 
 The following issues have **already passed deterministic eligibility checks** host-side
 (open, has `agent:implement`, not claimed/in-progress, no open native blockers,
-not a forbidden Wayfinder workflow type). Do not re-check those gates — they are authoritative.
+not a forbidden Wayfinder workflow type, and for `wayfinder:task` the triple-signal `Execution is carried into this map` in body). Do not re-check those gates — they are authoritative.
 
 <issues-json>
 {{ISSUES_JSON}}
@@ -16,6 +16,12 @@ You are the overlap/serialization advisor, not the eligibility gate.
 - If two or more issues are likely to edit overlapping files/modules or produce merge conflicts, serialize: include only the subset that can run safely now and defer the rest to the next factory iteration. Explain your reasoning briefly.
 - Never invent eligibility. Never override a real blocker (already filtered). Never execute a Wayfinder `research`/`prototype`/`grilling` ticket — those are already excluded.
 - If every issue is blocked, you would have received an empty list (already handled host-side). Do not force execution of a blocked issue.
+
+## Wayfinder Serialization Rule (Factory v0 — from #17/#18)
+
+- When the eligible set contains two or more `wayfinder:task` issues that both reference `Part of #<same-map>` in their body (or both have `wayfinder:task` without distinct map context), include **at most one `wayfinder:task` per map per iteration**. Defer additional same-map `wayfinder:task` tickets to the next factory iteration. If map cannot be parsed, treat any two `wayfinder:task` issues as same-map and serialize to one.
+- Ordinary implementation issues (no `wayfinder:*` label) may still run concurrently via `Promise.allSettled`; only same-map Wayfinder tickets serialize. Parent-map mutation is single-writer: Wayfinder owns `gh issue edit <map> --body` for Notes, host merger does not close Wayfinder tickets (see `// TODO(factory-v1): Wayfinder close ownership` in `.sandcastle/main.mts` — host `markIntegrated()` still closes ordinary impl, Wayfinder skill will own Wayfinder close when v1 ships).
+- For map extraction, look for `Part of #14` / `Part of #<number>` patterns in issue bodies; use the numeric map id as the grouping key.
 
 For each issue you include, assign branch `sandcastle/issue-{id}` deterministically.
 

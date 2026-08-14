@@ -125,9 +125,14 @@ describe("AC12: re-running dispatcher does not duplicate", () => {
 
 describe("Wayfinder seam", () => {
   it("wayfinder:task is allowed but leaves seam for future routing", () => {
-    const t = issue({ labels: ["agent:implement", "wayfinder:task"] });
+    const t = issue({ labels: ["agent:implement", "wayfinder:task"], body: "Execution is carried into this map" });
     expect(isEligible(t).eligible).toBe(true);
     // Future: if wayfinder:task needs special routing, add check here without affecting
     // research/prototype/grilling block-list.
+  });
+
+  it("wayfinder:task without Notes is blocked by triple-signal", () => {
+    const t = issue({ labels: ["agent:implement", "wayfinder:task"], body: "no notes" });
+    expect(isEligible(t).eligible).toBe(false);
   });
 });

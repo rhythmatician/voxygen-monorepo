@@ -90,6 +90,13 @@ export function isEligible(issue: IssueInput): EligibilityResult {
     }
   }
 
+  // 6. AFK wayfinder:task triple-signal gate — labels + map Notes as durable signal
+  if (issue.labels.includes("wayfinder:task") && issue.labels.includes(REQUIRED_LABEL)) {
+    // For v0: proxy via ticket body; v1 can fetch map body via gh api. Keep deterministic.
+    const notesAllowsExecution = issue.body?.includes("Execution is carried into this map");
+    if (!notesAllowsExecution) return { eligible: false, reason: "wayfinder:task: map Notes does not authorize AFK execution" };
+  }
+
   return { eligible: true };
 }
 

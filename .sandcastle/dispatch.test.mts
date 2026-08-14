@@ -107,9 +107,26 @@ describe("isEligible", () => {
   });
 
   it("wayfinder:task is allowed (seam for future routing)", () => {
-    // wayfinder:task is AFK-task — allowed if explicitly authorized.
-    const i = issue({ labels: ["agent:implement", "wayfinder:task"] });
+    // wayfinder:task is AFK-task — allowed if explicitly authorized via triple-signal.
+    const i = issue({ labels: ["agent:implement", "wayfinder:task"], body: "Part of #14\nExecution is carried into this map" });
     expect(isEligible(i).eligible).toBe(true);
+  });
+
+  it("wayfinder:task without Notes is not dispatched (triple-signal gate)", () => {
+    const i = issue({ labels: ["agent:implement", "wayfinder:task"], body: "Part of #14" });
+    const res = isEligible(i);
+    expect(res.eligible).toBe(false);
+    expect((res as any).reason).toContain("wayfinder:task: map Notes does not authorize");
+  });
+
+  it("wayfinder:task without body is not dispatched", () => {
+    const i = issue({ labels: ["agent:implement", "wayfinder:task"] });
+    expect(isEligible(i).eligible).toBe(false);
+  });
+
+  it("wayfinder:task without agent:implement remains ineligible (missing REQUIRED_LABEL)", () => {
+    const i = issue({ labels: ["wayfinder:task"], body: "Execution is carried into this map" });
+    expect(isEligible(i).eligible).toBe(false);
   });
 
   it("duplicate prevention: re-running dispatcher on same issue does not re-dispatch if already in-progress", () => {
