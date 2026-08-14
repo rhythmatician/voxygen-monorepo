@@ -32,6 +32,10 @@ export const FORBIDDEN_WAYFINDER_LABELS = [
   "wayfinder:preserve-futures",
 ] as const;
 
+export const WAYFINDER_TASK_LABEL = "wayfinder:task" as const;
+export const WAYFINDER_TASK_MAP_SIGNAL = "Execution is carried into this map" as const;
+const WAYFINDER_TASK_REASON = "wayfinder:task: map Notes does not authorize AFK execution" as const;
+
 export type EligibilityResult =
   | { eligible: true }
   | { eligible: false; reason: string };
@@ -88,6 +92,15 @@ export function isEligible(issue: IssueInput): EligibilityResult {
         reason: `forbidden Wayfinder type ${label} — requires HITL/other workflow`,
       };
     }
+  }
+
+  // 6. AFK wayfinder:task triple-signal gate — labels + map Notes as durable signal.
+  // Requires `wayfinder:task` + `agent:implement` + map Notes. Gate 2 already
+  // ensures REQUIRED_LABEL, so only the Wayfinder label is checked here.
+  // v0 proxies map Notes via ticket body; v1 can fetch map body via `gh api`.
+  if (issue.labels.includes(WAYFINDER_TASK_LABEL)) {
+    const notesAllowsExecution = issue.body?.includes(WAYFINDER_TASK_MAP_SIGNAL);
+    if (!notesAllowsExecution) return { eligible: false, reason: WAYFINDER_TASK_REASON };
   }
 
   return { eligible: true };

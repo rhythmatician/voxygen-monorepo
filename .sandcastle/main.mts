@@ -174,6 +174,9 @@ async function fetchOpenImplementIssues(): Promise<IssueInput[]> {
   return issues;
 }
 
+// Phase 0.5 claim — host-side, sequential, before createSandbox (single-host v0).
+// Unified host claim: assignee + label + comment. Stale release is manual
+// per #18 — do not auto-expire (gh issue edit --remove-label/--remove-assignee).
 async function claimIssue(issue: IssueInput): Promise<boolean> {
   const id = String(issue.number);
   const branch = branchForIssue(issue.number);
@@ -213,6 +216,8 @@ async function markBlocked(issueId: string, branch: string, reason: string): Pro
 }
 
 async function markIntegrated(issueId: string, branch: string): Promise<void> {
+  // TODO(factory-v1): Wayfinder close ownership -- host closes ordinary impl
+  // only; Wayfinder skill will own Wayfinder ticket close. See plan-prompt.
   for (const label of ["agent:in-progress", "agent:implement", "agent:blocked"]) {
     await safeRunGh(["issue", "edit", issueId, "--remove-label", label]);
   }
