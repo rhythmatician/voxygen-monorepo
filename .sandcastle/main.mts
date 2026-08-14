@@ -18,10 +18,15 @@ const execFileAsync = promisify(execFile);
 // ---------------------------------------------------------------------------
 const MAX_ITERATIONS = 10;
 const hooks = {
+  // Install vendored skills into the sandbox before any other setup so
+  // Wayfinder/implement/research agents can discover them via `muse skills`.
+  // Each entry in .muse/skills/* is installed to the user scope; output is
+  // truncated to keep sandbox logs concise. This is best-effort — the
+  // forbidden-label guard in implement-prompt.md remains the safety net.
   sandbox: {
     onSandboxReady: [
       { command: 'for s in .muse/skills/*; do muse skills install "$s" --scope user 2>&1 | head -5; done' },
-      { command: "npm install" },
+      { command: 'npm install' },
     ],
   },
 };
