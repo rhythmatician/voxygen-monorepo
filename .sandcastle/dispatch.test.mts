@@ -116,7 +116,9 @@ describe("isEligible", () => {
     const i = issue({ labels: ["agent:implement", "wayfinder:task"], body: "Part of #14" });
     const res = isEligible(i);
     expect(res.eligible).toBe(false);
-    expect((res as any).reason).toContain("wayfinder:task: map Notes does not authorize");
+    if (!res.eligible) {
+      expect(res.reason).toContain("wayfinder:task: map Notes does not authorize");
+    }
   });
 
   it("wayfinder:task without body is not dispatched", () => {

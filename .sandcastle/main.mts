@@ -138,8 +138,8 @@ async function fetchOpenImplementIssues(): Promise<IssueInput[]> {
 }
 
 // Phase 0.5 claim — host-side, sequential, before createSandbox (single-host v0).
-// Unified host claim: gh issue edit --add-assignee @me --add-label agent:in-progress + comment.
-// Stale release is manual per #18: gh issue edit <id> --remove-label agent:in-progress --remove-assignee @me; do not auto-expire.
+// Unified host claim: assignee + label + comment. Stale release is manual
+// per #18 — do not auto-expire (gh issue edit --remove-label/--remove-assignee).
 async function claimIssue(issue: IssueInput): Promise<boolean> {
   const id = String(issue.number);
   const branch = branchForIssue(issue.number);
@@ -185,8 +185,8 @@ async function markBlocked(issueId: string, branch: string, reason: string): Pro
 }
 
 async function markIntegrated(issueId: string, branch: string): Promise<void> {
-  // TODO(factory-v1): Wayfinder close ownership — host markIntegrated() still closes ordinary impl;
-  // Wayfinder skill will own Wayfinder ticket close when v1 ships. Host merger does not close Wayfinder tickets.
+  // TODO(factory-v1): Wayfinder close ownership — host closes ordinary impl
+  // only; Wayfinder skill will own Wayfinder ticket close. See plan-prompt.
   try {
     await runGh(["issue", "edit", issueId, "--remove-label", "agent:in-progress"]);
   } catch {}
@@ -233,7 +233,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   for (const c of allCandidates) {
     const r = isEligible(c);
     if (!r.eligible) {
-      console.log(`  - #${c.number} "${c.title}" → SKIP (${(r as any).reason})`);
+      console.log(`  - #${c.number} "${c.title}" → SKIP (${r.reason})`);
     } else {
       console.log(`  - #${c.number} "${c.title}" → ELIGIBLE`);
     }
@@ -276,10 +276,10 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
         promptArgs: { ISSUES_JSON: issuesJson },
         output: sandcastle.Output.object({ tag: "plan", schema: planSchema }),
       });
-      const rawPlanned = plan.output.issues;
+      const rawPlanned: Array<{ id: string; title: string; branch: string }> = plan.output.issues;
       // Enforce subset of eligible — drop any hallucinated IDs
       const eligibleIds = new Set(eligible.map((e) => String(e.number)));
-      plannedIssues = rawPlanned.filter((p: { id: string }) => eligibleIds.has(p.id));
+      plannedIssues = rawPlanned.filter((p) => eligibleIds.has(p.id));
       if (plannedIssues.length !== rawPlanned.length) {
         console.warn(`Planner returned ${rawPlanned.length - plannedIssues.length} ineligible hallucinated issue(s) — dropped`);
       }

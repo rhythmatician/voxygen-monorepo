@@ -19,8 +19,9 @@ You are the overlap/serialization advisor, not the eligibility gate.
 
 ## Wayfinder Serialization Rule (Factory v0 — from #17/#18)
 
-- When the eligible set contains two or more `wayfinder:task` issues that both reference `Part of #<same-map>` in their body (or both have `wayfinder:task` without distinct map context), include **at most one `wayfinder:task` per map per iteration**. Defer additional same-map `wayfinder:task` tickets to the next factory iteration. If map cannot be parsed, treat any two `wayfinder:task` issues as same-map and serialize to one.
-- Ordinary implementation issues (no `wayfinder:*` label) may still run concurrently via `Promise.allSettled`; only same-map Wayfinder tickets serialize. Parent-map mutation is single-writer: Wayfinder owns `gh issue edit <map> --body` for Notes, host merger does not close Wayfinder tickets (see `// TODO(factory-v1): Wayfinder close ownership` in `.sandcastle/main.mts` — host `markIntegrated()` still closes ordinary impl, Wayfinder skill will own Wayfinder close when v1 ships).
+- When the eligible set contains two or more `wayfinder:task` issues that reference the same map (both contain `Part of #<same-map>` or both lack distinct map context), include **at most one `wayfinder:task` per map per iteration**. Defer additional same-map tickets to the next factory iteration. If the map cannot be parsed, treat any two `wayfinder:task` issues as same-map and serialize to one.
+- Ordinary implementation issues (no `wayfinder:*` label) may still run concurrently via `Promise.allSettled`; only same-map Wayfinder tickets serialize.
+- Parent-map mutation is single-writer: Wayfinder owns `gh issue edit <map> --body` for Notes; host merger does not close Wayfinder tickets (see `// TODO(factory-v1): Wayfinder close ownership` in `.sandcastle/main.mts`).
 - For map extraction, look for `Part of #14` / `Part of #<number>` patterns in issue bodies; use the numeric map id as the grouping key.
 
 For each issue you include, assign branch `sandcastle/issue-{id}` deterministically.
