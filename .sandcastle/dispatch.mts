@@ -45,8 +45,8 @@ export function branchForIssue(id: number | string): string {
  * Returns eligible:false with a human-readable reason when any gate fails.
  */
 export function isEligible(issue: IssueInput): EligibilityResult {
-  // 1. Issue must be open
-  if (issue.state !== "open") {
+  // 1. Issue must be open (GH returns "OPEN" uppercase; normalize)
+  if (issue.state.toLowerCase() !== "open") {
     return { eligible: false, reason: `state is ${issue.state}, expected open` };
   }
 
