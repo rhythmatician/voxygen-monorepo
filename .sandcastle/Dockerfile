@@ -21,10 +21,13 @@ ARG AGENT_GID=1000
 RUN groupmod -o -g $AGENT_GID node && usermod -o -u $AGENT_UID -g $AGENT_GID -d /home/agent -m -l agent node
 USER ${AGENT_UID}:${AGENT_GID}
 
+# Install uv (Python package manager) for Voxygen quality tooling
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+
 # Install Muse CLI
 RUN curl -fsSL https://dev.meta.ai/install.sh | bash
 
-# Add Muse to PATH (install.sh writes to ~/.local/bin)
+# Add uv and Muse to PATH (install.sh writes to ~/.local/bin)
 ENV PATH="/home/agent/.local/bin:$PATH"
 
 WORKDIR /home/agent

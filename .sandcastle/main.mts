@@ -28,10 +28,26 @@ const hooks = {
   // Each entry in .muse/skills/* is installed to the user scope; output is
   // truncated to keep sandbox logs concise. This is best-effort -- the
   // forbidden-label guard in implement-prompt.md remains the safety net.
+  //
+  // Provision Python quality tooling before Muse starts work so formatting and
+  // diagnostics are immediately available without agent remediation. Use the
+  // lightweight dev-only sync (no heavy ML deps) aligned with the locked
+  // versions: `uv sync --project python --only-group dev --locked`.
   sandbox: {
     onSandboxReady: [
-      { command: 'for s in .muse/skills/*; do muse skills install "$s" --scope user 2>&1 | head -5; done' },
-      { command: 'npm install' },
+      {
+        command:
+          'for s in .muse/skills/*; do muse skills install "$s" --scope user 2>&1 | head -5; done',
+      },
+      { command: "npm install" },
+      {
+        command:
+          "uv sync --project python --only-group dev --locked 2>&1 | tail -20",
+      },
+      {
+        command:
+          'if pgrep -f "qgate-watcher.mjs" > /dev/null; then echo "watcher already running"; else setsid -f node scripts/qgate-watcher.mjs >> /tmp/qgate-watcher.log 2>&1; echo "watcher started pid $!"; sleep 1; cat /tmp/qgate-watcher.log 2>&1 | head -20; ps aux | grep -v grep | grep qgate-watcher | head -5 || echo "watcher check done"; fi',
+      },
     ],
   },
 } as const;
@@ -39,7 +55,7 @@ const copyToWorktree: string[] = [];
 
 const planSchema = z.object({
   issues: z.array(
-    z.object({ id: z.string(), title: z.string(), branch: z.string() }),
+    z.object({ id: z.string(), title: z.string(), branch: z.string() })
   ),
 });
 
@@ -107,7 +123,10 @@ async function runGh(args: string[]): Promise<string> {
   const env = { ...process.env, GH_TOKEN: token };
   const bin = ghBinary();
   try {
-    const { stdout } = await execFileAsync(bin, args, { env, maxBuffer: 10 * 1024 * 1024 });
+    const { stdout } = await execFileAsync(bin, args, {
+      env,
+      maxBuffer: 10 * 1024 * 1024,
+    });
     return stdout.trim();
   } catch (error: unknown) {
     throw new Error(`gh ${args.join(" ")} failed: ${getGhErrorDetails(error)}`);
@@ -116,7 +135,9 @@ async function runGh(args: string[]): Promise<string> {
 
 function parseOwnerRepo(): { owner: string; repo: string } | null {
   try {
-    const out = execSync("git remote get-url origin", { encoding: "utf8" }).trim();
+    const out = execSync("git remote get-url origin", {
+      encoding: "utf8",
+    }).trim();
     // https://github.com/rhythmatician/voxygen-monorepo.git
     const m = out.match(/github\.com[:/]([^/]+)\/([^/.]+)/);
     if (m) return { owner: m[1], repo: m[2] };
@@ -180,7 +201,7 @@ async function fetchOpenImplementIssues(): Promise<IssueInput[]> {
         blockedByCount,
         body: r.body,
       };
-    }),
+    })
   );
   return issues;
 }
@@ -193,7 +214,15 @@ async function claimIssue(issue: IssueInput): Promise<boolean> {
   const branch = branchForIssue(issue.number);
   try {
     // Wayfinder-compatible claim: assignee + in-progress label, plus comment trace
-    await runGh(["issue", "edit", id, "--add-assignee", "@me", "--add-label", "agent:in-progress"]);
+    await runGh([
+      "issue",
+      "edit",
+      id,
+      "--add-assignee",
+      "@me",
+      "--add-label",
+      "agent:in-progress",
+    ]);
     try {
       await runGh([
         "issue",
@@ -213,9 +242,19 @@ async function claimIssue(issue: IssueInput): Promise<boolean> {
   }
 }
 
-async function markBlocked(issueId: string, branch: string, reason: string): Promise<void> {
+async function markBlocked(
+  issueId: string,
+  branch: string,
+  reason: string
+): Promise<void> {
   const shortReason = reason.slice(0, REASON_TRUNCATE);
-  await safeRunGh(["issue", "edit", issueId, "--remove-label", "agent:in-progress"]);
+  await safeRunGh([
+    "issue",
+    "edit",
+    issueId,
+    "--remove-label",
+    "agent:in-progress",
+  ]);
   await safeRunGh(["issue", "edit", issueId, "--add-label", "agent:blocked"]);
   await safeRunGh([
     "issue",
@@ -229,7 +268,11 @@ async function markBlocked(issueId: string, branch: string, reason: string): Pro
 async function markIntegrated(issueId: string, branch: string): Promise<void> {
   // TODO(factory-v1): Wayfinder close ownership -- host closes ordinary impl
   // only; Wayfinder skill will own Wayfinder ticket close. See plan-prompt.
-  for (const label of ["agent:in-progress", "agent:implement", "agent:blocked"]) {
+  for (const label of [
+    "agent:in-progress",
+    "agent:implement",
+    "agent:blocked",
+  ]) {
     await safeRunGh(["issue", "edit", issueId, "--remove-label", label]);
   }
   // Close with audit comment
@@ -244,7 +287,13 @@ async function markIntegrated(issueId: string, branch: string): Promise<void> {
   } catch {
     // fallback: comment then close
     try {
-      await runGh(["issue", "comment", issueId, "--body", `Completed by Sandcastle -- branch \`${branch}\` integrated.`]);
+      await runGh([
+        "issue",
+        "comment",
+        issueId,
+        "--body",
+        `Completed by Sandcastle -- branch \`${branch}\` integrated.`,
+      ]);
       await runGh(["issue", "close", issueId]);
     } catch {}
   }
@@ -265,7 +314,9 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     break;
   }
 
-  console.log(`Fetched ${allCandidates.length} open issue(s) with agent:implement`);
+  console.log(
+    `Fetched ${allCandidates.length} open issue(s) with agent:implement`
+  );
   for (const c of allCandidates) {
     const r = isEligible(c);
     if (!r.eligible) {
@@ -292,14 +343,22 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
       branch: branchForIssue(i.number),
     })),
     null,
-    2,
+    2
   );
 
   let plannedIssues: PlannedIssue[] = [];
   if (eligible.length === 1) {
     // Single issue -- no need to invoke LLM
-    plannedIssues = [{ id: String(eligible[0].number), title: eligible[0].title, branch: branchForIssue(eligible[0].number) }];
-    console.log(`Single eligible issue -- skipping LLM planner, direct dispatch #${plannedIssues[0].id}`);
+    plannedIssues = [
+      {
+        id: String(eligible[0].number),
+        title: eligible[0].title,
+        branch: branchForIssue(eligible[0].number),
+      },
+    ];
+    console.log(
+      `Single eligible issue -- skipping LLM planner, direct dispatch #${plannedIssues[0].id}`
+    );
   } else {
     try {
       const plan = await sandcastle.run({
@@ -317,18 +376,31 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
       const eligibleIds = new Set(eligible.map((e) => String(e.number)));
       plannedIssues = rawPlanned.filter((p) => eligibleIds.has(p.id));
       if (plannedIssues.length !== rawPlanned.length) {
-        console.warn(`Planner returned ${rawPlanned.length - plannedIssues.length} ineligible hallucinated issue(s) -- dropped`);
+        console.warn(
+          `Planner returned ${rawPlanned.length - plannedIssues.length} ineligible hallucinated issue(s) -- dropped`
+        );
       }
       if (plannedIssues.length === 0) {
-        console.log("Planner advised to defer all eligible issues due to overlap risk. Will retry next iteration.");
+        console.log(
+          "Planner advised to defer all eligible issues due to overlap risk. Will retry next iteration."
+        );
         // Avoid busy loop: break to let human intervene next run
         break;
       }
-      console.log(`Planner selected ${plannedIssues.length}/${eligible.length} issue(s) to run now:`);
-      for (const p of plannedIssues) console.log(`  ${p.id}: ${p.title} → ${p.branch}`);
+      console.log(
+        `Planner selected ${plannedIssues.length}/${eligible.length} issue(s) to run now:`
+      );
+      for (const p of plannedIssues)
+        console.log(`  ${p.id}: ${p.title} → ${p.branch}`);
     } catch (error: unknown) {
-      console.error(`Planner failed: ${getErrorMessage(error)} -- falling back to direct dispatch of all eligible`);
-      plannedIssues = eligible.map((i) => ({ id: String(i.number), title: i.title, branch: branchForIssue(i.number) }));
+      console.error(
+        `Planner failed: ${getErrorMessage(error)} -- falling back to direct dispatch of all eligible`
+      );
+      plannedIssues = eligible.map((i) => ({
+        id: String(i.number),
+        title: i.title,
+        branch: branchForIssue(i.number),
+      }));
     }
   }
 
@@ -347,7 +419,9 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     continue;
   }
 
-  console.log(`\nClaimed ${claimedIssues.length} issue(s), launching parallel workers...\n`);
+  console.log(
+    `\nClaimed ${claimedIssues.length} issue(s), launching parallel workers...\n`
+  );
 
   // ----- Phase 2: Execute + Review (parallel, isolated) -----
   const settled = await Promise.allSettled(
@@ -381,28 +455,42 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
             promptFile: "./.sandcastle/review-prompt.md",
             promptArgs: { BRANCH: issue.branch },
           });
-          return { ...review, commits: [...implement.commits, ...review.commits] };
+          return {
+            ...review,
+            commits: [...implement.commits, ...review.commits],
+          };
         }
         return implement;
       } finally {
         await sandbox.close();
       }
-    }),
+    })
   );
 
   // ----- Failure visibility per worker -----
   const failedIndices: number[] = [];
   for (const [i, outcome] of settled.entries()) {
     if (outcome.status === "rejected") {
-      const reason = String(outcome.reason ?? "unknown error").slice(0, WORKER_REASON_TRUNCATE);
-      console.error(`  ✗ ${claimedIssues[i]!.id} (${claimedIssues[i]!.branch}) failed: ${reason}`);
+      const reason = String(outcome.reason ?? "unknown error").slice(
+        0,
+        WORKER_REASON_TRUNCATE
+      );
+      console.error(
+        `  ✗ ${claimedIssues[i]!.id} (${claimedIssues[i]!.branch}) failed: ${reason}`
+      );
       failedIndices.push(i);
       await markBlocked(claimedIssues[i]!.id, claimedIssues[i]!.branch, reason);
     } else if (outcome.value.commits.length === 0) {
       // No commits -- treat as no-op, not failure, but remove in-progress so it can be retried?
       // Spec says failure must leave blocked; no-op we treat as blocked with diagnostics.
-      console.warn(`  ⚠ ${claimedIssues[i]!.id} produced no commits -- marking blocked for inspection`);
-      await markBlocked(claimedIssues[i]!.id, claimedIssues[i]!.branch, "Implementer produced no commits (no work or error without throw). Branch preserved.");
+      console.warn(
+        `  ⚠ ${claimedIssues[i]!.id} produced no commits -- marking blocked for inspection`
+      );
+      await markBlocked(
+        claimedIssues[i]!.id,
+        claimedIssues[i]!.branch,
+        "Implementer produced no commits (no work or error without throw). Branch preserved."
+      );
       failedIndices.push(i);
     }
   }
@@ -410,16 +498,22 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   const completedIssues = settled
     .map((outcome, i) => ({ outcome, issue: claimedIssues[i]! }))
     .filter(
-      (entry) => entry.outcome.status === "fulfilled" && entry.outcome.value.commits.length > 0,
+      (entry) =>
+        entry.outcome.status === "fulfilled" &&
+        entry.outcome.value.commits.length > 0
     )
     .map((entry) => entry.issue);
 
   const completedBranches = completedIssues.map((i) => i.branch);
 
-  console.log(`\nExecution complete. ${completedBranches.length} branch(es) with commits:`);
+  console.log(
+    `\nExecution complete. ${completedBranches.length} branch(es) with commits:`
+  );
   for (const b of completedBranches) console.log(`  ${b}`);
   if (failedIndices.length > 0) {
-    console.log(`  ${failedIndices.length} branch(es) failed and were marked agent:blocked`);
+    console.log(
+      `  ${failedIndices.length} branch(es) failed and were marked agent:blocked`
+    );
   }
 
   if (completedBranches.length === 0) {
@@ -446,7 +540,11 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     console.error(`Merger failed: ${getErrorMessage(error)}`);
     // Mark all completed as blocked since integration failed
     for (const iss of completedIssues) {
-      await markBlocked(iss.id, iss.branch, `Merger failed: ${String(getErrorMessage(error)).slice(0, MERGER_REASON_TRUNCATE)} -- branch preserved`);
+      await markBlocked(
+        iss.id,
+        iss.branch,
+        `Merger failed: ${String(getErrorMessage(error)).slice(0, MERGER_REASON_TRUNCATE)} -- branch preserved`
+      );
     }
     continue;
   }
@@ -457,7 +555,9 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   // The PR creation is best-effort; closing issues indicates integration on current branch.
   try {
     // Try to push current branch if remote exists
-    const currentBranch = execSync("git branch --show-current", { encoding: "utf8" }).trim();
+    const currentBranch = execSync("git branch --show-current", {
+      encoding: "utf8",
+    }).trim();
     console.log(`Current branch after merge: ${currentBranch}`);
 
     // Attempt to create/update PR for batch -- best effort
@@ -467,7 +567,14 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
         // Check if PR already exists for this branch
         let existingPr = "";
         try {
-          existingPr = await runGh(["pr", "view", "--json", "number,state", "--jq", ".number"]);
+          existingPr = await runGh([
+            "pr",
+            "view",
+            "--json",
+            "number,state",
+            "--jq",
+            ".number",
+          ]);
         } catch {}
         if (!existingPr) {
           try {
@@ -491,12 +598,21 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
             try {
               const prNumber = prUrl.match(/\/pull\/(\d+)/)?.[1];
               if (prNumber) {
-                const changed = execSync("git diff --name-only origin/main...HEAD", { encoding: "utf8" }).split(/\r?\n/).filter(Boolean);
+                const changed = execSync(
+                  "git diff --name-only origin/main...HEAD",
+                  { encoding: "utf8" }
+                )
+                  .split(/\r?\n/)
+                  .filter(Boolean);
                 if (!mayAutonomouslyMerge(changed)) {
-                  console.log(`PR #${prNumber} changes the control plane; independent human approval is required`);
+                  console.log(
+                    `PR #${prNumber} changes the control plane; independent human approval is required`
+                  );
                 } else {
                   await runGh(["pr", "merge", prNumber, "--auto", "--merge"]);
-                  console.log(`Auto-merge enabled for PR #${prNumber}; Factory / Merge Oracle remains authoritative`);
+                  console.log(
+                    `Auto-merge enabled for PR #${prNumber}; Factory / Merge Oracle remains authoritative`
+                  );
                 }
               }
             } catch (error: unknown) {
@@ -516,17 +632,27 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
       }
     }
   } catch (error: unknown) {
-    console.warn(`Post-merge PR handling failed (non-fatal): ${getErrorMessage(error)}`);
+    console.warn(
+      `Post-merge PR handling failed (non-fatal): ${getErrorMessage(error)}`
+    );
   }
 
   // A local merge is not integration into main. Leave tickets open until the
   // PR is actually merged under Factory / Merge Oracle authority.
   for (const iss of completedIssues) {
-    await safeRunGh(["issue", "comment", iss.id, "--body", `Sandcastle produced and reviewed \`${iss.branch}\`. Awaiting exact-SHA Factory / Merge Oracle evidence and PR merge; this issue remains open.`]);
+    await safeRunGh([
+      "issue",
+      "comment",
+      iss.id,
+      "--body",
+      `Sandcastle produced and reviewed \`${iss.branch}\`. Awaiting exact-SHA Factory / Merge Oracle evidence and PR merge; this issue remains open.`,
+    ]);
     console.log(`  #${iss.id} remains open pending authoritative PR merge`);
   }
 
-  console.log("\nBatch submitted -- authoritative CI and merge remain pending.");
+  console.log(
+    "\nBatch submitted -- authoritative CI and merge remain pending."
+  );
 }
 
 console.log("\nAll done.");

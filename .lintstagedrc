@@ -1,0 +1,4 @@
+{
+  "*.py": "node scripts/ruff-stage.mjs",
+  "*.{js,ts,mjs,mts,json,md,yml,yaml}": "prettier --ignore-unknown --write"
+}

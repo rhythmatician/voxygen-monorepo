@@ -2,6 +2,9 @@
   "devDependencies": {
     "@ai-hero/sandcastle": "file:../../sandcastle",
     "@types/node": "^26.2.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.4.0",
+    "prettier": "^3.9.6",
     "tsx": "^4.23.12",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10"
@@ -12,7 +15,8 @@
     "sandcastle:docker:build": "npx sandcastle docker build-image",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "ci:oracle": "tsx .sandcastle/ci-oracle.mts"
+    "ci:oracle": "tsx .sandcastle/ci-oracle.mts",
+    "prepare": "husky"
   },
   "dependencies": {
     "zod": "^4.4.3"
