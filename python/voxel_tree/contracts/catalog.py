@@ -83,7 +83,7 @@ _register(
 
 _CANONICAL_BLOCK_REGISTRY = {
     "version": "voxygen.blocks.v1",
-    "sha256": "9b034f2f7a5caa9c5d9e0c2674107f8b33c482bd6d6f887a165b0432981cf5af",
+    "sha256": "0c6a4c223cf4c7debea631a14a85741f8d09f684352a9d84cad072eceb087483",
     "size": 513,
 }
 _ROUTER_FIELDS = (
