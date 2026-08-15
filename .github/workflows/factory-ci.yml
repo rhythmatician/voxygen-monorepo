@@ -58,6 +58,11 @@ jobs:
       - run: uv lock --project python --check
       - name: Verify pinned Voxy identity
         run: bash .ci/install-voxy.sh verify
+      - name: R-02 Documentation policy
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          CANDIDATE_SHA: ${{ github.sha }}
+        run: npx tsx .ci/docs-policy.mts --base "$BASE_SHA" --candidate "$CANDIDATE_SHA"
 
   factory:
     name: Factory policy
@@ -91,6 +96,7 @@ jobs:
       - name: Install Qt runtime libraries
         run: sudo apt-get update && sudo apt-get install --yes libegl1
       - run: uv sync --locked --group dev --extra test --extra type_stubs
+      - run: uv run ruff format --check --exclude docs --exclude notebooks --exclude "*.md" --exclude "*.ipynb" .
       - run: uv run ruff check .
       - run: uv run pyright voxel_tree
       - run: uv run pytest voxel_tree --tb=short
@@ -173,7 +179,18 @@ jobs:
   merge-oracle:
     name: Factory / Merge Oracle
     if: always()
-    needs: [classify, repository, factory, python, java, cross-language, performance, security, control-plane-approval]
+    needs:
+      [
+        classify,
+        repository,
+        factory,
+        python,
+        java,
+        cross-language,
+        performance,
+        security,
+        control-plane-approval,
+      ]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
