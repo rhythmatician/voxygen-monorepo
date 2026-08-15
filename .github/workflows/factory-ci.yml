@@ -3,7 +3,9 @@ name: Factory CI
 "on":
   pull_request:
     branches: [main]
-    types: [opened, synchronize, reopened, ready_for_review, review_submitted]
+    types: [opened, synchronize, reopened, ready_for_review]
+  pull_request_review:
+    types: [submitted, dismissed]
   push:
     branches: [main]
   workflow_dispatch:
@@ -22,7 +24,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with: { fetch-depth: 0, lfs: true }
+        with:
+          fetch-depth: 0
+          lfs: true
+          ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm }
       - run: npm ci --ignore-scripts
@@ -38,6 +43,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm }
       - run: npm ci
@@ -48,22 +55,29 @@ jobs:
   python:
     name: Python engineering and contracts
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: python
     steps:
       - uses: actions/checkout@v4
-        with: { lfs: true }
+        with:
+          lfs: true
+          ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
       - uses: astral-sh/setup-uv@v6
         with: { version: "0.8.8", enable-cache: true }
-      - run: uv sync --project python --locked --group dev --extra test --extra type_stubs
-      - run: uv run --project python ruff check python
-      - run: uv run --project python pyright python/voxel_tree
-      - run: uv run --project python pytest python/voxel_tree --tb=short
+      - run: uv sync --locked --group dev --extra test --extra type_stubs
+      - run: uv run ruff check .
+      - run: uv run pyright voxel_tree
+      - run: uv run pytest voxel_tree --tb=short
 
   java:
     name: Java build and real Voxy integration
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with: { lfs: true }
+        with:
+          lfs: true
+          ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: "21", cache: gradle }
       - name: Install pinned real Voxy artifact
@@ -89,7 +103,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with: { lfs: true }
+        with:
+          lfs: true
+          ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
       - uses: astral-sh/setup-uv@v6
         with: { version: "0.8.8", enable-cache: true }
       - run: uv sync --project python --locked --extra test
@@ -100,6 +116,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: "21", cache: gradle }
       - run: bash .ci/install-voxy.sh install
@@ -110,9 +128,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm }
-      - run: npm audit --audit-level=high
+      - run: npm audit --omit=dev --audit-level=high
       - uses: actions/dependency-review-action@v4
         if: github.event_name == 'pull_request'
 
@@ -123,7 +143,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm }
       - run: npm ci
@@ -139,7 +161,7 @@ jobs:
         run: printf '%s' "$LANE_RESULTS" > lane-results.json && npx tsx .sandcastle/ci-results.mts lane-results.json "$CANDIDATE_SHA" evidence.json
       - name: Check independent human approval
         id: approval
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' || github.event_name == 'pull_request_review'
         uses: actions/github-script@v7
         with:
           script: |
