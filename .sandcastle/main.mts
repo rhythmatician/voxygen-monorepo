@@ -357,6 +357,9 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
         sandbox: docker(),
         hooks,
         copyToWorktree,
+        // Worktree checkout runs through WSL on an NTFS mount and can exceed
+        // Sandcastle's 120-second default even for this modest repository.
+        timeouts: { worktreeMs: 300_000 },
       });
       try {
         const implement = await sandbox.run({
