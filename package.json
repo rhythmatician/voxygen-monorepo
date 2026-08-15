@@ -11,7 +11,8 @@
     "sandcastle:heavy": "npx tsx .sandcastle/main.heavy.mts",
     "sandcastle:docker:build": "npx sandcastle docker build-image",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "ci:oracle": "tsx .sandcastle/ci-oracle.mts"
   },
   "dependencies": {
     "zod": "^4.4.3"
