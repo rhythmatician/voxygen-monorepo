@@ -185,6 +185,26 @@ class ConfigLoaderContractTest {
     }
 
     @Test
+    void voxySidecar_acceptsMatchingCanonicalRegistryIdentity(@TempDir Path tmp)
+            throws IOException {
+        Path cfg = tmp.resolve("voxy_l4_config.json");
+        Files.writeString(cfg, voxySidecar("voxygen.blocks.v1",
+                "9b034f2f7a5caa9c5d9e0c2674107f8b33c482bd6d6f887a165b0432981cf5af"));
+
+        assertEquals("lodiffusion.v7.voxy_l4", ConfigLoader.load(cfg).contract());
+    }
+
+    @Test
+    void voxySidecar_rejectsMismatchedCanonicalRegistryIdentity(@TempDir Path tmp)
+            throws IOException {
+        Path cfg = tmp.resolve("voxy_l4_config.json");
+        Files.writeString(cfg, voxySidecar("voxygen.blocks.v2", "wrong-hash"));
+
+        IOException ex = assertThrows(IOException.class, () -> ConfigLoader.load(cfg));
+        assertTrue(ex.getMessage().contains("canonical block registry mismatch"));
+    }
+
+    @Test
     void futureSparseOctreeContract_alsoBypasses(@TempDir Path tmp) throws IOException {
         // Any .sparse_octree suffix should bypass block_logits validation
         String futureConfig = V7_SPARSE_OCTREE_CONFIG
@@ -196,5 +216,23 @@ class ConfigLoaderContractTest {
 
         assertEquals("lodiffusion.v99.sparse_octree", config.contract());
         assertNotNull(config.outputs());
+    }
+
+    private static String voxySidecar(String registryVersion, String registrySha256) {
+        return """
+                {
+                  "modelName": "voxy_l4",
+                  "version": "7.0.0",
+                  "contract": "lodiffusion.v7.voxy_l4",
+                  "blockVocabSize": 513,
+                  "inputs": {"climate_2d": [1, 6, 8, 8]},
+                  "outputs": {"block_logits": [1, 513, 24, 32, 32]},
+                  "canonical_block_registry": {
+                    "version": "%s",
+                    "sha256": "%s",
+                    "size": 513
+                  }
+                }
+                """.formatted(registryVersion, registrySha256);
     }
 }

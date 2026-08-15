@@ -301,6 +301,7 @@ class TestCatalogContracts:
         }
         assert c.extra["deployment_output"] == {
             "kind": "canonical_block_ids",
+            "shape": ["batch", *spatial_shape],
             "dtype": "int64",
             "layout": "YZX",
             "byte_size_per_item": byte_size,
