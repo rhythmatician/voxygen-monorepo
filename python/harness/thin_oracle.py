@@ -1,8 +1,29 @@
 #!/usr/bin/env python3
 """
+⚠️  SCAFFOLD — NOT AUTHORITATIVE EVIDENCE  ⚠️
+
 Thin oracle harness — Oracle 1-7 + FINAL_DENSITY viability gate.
+
+THIS FILE IS SCAFFOLDING ONLY. It does NOT produce oracle evidence and
+MUST NOT be used to satisfy any Factory, performance, or representation
+gate. Specifically:
+  - bench_final_density() emits SYNTHETIC RANDOM timings (random.uniform)
+    chosen to have the expected ordering — it does not benchmark
+    FINAL_DENSITY, ChunkNoiseSampler, or GpuHeightmapProvider.
+  - oracle_stub() does NOT evaluate Oracles 1–4; it only checks whether
+    a GT path exists on disk.
+  - The report field `viable` is therefore MEANINGLESS and is forced to
+    null/false by this scaffold. Any consumer that treats this output as
+    a passing viability signal is misconfigured.
+
+When a real oracle is needed, replace this file with an implementation
+that calls VanillaNoiseRouterSampler.sampleSection via JPype/Py4J or via
+pre-dumped SectionNoiseData npz, measures wall-clock time against a
+ServerWorld/NoiseConfig, and computes real voxel accuracy / surface MAE /
+silhouette IoU against GT.
+
 Single file, no training. Reads fixed voxy_sections GT (build_voxy_pairs.py:504, vocab_remap 1104→513)
-and benchmarks FINAL_DENSITY quart sampling vs ChunkNoiseSampler heightmap.
+and would benchmark FINAL_DENSITY quart sampling vs ChunkNoiseSampler heightmap if implemented.
 
 Usage:
   python python/harness/thin_oracle.py --gt /path/to/voxy_sections --columns 100 --seed 42 --report json
@@ -22,6 +43,7 @@ import json
 import time
 import statistics
 import sys
+import warnings
 from pathlib import Path
 
 
@@ -36,9 +58,15 @@ def find_gt(args_gt):
 
 
 def bench_final_density(columns, seed):
-    # Stub: real impl calls VanillaNoiseRouterSampler.sampleSection via JPype/Py4J or via
-    # pre-dumped SectionNoiseData npz. For scaffold, emit deterministic synthetic timing
-    # that matches expected order: FINAL_DENSITY ~0.3ms/col, heightmap ~1-5ms/col.
+    # SCAFFOLD: emits synthetic random timings — NOT a measurement.
+    # Real impl would call VanillaNoiseRouterSampler.sampleSection via
+    # JPype/Py4J or via pre-dumped SectionNoiseData npz.
+    warnings.warn(
+        "bench_final_density is SCAFFOLD — synthetic timings, not a measurement. "
+        "Do not use `viable` as evidence.",
+        UserWarning,
+        stacklevel=2,
+    )
     import random
 
     random.seed(seed)
@@ -49,23 +77,35 @@ def bench_final_density(columns, seed):
 
 
 def oracle_stub(gt_path, columns):
-    # Oracles 1-4 on GT: perfect height+water, +surface, +features, residual.
-    # With no GT, report harness shape only.
+    # SCAFFOLD: does NOT evaluate Oracles 1–4; only reports GT presence.
     if gt_path is None:
         return {
-            "status": "GT_NOT_FOUND",
+            "status": "SCAFFOLD_GT_NOT_FOUND",
+            "scaffold": True,
+            "authoritative": False,
             "hint": "provide --gt /path/to/voxy_sections (see build_voxy_pairs.py:108,504)",
         }
     return {
-        "status": "GT_FOUND",
+        "status": "SCAFFOLD_GT_FOUND",
+        "scaffold": True,
+        "authoritative": False,
         "gt": str(gt_path),
         "columns": columns,
-        "oracles": "1:height 2:surface 3:features 4:residual — see 34-min-sufficient-representation-decision.md:§3",
+        "oracles": "SCAFFOLD — not evaluated. Real Oracles 1:height 2:surface 3:features 4:residual — see 34-min-sufficient-representation-decision.md:§3",
+        "warning": "This stub does not compute accuracy/MAE/IoU. Presence of a GT path is not evidence.",
     }
 
 
 def main():
-    ap = argparse.ArgumentParser()
+    print(
+        "WARNING: python/harness/thin_oracle.py is SCAFFOLD — NOT authoritative evidence. "
+        "Timings are synthetic random numbers; Oracles 1–4 are not evaluated. "
+        "See file header.",
+        file=sys.stderr,
+    )
+    ap = argparse.ArgumentParser(
+        description="SCAFFOLD — not authoritative. See file header."
+    )
     ap.add_argument("--gt", default=None)
     ap.add_argument("--columns", type=int, default=100)
     ap.add_argument("--seed", type=int, default=42)
@@ -85,18 +125,24 @@ def main():
 
     p95_final = p95(final)
     report = {
+        "scaffold": True,
+        "authoritative": False,
+        "warning": "SCAFFOLD — synthetic timings and stub oracle. MUST NOT satisfy any Factory/performance/representation gate. Replace with real measurement before use as evidence.",
         "seed": args.seed,
         "columns": args.columns,
         "gt": str(gt) if gt else None,
         "final_density_ms_per_col": {
             "p50": p50(final),
             "p95": p95_final,
-            "viable": (p95_final < 5) if p95_final is not None else None,
+            # Forced non-viable: scaffold must not masquerade as passing.
+            "viable": None,
+            "viable_scaffold_synthetic": (p95_final < 5) if p95_final is not None else None,
+            "synthetic": True,
         },
-        "chunk_sampler_heightmap_ms_per_col": {"p50": p50(height), "p95": p95(height)},
-        "gpu_zero_crossing_ms_per_col": {"p50": p50(gpu), "p95": p95(gpu)},
+        "chunk_sampler_heightmap_ms_per_col": {"p50": p50(height), "p95": p95(height), "synthetic": True},
+        "gpu_zero_crossing_ms_per_col": {"p50": p50(gpu), "p95": p95(gpu), "synthetic": True},
         "oracle": oracle,
-        "note": "No chunk getHeight() used. 5 evals/chunk vs 512 per GLOSSARY/WorldNoiseAccess.java:192. Real timings require NoiseConfig + ServerWorld; this scaffold runs offline.",
+        "note": "SCAFFOLD. No chunk getHeight() used. 5 evals/chunk vs 512 per GLOSSARY/WorldNoiseAccess.java:192. Real timings require NoiseConfig + ServerWorld; this scaffold runs offline and emits random numbers.",
         "elapsed_s": time.time() - t0,
     }
     if args.report == "json":
