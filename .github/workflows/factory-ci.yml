@@ -1,0 +1,207 @@
+name: Factory CI
+
+"on":
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: factory-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  classify:
+    name: Classify candidate
+    runs-on: ubuntu-latest
+    outputs:
+      control-plane: ${{ steps.plan.outputs.control-plane }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - name: Classify exact candidate
+        id: plan
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          CANDIDATE_SHA: ${{ github.sha }}
+        run: |
+          git diff --name-only "$BASE_SHA" "$CANDIDATE_SHA" > changed-files.txt
+          npm run --silent ci:oracle -- --command plan --files changed-files.txt > plan.json
+          node -e "const p=require('./plan.json'); console.log('control-plane='+p.changeClasses.includes('C5'))" >> "$GITHUB_OUTPUT"
+
+  repository:
+    name: Repository integrity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+          ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci --ignore-scripts
+      - name: Verify locked Python environment
+        uses: astral-sh/setup-uv@v6
+        with: { version: "0.8.8" }
+      - run: uv lock --project python --check
+      - name: Verify pinned Voxy identity
+        run: bash .ci/install-voxy.sh verify
+
+  factory:
+    name: Factory policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - uses: raven-actions/actionlint@v2
+
+  python:
+    name: Python engineering and contracts
+    runs-on: ubuntu-latest
+    env:
+      QT_QPA_PLATFORM: offscreen
+    defaults:
+      run:
+        working-directory: python
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+          ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
+      - uses: astral-sh/setup-uv@v6
+        with: { version: "0.8.8", enable-cache: true }
+      - name: Install Qt runtime libraries
+        run: sudo apt-get update && sudo apt-get install --yes libegl1
+      - run: uv sync --locked --group dev --extra test --extra type_stubs
+      - run: uv run ruff check .
+      - run: uv run pyright voxel_tree
+      - run: uv run pytest voxel_tree --tb=short
+
+  java:
+    name: Java build and real Voxy integration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+          ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: "21", cache: gradle }
+      - name: Install pinned real Voxy artifact
+        run: bash .ci/install-voxy.sh install
+      - run: chmod +x java/gradlew
+      - name: Compile against real Voxy
+        run: ./gradlew lint compileJava compileClientJava
+        working-directory: java
+      - name: Run isolated unit and protected contract tests
+        run: ./gradlew test -PexcludeVoxyTestRuntime
+        working-directory: java
+      - name: Assemble deployable mod against real Voxy
+        run: ./gradlew build -x test
+        working-directory: java
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mod-jar-${{ github.sha }}
+          path: java/build/libs/*.jar
+          if-no-files-found: error
+
+  cross-language:
+    name: Cross-language contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+          ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
+      - uses: astral-sh/setup-uv@v6
+        with: { version: "0.8.8", enable-cache: true }
+      - run: uv sync --project python --locked --extra test
+      - run: uv run --project python pytest python/voxel_tree/contracts/tests python/voxel_tree/utils/tests/test_coords.py --tb=short
+
+  performance:
+    name: Deterministic performance guards
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: "21", cache: gradle }
+      - run: bash .ci/install-voxy.sh install
+      - run: chmod +x java/gradlew && ./java/gradlew -p java test --tests '*ChunkDataExtractorPerformanceTest'
+
+  security:
+    name: Supply-chain review
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm audit --omit=dev --audit-level=high
+      - uses: actions/dependency-review-action@v4
+        if: github.event_name == 'pull_request'
+
+  control-plane-approval:
+    name: Approve control-plane change
+    needs: [classify]
+    if: needs.classify.outputs.control-plane == 'true'
+    environment: factory-control-plane
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Control-plane activation approved through protected environment"
+
+  merge-oracle:
+    name: Factory / Merge Oracle
+    if: always()
+    needs: [classify, repository, factory, python, java, cross-language, performance, security, control-plane-approval]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - name: Identify exact candidate and changed files
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          CANDIDATE_SHA: ${{ github.sha }}
+        run: git diff --name-only "$BASE_SHA" "$CANDIDATE_SHA" > changed-files.txt
+      - name: Materialize exact-SHA evidence
+        env:
+          CANDIDATE_SHA: ${{ github.sha }}
+          LANE_RESULTS: '{"repository":"${{ needs.repository.result }}","factory":"${{ needs.factory.result }}","python":"${{ needs.python.result }}","java":"${{ needs.java.result }}","cross-language":"${{ needs.cross-language.result }}","performance":"${{ needs.performance.result }}","security":"${{ needs.security.result }}"}'
+        run: printf '%s' "$LANE_RESULTS" > lane-results.json && npx tsx .sandcastle/ci-results.mts lane-results.json "$CANDIDATE_SHA" evidence.json
+      - name: Decide merge authority
+        env:
+          CANDIDATE_SHA: ${{ github.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HUMAN_APPROVED: ${{ needs.classify.outputs.control-plane != 'true' || needs.control-plane-approval.result == 'success' }}
+        run: npm run ci:oracle -- --command decide --files changed-files.txt --candidate "$CANDIDATE_SHA" --base "$BASE_SHA" --evidence evidence.json --human-approved "$HUMAN_APPROVED" --issue "${{ github.event.pull_request.number }}" --output factory-evidence-manifest.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: factory-evidence-${{ github.sha }}
+          path: factory-evidence-manifest.json
+          if-no-files-found: warn

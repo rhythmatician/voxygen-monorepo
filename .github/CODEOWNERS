@@ -1,0 +1,7 @@
+# Factory control plane and protected oracles require independent human review.
+/.github/workflows/ @rhythmatician
+/.ci/ @rhythmatician
+/.sandcastle/ @rhythmatician
+/AGENTS.md @rhythmatician
+/java/src/test/java/com/rhythmatician/lodiffusion/voxy/ @rhythmatician
+/python/voxel_tree/contracts/tests/ @rhythmatician

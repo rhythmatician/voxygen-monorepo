@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "authoritativeCheck": "Factory / Merge Oracle",
+  "lanes": {
+    "repository": ["R-01", "I-03"],
+    "factory": ["F-01", "F-02", "F-03", "F-04"],
+    "python": ["P-01", "P-02", "P-03", "P-04"],
+    "java": ["J-01", "J-02", "J-03", "J-04", "I-01", "I-03", "I-04", "X-07", "X-08", "X-09"],
+    "cross-language": [],
+    "performance": ["PERF-01"],
+    "security": ["SEC-01"]
+  },
+  "requirements": {
+    "repository": ["R-01"],
+    "factory": ["F-01", "F-02", "F-03", "F-04"],
+    "java": ["J-01", "J-02", "J-04"],
+    "python": ["P-01", "P-02", "P-03"],
+    "contract": ["J-01", "J-02", "J-03", "J-04", "P-01", "P-02", "P-03", "P-04", "X-01", "X-02", "X-03", "X-04", "X-05", "X-06", "X-07", "X-08", "X-09"],
+    "integration": ["I-01", "I-03", "I-04"],
+    "performance": ["PERF-01"],
+    "supplyChain": ["SEC-01"]
+  },
+  "controlPlanePrefixes": [
+    ".github/workflows/",
+    ".github/CODEOWNERS",
+    ".sandcastle/",
+    ".ci/",
+    "docs/agents/",
+    "java/src/test/java/com/rhythmatician/lodiffusion/voxy/",
+    "python/voxel_tree/contracts/tests/"
+  ],
+  "controlPlaneFiles": ["AGENTS.md"]
+}

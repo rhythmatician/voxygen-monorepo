@@ -10,6 +10,7 @@ import { promisify } from "node:util";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { isEligible, branchForIssue, type IssueInput } from "./dispatch.mts";
+import { mayAutonomouslyMerge } from "./ci-policy.mts";
 
 const execFileAsync = promisify(execFile);
 
@@ -356,6 +357,9 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
         sandbox: docker(),
         hooks,
         copyToWorktree,
+        // Worktree checkout runs through WSL on an NTFS mount and can exceed
+        // Sandcastle's 120-second default even for this modest repository.
+        timeouts: { worktreeMs: 300_000 },
       });
       try {
         const implement = await sandbox.run({
@@ -483,12 +487,17 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
               prBody,
             ]);
             console.log(`Created PR: ${prUrl}`);
-            // Try auto-merge
+            // C5 changes may never grant themselves autonomous merge authority.
             try {
               const prNumber = prUrl.match(/\/pull\/(\d+)/)?.[1];
               if (prNumber) {
-                await runGh(["pr", "merge", prNumber, "--auto", "--merge"]);
-                console.log(`Auto-merge enabled for PR #${prNumber}`);
+                const changed = execSync("git diff --name-only origin/main...HEAD", { encoding: "utf8" }).split(/\r?\n/).filter(Boolean);
+                if (!mayAutonomouslyMerge(changed)) {
+                  console.log(`PR #${prNumber} changes the control plane; independent human approval is required`);
+                } else {
+                  await runGh(["pr", "merge", prNumber, "--auto", "--merge"]);
+                  console.log(`Auto-merge enabled for PR #${prNumber}; Factory / Merge Oracle remains authoritative`);
+                }
               }
             } catch (error: unknown) {
               console.warn(`Auto-merge not enabled: ${getErrorMessage(error)}`);
@@ -510,13 +519,14 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     console.warn(`Post-merge PR handling failed (non-fatal): ${getErrorMessage(error)}`);
   }
 
-  // Close issues after successful local integration (audit trail)
+  // A local merge is not integration into main. Leave tickets open until the
+  // PR is actually merged under Factory / Merge Oracle authority.
   for (const iss of completedIssues) {
-    await markIntegrated(iss.id, iss.branch);
-    console.log(`  Closed #${iss.id} -- integrated via ${iss.branch}`);
+    await safeRunGh(["issue", "comment", iss.id, "--body", `Sandcastle produced and reviewed \`${iss.branch}\`. Awaiting exact-SHA Factory / Merge Oracle evidence and PR merge; this issue remains open.`]);
+    console.log(`  #${iss.id} remains open pending authoritative PR merge`);
   }
 
-  console.log("\nBatch complete -- issues closed and transient labels cleared.");
+  console.log("\nBatch submitted -- authoritative CI and merge remain pending.");
 }
 
 console.log("\nAll done.");

@@ -7,7 +7,7 @@ Merge the following branches into the current branch:
 For each branch:
 1. Run `git merge <branch> --no-edit`
 2. If conflicts, resolve by reading both sides and choosing correct resolution — prefer semantic correctness over syntactic merge.
-3. After resolving conflicts, run `npm run typecheck` and `npm run test` (and `./dev/verify-all` if Java/Python oracles are touched) to verify.
+3. After resolving conflicts, run `npm run typecheck` and `npm run test` to verify.
 4. If verification fails, fix the integration (not the oracle) before proceeding.
 
 After all branches are merged, make a single commit summarizing the batch: `RALPH: merge sandcastle batch [branches] — integrations verified`.
