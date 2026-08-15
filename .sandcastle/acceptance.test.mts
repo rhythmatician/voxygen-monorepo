@@ -166,7 +166,7 @@ describe("Factory v0 acceptance dry runs G1-G6 (issue #32)", () => {
   // G4 Wayfinder HITL refused — research|prototype|grilling are never dispatched/sandboxed/mutated
   describe("G4 Wayfinder HITL refused", () => {
     it.each([...FORBIDDEN_WAYFINDER_LABELS])(
-      "forbidden %s with agent:implement yields SKIP(forbidden Wayfinder type ...)", 
+      "forbidden %s with agent:implement yields SKIP(forbidden Wayfinder type ...)",
       (label) => {
         const i = issue({ labels: ["agent:implement", label] });
         const res = isEligible(i);
@@ -207,15 +207,15 @@ describe("Factory v0 acceptance dry runs G1-G6 (issue #32)", () => {
     });
   });
 
-  // G5 Failure recoverable — worker failing verify-all/oracles is not merged; branch preserved, agent:blocked set, retry possible
+  // G5 Failure recoverable — worker failing verification/oracles is not merged; branch preserved, agent:blocked set, retry possible
   describe("G5 Failure recoverable", () => {
     it("rejected worker partitions to failed, not completed — would be markBlocked, not merged", () => {
       const issues = [{ id: "401", branch: "sandcastle/issue-401" }];
-      const settled = [{ status: "rejected" as const, reason: "verify-all failed: VOXYGEN_CONTRACT_FAILURE" }];
+      const settled = [{ status: "rejected" as const, reason: "verification failed: VOXYGEN_CONTRACT_FAILURE" }];
       const { completed, failed } = partitionWorkers(issues, settled);
       expect(completed).toHaveLength(0);
       expect(failed).toHaveLength(1);
-      expect(failed[0].reason).toContain("verify-all failed");
+      expect(failed[0].reason).toContain("verification failed");
       expect(completed.map((c) => c.branch)).not.toContain("sandcastle/issue-401");
     });
 
@@ -255,39 +255,41 @@ describe("Factory v0 acceptance dry runs G1-G6 (issue #32)", () => {
     });
   });
 
-  // G6 Oracle integrity — spec/fixtures/contractTest read-only, hashes.manifest, verify-all cannot be weakened to get green
+  // G6 Oracle integrity — oracles are read-only, verification cannot be weakened to get green
   describe("G6 Oracle integrity", () => {
     it("tampering a golden fixture would cause verification to fail and yield markBlocked, not a fixture edit that makes test pass", () => {
-      // This documents AGENT_RULES Axiom I: oracle is immutable — Java impl is wrong, fixture is right.
+      // This documents the oracle-immutability rule: tests and oracles are right, implementation is wrong.
       // Simulated: a worker that tampers with fixture would still have a verification failure in the *correct* pipeline,
       // and partition would mark it blocked (failed partition) rather than completed.
       // We assert the intended behavior: verification failure → failed partition → blocked, not merged.
       const issues = [{ id: "501", branch: "sandcastle/issue-501" }];
-      const settledTampered = [{ status: "rejected" as const, reason: "sha256sum -c fixtures/hashes.manifest: FAILED — golden tampered" }];
+      const settledTampered = [{ status: "rejected" as const, reason: "oracle integrity check FAILED — golden tampered" }];
       const { completed, failed } = partitionWorkers(issues, settledTampered);
       expect(completed).toHaveLength(0);
       expect(failed).toHaveLength(1);
-      expect(failed[0].reason).toContain("hashes.manifest");
+      expect(failed[0].reason).toContain("golden tampered");
     });
 
-    it("oracles are read-only: spec/ and fixtures paths are never written by dispatch/partition logic", () => {
+    it("oracles are read-only: dispatch/partition logic does not mutate the file system", () => {
       // Pure functions isEligible/filterEligible/partitionWorkers/branchForIssue do not mutate any file system.
       // This test is a seam: if future code added oracle-tampering, it would be visible here as a side effect.
       // For v0, we assert these helpers are pure and do not import fs.
       expect(typeof isEligible).toBe("function");
       expect(typeof filterEligible).toBe("function");
-      // The only mutable paths are java/src/main/ (implementation surface) and docs/ per AGENT_RULES.
-      // No assertion on file existence —just that the factory's JS does not weaken oracles.
+      expect(typeof partitionWorkers).toBe("function");
+      expect(typeof branchForIssue).toBe("function");
+      // The only mutable paths are implementation surfaces (e.g., java/src/main/, python/voxel_tree/) — not external/ or control-plane tests.
+      // No assertion on file existence — just that the factory's JS does not weaken oracles.
     });
 
     it("G6 extends G1/G5: a branch that tampers with oracle still triggers markBlocked path, not integration", () => {
       // Reuse G5 failure path to show oracle tamper is same as verification failure: not merged.
       const issues = [{ id: "501", branch: "sandcastle/issue-501" }];
-      const settled = [{ status: "rejected" as const, reason: "contractTest FAILED — sentinel mismatch at (15,0,0)" }];
+      const settled = [{ status: "rejected" as const, reason: "contract verification FAILED — sentinel mismatch at (15,0,0)" }];
       const { completed, failed } = partitionWorkers(issues, settled);
       expect(failed[0].reason).toContain("sentinel mismatch");
       expect(completed).toHaveLength(0);
-      // Correct fix is in java/src/main/, not in java/src/contractTest/ or fixtures/golden/ per AGENT_RULES.
+      // Correct fix is in the implementation surface, not by weakening oracles or tests.
     });
   });
 });
