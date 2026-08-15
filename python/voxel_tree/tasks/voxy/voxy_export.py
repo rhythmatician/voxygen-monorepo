@@ -29,6 +29,7 @@ import numpy as np
 import torch
 from torch import nn
 
+from voxel_tree.contracts import get_contract
 from voxel_tree.tasks.voxy.voxy_models import (
     BIOME_SHAPES,
     L2_NOISE_CHANNELS,
@@ -124,6 +125,39 @@ def embed_block_mapping(config_dict: dict[str, Any]) -> dict[str, Any]:
     else:
         LOGGER.warning("No block vocabulary found at %s", vocab_path)
     return config_dict
+
+
+def build_level_sidecar(
+    *,
+    level: int,
+    cfg: VoxyModelConfig,
+    input_shapes: dict[str, list[int]],
+    input_dtypes: dict[str, str],
+    output_shapes: dict[str, list[int]],
+    provenance: dict[str, Any],
+) -> dict[str, Any]:
+    """Build an export sidecar from the authoritative per-Level catalog entry."""
+    contract = get_contract(f"voxy_l{level}", revision=1)
+    sidecar = contract.to_sidecar()
+    sidecar["contract_inputs"] = sidecar.pop("inputs")
+    sidecar["contract_outputs"] = sidecar.pop("outputs")
+    sidecar.update(contract.extra)
+    sidecar.update(
+        {
+            "version": "7.0.0",
+            "model": f"voxy_l{level}",
+            "level": level,
+            "inputs": input_shapes,
+            "outputs": output_shapes,
+            "input_dtypes": input_dtypes,
+            "dynamic_batch": True,
+            "block_vocab_size": cfg.block_vocab_size,
+            "biome_vocab_size": cfg.biome_vocab_size,
+            "y_vocab_size": cfg.y_vocab_size,
+            "provenance": provenance,
+        }
+    )
+    return sidecar
 
 
 # ─── ONNX adapter wrappers ──────────────────────────────────────────
@@ -368,10 +402,7 @@ def export_level(
     with torch.no_grad():
         block_logits = adapter(*dummy)
 
-    occ_logits = None
-
     # ── Sidecar config ────────────────────────────────────────────
-    V = cfg.block_vocab_size
     noise_channels = LEVEL_NOISE_CHANNELS[level]
     is_3d = level <= 1
 
@@ -379,35 +410,25 @@ def export_level(
     for name, tensor in zip(input_names, dummy):
         input_shapes[name] = list(tensor.shape)
 
-    output_shapes: dict[str, list[int]] = {
-        "block_logits": list(block_logits.shape),
-    }
-    if occ_logits is not None:
-        output_shapes["occ_logits"] = list(occ_logits.shape)
+    output_shapes = {"block_logits": list(block_logits.shape)}
 
-    model_config: dict[str, Any] = {
-        "version": "6.0.0",
-        "contract": "lodiffusion.v6.voxy",
-        "model": f"voxy_l{level}",
-        "level": level,
+    model_config = build_level_sidecar(
+        level=level,
+        cfg=cfg,
+        input_shapes=input_shapes,
+        input_dtypes=input_dtypes,
+        output_shapes=output_shapes,
+        provenance=collect_export_provenance(),
+    )
+    model_config.update(
+        {
         # Noise routing info for Java side
         "noise_encoding": "3d_native" if is_3d else "2d_climate",
         "noise_channels": noise_channels,
         "noise_channel_names": [ROUTER_FIELD_NAMES[i] for i in noise_channels],
         "has_parent": level < 4,
         "has_occupancy": False,
-        # I/O contract
-        "inputs": input_shapes,
-        "input_dtypes": input_dtypes,
-        "outputs": output_shapes,
         "output_resolution": 32,
-        "dynamic_batch": True,
-        # Vocab sizes
-        "block_vocab_size": V,
-        "biome_vocab_size": cfg.biome_vocab_size,
-        "y_vocab_size": cfg.y_vocab_size,
-        # Architecture metadata
-        "channels": list(getattr(cfg, f"l{level}_channels")),
         "bottleneck_extra": getattr(cfg, f"l{level}_bottleneck_extra"),
         "assumptions": {
             "y_position_range": [0, cfg.y_vocab_size - 1],
@@ -419,8 +440,8 @@ def export_level(
             "noise_format": ("float32, raw noise router values (not normalized)"),
             "biome_format": "int64, Minecraft biome registry IDs",
         },
-        "provenance": collect_export_provenance(),
-    }
+        },
+    )
 
     # Add 2D-specific hints for Java noise preparation
     if not is_3d:
@@ -445,8 +466,6 @@ def export_level(
     for name, tensor in zip(input_names, dummy):
         vectors[name] = tensor.numpy()
     vectors["block_logits"] = block_logits.numpy()
-    if occ_logits is not None:
-        vectors["occ_logits"] = occ_logits.numpy()
 
     vectors_path = out_dir / f"voxy_l{level}_test_vectors.npz"
     np.savez(str(vectors_path), **vectors)

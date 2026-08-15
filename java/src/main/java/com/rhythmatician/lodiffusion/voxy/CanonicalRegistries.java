@@ -7,10 +7,11 @@ package com.rhythmatician.lodiffusion.voxy;
  * and versioned, shared between Python training and Java runtime. The authoritative
  * mappings live in contract metadata (Python: config/voxy_vocab.json for blocks;
  * biome list: BiomeMapping / scripts/biome_mapping.py). Until an explicit
- * version/hash gate exists, these constants are <em>current pinned bounds</em>
- * verified against the checked-in mappings, not dynamically derived values.
- * A future slice will add the version/hash gate that makes drift impossible
- * and then derive or verify these bounds from the authoritative artifact.
+ * deployment contracts identify the active 513-entry model vocabulary with
+ * the version and hash below. Its IDs retain their canonical meanings inside
+ * the runtime's 1104-entry superset. Sidecar consumers compare both values
+ * before accepting model output; equality proves that Python export and Java
+ * runtime expect the same model-registry artifact.
  *
  * <p>Provenance: block mapping size 1104 verified against python/config/voxy_vocab.json
  * (keys minecraft:air=0 .. last entry inclusive at time of pinning). Biome mapping:
@@ -19,6 +20,13 @@ package com.rhythmatician.lodiffusion.voxy;
  */
 public final class CanonicalRegistries {
     private CanonicalRegistries() {}
+
+    /** Version written to {@code canonical_block_registry.version} in model sidecars. */
+    public static final String BLOCK_REGISTRY_VERSION = "voxygen.blocks.v1";
+
+    /** SHA-256 expected for Python {@code config/voxy_vocab.json}. */
+    public static final String BLOCK_REGISTRY_SHA256 =
+            "9b034f2f7a5caa9c5d9e0c2674107f8b33c482bd6d6f887a165b0432981cf5af";
 
     /** Canonical block ID for air. */
     public static final int BLOCK_AIR = 0;

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+from pathlib import Path
 
 import pytest
 import torch
@@ -169,7 +171,8 @@ class TestRegistry:
         assert "density" in models
         assert "biome" in models
         assert "heightmap" in models
-        assert "voxy" in models
+        assert {f"voxy_l{level}" for level in range(5)} <= set(models)
+        assert "voxy" not in models
 
     def test_latest_revision_density(self):
         rev = latest_revision("density")
@@ -182,12 +185,8 @@ class TestRegistry:
     def test_get_contract_specific_revision(self):
         c1 = get_contract("density", revision=1)
         assert c1.revision == 1
-        # voxy has two revisions we can test
-        s0 = get_contract("voxy", revision=0)
-        s1 = get_contract("voxy", revision=1)
-        assert s0.revision == 0
-        assert s1.revision == 1
-        assert s0.fingerprint != s1.fingerprint
+        voxy_l4 = get_contract("voxy_l4", revision=1)
+        assert voxy_l4.contract_id == "lodiffusion.v7.voxy_l4"
 
     def test_get_contract_missing(self):
         with pytest.raises(KeyError, match="No contract"):
@@ -235,11 +234,15 @@ class TestCheckpointValidation:
             validate_checkpoint_contract(ckpt, contract)
 
     def test_newer_revision_rejected(self):
-        # voxy has rev 0 and rev 1; load rev 0 as target
-        contract = get_contract("voxy", revision=0)
-        rev1 = get_contract("voxy", revision=1)
-        ckpt = {"contract_meta": rev1.to_checkpoint_meta()}
-        with pytest.raises(ContractViolation, match="revision 1"):
+        contract = get_contract("density", revision=1)
+        newer = ModelContract(
+            model_name="density",
+            revision=2,
+            inputs=contract.inputs,
+            outputs=contract.outputs,
+        )
+        ckpt = {"contract_meta": newer.to_checkpoint_meta()}
+        with pytest.raises(ContractViolation, match="revision 2"):
             validate_checkpoint_contract(ckpt, contract, strict=False)
 
 
@@ -268,36 +271,58 @@ class TestCatalogContracts:
         assert c.inputs[0].shape == ("batch", 96)
         assert c.outputs[0].shape == ("batch", 32)
 
-    def test_voxy_rev0_input(self):
-        c = get_contract("voxy", revision=0)
-        assert c.inputs[0].shape == (1, 13, 4, 2, 4)
+    @pytest.mark.parametrize(
+        ("level", "input_names", "head_width", "output_shape", "byte_size"),
+        [
+            (4, ["climate_2d", "biome_2d", "y_position"], 24, ("batch", 24, 32, 32), 196_608),
+            (3, ["climate_2d", "biome_2d", "y_position", "parent_blocks"], 24, ("batch", 32, 32, 32), 262_144),
+            (2, ["climate_2d", "biome_2d", "y_position", "parent_blocks"], 32, ("batch", 32, 32, 32), 262_144),
+            (1, ["noise_3d", "biome_3d", "y_position", "parent_blocks"], 48, ("batch", 32, 32, 32), 262_144),
+            (0, ["noise_3d", "biome_3d", "y_position", "parent_blocks"], 48, ("batch", 32, 32, 32), 262_144),
+        ],
+    )
+    def test_live_voxy_level_contracts(
+        self, level, input_names, head_width, output_shape, byte_size
+    ):
+        c = get_contract(f"voxy_l{level}", revision=1)
+        assert [spec.name for spec in c.inputs] == input_names
+        spatial_shape = output_shape[1:]
+        assert c.outputs == (
+            TensorSpec(
+                name="block_logits",
+                shape=("batch", 513, *spatial_shape),
+                dtype="float32",
+                description="Debug logits in CYZX order",
+            ),
+        )
+        assert c.extra["architecture"]["block_head"] == {
+            "input_channels": head_width,
+            "classes": 513,
+        }
+        assert c.extra["deployment_output"] == {
+            "kind": "canonical_block_ids",
+            "shape": ["batch", *spatial_shape],
+            "dtype": "int64",
+            "layout": "YZX",
+            "byte_size_per_item": byte_size,
+            "graph": "logits -> ArgMax -> local ID -> Gather(local_to_canonical) -> canonical ID",
+            "debug_output": {
+                "name": "block_logits",
+                "dtype": "float32",
+                "layout": "CYZX",
+                "shape": ["batch", 513, *spatial_shape],
+            },
+        }
+        assert c.extra["canonical_block_registry"] == {
+            "version": "voxygen.blocks.v1",
+            "sha256": "0c6a4c223cf4c7debea631a14a85741f8d09f684352a9d84cad072eceb087483",
+            "size": 513,
+        }
 
-    def test_voxy_rev1_input(self):
-        c = get_contract("voxy", revision=1)
-        assert c.inputs[0].shape == (1, 15, 4, 4, 4)
-        assert len(c.inputs[0].channels) == 15
-
-    def test_voxy_rev2_shapes(self):
-        """Revision 2 reflects the actual v7 DataHarvester output: 13ch / 4×2×4."""
-        c = get_contract("voxy", revision=2)
-        assert c.inputs[0].shape == (1, 13, 4, 2, 4)
-        assert c.inputs[0].channels is not None
-        assert len(c.inputs[0].channels) == 13
-        assert c.inputs[0].channels[0] == "offset"
-        assert c.inputs[0].channels[-1] == "final_density"
-
-    def test_voxy_rev3_shapes(self):
-        """Revision 3: v7 RouterField 15ch / 4×2×4 — canonical production spec."""
-        c = get_contract("voxy", revision=3)
-        assert c.inputs[0].shape == (1, 15, 4, 2, 4)
-        assert c.inputs[0].channels is not None
-        assert len(c.inputs[0].channels) == 15
-        assert c.inputs[0].channels[0] == "temperature"
-        assert c.inputs[0].channels[-1] == "vein_gap"
-
-    def test_voxy_rev1_has_10_outputs(self):
-        c = get_contract("voxy", revision=1)
-        assert len(c.outputs) == 10  # 5 levels × 2 (split + label)
+    def test_canonical_registry_hash_matches_checked_in_artifact(self):
+        vocab_path = Path(__file__).parents[2] / "config" / "voxy_vocab.json"
+        expected = get_contract("voxy_l4").extra["canonical_block_registry"]
+        assert hashlib.sha256(vocab_path.read_bytes()).hexdigest() == expected["sha256"]
 
     def test_all_contracts_have_fingerprints(self):
         for key, contract in CONTRACTS.items():
@@ -344,20 +369,25 @@ class TestTrackAlignment:
         issues = check_track_alignment(tracks)
         assert issues == []
 
-    def test_stale_track_detected(self, _fake_track):
+    def test_stale_track_detected(self, _fake_track, monkeypatch):
         from voxel_tree.contracts.registry import check_track_alignment
+        from voxel_tree.contracts import registry
 
-        # voxy has rev 0, 1, 2, 3; pinning to 0 → stale (latest is 3)
-        tracks = [_fake_track("old_octree", "voxy", 0)]
+        revision_zero = ModelContract("fixture_model", 0, (), ())
+        revision_one = ModelContract("fixture_model", 1, (), ())
+        monkeypatch.setitem(registry.CONTRACTS, ("fixture_model", 0), revision_zero)
+        monkeypatch.setitem(registry.CONTRACTS, ("fixture_model", 1), revision_one)
+        monkeypatch.setitem(registry._LATEST, "fixture_model", 1)
+        tracks = [_fake_track("old_octree", "fixture_model", 0)]
         issues = check_track_alignment(tracks)
         assert len(issues) >= 1
         stale_issues = [i for i in issues if i.severity == "stale"]
         assert len(stale_issues) == 1
         assert stale_issues[0].track_id == "old_octree"
         assert stale_issues[0].current_revision == 0
-        assert stale_issues[0].latest_revision_ == 3
+        assert stale_issues[0].latest_revision_ == 1
         assert "rev 0" in stale_issues[0].message
-        assert "rev 3" in stale_issues[0].message
+        assert "rev 1" in stale_issues[0].message
 
     def test_missing_contract_is_error(self, _fake_track):
         from voxel_tree.contracts.registry import check_track_alignment

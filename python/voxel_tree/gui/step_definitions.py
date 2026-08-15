@@ -1370,8 +1370,8 @@ MODEL_TRACKS: list[ModelTrack] = [
         deploy_factory=None,  # replaced by per-level steps in extra_steps
         build_pairs_consumes=frozenset({"voxy_db", "noise_dumps"}),
         checkpoint_filename=_VOXY_CHECKPOINT,
-        contract_name="voxy",
-        contract_revision=3,
+        contract_name="voxy_l0",
+        contract_revision=1,
         extra_steps=_VOXY_LEVEL_STEPS,
     ),
     # ── Density (climate → density prediction) ────────────────────────

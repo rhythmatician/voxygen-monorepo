@@ -17,6 +17,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.reflect.TypeToken;
+import com.rhythmatician.lodiffusion.voxy.CanonicalRegistries;
 
 /**
  * Loads {@link ModelConfig} from a JSON sidecar produced alongside ONNX models.
@@ -52,6 +53,7 @@ public final class ConfigLoader {
         }
 
         String contract = root.get("contract").getAsString();
+        validateCanonicalBlockRegistry(root, contract, jsonPath);
         
         // Detect contract version
         if ("lodiffusion.v1".equals(contract)) {
@@ -190,6 +192,28 @@ public final class ConfigLoader {
         if (obj.has(from) && !obj.has(to)) {
             JsonElement v = obj.remove(from);
             obj.add(to, v);
+        }
+    }
+
+    private static void validateCanonicalBlockRegistry(
+            JsonObject root, String contract, Path jsonPath) throws IOException {
+        if (!contract.matches("lodiffusion\\.v\\d+\\.voxy_l[0-4]")) return;
+        if (!root.has("canonical_block_registry")
+                || !root.get("canonical_block_registry").isJsonObject()) {
+            throw new IOException("Config file " + jsonPath
+                    + " is missing canonical_block_registry identity metadata");
+        }
+
+        JsonObject registry = root.getAsJsonObject("canonical_block_registry");
+        String version = getString(registry, "version", "");
+        String sha256 = getString(registry, "sha256", "");
+        if (!CanonicalRegistries.BLOCK_REGISTRY_VERSION.equals(version)
+                || !CanonicalRegistries.BLOCK_REGISTRY_SHA256.equals(sha256)) {
+            throw new IOException("Config file " + jsonPath
+                    + " canonical block registry mismatch: expected "
+                    + CanonicalRegistries.BLOCK_REGISTRY_VERSION + "/"
+                    + CanonicalRegistries.BLOCK_REGISTRY_SHA256 + ", got "
+                    + version + "/" + sha256);
         }
     }
 
