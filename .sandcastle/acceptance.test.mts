@@ -276,8 +276,10 @@ describe("Factory v0 acceptance dry runs G1-G6 (issue #32)", () => {
       // For v0, we assert these helpers are pure and do not import fs.
       expect(typeof isEligible).toBe("function");
       expect(typeof filterEligible).toBe("function");
+      expect(typeof partitionWorkers).toBe("function");
+      expect(typeof branchForIssue).toBe("function");
       // The only mutable paths are implementation surfaces (e.g., java/src/main/, python/voxel_tree/) — not external/ or control-plane tests.
-      // No assertion on file existence —just that the factory's JS does not weaken oracles.
+      // No assertion on file existence — just that the factory's JS does not weaken oracles.
     });
 
     it("G6 extends G1/G5: a branch that tampers with oracle still triggers markBlocked path, not integration", () => {

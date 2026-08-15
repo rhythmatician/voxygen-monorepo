@@ -47,4 +47,8 @@ Once complete, output <promise>COMPLETE</promise>.
 
 # FINAL RULES
 
-ONLY WORK ON A SINGLE TASK. Do not touch unrelated issues. Do not weaken tests, oracles, or fixtures to make CI pass unless the issue explicitly changes the contract — fix the implementation instead. Treat `external/` as read-only — see `external/README.md`. After repeated failure, stop and report evidence without destructively reverting the working tree.
+ONLY WORK ON A SINGLE TASK. Do not touch unrelated issues.
+
+- Do not weaken tests, oracles, or fixtures to make CI pass unless the issue explicitly changes the contract — fix the implementation instead.
+- Treat `external/` as read-only — see `external/README.md`.
+- After repeated failure, stop and report evidence without destructively reverting the working tree.
