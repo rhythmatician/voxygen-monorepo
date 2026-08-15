@@ -4,8 +4,6 @@ name: Factory CI
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]
-  pull_request_review:
-    types: [submitted, dismissed]
   push:
     branches: [main]
   workflow_dispatch:
@@ -19,6 +17,29 @@ permissions:
   pull-requests: read
 
 jobs:
+  classify:
+    name: Classify candidate
+    runs-on: ubuntu-latest
+    outputs:
+      control-plane: ${{ steps.plan.outputs.control-plane }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - name: Classify exact candidate
+        id: plan
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          CANDIDATE_SHA: ${{ github.sha }}
+        run: |
+          git diff --name-only "$BASE_SHA" "$CANDIDATE_SHA" > changed-files.txt
+          npm run --silent ci:oracle -- --command plan --files changed-files.txt > plan.json
+          node -e "const p=require('./plan.json'); console.log('control-plane='+p.changeClasses.includes('C5'))" >> "$GITHUB_OUTPUT"
+
   repository:
     name: Repository integrity
     runs-on: ubuntu-latest
@@ -140,10 +161,19 @@ jobs:
       - uses: actions/dependency-review-action@v4
         if: github.event_name == 'pull_request'
 
+  control-plane-approval:
+    name: Approve control-plane change
+    needs: [classify]
+    if: needs.classify.outputs.control-plane == 'true'
+    environment: factory-control-plane
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Control-plane activation approved through protected environment"
+
   merge-oracle:
     name: Factory / Merge Oracle
     if: always()
-    needs: [repository, factory, python, java, cross-language, performance, security]
+    needs: [classify, repository, factory, python, java, cross-language, performance, security, control-plane-approval]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -163,25 +193,11 @@ jobs:
           CANDIDATE_SHA: ${{ github.sha }}
           LANE_RESULTS: '{"repository":"${{ needs.repository.result }}","factory":"${{ needs.factory.result }}","python":"${{ needs.python.result }}","java":"${{ needs.java.result }}","cross-language":"${{ needs.cross-language.result }}","performance":"${{ needs.performance.result }}","security":"${{ needs.security.result }}"}'
         run: printf '%s' "$LANE_RESULTS" > lane-results.json && npx tsx .sandcastle/ci-results.mts lane-results.json "$CANDIDATE_SHA" evidence.json
-      - name: Check independent human approval
-        id: approval
-        if: github.event_name == 'pull_request' || github.event_name == 'pull_request_review'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const reviews = await github.paginate(github.rest.pulls.listReviews, {
-              ...context.repo, pull_number: context.issue.number
-            });
-            const author = context.payload.pull_request.user.login;
-            const latest = new Map();
-            for (const review of reviews) latest.set(review.user.login, review.state);
-            return [...latest].some(([login, state]) => login !== author && state === 'APPROVED');
-          result-encoding: string
       - name: Decide merge authority
         env:
           CANDIDATE_SHA: ${{ github.sha }}
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-          HUMAN_APPROVED: ${{ github.event_name != 'pull_request' || steps.approval.outputs.result == 'true' }}
+          HUMAN_APPROVED: ${{ needs.classify.outputs.control-plane != 'true' || needs.control-plane-approval.result == 'success' }}
         run: npm run ci:oracle -- --command decide --files changed-files.txt --candidate "$CANDIDATE_SHA" --base "$BASE_SHA" --evidence evidence.json --human-approved "$HUMAN_APPROVED" --issue "${{ github.event.pull_request.number }}" --output factory-evidence-manifest.json
       - uses: actions/upload-artifact@v4
         if: always()

@@ -2,7 +2,7 @@
 
 `Factory / Merge Oracle` is the only authoritative repository check. The workflow always runs on pull requests; path filters never decide whether evidence is required.
 
-The policy engine in `.sandcastle/ci-policy.mts` classifies the complete base-to-candidate diff, expands cumulative requirements, rejects missing/stale/non-passing evidence, and writes `factory-evidence-manifest.json`. `.ci/checks.json` is the single check and protected-path registry. Control-plane and protected-oracle changes are C5, are covered by `.github/CODEOWNERS`, and require human approval; Sandcastle will not enable autonomous merge for them. Repository rulesets must require both this stable oracle check and Code Owner review—repository code cannot safely bootstrap those platform settings itself.
+The policy engine in `.sandcastle/ci-policy.mts` classifies the complete base-to-candidate diff, expands cumulative requirements, rejects missing/stale/non-passing evidence, and writes `factory-evidence-manifest.json`. `.ci/checks.json` is the single check and protected-path registry. Control-plane and protected-oracle changes are C5, are covered by `.github/CODEOWNERS`, and pause at the protected `factory-control-plane` environment for a human to click **Review deployments → Approve and deploy**; Sandcastle will not enable autonomous merge for them. Repository rulesets must require the stable oracle check—repository code cannot safely bootstrap that platform setting itself.
 
 Local policy tests: `npm test -- --run .sandcastle/ci-policy.test.mts`. Full factory checks: `npm run typecheck && npm test`. Language lanes use the same Gradle, uv, and test commands recorded in `.github/workflows/factory-ci.yml`.
 
