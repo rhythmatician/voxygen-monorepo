@@ -166,7 +166,7 @@ describe("Factory v0 acceptance dry runs G1-G6 (issue #32)", () => {
   // G4 Wayfinder HITL refused — research|prototype|grilling are never dispatched/sandboxed/mutated
   describe("G4 Wayfinder HITL refused", () => {
     it.each([...FORBIDDEN_WAYFINDER_LABELS])(
-      "forbidden %s with agent:implement yields SKIP(forbidden Wayfinder type ...)", 
+      "forbidden %s with agent:implement yields SKIP(forbidden Wayfinder type ...)",
       (label) => {
         const i = issue({ labels: ["agent:implement", label] });
         const res = isEligible(i);

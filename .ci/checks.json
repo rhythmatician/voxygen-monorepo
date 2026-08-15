@@ -20,6 +20,14 @@
     "performance": ["PERF-01"],
     "supplyChain": ["SEC-01"]
   },
-  "controlPlanePrefixes": [".github/workflows/", ".github/CODEOWNERS", ".sandcastle/", ".ci/", "docs/agents/", "java/src/test/java/com/rhythmatician/lodiffusion/voxy/", "python/voxel_tree/contracts/tests/"],
+  "controlPlanePrefixes": [
+    ".github/workflows/",
+    ".github/CODEOWNERS",
+    ".sandcastle/",
+    ".ci/",
+    "docs/agents/",
+    "java/src/test/java/com/rhythmatician/lodiffusion/voxy/",
+    "python/voxel_tree/contracts/tests/"
+  ],
   "controlPlaneFiles": ["AGENTS.md"]
 }
