@@ -103,9 +103,7 @@ def main():
         "See file header.",
         file=sys.stderr,
     )
-    ap = argparse.ArgumentParser(
-        description="SCAFFOLD — not authoritative. See file header."
-    )
+    ap = argparse.ArgumentParser(description="SCAFFOLD — not authoritative. See file header.")
     ap.add_argument("--gt", default=None)
     ap.add_argument("--columns", type=int, default=100)
     ap.add_argument("--seed", type=int, default=42)
@@ -136,11 +134,19 @@ def main():
             "p95": p95_final,
             # Forced non-viable: scaffold must not masquerade as passing.
             "viable": None,
-            "viable_scaffold_synthetic": (p95_final < 5) if p95_final is not None else None,
+            "viable_scaffold_synthetic": ((p95_final < 5) if p95_final is not None else None),
             "synthetic": True,
         },
-        "chunk_sampler_heightmap_ms_per_col": {"p50": p50(height), "p95": p95(height), "synthetic": True},
-        "gpu_zero_crossing_ms_per_col": {"p50": p50(gpu), "p95": p95(gpu), "synthetic": True},
+        "chunk_sampler_heightmap_ms_per_col": {
+            "p50": p50(height),
+            "p95": p95(height),
+            "synthetic": True,
+        },
+        "gpu_zero_crossing_ms_per_col": {
+            "p50": p50(gpu),
+            "p95": p95(gpu),
+            "synthetic": True,
+        },
         "oracle": oracle,
         "note": "SCAFFOLD. No chunk getHeight() used. 5 evals/chunk vs 512 per GLOSSARY/WorldNoiseAccess.java:192. Real timings require NoiseConfig + ServerWorld; this scaffold runs offline and emits random numbers.",
         "elapsed_s": time.time() - t0,
@@ -151,6 +157,7 @@ def main():
         print(report)
 
     print(report)
+
 
 if __name__ == "__main__":
     main()

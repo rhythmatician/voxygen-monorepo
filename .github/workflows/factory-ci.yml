@@ -58,6 +58,10 @@ jobs:
       - run: uv lock --project python --check
       - name: Verify pinned Voxy identity
         run: bash .ci/install-voxy.sh verify
+      - name: R-02 Documentation policy
+        run: |
+          git diff --name-only HEAD~1 HEAD > /tmp/changed.txt 2>/dev/null || git diff --name-only origin/main...HEAD > /tmp/changed.txt 2>/dev/null || true
+          npx tsx .ci/docs-policy.mts --files /tmp/changed.txt
 
   factory:
     name: Factory policy

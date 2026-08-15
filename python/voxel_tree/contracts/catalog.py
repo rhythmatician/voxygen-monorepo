@@ -117,7 +117,9 @@ _LEVEL_INPUTS = {
         TensorSpec("parent_blocks", ("batch", 32, 32, 32), dtype="int64"),
     ),
     2: (
-        TensorSpec("climate_2d", ("batch", 7, 8, 8), channels=_ROUTER_FIELDS[:6] + ("final_density",)),
+        TensorSpec(
+            "climate_2d", ("batch", 7, 8, 8), channels=_ROUTER_FIELDS[:6] + ("final_density",)
+        ),
         TensorSpec("biome_2d", ("batch", 8, 8), dtype="int64"),
         TensorSpec("y_position", ("batch",), dtype="int64"),
         TensorSpec("parent_blocks", ("batch", 32, 32, 32), dtype="int64"),
@@ -162,7 +164,11 @@ for _level in range(5):
             extra={
                 "level": _level,
                 "architecture": {
-                    "channels": [_HEAD_WIDTHS[_level], _HEAD_WIDTHS[_level] * 2, _HEAD_WIDTHS[_level] * 4],
+                    "channels": [
+                        _HEAD_WIDTHS[_level],
+                        _HEAD_WIDTHS[_level] * 2,
+                        _HEAD_WIDTHS[_level] * 4,
+                    ],
                     "block_head": {"input_channels": _HEAD_WIDTHS[_level], "classes": 513},
                 },
                 "deployment_output": {
@@ -273,5 +279,3 @@ _register(
         export_fn="voxel_tree.tasks.heightmap.export_heightmap:main",
     )
 )
-
-

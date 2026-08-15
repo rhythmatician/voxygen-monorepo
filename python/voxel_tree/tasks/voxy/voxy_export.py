@@ -422,24 +422,24 @@ def export_level(
     )
     model_config.update(
         {
-        # Noise routing info for Java side
-        "noise_encoding": "3d_native" if is_3d else "2d_climate",
-        "noise_channels": noise_channels,
-        "noise_channel_names": [ROUTER_FIELD_NAMES[i] for i in noise_channels],
-        "has_parent": level < 4,
-        "has_occupancy": False,
-        "output_resolution": 32,
-        "bottleneck_extra": getattr(cfg, f"l{level}_bottleneck_extra"),
-        "assumptions": {
-            "y_position_range": [0, cfg.y_vocab_size - 1],
-            "parent_blocks": (
-                ("int64 block IDs [0, block_vocab_size); embedding is baked into ONNX graph")
-                if level < 4
-                else None
-            ),
-            "noise_format": ("float32, raw noise router values (not normalized)"),
-            "biome_format": "int64, Minecraft biome registry IDs",
-        },
+            # Noise routing info for Java side
+            "noise_encoding": "3d_native" if is_3d else "2d_climate",
+            "noise_channels": noise_channels,
+            "noise_channel_names": [ROUTER_FIELD_NAMES[i] for i in noise_channels],
+            "has_parent": level < 4,
+            "has_occupancy": False,
+            "output_resolution": 32,
+            "bottleneck_extra": getattr(cfg, f"l{level}_bottleneck_extra"),
+            "assumptions": {
+                "y_position_range": [0, cfg.y_vocab_size - 1],
+                "parent_blocks": (
+                    ("int64 block IDs [0, block_vocab_size); embedding is baked into ONNX graph")
+                    if level < 4
+                    else None
+                ),
+                "noise_format": ("float32, raw noise router values (not normalized)"),
+                "biome_format": "int64, Minecraft biome registry IDs",
+            },
         },
     )
 
