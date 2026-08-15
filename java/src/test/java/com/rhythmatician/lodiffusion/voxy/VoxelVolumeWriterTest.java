@@ -104,6 +104,10 @@ class VoxelVolumeWriterTest {
     void canonicalRegistries_bounds_derivedFromContract() {
         assertEquals(1104, CanonicalRegistries.BLOCK_COUNT);
         assertEquals(1103, CanonicalRegistries.BLOCK_ID_MAX);
+        assertEquals("voxygen.blocks.v1", CanonicalRegistries.BLOCK_REGISTRY_VERSION);
+        assertEquals(
+                "9b034f2f7a5caa9c5d9e0c2674107f8b33c482bd6d6f887a165b0432981cf5af",
+                CanonicalRegistries.BLOCK_REGISTRY_SHA256);
         assertEquals(54, CanonicalRegistries.BIOME_COUNT);
         assertEquals(255, CanonicalRegistries.BIOME_UNKNOWN);
         assertTrue(CanonicalRegistries.isValidBlockId(0));
