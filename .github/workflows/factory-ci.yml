@@ -65,6 +65,8 @@ jobs:
           ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
       - uses: astral-sh/setup-uv@v6
         with: { version: "0.8.8", enable-cache: true }
+      - name: Install Qt runtime libraries
+        run: sudo apt-get update && sudo apt-get install --yes libegl1
       - run: uv sync --locked --group dev --extra test --extra type_stubs
       - run: uv run ruff check .
       - run: uv run pyright voxel_tree
