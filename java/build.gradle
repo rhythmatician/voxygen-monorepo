@@ -72,8 +72,10 @@ dependencies {
 	// call getOcclusionDebugState() from LodiffusionClient.  Plain compileOnly
 	// (no Loom remapping) because VoxyClient is a mod class, not a MC class,
 	// and the jar was built with a newer Loom version that 1.13.6 cannot process.
-	compileOnly files('mods/voxy-0.2.11-alpha.jar')
-	testRuntimeOnly files('mods/voxy-0.2.11-alpha.jar')
+	compileOnly fileTree(dir: 'mods', include: 'voxy-*.jar')
+	if (!providers.gradleProperty('excludeVoxyTestRuntime').isPresent()) {
+		testRuntimeOnly fileTree(dir: 'mods', include: 'voxy-*.jar')
+	}
 
 	// NBT and MCA library for parsing Minecraft region files (1.18+ compatible)
 	// Using JitPack for reliable dependency resolution
