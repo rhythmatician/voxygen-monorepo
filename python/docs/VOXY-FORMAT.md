@@ -1,7 +1,10 @@
 # Voxy On-Disk & In-Memory Format
 
-> **Source:** Audited from `MCRcortex/voxy` source code (v0.2.11-alpha), cloned to
-> `reference-code/voxy/`. All claims below are grounded in specific Java files.
+> **Source:** Audited from `MCRcortex/voxy` source code (v0.2.11-alpha) at
+> `python/tools/fabric-server/runtime/mods/voxy-0.2.11-alpha.jar`
+> (sha256 `63d1747017041b659ef620f589006d079d3574e3124dbdb165f9998533a7920c`),
+> mirrored at `MCRcortex/voxy` commit `337b919` (`dev` branch). All claims below
+> are grounded in specific Java files (see per-section citations).
 
 ---
 
@@ -55,7 +58,10 @@ getZ(id) = (int)((id<<12)>>40)   // sign-extends 24-bit
 From `Mapper.java` constants and `composeMappingId()`:
 
 ```
-Bit 63–56  (8 bits) : light  — packed as (sky<<4 | block), each 4 bits
+Bit 63–56  (8 bits) : light  — packed as (block<<4 | sky), each 4 bits
+                      high nibble = block light, low nibble = sky light
+                      (source: VoxelIngestService.java:71  sky|(block<<4),
+                       Mipper.java blockLight & 0xF0 vs skyLight & 0x0F)
 Bit 55–47  (9 bits) : biome ID  — Voxy's internal biome index (up to 512)
 Bit 46–27  (20 bits): block state ID — Voxy's **internal** mapped ID (not MC registry ID)
 Bit 26–0   (27 bits): unused / lower flags (zero in practice)
@@ -137,22 +143,30 @@ For the 8 children (I000 … I111):
 
 ## 6. On-Disk Serialization Format
 
-From `SaveLoadSystem.java`. Each section is serialized as:
+From `SaveLoadSystem3.java` (`me.cortex.voxy.common.world.SaveLoadSystem3`). Each section
+is serialized after ZSTD compression as (little-endian):
 
 | Field | Size | Notes |
 |---|---|---|
-| `key` | 8 bytes | Section's 64-bit position key (§2 above) |
-| `metadata` | 8 bytes | Low byte = `nonEmptyChildren` bitmask (which of the 8 octants have data) |
-| `lutLen` | 4 bytes | Number of unique `long` values in this section (≤ 32,768) |
-| LUT entries | `lutLen × 8 bytes` | The unique 64-bit voxel values (full long encoding, §3) |
-| Block indices | `32³ × 2 = 65,536 bytes` | 16-bit indices into LUT, in **z-curve (Morton) order** |
-| `hash` | 8 bytes | Integrity check |
+| `key` | 8 bytes | Section's 64-bit position key (§2) — LE long |
+| `metadata` | 8 bytes | LE long; low 2 bytes = palette size `lutLen` (≤ 32768), next byte = `nonEmptyChildren` |
+| `indices` | `32³ × 2 = 65,536 bytes` | 16-bit LE indices into LUT, in **YZX linear order** `y<<10\|z<<5\|x` |
+| `palette` | `lutLen × 8 bytes` | LE int64 palette entries (full packed voxel longs, §3) |
 
-**Maximum section size:** `32×32×32×8` (all unique) `+ 8+8+4+8` header/footer.
+In the decompressed buffer layout (`SaveLoadSystem3.serialize`):
+```
+offset 0:       key (8 bytes LE)
+offset 8:       metadata (8 bytes LE)
+offset 16:      32768 × uint16 LE palette indices (YZX order)
+offset 65552:   palette table (lutLen × int64 LE)
+```
 
-**Spatial ordering: Morton (z-curve) code** — NOT raster/linear order.
-`lin2z(idx)` interleaves the 3 axis bits; `z2lin(morton)` reverses it.
-When writing/reading a Python parser, apply `lin2z` / `z2lin` accordingly.
+**Spatial ordering note:** Indices on disk are **YZX linear** (`(y<<10)|(z<<5)|x`), not
+raster XYZ. `SaveLoadSystem3` loops over `section.data` (YZX) and writes indices in that
+order; `deserialize` reads them back linearly into `section.data`. The Morton helpers
+`lin2z`/`z2lin` are defined in the same file but are *not* used for this serialization
+path — they remain as correct utilities for Morton-encoded pipelines and are tested for
+bijection. When a Morton-ordered pipeline is needed, convert via `lin2z`/`z2lin`.
 
 ---
 
@@ -193,75 +207,61 @@ ID mapping table first, then decode voxels. We cannot assume any mapping from ou
 
 ---
 
-## 9. Python Decoding Recipe
+## 9. Python Reference Decoder (tested)
+
+Use the tested helpers in `voxel_tree.voxy_format` — they are the single source of
+truth for this document and are exercised by `voxel_tree/tests/test_voxy_format.py`.
 
 ```python
+from voxel_tree.voxy_format import (
+    make_key, decode_key,        # WorldEngine.getWorldSectionId family (§2)
+    encode_voxel, decode_voxel,  # Mapper bit layout + sky|(block<<4) (§3)
+    yzx_index, lin2z, z2lin,     # WorldSection.getIndex + SaveLoadSystem3 Morton (§6)
+)
+
+# --- Section key round-trip (correct sign-extension) ---
+key = make_key(lvl=1, x=-1, y=-128, z=8388607)
+lvl, x, y, z = decode_key(key)     # -> (1, -1, -128, 8388607)
+# Implementation: explicit mask + _sign_extend, not np.int32((key<<... )>>...)
+
+# --- Voxel long decoding (asymmetric nibbles) ---
+v = encode_voxel(block_id=42, biome_id=7, sky_light=2, block_light=13)  # light = 0xD2
+block_id, biome_id, sky, block = decode_voxel(v)
+assert (sky, block) == (2, 13)   # low nibble = sky (0x2), high nibble = block (0xD)
+
+# --- Morton helpers (YZX ↔ Morton, proved bijection over 32^3) ---
+idx = yzx_index(x=1, y=2, z=3)    # (2<<10)|(3<<5)|1
+assert z2lin(lin2z(idx)) == idx
+
+# --- Parse a decompressed SaveLoadSystem3 section (little-endian, YZX) ---
 import struct, numpy as np
 
-# --- Section key round-trip ---
-def make_key(lvl, x, y, z):
-    return (
-        ((lvl & 0xF) << 60) |
-        ((y & 0xFF) << 52) |
-        ((z & 0xFFFFFF) << 28) |
-        ((x & 0xFFFFFF) << 4)
-    )
+def parse_section_save3(decompressed: bytes):
+    # layout: key(LE q), metadata(LE Q), 32768*2 indices(LE u2 YZX), palette(LE i8)
+    key = struct.unpack_from('<q', decompressed, 0)[0]
+    metadata = struct.unpack_from('<Q', decompressed, 8)[0]
+    lut_len = int(metadata & 0xFFFF)
+    non_empty_children = int((metadata >> 16) & 0xFF)
 
-def decode_key(key):
-    lvl = (key >> 60) & 0xF
-    y   = np.int8((key >> 52) & 0xFF)
-    z   = np.int32((key << 12) >> 40)   # sign-extend 24-bit
-    x   = np.int32((key << 36) >> 40)
-    return int(lvl), int(x), int(y), int(z)
+    indices = np.frombuffer(decompressed, dtype='<u2', count=32768, offset=16)  # YZX
+    lut = np.frombuffer(decompressed, dtype='<i8', count=lut_len, offset=16 + 32768*2)
 
-
-# --- Voxel long decoding ---
-BLOCK_ID_SHIFT  = 27
-BLOCK_ID_MASK   = (1 << 20) - 1        # 20 bits
-BIOME_ID_SHIFT  = 47
-BIOME_ID_MASK   = (1 << 9) - 1         # 9 bits
-LIGHT_SHIFT     = 56
-LIGHT_MASK      = 0xFF                  # 8 bits (sky<<4 | block)
-
-def decode_voxel(v: int):
-    block_id = (v >> BLOCK_ID_SHIFT) & BLOCK_ID_MASK
-    biome_id = (v >> BIOME_ID_SHIFT) & BIOME_ID_MASK
-    light    = (v >> LIGHT_SHIFT) & LIGHT_MASK
-    sky_light   = light & 0xF
-    block_light = (light >> 4) & 0xF
-    return block_id, biome_id, sky_light, block_light
-
-
-# --- Morton code (z-curve) helpers ---
-def _split3(a):
-    a &= 0x1FFFFF
-    a = (a | (a << 32)) & 0x1F00000000FFFF
-    a = (a | (a << 16)) & 0x1F0000FF0000FF
-    a = (a | (a <<  8)) & 0x100F00F00F00F00F
-    a = (a | (a <<  4)) & 0x10C30C30C30C30C3
-    a = (a | (a <<  2)) & 0x1249249249249249
-    return a
-
-def lin2z(idx):
-    x, y, z = idx & 31, (idx >> 5) & 31, (idx >> 10) & 31
-    return _split3(x) | (_split3(y) << 1) | (_split3(z) << 2)
-
-
-# --- Parse a serialized section (bytes) ---
-def parse_section(data: bytes):
-    off = 0
-    key,      = struct.unpack_from('>q', data, off); off += 8
-    metadata, = struct.unpack_from('>q', data, off); off += 8
-    lut_len,  = struct.unpack_from('>I', data, off); off += 4
-    lut = np.frombuffer(data, dtype='>i8', count=lut_len, offset=off); off += lut_len * 8
-    # indices are Morton-ordered
-    indices_morton = np.frombuffer(data, dtype='>u2', count=32**3, offset=off); off += 32**3 * 2
-    # rearrange to linear order
-    linear_order = np.argsort([lin2z(i) for i in range(32**3)])
-    indices_linear = indices_morton[linear_order]
-    voxels = lut[indices_linear].reshape(32, 32, 32)   # [x, z, y] → reorder as needed
-    return decode_key(key), voxels
+    # YZX linear voxels (axis 0=y, 1=z, 2=x): reshape as (32,32,32) YZX
+    voxels_flat = lut[indices]                     # (32768,) packed longs
+    voxels_yzx = voxels_flat.reshape(32, 32, 32)    # (y,z,x) — not [x,z,y]
+    # Optional Morton-ordered view for Morton pipelines:
+    # morton_view[lin2z(idx)] = voxels_flat[idx]
+    return decode_key(key), voxels_yzx, non_empty_children
 ```
+
+All helpers above are imported from `voxel_tree.voxy_format` and are tested:
+
+* signed 24-bit X/Z edges (`-8388608, -1, 0, 1, 8388607`), signed 8-bit Y edges
+  (`-128, -1, 0, 1, 127`), and L0/L4 round-trips;
+* asymmetric `sky=2, block=13` proving high/low nibble ownership;
+* `lin2z`/`z2lin` full-domain inverse and uniqueness over `32^3`;
+* sentinel `val = x + 100*y + 10000*z` volume proving XYZ ↔ YZX ↔ Morton round-trips
+  (including `reshape(32,32,32)` YZX semantics and `lin2z`/`z2lin` bijection).
 
 ---
 
@@ -272,9 +272,9 @@ def parse_section(data: bytes):
 | "palette + 16-bit indices" | ✅ Correct structurally, but palette entries are **full 64-bit longs** containing block+biome+light |
 | "32³ section format" | ✅ Correct |
 | "RocksDB with world_sections column family" | ✅ RocksDB is correct default, but no "column family" — all in one RocksDB store with key prefixes |
-| Linear voxel ordering assumed | ❌ Spatial order is **Morton / z-curve** on disk |
+| Linear voxel ordering assumed | ✅ YZX linear `(y<<10)|(z<<5)|x` on disk (SaveLoadSystem3); Morton `lin2z`/`z2lin` are valid transforms but not used for this store |
 | No mention of biome per-voxel | ❌ Each voxel carries 9-bit biome ID (bits 47–55) |
-| No mention of light per-voxel | ❌ Each voxel carries 8-bit light (bits 56–63: sky<<4\|block) |
+| No mention of light per-voxel | ❌ Each voxel carries 8-bit light (bits 56–63: `block<<4|sky`, high/low nibbles) |
 | "Block ID = Minecraft registry ID" (implied) | ❌ Voxy uses its own **internal mapped IDs**, world-specific |
 | LOD downsampling = majority vote (implied) | ❌ Opacity-biased corner selection (§5) |
 
