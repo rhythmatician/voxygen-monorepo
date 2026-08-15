@@ -4,7 +4,7 @@ repos:
       - id: qgate
         name: Quality Gate
         language: system
-        entry: uv run qgate --fix --type-checker dmypy
+        entry: uv run --project python qgate --fix
         types: [python]
         pass_filenames: true
         require_serial: true
