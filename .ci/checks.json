@@ -6,7 +6,7 @@
     "factory": ["F-01", "F-02", "F-03", "F-04"],
     "python": ["P-01", "P-02", "P-03", "P-04"],
     "java": ["J-01", "J-02", "J-03", "J-04", "I-01", "I-03", "I-04", "X-07", "X-08", "X-09"],
-    "cross-language": [],
+    "cross-language": ["X-01", "X-02", "X-03", "X-04", "X-05", "X-06"],
     "performance": ["PERF-01"],
     "security": ["SEC-01"]
   },
