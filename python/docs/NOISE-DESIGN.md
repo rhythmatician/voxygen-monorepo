@@ -1,5 +1,10 @@
 # Per-LOD Noise & Conditioning Design
 
+> **Historical — March 2026 architecture generation (no learned L0, four transitions L4→L1).**
+> This document is retained for unique rationale (why router6 was dropped) but its model architecture is not current.
+> Successors: `CONTEXT.md` (canonical language), per-Level contracts L0–L4 from PR #36, dense baseline, and minimum-sufficient-representation program.
+> Current conditioning is per `CONTEXT.md`; this file's "No LOD0 generation" and "All 4 LOD transitions" table describes the superseded generation.
+
 > What conditioning inputs does each LOD transition need, and why router6 was dropped.
 
 ---

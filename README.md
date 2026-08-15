@@ -38,12 +38,9 @@ Push-Location java; rtk proxy .\gradlew.bat :compileJava; Pop-Location
 ## CI
 
 GitHub only discovers workflows in `.github/workflows/` at the repository root.
-Root workflows are the source of truth:
+The single authoritative workflow is:
 
-- `.github/workflows/java-ci.yml` — lint / test+coverage / build / CodeQL (Windows + Ubuntu), runs with `working-directory: java`
-- `.github/workflows/python-ci.yml` — lint/typecheck/test + ONNX export + DJL verify, runs with `working-directory: python`
-
-The old `java/.github/workflows/ci.yml` and `python/.github/workflows/ci.yml` are retained for history but not executed by GitHub after the merge.
+- `.github/workflows/factory-ci.yml` — `Factory / Merge Oracle` is the only authoritative repository check; see `.ci/checks.json` for the check and protected-path registry and `.ci/README.md` for the policy engine.
 
 ## Python from the monorepo root
 

@@ -219,7 +219,7 @@ One of the 8 children of a WorldSection. For parent `(px,py,pz)` at level `L`, c
 `SectionStorage` is Voxy's pluggable backend interface. Default composition (via `StorageConfigUtil.createDefaultSerializer()`): `RocksDBStorageBackend` wrapped by `CompressionStorageAdaptor(ZSTD level 1)` wrapped by `SectionSerializationStorage`. Alternatives: LMDB, Redis, in-memory. ID mappings are stored under a separate key prefix in the same DB.
 
 ### Serialization Format and Morton (Z-curve) Order [External]
-Serialized section (see `SaveLoadSystem.java`): `key(8) | metadata(8, low byte = nonEmptyChildren) | lutLen(4) | lut(lutLenx8) | indices(32^3x2 = 65536 bytes of u16 into LUT in Morton order) | hash(8)`. Spatial order on disk is **Morton / z-curve** (`lin2z` / `z2lin` interleaving 5 bits per axis), not linear YZX. Python readers must apply `lin2z` when parsing. Maximum section payload when all voxels unique: `32^3x8 + header`.
+Serialized section (see `SaveLoadSystem.java` / `SaveLoadSystem3`): `key(8) | metadata(8, low byte = nonEmptyChildren) | lutLen(4) | lut(lutLenx8) | indices(32^3x2 = 65536 bytes of u16 into LUT) | hash(8)`. `SaveLoadSystem3` (the current system) is **little-endian** with **YZX-linear** indices (`(y<<10)|(z<<5)|x`), not Morton-ordered; Morton helpers (`lin2z`/`z2lin` interleaving 5 bits per axis) exist but are not the storage path. Light packing is high-nibble = block light, low-nibble = sky light. Tested canonical spec: `python/docs/VOXY-FORMAT.md` and executable reference `python/voxel_tree/voxy_format` (fixed-width signed section-coordinate decoding). Maximum section payload when all voxels unique: `32^3x8 + header`.
 
 ---
 
@@ -273,14 +273,14 @@ Gradle plugin that deobfuscates/maps Minecraft jars, remaps mod code per Yarn/Mo
 ### VoxelVolumeWriter (interface) [Current]
 Deep seam with exactly the two operations above and no other write entry points. Implementations must not add overloads that infer `Level` from extent. Binding unavailability throws unchecked `VolumeUnavailableException` (extends `IllegalStateException`). See also `WriteOutcome` and `VolumeUnavailableException`.
 
-### RealVoxyVolumeWriter [Planned]
-The production `VoxelVolumeWriter` that encodes semantic `(blockId, biomeId)` via `VoxyBlockMapper` / `BlockVocabulary` and writes into Voxy's `WorldSection` store. **This is the only place where** YZX linearization `(y<<10)|(z<<5)|x`, `long[]` packing, `VarHandle`/CAS, reflection, light defaults, and `WorldSection` / `WorldEngine` mapping live. Callers behind the `VoxelVolumeWriter` interface never see these details. Obtained via `VoxyWorldBinding` when Voxy is present; otherwise the binding is unavailable and writes throw `VolumeUnavailableException`. Sources: `java/.../voxy/VoxyCompat.java` + `VoxySectionWriter.java` (legacy names; combined under this role), `VoxyWorldBinding.java`, `VoxyBlockMapper.java`.
+### RealVoxyVolumeWriter [Current]
+The production `VoxelVolumeWriter` (`java/src/main/java/com/rhythmatician/lodiffusion/voxy/RealVoxyVolumeWriter.java`) that encodes semantic `(blockId, biomeId)` via `VoxyBlockMapper` / `BlockVocabulary` and writes into Voxy's `WorldSection` store. **This is the only place where** YZX linearization `(y<<10)|(z<<5)|x`, `long[]` packing, `VarHandle`/CAS, reflection, light defaults, and `WorldSection` / `WorldEngine` mapping live. Callers behind the `VoxelVolumeWriter` interface never see these details. Obtained via `VoxyWorldBinding` when Voxy is present; otherwise the binding is unavailable and writes throw `VolumeUnavailableException`. Sources: `java/.../voxy/RealVoxyVolumeWriter.java`, `VoxyCompat.java`, `VoxyBlockMapper.java`.
 
 ### InMemoryVolumeWriter [Current]
 Test/contract adapter for `VoxelVolumeWriter` (`java/.../voxy/InMemoryVolumeWriter.java`). Records semantic `WriteRecord` entries — `SectionRecord(SectionPos, VoxelVolume)` and `RegionRecord(SectionPos origin, Level, VoxelVolume)` — as opaque `VoxelVolume` snapshots keyed by position/level. Implements the intended semantic writer guards for contract testing (all-air -> `SKIPPED_AIR`, second write to same position -> `SKIPPED_EXISTS`) but **never stores or emulates Voxy packed `long[]` or `WorldSection` internals**. Deterministic and free of Minecraft/Voxy classes; can be marked unavailable to test error paths.
 
-### VoxelPredictionDecoder [Planned]
-Inference-boundary module that decodes model outputs (logits/argmax) into a semantic `VoxelVolume`. The only place that understands model output layout. The writer never does argmax. Avoid: "writer argmax", "logits in writer".
+### VoxelPredictionDecoder [Current]
+Inference-boundary module (`java/src/main/java/com/rhythmatician/lodiffusion/voxy/VoxelPredictionDecoder.java`) that decodes model outputs (logits/argmax) into a semantic `VoxelVolume`. The only place that understands model output layout. The writer never does argmax. Avoid: "writer argmax", "logits in writer".
 
 ### WriteOutcome / VolumeUnavailableException [Current]
 `WriteOutcome` is `WRITTEN | SKIPPED_AIR | SKIPPED_EXISTS`. `SKIPPED_AIR` and `SKIPPED_EXISTS` are normal runtime decisions, not errors. Contract violations throw `IllegalArgumentException`; binding unavailability throws unchecked `VolumeUnavailableException` (extends `IllegalStateException`, not declared). Avoid: `SKIPPED_BOUNDS`, `SKIPPED_INVALID`, checked exception.
@@ -295,7 +295,7 @@ Inference-boundary module that decodes model outputs (logits/argmax) into a sema
 - **"Level" vs "LOD" vs "lvl"** — `L0` finest in Voxygen; higher number = coarser. Some renderers invert this. Voxy file uses field name `lvl`; Voxygen uses type `Level`. Always state the scale. `Level` never inferred from `VoxelVolume` extent; the operation (`writeSection` vs `writeRegion`) determines the required extent and whether a `Level` is needed.
 - **"Palette" vs "Mapper" vs "Registry"** — Palette = per-section `PalettedContainer` local compression; Mapper = Voxy per-world global `long` packing; Registry = vanilla `Registries.BLOCK / BIOME` authoritative IDs; Canonical Registry = Voxygen cross-language stable IDs (same number as `BlockVocabulary` canonical index — one ID space).
 - **"VoxelVolume" backing** — Do not freeze to `int[]` or to `x+y*E+z*E*E` or to YZX. The contract is an opaque XYZ coordinate API; backing and linearization are implementation details (currently primitive arrays, but not frozen).
-- **YZX vs XYZ vs Morton** — Voxy in-memory order is YZX `(y<<10)|(z<<5)|x` inside `RealVoxyVolumeWriter` only; `VoxelVolume` API is XYZ; Morton order is the *serialized* on-disk order. Convert only inside the writer.
+- **YZX vs XYZ vs Morton** — Voxy in-memory order is YZX `(y<<10)|(z<<5)|x` inside `RealVoxyVolumeWriter` only; `VoxelVolume` API is XYZ; serialized order for `SaveLoadSystem3` is YZX-linear (little-endian; Morton `lin2z`/`z2lin` helpers exist but are not the storage path — see `python/docs/VOXY-FORMAT.md`). Convert only inside the writer.
 
 ---
 
@@ -305,6 +305,6 @@ Inference-boundary module that decodes model outputs (logits/argmax) into a sema
 - Heightmaps: `net.minecraft.world.level.levelgen.Heightmap`
 - Noise: `net.minecraft.world.level.levelgen.NoiseRouter`, `DensityFunction`, `NoiseGeneratorSettings` + `python/docs/NOISETAP-INTERFACE.md` (historical), `python/docs/NOISE-DESIGN.md` (current)
 - Voxy store internals: `external/voxy/src/main/java/me/cortex/voxy/common/world/WorldSection.java`, `WorldEngine.java`, `common/world/other/Mapper.java`, `Mipper.java`, `common/voxelization/VoxelizedSection.java`, `python/docs/VOXY-FORMAT.md`
-- Octree pipeline vision: `python/docs/OCTREE-GENERATION-DESIGN.md`
+- Octree pipeline vision: `python/docs/MASTER_PLAN.md` + `CONTEXT.md` (canonical language) — former `python/docs/OCTREE-GENERATION-DESIGN.md` was removed; see git history if needed
 - Canonical language decision: `CONTEXT.md`
 
