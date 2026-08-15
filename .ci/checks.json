@@ -21,5 +21,5 @@
     "supplyChain": ["SEC-01"]
   },
   "controlPlanePrefixes": [".github/workflows/", ".github/CODEOWNERS", ".sandcastle/", ".ci/", "docs/agents/", "java/src/test/java/com/rhythmatician/lodiffusion/voxy/", "python/voxel_tree/contracts/tests/"],
-  "controlPlaneFiles": ["AGENT_RULES.md", "AGENTS.md"]
+  "controlPlaneFiles": ["AGENTS.md"]
 }

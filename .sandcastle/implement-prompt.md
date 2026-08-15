@@ -29,11 +29,11 @@ Last 10 commits:
 
 # EXECUTION
 
-Explore the repo and fill context with relevant code and tests. Pay attention to contract tests under `java/src/contractTest/` and schemas under `spec/` — they are immutable oracles, never edit them to make tests pass.
+Explore the repo and fill context with relevant code and tests.
 
 Use Red-Green-Refactor where applicable.
 
-Before committing, run `npm run typecheck` and `npm run test` (or the narrowest applicable gate `./dev/verify-all` when touching Java/Python oracles).
+Before committing, run `npm run typecheck` and `npm run test`.
 
 # COMMIT
 
@@ -47,4 +47,4 @@ Once complete, output <promise>COMPLETE</promise>.
 
 # FINAL RULES
 
-ONLY WORK ON A SINGLE TASK. Do not touch unrelated issues. Respect `AGENT_RULES.md` — never weaken oracles or fixtures to make tests green.
+ONLY WORK ON A SINGLE TASK. Do not touch unrelated issues. Do not weaken tests, oracles, or fixtures to make CI pass unless the issue explicitly changes the contract — fix the implementation instead. Treat `external/` as read-only — see `external/README.md`. After repeated failure, stop and report evidence without destructively reverting the working tree.
