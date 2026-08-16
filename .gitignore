@@ -37,3 +37,4 @@ node_modules/
 
 # VS Code internal diagnostics
 .vscode/prompt-diagnostics.json
+tree_output.txt
