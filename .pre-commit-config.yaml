@@ -8,3 +8,10 @@ repos:
         types: [python]
         pass_filenames: true
         require_serial: true
+      - id: docs-policy
+        name: R-02 Documentation policy
+        language: system
+        entry: npx tsx .ci/docs-policy.mts --base origin/main --candidate HEAD
+        types: [markdown]
+        pass_filenames: false
+        require_serial: true
