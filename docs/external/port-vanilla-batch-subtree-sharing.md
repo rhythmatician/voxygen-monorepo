@@ -1,16 +1,25 @@
 # Research: port-vanilla-batch — Subtree Sharing Table for Layer 2
 
-> **Status:** wayfinder:research — AFK, version-bound
+> **Status:** version-bound upstream reference — do not edit to describe a different upstream version
+>
+> doc-type: external-reference
+> source-revision: 26.1-snapshot-11 (CFR 0.152 decompiled, external/minecraft-src/src; no git SHA)
+>
+> **Upstream project:** Minecraft (Mojang Studios)
+>
+> **Upstream version:** 1.21.11 (decompiled corpus identifies as 26.1-snapshot-11)
+>
+> **Decompiler:** CFR 0.152 (headers `Decompiled with CFR 0.152` throughout inspected corpus)
+>
+> **Exact source revision / commit:** not pinned — inspected corpus is the decompiled `external/minecraft-src/src` tree derived from `26.1-snapshot-11.jar` / `client.jar` present in `external/minecraft-src/` (`26.1-snapshot-11.json` + `cfr.jar` alongside `src/`). No git SHA is established for this upstream; re-verification must compare against the Mojang 1.21.11 / 26.1-snapshot-11 artifacts.
+>
 > **Wayfinder map:** #22 · ticket #92 · blocks #83 tiling decision, informs #85 partition
 > **Question:** Which DensityFunction subtrees are shareable across neighboring sections vs per-column, and what cache key + halo does that imply?
-> **Upstream project:** Minecraft (Mojang Studios)
-> **Upstream version:** 1.21.11 (decompiled corpus 26.1-snapshot-11, CFR 0.152, `external/minecraft-src/src`)
-> **Source revision:** decompiled `external/minecraft-src/src` tree + local `26.1-snapshot-11.jar` (no git SHA; same corpus as `docs/reference/upstream/minecraft-1.21.11-worldgen-seams.md`)
 > **Research date:** 2026-08-16
-> **Scope:** only the named upstream version + current `java/` port adapters. Does not describe future L4/L3 learned approximators.
+> **Scope:** This document describes **only** the named Minecraft upstream version plus current `java/` port adapters. It does not describe future L4/L3 learned approximators.
 > **Invalidation rule:** newer Minecraft version requires re-verification against its `NoiseRouterData`/`NoiseChunk`/`DensityFunctions` corpus; do not silently edit this file for a different version.
 
----
+------
 
 ## TL;DR — the one table the lattice gate needs
 
