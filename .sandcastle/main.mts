@@ -45,6 +45,12 @@ const hooks = {
     onSandboxReady: [
       { command: 'for s in .muse/skills/*; do muse skills install "$s" --scope user 2>&1 | head -5; done' },
       { command: 'npm install' },
+      // Ensure every worktree agent has a current GRAPH_REPORT.md for its HEAD.
+      // graphify-out/ is gitignored so worktrees start without it; the hook's
+      // worktree guard intentionally skips background rebuilds in worktrees.
+      // `graphify update .` is code-only (no LLM, no API key) and incremental
+      // when a prior graph exists, so this is fast after the first build.
+      { command: 'if command -v graphify >/dev/null 2>&1; then echo "[graphify] rebuilding for $(git rev-parse --short HEAD 2>/dev/null || echo HEAD)"; graphify update . 2>&1 | tail -30; echo "[graphify] report: $(grep \"Built from\" graphify-out/GRAPH_REPORT.md 2>/dev/null || echo \"missing\")"; elif python3 -m graphify --help >/dev/null 2>&1; then echo "[graphify] rebuilding via python3 -m graphify"; python3 -m graphify update . 2>&1 | tail -30; else echo "[graphify] not installed - skipping (rebuild Dockerfile)"; fi' },
     ],
   },
 } as const;
