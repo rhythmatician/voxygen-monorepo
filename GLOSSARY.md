@@ -1,13 +1,14 @@
 # Glossary — Terrain Generation (Minecraft / Voxy / Fabric / Voxygen)
 
 > **Scope:** Only terms that appear when you generate, store, or render terrain in this monorepo.
-> Read alongside `CONTEXT.md` (canonical project language) and `python/docs/VOXY-FORMAT.md` (grounded Voxy audit).
+> Read alongside `CONTEXT.md` (canonical project language), `python/docs/VOXY-FORMAT.md` (grounded Voxy audit), and the version-bound upstream references `docs/reference/upstream/minecraft-1.21.11-worldgen-seams.md` and `docs/reference/upstream/voxy-0.2.11-alpha-storage-and-lod-seams.md` for detailed version-specific behavior.
 > Sources are noted per entry: `minecraft-src` = decompiled `net.minecraft.*`, `voxy` = `external/voxy/src/main/java/me/cortex/voxy/**`, `fabric` = `external/fabric-api`, `project` = `java/src/main/java/com/rhythmatician/lodiffusion/**`.
 
 > **Authority hierarchy:**
 > 1. `CONTEXT.md` — authoritative project language and architectural meanings.
-> 2. `GLOSSARY.md` (this file) — explanatory cross-system reference. Must conform to `CONTEXT.md`; if there is a conflict, `CONTEXT.md` wins.
-> 3. Grounding docs / external source (`python/docs/VOXY-FORMAT.md`, `external/minecraft-src`, `external/voxy`) — authoritative for external technical details.
+> 2. `GLOSSARY.md` (this file) — concise cross-system definitions and disambiguation. Must conform to `CONTEXT.md`; if there is a conflict, `CONTEXT.md` wins.
+> 3. Version-bound upstream references (`docs/reference/upstream/minecraft-1.21.11-worldgen-seams.md`, `docs/reference/upstream/voxy-0.2.11-alpha-storage-and-lod-seams.md`) — authoritative for detailed version-specific external behavior.
+> 4. Grounding docs / external source (`python/docs/VOXY-FORMAT.md`, `external/minecraft-src`, `external/voxy`) — source corpus.
 
 > **Status legend:** `[External]` stable external system · `[Current]` current project canonical · `[Legacy]` historical / deprecated but still referenced · `[Planned]` design not yet implemented
 
@@ -92,26 +93,20 @@ Immutable `record SectionPos(int x, int y, int z)` where each coordinate = `bloc
 
 ### BlockPos / BlockState [External]
 `BlockPos(x,y,z)` = integer world block coordinate. `BlockState` = block type + properties (e.g. `minecraft:grass_block[snowy=false]`). Block states are palette-indexed inside `LevelChunkSection`; there are ~30k distinct block-state IDs in vanilla registry but only a few hundred appear in natural terrain.
-
 ### Heightmap [External]
-A `16x16` **per-chunk** (XZ) array storing the highest Y for a predicate. Types (Minecraft `Heightmap.Types`):
-- `WORLD_SURFACE_WG` — world-gen surface before features (what `NoiseTap`/training samples before features).
-- `OCEAN_FLOOR_WG` — ocean floor world-gen height.
-- `WORLD_SURFACE` / `OCEAN_FLOOR` / `MOTION_BLOCKING` — post-feature heights used at runtime.
-Computed during `ChunkStatus` filling and stored on `ChunkAccess` keyed by `ChunkPos`, not by `SectionPos`. In Voxygen: 5 derived height planes (`surface, ocean_floor, slope_x, slope_z, curvature`) per 16x16 chunk footprint form the primary conditioning for ONNX; slopes/curvature are finite differences of `WORLD_SURFACE_WG`. Source: `net.minecraft.world.level.levelgen.Heightmap`.
+A `16x16` **per-chunk** (XZ) array storing the highest Y for a predicate. See `docs/reference/upstream/minecraft-1.21.11-worldgen-seams.md §1` for version-bound validity. In 1.21.11, `WORLD_SURFACE_WG` / `OCEAN_FLOOR_WG` (Usage WORLDGEN) become valid at `ChunkStatus.NOISE`; `WORLD_SURFACE` / `OCEAN_FLOOR` / `MOTION_BLOCKING` / `MOTION_BLOCKING_NO_LEAVES` become valid at `CARVERS`. Stored on `ChunkAccess` keyed by `ChunkPos`, not `SectionPos`. Source: `net.minecraft.world.level.levelgen.Heightmap`.
 
 ### Biome / BiomeSource / MultiNoiseBiomeSource [External]
 `Biome` is a registry entry (e.g. `minecraft:plains`). Biomes in chunk sections are stored at quart resolution (4-block cells). Vanilla overworld biome placement uses `MultiNoiseBiomeSource` which evaluates 6 climate `DensityFunction`s (see Noise Router) and looks up the nearest biome via `Climate.ParameterPoint`. In Voxygen/Python the canonical set is 54 overworld biomes alphabetically mapped to IDs `0..53` (255 = unknown); see `CONTEXT.md` / `BiomeMapping.java`. Source: `net.minecraft.world.level.biome.*`.
 
 ### NoiseRouter / Noise Router [External]
-Minecraft 1.18+ field on `NoiseGeneratorSettings` / `NoiseConfig`. A **graph of `DensityFunction`s** that turns `(x,y,z, seed)` -> terrain shape. Six climate functions form the historic `router6` (still present in vanilla, removed from Voxygen conditioning March 2026 — see `python/docs/NOISE-DESIGN.md`):
-`temperature`, `vegetation` (humidity), `continentalness`, `erosion`, `depth` (shift), `ridges` (weirdness). The router also contains `finalDensity`, `veinToggle`, `veinRidged`, `veinGap` etc. that carve terrain. DensityFunctions are composable noise primitives (Perlin, Simplex, `add`, `mul`, `clamp`, `interpolated`, `flatCache`, `cache2D` ...). Source: `net.minecraft.world.level.levelgen.NoiseRouter`, `net.minecraft.world.level.levelgen.DensityFunction`, `net.minecraft.world.level.levelgen.NoiseGeneratorSettings`.
+`NoiseRouter` is a 15-field record on `NoiseGeneratorSettings` — see `docs/reference/upstream/minecraft-1.21.11-worldgen-seams.md §2` for the full field list and grouping: Climate 6 (`temperature, vegetation, continents, erosion, depth, ridges`), Density 2 (`preliminarySurfaceLevel, finalDensity` where `finalDensity > 1.5625` decides solid), Aquifer 4 (`barrier, fluidLevelFloodedness, fluidLevelSpread, lava`), Veins 3 (`veinToggle, veinRidged, veinGap`). `NoiseRouter.mapAll(Visitor)` rewrites the whole `DensityFunction` tree. Source: `net.minecraft.world.level.levelgen.NoiseRouter:17`.
 
 ### DensityFunction [External]
 A functional interface `double compute(FunctionContext)` with an AST-like type hierarchy. Can be sampled directly (`DensityFunction.sample()`) or baked. In Voxygen, `WorldNoiseAccess` / legacy `NoiseTap` samples these per-chunk to obtain heightmap/biome/router channels. The cubiomes equivalent is `sampleBiomeNoise()` returning fixed-point `NP_TEMPERATURE..NP_WEIRDNESS` (divide by 10000). Source: `net.minecraft.world.level.levelgen.DensityFunction`.
 
 ### NoiseConfig / NoiseGeneratorSettings / RandomState [External]
-`NoiseConfig` bundles the `NoiseRouter`, `ClimateSampler`, chunk noise samplers, and seed for a given world. `NoiseGeneratorSettings` is the datapack JSON that *configures* the router (overworld: `minecraft:overworld`). `RandomState` holds per-chunk `RandomSource`s. `NoiseTap` / `WorldNoiseAccess` receives `(ChunkGenerator, NoiseConfig, worldSeed)` to sample deterministically. Source: `net.minecraft.world.level.levelgen.NoiseConfig`, `NoiseGeneratorSettings`.
+`NoiseGeneratorSettings` is the datapack record that configures a dimension — see `docs/reference/upstream/minecraft-1.21.11-worldgen-seams.md §5` for the full shape (`noiseSettings, noiseRouter, surfaceRule, defaultBlock, seaLevel, aquifersEnabled, oreVeinsEnabled, useLegacyRandomSource`). `NoiseSettings` is per-dimension (Overworld `-64,384,1,2` → cell `4×8`; Nether `0,128,1,2` same; End `0,128,2,1` → `8×4` swapped) and `clampToHeightAccessor` defines the valid lattice. `RandomState` owns the seeded wiring — `PositionalRandomFactory` fork, `ConcurrentHashMap<ResourceKey<NoiseParameters>,NormalNoise>` cache, and `Visitor mapAll` that injects `NormalNoise` into the tree exactly once. Source: `net.minecraft.world.level.levelgen.NoiseGeneratorSettings:35`, `NoiseSettings.java:23`, `RandomState.java:28`.
 
 ### ChunkGenerator / NoiseBasedChunkGenerator [External]
 Abstract class responsible for turning a `ChunkPos` -> `ChunkAccess`. Vanilla overworld uses `NoiseBasedChunkGenerator` which runs: aquifer -> noise routing -> surface rules -> carvers -> features/structures. Custom generators extend this; Mixins typically `@Inject` into its methods. Source: `net.minecraft.world.level.levelgen.chunk.ChunkGenerator`.
@@ -126,10 +121,10 @@ Sub-system that floods terrain below sea level and carves lava lakes. The router
 World-gen pass that etches caves after noise terrain. Two families: `CaveCarver` (noodle/cave) and `CanyonCarver`. Expensive to sample; Voxygen defers it (Phase-2 `cavePrior` was `[1,4,4,4]` coarse likelihood). Source: `net.minecraft.world.level.levelgen.carver.*`.
 
 ### ChunkStatus / ChunkPyramid [External]
-The generation pipeline stage enum: `EMPTY -> STRUCTURE_STARTS -> STRUCTURE_REFERENCES -> BIOMES -> NOISE -> SURFACE -> CARVERS -> FEATURES -> INITIALIZE_LIGHT -> LIGHT -> SPAWN -> FULL`. Each status depends on a ring of neighbors (`ChunkPyramid.GENERATION_PYRAMID`). Important for pregeneration (Chunky) and for knowing when a chunk's heightmap is valid. Source: `net.minecraft.world.level.chunk.status.ChunkStatus`.
+The generation stage enum — see `docs/reference/upstream/minecraft-1.21.11-worldgen-seams.md §1` for ordering and validity: `EMPTY(0) → STRUCTURE_STARTS → STRUCTURE_REFERENCES → BIOMES → NOISE(4) → SURFACE(5) → CARVERS(6) → FEATURES(7) → INITIALIZE_LIGHT → LIGHT → SPAWN → FULL(11)` with `WORLDGEN_HEIGHTMAPS` valid at `NOISE` and `FINAL_HEIGHTMAPS` at `CARVERS`. `ChunkStatus` ordering governs neighbor requirements. Source: `net.minecraft.world.level.chunk.status.ChunkStatus:28`.
 
 ### LevelHeightAccessor [External]
-Reports `getMinY()`, `getHeight()`, `getSectionsCount()`, `getMinSection()`. Overworld in 1.18+: `minY=-64`, `height=384`, `sections=24`, `minSection=-4`. Used to compute `y_index` (0..23) and to translate block Y <-> section Y (`y >> 4`). Source: `net.minecraft.world.level.LevelHeightAccessor`.
+Reports `getMinY()`, `getHeight()`, `getSectionsCount()`, `getMinSection()`. Overworld in 1.21.11: `minY=-64`, `height=384`, `sections=24`, `minSection=-4` (see `docs/reference/upstream/minecraft-1.21.11-worldgen-seams.md §5/§10` for per-dimension `NoiseSettings` that define the underlying cell lattice). Source: `net.minecraft.world.level.LevelHeightAccessor`.
 
 ---
 
@@ -163,7 +158,7 @@ WorldSection
     Never call it a chunk, subchunk, or chunk section.
 ```
 
-The sole persistent storage unit in Voxy. **Always `32 x 32 x 32 = 32,768` voxels in memory** regardless of LOD level. Coordinates `(lvl, x, y, z)` where `lvl` in `0..4` and `(x,y,z)` are WorldSection grid coordinates (not block coords). A Voxy `WorldSection` is invariantly 32x32x32 voxels; the number of blocks represented by each voxel depends on LOD (see table above). In-RAM backing is `long[32768]` indexed YZX as `(y<<10)|(z<<5)|x` (`WorldSection.java:getIndex()`). Atomic state machine (`VarHandle` `atomicState`, `nonEmptyChildren`, `nonEmptyBlockCount`, `isDirty`) tracks load/save contention. Source: `voxy/common/world/WorldSection.java`.
+The sole persistent storage unit in Voxy — see `docs/reference/upstream/voxy-0.2.11-alpha-storage-and-lod-seams.md §1` for geometry (32³ voxels, `long[32768]` YZX `(y<<10)|(z<<5)|x`, coordinates `(lvl,x,y,z)` lvl 0..4) and lifecycle. Source: `voxy/common/world/WorldSection.java`.
 
 At L0 only, a 32^3-voxel WorldSection spans 32^3 Minecraft blocks, which spatially corresponds to 2x2x2 subchunks. At higher LODs the WorldSection still contains exactly 32^3 voxels, but represents a progressively larger block-space volume — it does not "contain" those chunk sections as stored data.
 
@@ -190,36 +185,31 @@ Equivalent world-space footprints (dimensional equivalence, not storage composit
 Do not say a higher-level WorldSection "contains" thousands of chunk sections — those Minecraft sections are not stored inside the Voxy WorldSection.
 
 ### WorldSection Key (64-bit packed ID) [External]
-`WorldEngine.getWorldSectionId(lvl, x,y,z)` packs the position into a `long`:
-`((lvl&0xF)<<60) | ((y&0xFF)<<52) | ((z&0xFFFFFF)<<28) | ((x&0xFFFFFF)<<4)` — 4 spare low bits. Decoders: `getLevel(id)`, `getX(id)`, `getY(id)`, `getZ(id)` using arithmetic shifts to sign-extend 24-bit X/Z and 8-bit Y. Used as RocksDB key and as `OctreeTask.wsKey`. Source: `voxy/common/world/WorldEngine.java`.
+`WorldEngine.getWorldSectionId(lvl,x,y,z)` packing — see `docs/reference/upstream/voxy-0.2.11-alpha-storage-and-lod-seams.md §2` ( `((lvl&0xF)<<60)|(y&0xFF)<<52|(z&0xFFFFFF)<<28|(x&0xFFFFFF)<<4`, 4 spare bits, decoders sign-extend). Used as RocksDB key. Source: `voxy/common/world/WorldEngine.java`.
 
 ### VoxelizedSection [External]
-**Ingestion-only** container (`voxy/common/voxelization/VoxelizedSection.java`) holding the full 5-level mip pyramid derived from a single vanilla `16^3` subchunk. Flat `long[]` length `4681 = 4096+512+64+8+1` with level offsets `0, 4096, 4608, 4672, 4680`. Created by `WorldConversionFactory.convert()` (fills level 0) then `mipSection()` (fills 1..4). Passed to `WorldUpdater.insertUpdate()` which scatters it into persistent `WorldSection` 32^3-voxel grids; never stored on disk itself.
+**Ingestion-only** container (`voxy/common/voxelization/VoxelizedSection.java`) holding the 5-level mip pyramid for a single `16^3` subchunk — see `docs/reference/upstream/voxy-0.2.11-alpha-storage-and-lod-seams.md §5` for layout (`long[4681]`, offsets `0/4096/4608/4672/4680`, `WorldConversionFactory.convert()` → `mipSection()` → `WorldUpdater.insertUpdate()`). Never stored on disk.
 
 ### Mapper — Block/Biome Mapping and 64-bit Voxel Encoding [External]
-`voxy/common/world/other/Mapper.java`. Two independent registries:
-- **Block-state mapping:** `BlockState.toString()` (e.g. `minecraft:stone`) <-> sequential int `1..` (0 = air). Lazily assigned, persisted per-world via `storage.putIdMapping()` — **not** the vanilla registry ID. Bit layout of each `long` voxel: `bits 46..27 = blockStateId (20 bits)`, `bits 55..47 = biomeId (9 bits, up to 512)`, `bits 63..56 = light (sky<<4|block, 8 bits)`, `bits 26..0 = unused`. `AIR = 0L`; `Mapper.isAir(id)` checks block bits.
-- **Biome mapping:** `Biome.toString()` <-> int likewise persisted. Voxygen replaces this with its own canonical 54-entry overworld registry (`Canonical Biome Registry`, `BiomeMapping.java`) for training/runtime parity.
+`voxy/common/world/other/Mapper.java` — see `docs/reference/upstream/voxy-0.2.11-alpha-storage-and-lod-seams.md §3-§4` for bit layout (`63..56` light `block<<4|sky`, `55..47` biome 9b, `46..27` blockId 20b, `AIR=0` via block bits) and per-world sequential identity (persisted via `storage.putIdMapping()`, not vanilla registry ID).
 
 ### Mipper / Mip (Mipper.java) [External]
-Voxy's LOD downsampler: for each `2x2x2` child octant, **opacity-biased selection**, not majority vote. Among non-air children, score = `(blockOpacity << 4) | cornerPriority` where corner priority `I111=7 ... I000=0`; highest score wins. If all 8 are air, light is averaged (`blockLight = floor(mean)`, `skyLight = ceil(mean)`) and the air voxel retains `I111`'s light. Consequence: opaque blocks (stone) always beat transparent (water/glass); training must not use naive averaging. Source: `voxy/common/world/other/Mipper.java`.
+Voxy's LOD downsampler — see `docs/reference/upstream/voxy-0.2.11-alpha-storage-and-lod-seams.md §6` for algorithm (opacity-biased selection, score `(blockOpacity << 4) | cornerPriority` `I111=7..I000=0`, highest wins; all-air averages light). Opaque blocks win over transparent under this rule. Source: `voxy/common/world/other/Mipper.java`.
 
 ### nonEmptyChildren / Octant Mask [External]
-`byte nonEmptyChildren` on each `WorldSection` — 8-bit bitmask: which of the 8 child octants at `lvl-1` contain non-air data. Bit index = `(x&1) | ((z&1)<<1) | ((y&1)<<2)` i.e. `Ixyz` corner encoding. `0b00000000` = empty section (skipped by GPU). Used by `HierarchicalOcclusionTraverser` to cull empty subtrees and by Voxygen's `OctreeQueue` to decide expansion.
+`byte nonEmptyChildren` on each `WorldSection` — 8-bit octant mask — see `docs/reference/upstream/voxy-0.2.11-alpha-storage-and-lod-seams.md §7` for bit index `Ixyz` and geometry. `0b00000000`=empty (skipped). Source: `voxy/common/world/WorldSection.java`.
 
 ### Octant [External]
 One of the 8 children of a WorldSection. For parent `(px,py,pz)` at level `L`, child `octant in 0..7` is at `childX=(px<<1)|(octant&1)`, `childY=(py<<1)|((octant>>2)&1)`, `childZ=(pz<<1)|((octant>>1)&1)` at level `L-1`. Octants are extracted as `16^3` sub-cubes of a parent `32^3`-voxel grid (then 2x upsampled for refinement model input).
 
 ### WorldEngine / ActiveSectionTracker / WorldUpdater [External]
-- **WorldEngine** — owns `SectionStorage`, `Mapper`, `ActiveSectionTracker`; exposes `acquire(lvl,x,y,z)`, `markDirty()`, section-cache accounting. Manages `MAX_LOD_LAYER=4`. Source: `voxy/common/world/WorldEngine.java`.
-- **ActiveSectionTracker** — in-memory MRU cache of loaded `WorldSection`s (capacity 1024 default, 2048 when `maxMemory >= 4 GiB`). Eviction -> save queue.
-- **WorldUpdater / SectionSavingService** — queues ingested `VoxelizedSection`s and flushes dirty WorldSections to `SectionStorage`.
+See `docs/reference/upstream/voxy-0.2.11-alpha-storage-and-lod-seams.md §8-§9` for lifecycle: `WorldEngine` owns `SectionStorage`/`Mapper`/`ActiveSectionTracker` (`acquire`, `markDirty`, `MAX_LOD_LAYER=4`), `ActiveSectionTracker` MRU cache (1024 default, 2048 if ≥4 GiB) → save queue, `WorldUpdater`/`SectionSavingService` flush. Source: `voxy/common/world/WorldEngine.java`.
 
 ### SectionStorage / SectionSerializationStorage / RocksDB + ZSTD [External]
-`SectionStorage` is Voxy's pluggable backend interface. Default composition (via `StorageConfigUtil.createDefaultSerializer()`): `RocksDBStorageBackend` wrapped by `CompressionStorageAdaptor(ZSTD level 1)` wrapped by `SectionSerializationStorage`. Alternatives: LMDB, Redis, in-memory. ID mappings are stored under a separate key prefix in the same DB.
+`SectionStorage` pluggable backend — see `docs/reference/upstream/voxy-0.2.11-alpha-storage-and-lod-seams.md §10` for default composition (`RocksDBStorageBackend` + `CompressionStorageAdaptor(ZSTD level 1)` + `SectionSerializationStorage`). Alternatives: LMDB, Redis, in-memory.
 
 ### Serialization Format and Morton (Z-curve) Order [External]
-Serialized section (see `SaveLoadSystem.java` / `SaveLoadSystem3`): `key(8) | metadata(8, low byte = nonEmptyChildren) | lutLen(4) | lut(lutLenx8) | indices(32^3x2 = 65536 bytes of u16 into LUT) | hash(8)`. `SaveLoadSystem3` (the current system) is **little-endian** with **YZX-linear** indices (`(y<<10)|(z<<5)|x`), not Morton-ordered; Morton helpers (`lin2z`/`z2lin` interleaving 5 bits per axis) exist but are not the storage path. Light packing is high-nibble = block light, low-nibble = sky light. Tested canonical spec: `python/docs/VOXY-FORMAT.md` and executable reference `python/voxel_tree/voxy_format` (fixed-width signed section-coordinate decoding). Maximum section payload when all voxels unique: `32^3x8 + header`.
+Serialized section — see `docs/reference/upstream/voxy-0.2.11-alpha-storage-and-lod-seams.md §11` for layout (`SaveLoadSystem3` little-endian, YZX-linear `(y<<10)|(z<<5)|x`, metadata low 2 bytes lutLen + next byte nonEmptyChildren). `SaveLoadSystem` (older) is big-endian. Morton helpers exist but are not the storage path. Tested specs: `python/docs/VOXY-FORMAT.md`, `python/voxel_tree/voxy_format`.
 
 ---
 
@@ -301,10 +291,9 @@ Inference-boundary module (`java/src/main/java/com/rhythmatician/lodiffusion/vox
 
 ## 7. Where to Learn More
 
+- Version-bound upstream facts: `docs/reference/upstream/minecraft-1.21.11-worldgen-seams.md` (§1-§18) and `docs/reference/upstream/voxy-0.2.11-alpha-storage-and-lod-seams.md` (§1-§11)
 - Chunk lattice and generation order: `external/minecraft-src/src/net/minecraft/world/level/chunk/**`, `net.minecraft.core.SectionPos`, `net.minecraft.world.level.ChunkPos`
-- Heightmaps: `net.minecraft.world.level.levelgen.Heightmap`
-- Noise: `net.minecraft.world.level.levelgen.NoiseRouter`, `DensityFunction`, `NoiseGeneratorSettings` + `python/docs/NOISETAP-INTERFACE.md` (historical), `python/docs/NOISE-DESIGN.md` (current)
-- Voxy store internals: `external/voxy/src/main/java/me/cortex/voxy/common/world/WorldSection.java`, `WorldEngine.java`, `common/world/other/Mapper.java`, `Mipper.java`, `common/voxelization/VoxelizedSection.java`, `python/docs/VOXY-FORMAT.md`
-- Octree pipeline vision: `python/docs/MASTER_PLAN.md` + `CONTEXT.md` (canonical language) — former `python/docs/OCTREE-GENERATION-DESIGN.md` was removed; see git history if needed
-- Canonical language decision: `CONTEXT.md`
+- Noise: `net.minecraft.world.level.levelgen.NoiseRouter`, `DensityFunction`, `NoiseGeneratorSettings` + `python/docs/NOISE-DESIGN.md` (current)
+- Voxy store internals: `external/voxy/src/main/java/me/cortex/voxy/common/world/WorldSection.java`, `WorldEngine.java`, `common/world/other/Mapper.java`, `Mipper.java`, `common/voxelization/VoxelizedSection.java`, `python/docs/VOXY-FORMAT.md` + `python/voxel_tree/voxy_format`
+- Canonical language: `CONTEXT.md`
 

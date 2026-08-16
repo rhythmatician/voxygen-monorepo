@@ -18,6 +18,7 @@ const ADMITTED = [
   /^\.sandcastle\/.+\.md$/,
   /^\.sandcastle\/CODING_STANDARDS\.md$/,
   /^docs\/external\/.+\.md$/,
+  /^docs\/reference\/upstream\/.+\.md$/,
   // grandfathered version-pinned external-reference — prefer docs/external/ for new
   /^python\/docs\/VOXY-FORMAT\.md$/,
 ];
@@ -42,9 +43,9 @@ export function validateAdmitted(path: string, content: string): string[] {
     if (!/decision/i.test(content)) errors.push("ADR must have decision");
     if (!/(alternative|trade-off|consequence)/i.test(content)) errors.push("ADR must have alternatives/trade-offs");
   }
-  // docs/external/* must have provenance; any external-reference claim must have provenance
-  if (path.startsWith("docs/external/")) {
-    if (!content.includes("doc-type: external-reference")) errors.push("docs/external/* must have doc-type: external-reference");
+  // docs/external/* and docs/reference/upstream/* (except README) must have provenance; any external-reference claim must have provenance
+  if ((path.startsWith("docs/external/") || path.startsWith("docs/reference/upstream/")) && !path.endsWith("/README.md")) {
+    if (!content.includes("doc-type: external-reference")) errors.push(path + " must have doc-type: external-reference");
     if (!/source-revision:/i.test(content)) errors.push("external-reference must have source-revision");
   } else if (content.includes("doc-type: external-reference")) {
     if (!/source-revision:/i.test(content)) errors.push("external-reference must have source-revision");
