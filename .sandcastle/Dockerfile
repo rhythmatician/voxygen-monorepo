@@ -1,7 +1,12 @@
 FROM node:22-bookworm
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y   git   curl   jq   && rm -rf /var/lib/apt/lists/*
+# Install system dependencies (python3 + pip for graphify code-only updates)
+RUN apt-get update && apt-get install -y git curl jq python3 python3-pip python3-venv && rm -rf /var/lib/apt/lists/*
+
+# Install graphify (code-only graph rebuild, no LLM needed) system-wide so sandcastle agents
+# can run `graphify update .` on worktree startup. --break-system-packages is required on
+# Debian bookworm where pip refuses system installs inside the base image.
+RUN pip install --break-system-packages graphifyy 2>&1 | tail -5
 
 # Install GitHub CLI
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
