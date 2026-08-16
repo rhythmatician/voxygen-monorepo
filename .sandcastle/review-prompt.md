@@ -28,11 +28,11 @@ This section is the **authoritative source of intent**. It is fetched live for e
 
 # REVIEW PROCESS
 
-1. Understand intent from original issue contract + acceptance criteria in a fresh context, alongside diff, commits, and coding standards. The issue contract is authoritative — do not derive intent solely from diff/commits.
+1. Understand intent from original issue contract and acceptance criteria in a fresh context, alongside diff, commits, and coding standards. The issue contract is authoritative — do not derive intent solely from diff/commits.
 2. Extract every acceptance criterion from the issue body. For each, locate evidence in the diff/commits/tests that it is met; absence of evidence is a finding.
 3. Check changed prose against `docs/agents/documentation.md`. Remove documentation that duplicates executable truth or GitHub work state. Prefer improving code, types, tests, or navigation over preserving an explanatory implementation doc.
 4. Look for unnecessary complexity, redundant code, poor naming, or security issues.
-5. Check correctness: does the implementation match the contract, handle edge cases, have tests, avoid unsafe casts/any?
+5. Check correctness: does the implementation match the contract, handle edge cases, have tests, and avoid unsafe casts/`any`?
 6. Apply standards from `@.sandcastle/CODING_STANDARDS.md`.
 7. Preserve functionality — never change what the code does, only how, unless the contract requires a behavior change that the diff missed (then flag as `approved=false` rather than silently fixing intent).
 
@@ -50,6 +50,8 @@ If already clean, do nothing.
 
 You MUST emit a machine-readable verdict as JSON inside `<verdict>` tags. The factory gates merge on `approved` — `approved=true` means eligible for merger, `approved=false` means do NOT merge, preserve branch, and mark `agent:blocked` with findings.
 
+Schema lives in `.sandcastle/review-verdict.mts` (`reviewVerdictSchema` via Zod) — keep prompt and code in sync.
+
 Schema (`ReviewVerdict`):
 
 ```json
@@ -64,7 +66,7 @@ Schema (`ReviewVerdict`):
 Rules:
 
 - `approved` is `true` only if EVERY acceptance criterion is `met=true` and there are zero `blocking` findings. If any criterion is unmet or any blocking finding exists, set `approved=false`.
-- `findings`: every mismatch between contract and implementation. Use `severity: "blocking"` for contract violations, `severity: "nit"` for style-only.
+- `findings`: every mismatch between contract and implementation. Use `severity: "blocking"` for contract violations, `severity: "nit"` for style-only (`suggestion` is also allowed).
 - `acceptanceCriteriaMet`: one entry per acceptance criterion extracted from the issue body, including unchecked boxes. Copy criterion text verbatim where possible.
 - Always emit the `<verdict>` block, even when you also make refinement commits.
 - Example rejected: `<verdict>{"approved": false, "findings": [{"message": "missing gadget for criterion '...'", "severity": "blocking"}], "acceptanceCriteriaMet": [{"criterion": "gadget does X", "met": false, "evidence": "no code path covers X"}], "summary": "Implementation diverges from acceptance criterion X"}</verdict>`

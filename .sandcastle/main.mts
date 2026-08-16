@@ -14,8 +14,8 @@ import { mayAutonomouslyMerge } from "./ci-policy.mts";
 import {
   reviewVerdictSchema,
   isVerdictApproved,
-  parseVerdictFromText,
-  parseReviewVerdict,
+  extractVerdict,
+  blockedReasonForVerdict,
   type ReviewVerdict,
 } from "./review-verdict.mts";
 
@@ -28,6 +28,12 @@ const MAX_ITERATIONS = 10;
 const REASON_TRUNCATE = 800;
 const MERGER_REASON_TRUNCATE = 1000;
 const WORKER_REASON_TRUNCATE = 2000;
+const VERDICT_JSON_TRUNCATE = 2000;
+const REVIEW_ERROR_TRUNCATE = 500;
+const TARGET_BRANCH = "main";
+
+// Worker result after implement + review — commits plus machine-readable verdict.
+type WorkerResult = { commits: string[]; verdict: ReviewVerdict | null; reviewText?: string };
 
 const hooks = {
   // Install vendored skills into the sandbox before any other setup so
@@ -220,10 +226,14 @@ async function claimIssue(issue: IssueInput): Promise<boolean> {
   }
 }
 
-async function markBlocked(issueId: string, branch: string, reason: string): Promise<void> {
-  const shortReason = reason.slice(0, REASON_TRUNCATE);
+async function transitionToBlocked(issueId: string): Promise<void> {
   await safeRunGh(["issue", "edit", issueId, "--remove-label", "agent:in-progress"]);
   await safeRunGh(["issue", "edit", issueId, "--add-label", "agent:blocked"]);
+}
+
+async function markBlocked(issueId: string, branch: string, reason: string): Promise<void> {
+  const shortReason = reason.slice(0, REASON_TRUNCATE);
+  await transitionToBlocked(issueId);
   await safeRunGh([
     "issue",
     "comment",
@@ -285,18 +295,14 @@ async function markReviewRejected(
 **Verdict: approved=false**
 **Summary:** ${summary.slice(0, REASON_TRUNCATE)}
 
-${findings ? `**Findings:**\n${findings.slice(0, REASON_TRUNCATE)}\n` : ""}
-${criteria ? `**Acceptance criteria:**\n${criteria.slice(0, REASON_TRUNCATE)}\n` : ""}
-**Full verdict:** \`\`\`json
-${JSON.stringify(verdict ?? { approved: false, reason: fallbackReason }, null, 2).slice(0, 2000)}
+${findings ? `**Findings:**\n${findings.slice(0, REASON_TRUNCATE)}\n` : ""}${criteria ? `**Acceptance criteria:**\n${criteria.slice(0, REASON_TRUNCATE)}\n` : ""}**Full verdict:** \`\`\`json
+${JSON.stringify(verdict ?? { approved: false, reason: fallbackReason }, null, 2).slice(0, VERDICT_JSON_TRUNCATE)}
 \`\`\`
 
 Branch: \`${branch}\`
 
 To retry: fix implementation to address findings, ensure \`agent:blocked\` is removed, \`agent:implement\` remains, and re-run factory.`;
-  // Reuse blocked marking (preserve branch, add agent:blocked, post findings)
-  await safeRunGh(["issue", "edit", issueId, "--remove-label", "agent:in-progress"]);
-  await safeRunGh(["issue", "edit", issueId, "--add-label", "agent:blocked"]);
+  await transitionToBlocked(issueId);
   await safeRunGh(["issue", "comment", issueId, "--body", body]);
 }
 
@@ -400,7 +406,6 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   console.log(`\nClaimed ${claimedIssues.length} issue(s), launching parallel workers...\n`);
 
   // ----- Phase 2: Execute + Review (parallel, isolated) -----
-  type WorkerResult = { commits: string[]; verdict: ReviewVerdict | null; reviewText?: string };
   const settled = await Promise.allSettled<WorkerResult>(
     claimedIssues.map(async (issue): Promise<WorkerResult> => {
       const sandbox = await sandcastle.createSandbox({
@@ -427,7 +432,6 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
         if (implement.commits.length > 0) {
           // Fresh fetch of original issue body - no stale caching.
           const issueBody = await fetchIssueBody(issue.id);
-          const targetBranch = "main";
           let verdict: ReviewVerdict | null = null;
           let reviewText = "";
           try {
@@ -438,39 +442,23 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
               promptFile: "./.sandcastle/review-prompt.md",
               promptArgs: {
                 BRANCH: issue.branch,
-                TARGET_BRANCH: targetBranch,
+                TARGET_BRANCH,
                 ISSUE_NUMBER: issue.id,
                 ISSUE_TITLE: issue.title,
                 ISSUE_BODY: issueBody,
               },
               output: sandcastle.Output.object({ tag: "verdict", schema: reviewVerdictSchema }),
             })) as unknown as { commits: string[]; output?: unknown; text?: string };
-            // Try structured output first
-            if (review.output && typeof review.output === "object") {
-              const parsed = parseReviewVerdict(review.output);
-              if (parsed) verdict = parsed;
-              // Some sandcastle versions nest under verdict key
-              else if ((review.output as Record<string, unknown>).verdict) {
-                verdict = parseReviewVerdict((review.output as Record<string, unknown>).verdict);
-              }
-            }
-            // Fallback: parse <verdict> from text if structured output missing
-            if (!verdict && typeof review.text === "string") {
-              reviewText = review.text;
-              verdict = parseVerdictFromText(review.text);
-            }
-            // Also try stringified output
-            if (!verdict && review.output && typeof review.output === "string") {
-              verdict = parseVerdictFromText(String(review.output));
-            }
+            verdict = extractVerdict(review);
+            if (typeof review.text === "string") reviewText = review.text;
             return {
               commits: [...implement.commits, ...(review.commits ?? [])],
               verdict,
               reviewText,
             };
           } catch (reviewError: unknown) {
-            // Reviewer failure - treat as rejected to avoid merging unreviewed code
-            console.warn(`  Reviewer failed for #${issue.id}: ${String(reviewError).slice(0, 500)} - treating as rejected`);
+            // Reviewer failure — fail-closed: preserve branch, never merge unreviewed code
+            console.warn(`  Reviewer failed for #${issue.id}: ${String(reviewError).slice(0, REVIEW_ERROR_TRUNCATE)} - treating as rejected`);
             return { commits: [...implement.commits], verdict: null, reviewText: String(reviewError) };
           }
         }
@@ -484,8 +472,6 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   // ----- Failure visibility per worker + review verdict gating -----
   const failedIndices: number[] = [];
   const reviewRejectedIndices: number[] = [];
-  // Track verdicts for gating (null for rejected/zero-commits)
-  const verdictsByIndex: Array<ReviewVerdict | null> = new Array(claimedIssues.length).fill(null);
 
   for (const [i, outcome] of settled.entries()) {
     if (outcome.status === "rejected") {
@@ -498,16 +484,11 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
       await markBlocked(claimedIssues[i]!.id, claimedIssues[i]!.branch, "Implementer produced no commits (no work or error without throw). Branch preserved.");
       failedIndices.push(i);
     } else {
-      // Commit-bearing worker - capture verdict for gating
-      verdictsByIndex[i] = outcome.value.verdict;
       const verdict = outcome.value.verdict;
       if (!isVerdictApproved(verdict)) {
-        const reason = !verdict
-          ? "reviewer produced no verdict (treated as rejected - branch preserved, not merged)"
-          : `reviewer rejected (approved=false): ${verdict.findings.map((f) => f.message).join("; ") || verdict.summary || "unmet criteria"}`;
-        console.warn(`  ⚠ ${claimedIssues[i]!.id} review rejected - not eligible for merger: ${reason.slice(0, 500)}`);
+        const reason = blockedReasonForVerdict(verdict);
+        console.warn(`  ⚠ ${claimedIssues[i]!.id} review rejected - not eligible for merger: ${reason.slice(0, REVIEW_ERROR_TRUNCATE)}`);
         reviewRejectedIndices.push(i);
-        // Do NOT push to failedIndices yet - handled separately as review rejection with verdict findings
         await markReviewRejected(claimedIssues[i]!.id, claimedIssues[i]!.branch, verdict, reason);
       }
     }
