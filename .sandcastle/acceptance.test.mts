@@ -180,10 +180,10 @@ describe("Factory v0 acceptance dry runs G1-G6 (issue #32)", () => {
       }
     );
 
-    it("defense-in-depth: even with GH misroute, implement-prompt second guard would self-abort (no sandbox created)", () => {
+    it("defense-in-depth: HITL wayfinder types remain blocked; research is AFK via Wayfinder not Sandcastle (see ADR 0001)", () => {
       // This test documents that main.mts never creates a sandbox for ineligible issues.
       // Eligibility gate is host-side before createSandbox; no sandbox, no mutation.
-      const forbidden = issue({ labels: ["agent:implement", "wayfinder:research"] });
+      const forbidden = issue({ labels: ["agent:implement", "wayfinder:grilling"] });
       expect(isEligible(forbidden).eligible).toBe(false);
       // Filter ensures zero eligible → zero claimed → zero sandboxes
       expect(filterEligible([forbidden])).toHaveLength(0);

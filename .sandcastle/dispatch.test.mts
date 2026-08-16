@@ -90,9 +90,14 @@ describe("isEligible", () => {
     expect(isEligible(i).eligible).toBe(false);
   });
 
-  it("AC8: wayfinder:research cannot enter generic worker", () => {
-    const i = issue({ labels: ["agent:implement", "wayfinder:research"] });
-    expect(isEligible(i).eligible).toBe(false);
+  it("AC8: wayfinder:research is AFK via Wayfinder subagents, not Sandcastle — with agent:implement it follows normal tracer gate (see ADR 0001)", () => {
+    // research is not forbidden; without agent:implement it is ineligible at gate 2, with it it must pass tracer like any other AFK ticket.
+    const withoutImplement = issue({ labels: ["wayfinder:research"], body: "Execution is carried into this map" });
+    expect(isEligible(withoutImplement).eligible).toBe(false);
+    const withImplementNoTracer = issue({ labels: ["agent:implement", "wayfinder:research"], body: "no tracer" });
+    expect(isEligible(withImplementNoTracer).eligible).toBe(false);
+    const r = isEligible(withImplementNoTracer);
+    if (!r.eligible) expect(r.reason).toContain("tracer contract missing");
   });
 
   it("wayfinder:map and preserve-futures also blocked", () => {
