@@ -1,8 +1,10 @@
 import { describe, it, expect } from "vitest";
 import { isEligible, partitionWorkers } from "./dispatch.mts";
 import type { IssueInput } from "./dispatch.mts";
+import { TRACER_BODY } from "./fixtures.mts";
 
 // Helpers
+
 function issue(overrides: Partial<IssueInput> = {}): IssueInput {
   return {
     number: 1,
@@ -10,6 +12,7 @@ function issue(overrides: Partial<IssueInput> = {}): IssueInput {
     state: "open",
     labels: ["agent:implement"],
     assignees: [],
+    body: TRACER_BODY,
     ...overrides,
   };
 }
@@ -125,7 +128,7 @@ describe("AC12: re-running dispatcher does not duplicate", () => {
 
 describe("Wayfinder seam", () => {
   it("wayfinder:task is allowed but leaves seam for future routing", () => {
-    const t = issue({ labels: ["agent:implement", "wayfinder:task"], body: "Execution is carried into this map" });
+    const t = issue({ labels: ["agent:implement", "wayfinder:task"], body: TRACER_BODY });
     expect(isEligible(t).eligible).toBe(true);
     // Future: if wayfinder:task needs special routing, add check here without affecting
     // research/prototype/grilling block-list.

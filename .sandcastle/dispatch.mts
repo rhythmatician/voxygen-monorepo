@@ -1,3 +1,5 @@
+import { missingTracerConcepts } from "./tracer-contract.mts";
+
 /**
  * Factory v0 dispatch — deterministic eligibility for AFK implementation.
  *
@@ -101,6 +103,20 @@ export function isEligible(issue: IssueInput): EligibilityResult {
   if (issue.labels.includes(WAYFINDER_TASK_LABEL)) {
     const notesAllowsExecution = issue.body?.includes(WAYFINDER_TASK_MAP_SIGNAL);
     if (!notesAllowsExecution) return { eligible: false, reason: WAYFINDER_TASK_REASON };
+  }
+
+  // 7. Tracer-bullet contract — fail-closed. By gate 2 REQUIRED_LABEL is
+  //    guaranteed present, so no second includes() check is needed.
+  //    ready-for-agent remains triage/readiness, not an execution gate.
+  //    Alias-tolerant: see docs/agents/tracer-contract.md + tracer-contract.mts.
+  {
+    const missing = missingTracerConcepts(issue.body);
+    if (missing.length > 0) {
+      return {
+        eligible: false,
+        reason: `tracer contract missing: ${missing.join(", ")} — see docs/agents/tracer-contract.md`,
+      };
+    }
   }
 
   return { eligible: true };
