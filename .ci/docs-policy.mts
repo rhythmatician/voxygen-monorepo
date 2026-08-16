@@ -42,14 +42,17 @@ export function validateAdmitted(path: string, content: string): string[] {
     if (!/decision/i.test(content)) errors.push("ADR must have decision");
     if (!/(alternative|trade-off|consequence)/i.test(content)) errors.push("ADR must have alternatives/trade-offs");
   }
-  // docs/external/* and any file claiming external-reference must have provenance
-  if (path.startsWith("docs/external/") || content.includes("doc-type: external-reference")) {
-    if (!/source-revision:/i.test(content)) errors.push("external-reference must have source-revision");
+  // docs/external/* must have provenance; any external-reference claim must have provenance
+  if (path.startsWith("docs/external/")) {
     if (!content.includes("doc-type: external-reference")) errors.push("docs/external/* must have doc-type: external-reference");
-  }
-  // grandfathered VOXY-FORMAT must also have provenance if it claims external-reference
-  if (path === "python/docs/VOXY-FORMAT.md" && content.includes("doc-type: external-reference")) {
     if (!/source-revision:/i.test(content)) errors.push("external-reference must have source-revision");
+  } else if (content.includes("doc-type: external-reference")) {
+    if (!/source-revision:/i.test(content)) errors.push("external-reference must have source-revision");
+  }
+  // Grandfathered VOXY-FORMAT is explicitly admitted only with version-pinned provenance
+  if (path === "python/docs/VOXY-FORMAT.md") {
+    if (!content.includes("doc-type: external-reference")) errors.push("VOXY-FORMAT must have doc-type: external-reference");
+    if (!/source-revision:/i.test(content)) errors.push("VOXY-FORMAT must have source-revision");
   }
   return errors;
 }
@@ -75,8 +78,13 @@ export function checkFilesWithStatus(
     const isModify = entry.status === "M";
 
     const candidate = getCandidateContent(f);
-    // If candidate is null/missing (should not happen for A/M/R), skip
-    if (candidate === null) continue;
+    if (candidate === null) {
+      violations.push({
+        path: f,
+        error: `Documentation policy violation: ${f} — candidate content missing for ${entry.status} (expected in candidate revision)`,
+      });
+      continue;
+    }
 
     // Incremental debt rule for non-admitted existing files on M
     if (isModify && !isAdmitted(f)) {
@@ -150,7 +158,7 @@ export function checkFiles(files: string[], read: (p: string) => string): { path
 if (import.meta.url.endsWith("docs-policy.mts") && process.argv.some((a) => a.endsWith("docs-policy.mts"))) {
   const args = process.argv.slice(2);
   const fs = await import("node:fs");
-  const { execSync } = await import("node:child_process");
+  const { execFileSync } = await import("node:child_process");
 
   let entries: FileEntry[] = [];
   const baseIdx = args.indexOf("--base");
@@ -195,17 +203,17 @@ if (import.meta.url.endsWith("docs-policy.mts") && process.argv.some((a) => a.en
     const candidate = args[candIdx + 1];
     let buf: Buffer;
     try {
-      buf = execSync(`git diff --name-status -z --diff-filter=ADMR ${base} ${candidate}`, { encoding: "buffer" }) as Buffer;
+      buf = execFileSync("git", ["diff", "--name-status", "-z", "--diff-filter=ADMR", base, candidate], { encoding: "buffer" }) as Buffer;
       // If base == candidate and there are staged changes, git diff with two commits shows nothing; also check HEAD
       if (buf.length === 0 && base === candidate) {
         try {
-          buf = execSync("git diff --name-status -z --diff-filter=ADMR HEAD", { encoding: "buffer" }) as Buffer;
+          buf = execFileSync("git", ["diff", "--name-status", "-z", "--diff-filter=ADMR", "HEAD"], { encoding: "buffer" }) as Buffer;
         } catch {}
       }
       // Also include staged vs HEAD if needed
       if (buf.length === 0) {
         try {
-          const staged = execSync("git diff --cached --name-status -z --diff-filter=ADMR", { encoding: "buffer" }) as Buffer;
+          const staged = execFileSync("git", ["diff", "--cached", "--name-status", "-z", "--diff-filter=ADMR"], { encoding: "buffer" }) as Buffer;
           if (staged.length > 0) buf = staged;
         } catch {}
       }
@@ -217,7 +225,7 @@ if (import.meta.url.endsWith("docs-policy.mts") && process.argv.some((a) => a.en
     const fileArg = args[nameStatusIdx + 1];
     let raw: string;
     if (fileArg) raw = fs.readFileSync(fileArg, "utf-8");
-    else raw = execSync("git diff --name-status --diff-filter=ADMR HEAD", { encoding: "utf-8" });
+    else raw = execFileSync("git", ["diff", "--name-status", "--diff-filter=ADMR", "HEAD"], { encoding: "utf-8" });
     for (const line of raw.split("\n")) {
       const t = line.trim();
       if (!t) continue;
@@ -238,13 +246,13 @@ if (import.meta.url.endsWith("docs-policy.mts") && process.argv.some((a) => a.en
       const raw = fs.readFileSync(filesArg, "utf-8");
       for (const line of raw.split("\n")) if (line.trim()) files.push(line.trim());
     } else {
-      const out = execSync("git diff --name-only --diff-filter=AM HEAD", { encoding: "utf-8" });
+      const out = execFileSync("git", ["diff", "--name-only", "--diff-filter=AM", "HEAD"], { encoding: "utf-8" });
       for (const line of out.split("\n")) if (line.trim()) files.push(line.trim());
     }
     entries = files.map((p) => ({ path: p, status: "A" as FileStatus }));
   } else {
     try {
-      const out = execSync("git diff --name-status HEAD", { encoding: "utf-8" });
+      const out = execFileSync("git", ["diff", "--name-status", "HEAD"], { encoding: "utf-8" });
       for (const line of out.split("\n")) {
         const t = line.trim();
         if (!t) continue;
@@ -254,7 +262,7 @@ if (import.meta.url.endsWith("docs-policy.mts") && process.argv.some((a) => a.en
         else if (parts[1]) entries.push({ path: parts[1], status });
       }
     } catch {
-      const out = execSync("git ls-files '*.md'", { encoding: "utf-8" });
+      const out = execFileSync("git", ["ls-files", "*.md"], { encoding: "utf-8" });
       for (const line of out.split("\n")) if (line.trim()) entries.push({ path: line.trim(), status: "A" });
     }
   }
@@ -267,8 +275,8 @@ if (import.meta.url.endsWith("docs-policy.mts") && process.argv.some((a) => a.en
   }
   const getBaseContent = (p: string): string | null => {
     try {
-      if (baseSha) return execSync(`git show ${baseSha}:${p}`, { encoding: "utf-8" });
-      return execSync(`git show HEAD:${p}`, { encoding: "utf-8" });
+      if (baseSha) return execFileSync("git", ["show", `${baseSha}:${p}`], { encoding: "utf-8" });
+      return execFileSync("git", ["show", `HEAD:${p}`], { encoding: "utf-8" });
     } catch {
       return null;
     }
@@ -277,11 +285,11 @@ if (import.meta.url.endsWith("docs-policy.mts") && process.argv.some((a) => a.en
     try {
       if (candidateSha) {
         try {
-          return execSync(`git show ${candidateSha}:${p}`, { encoding: "utf-8" });
+          return execFileSync("git", ["show", `${candidateSha}:${p}`], { encoding: "utf-8" });
         } catch {
           // For staged but not yet committed (candidate == HEAD with staged new file), try index
           try {
-            return execSync(`git show :0:${p}`, { encoding: "utf-8" });
+            return execFileSync("git", ["show", `:0:${p}`], { encoding: "utf-8" });
           } catch {
             return fs.readFileSync(p, "utf-8");
           }
