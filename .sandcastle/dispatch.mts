@@ -23,11 +23,15 @@ export const BLOCKED_LABEL = "agent:blocked";
 
 // Wayfinder workflow types that the generic implementation pipeline must never
 // execute. `wayfinder:task` is intentionally NOT in this list — it is the
-// only Wayfinder type that may be AFK-executable. Leave a seam: if future
+// only Wayfinder type that may be AFK-executable via Sandcastle (AFK Task =
+// wayfinder:task + agent:implement + map Notes signal + tracer contract).
+// `wayfinder:research` is AFK but via Wayfinder research subagents during
+// charting, not via Sandcastle — it has no agent:implement so it remains
+// ineligible here without being forbidden. See ADR 0001 and CONTEXT.md.
+// Leave a seam: if future
 // task routing needs special handling, gate it here instead of expanding
 // this block-list.
 export const FORBIDDEN_WAYFINDER_LABELS = [
-  "wayfinder:research",
   "wayfinder:prototype",
   "wayfinder:grilling",
   "wayfinder:map",
@@ -87,6 +91,8 @@ export function isEligible(issue: IssueInput): EligibilityResult {
   // dependency convention.
 
   // 5. Wayfinder workflow boundary — generic worker must not execute HITL tickets
+  // HITL-only: prototype, grilling, map, preserve-futures. Research is AFK via
+  // Wayfinder subagents (no agent:implement) so not forbidden — see ADR 0001.
   for (const label of FORBIDDEN_WAYFINDER_LABELS) {
     if (issue.labels.includes(label)) {
       return {
@@ -97,6 +103,9 @@ export function isEligible(issue: IssueInput): EligibilityResult {
   }
 
   // 6. AFK wayfinder:task triple-signal gate — labels + map Notes as durable signal.
+  // Wayfinder Task executor is orthogonal (CONTEXT.md): HITL Task = wayfinder:task
+  // without agent:implement (ineligible at gate 2); AFK Task = wayfinder:task +
+  // agent:implement + signal + tracer contract.
   // Requires `wayfinder:task` + `agent:implement` + map Notes. Gate 2 already
   // ensures REQUIRED_LABEL, so only the Wayfinder label is checked here.
   // v0 proxies map Notes via ticket body; v1 can fetch map body via `gh api`.

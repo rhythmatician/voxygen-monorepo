@@ -442,7 +442,6 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
               promptFile: "./.sandcastle/review-prompt.md",
               promptArgs: {
                 BRANCH: issue.branch,
-                TARGET_BRANCH,
                 ISSUE_NUMBER: issue.id,
                 ISSUE_TITLE: issue.title,
                 ISSUE_BODY: issueBody,

@@ -265,11 +265,13 @@ describe("dispatch fail-closed on agent:implement without tracer contract", () =
     if (!res.eligible) expect(res.reason).toContain("tracer contract missing");
   });
 
-  it("tracer is checked after Wayfinder gates (forbidden label wins)", () => {
-    const i = issue({ labels: ["agent:implement", "wayfinder:research"], body: CANONICAL_BODY });
-    const res = isEligible(i);
-    expect(res.eligible).toBe(false);
-    if (!res.eligible) expect(res.reason).toContain("forbidden Wayfinder type");
+  it("tracer is checked after Wayfinder gates (forbidden label wins); research is not forbidden — see ADR 0001", () => {
+    const forbidden = issue({ labels: ["agent:implement", "wayfinder:grilling"], body: CANONICAL_BODY });
+    const resForbidden = isEligible(forbidden);
+    expect(resForbidden.eligible).toBe(false);
+    if (!resForbidden.eligible) expect(resForbidden.reason).toContain("forbidden Wayfinder type");
+    const research = issue({ labels: ["agent:implement", "wayfinder:research"], body: CANONICAL_BODY });
+    expect(isEligible(research).eligible).toBe(true);
   });
 
   it("wayfinder:task + agent:implement without tracer still fails (triple-signal checked before tracer)", () => {
