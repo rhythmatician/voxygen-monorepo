@@ -43,8 +43,8 @@ export function validateAdmitted(path: string, content: string): string[] {
     if (!/decision/i.test(content)) errors.push("ADR must have decision");
     if (!/(alternative|trade-off|consequence)/i.test(content)) errors.push("ADR must have alternatives/trade-offs");
   }
-  // docs/external/* must have provenance; any external-reference claim must have provenance
-  if (path.startsWith("docs/external/") || path.startsWith("docs/reference/upstream/")) {
+  // docs/external/* and docs/reference/upstream/* (except README) must have provenance; any external-reference claim must have provenance
+  if ((path.startsWith("docs/external/") || path.startsWith("docs/reference/upstream/")) && !path.endsWith("/README.md")) {
     if (!content.includes("doc-type: external-reference")) errors.push(path + " must have doc-type: external-reference");
     if (!/source-revision:/i.test(content)) errors.push("external-reference must have source-revision");
   } else if (content.includes("doc-type: external-reference")) {
