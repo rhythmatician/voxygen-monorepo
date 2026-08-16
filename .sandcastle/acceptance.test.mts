@@ -8,6 +8,7 @@ import {
   WAYFINDER_TASK_MAP_SIGNAL,
 } from "./dispatch.mts";
 import type { IssueInput } from "./dispatch.mts";
+import { TRACER_BODY } from "./fixtures.mts";
 
 function issue(overrides: Partial<IssueInput> = {}): IssueInput {
   return {
@@ -16,6 +17,7 @@ function issue(overrides: Partial<IssueInput> = {}): IssueInput {
     state: "open",
     labels: ["agent:implement"],
     assignees: [],
+    body: TRACER_BODY,
     ...overrides,
   };
 }
@@ -200,7 +202,7 @@ describe("Factory v0 acceptance dry runs G1-G6 (issue #32)", () => {
       }
       const withNotes = issue({
         labels: ["agent:implement", "wayfinder:task"],
-        body: "Part of #14\nExecution is carried into this map",
+        body: TRACER_BODY,
       });
       expect(isEligible(withNotes).eligible).toBe(true);
       expect(withNotes.body).toContain(WAYFINDER_TASK_MAP_SIGNAL);
