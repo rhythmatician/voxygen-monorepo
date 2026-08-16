@@ -11,6 +11,13 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { isEligible, branchForIssue, type IssueInput } from "./dispatch.mts";
 import { mayAutonomouslyMerge } from "./ci-policy.mts";
+import {
+  reviewVerdictSchema,
+  isVerdictApproved,
+  parseVerdictFromText,
+  parseReviewVerdict,
+  type ReviewVerdict,
+} from "./review-verdict.mts";
 
 const execFileAsync = promisify(execFile);
 
@@ -185,9 +192,9 @@ async function fetchOpenImplementIssues(): Promise<IssueInput[]> {
   return issues;
 }
 
-// Phase 0.5 claim — host-side, sequential, before createSandbox (single-host v0).
+// Phase 0.5 claim - host-side, sequential, before createSandbox (single-host v0).
 // Unified host claim: assignee + label + comment. Stale release is manual
-// per #18 — do not auto-expire (gh issue edit --remove-label/--remove-assignee).
+// per #18 - do not auto-expire (gh issue edit --remove-label/--remove-assignee).
 async function claimIssue(issue: IssueInput): Promise<boolean> {
   const id = String(issue.number);
   const branch = branchForIssue(issue.number);
@@ -248,6 +255,49 @@ async function markIntegrated(issueId: string, branch: string): Promise<void> {
       await runGh(["issue", "close", issueId]);
     } catch {}
   }
+}
+
+async function fetchIssueBody(issueId: string): Promise<string> {
+  // Fresh fetch every time - no caching. Host-side so it is authoritative.
+  try {
+    const body = await runGh(["issue", "view", issueId, "--json", "body", "--jq", ".body"]);
+    return body;
+  } catch {
+    return "";
+  }
+}
+
+async function markReviewRejected(
+  issueId: string,
+  branch: string,
+  verdict: ReviewVerdict | null,
+  fallbackReason: string,
+): Promise<void> {
+  const findings = verdict
+    ? verdict.findings.map((f) => `- [${f.severity}] ${f.message}`).join("\n")
+    : "";
+  const criteria = verdict
+    ? verdict.acceptanceCriteriaMet.map((c) => `- [${c.met ? "x" : " "}] ${c.criterion}${c.evidence ? ` - ${c.evidence}` : ""}`).join("\n")
+    : "";
+  const summary = verdict?.summary ?? fallbackReason;
+  const body = `Sandcastle review rejected \`${branch}\` - not merged. Preserved branch for inspection.
+
+**Verdict: approved=false**
+**Summary:** ${summary.slice(0, REASON_TRUNCATE)}
+
+${findings ? `**Findings:**\n${findings.slice(0, REASON_TRUNCATE)}\n` : ""}
+${criteria ? `**Acceptance criteria:**\n${criteria.slice(0, REASON_TRUNCATE)}\n` : ""}
+**Full verdict:** \`\`\`json
+${JSON.stringify(verdict ?? { approved: false, reason: fallbackReason }, null, 2).slice(0, 2000)}
+\`\`\`
+
+Branch: \`${branch}\`
+
+To retry: fix implementation to address findings, ensure \`agent:blocked\` is removed, \`agent:implement\` remains, and re-run factory.`;
+  // Reuse blocked marking (preserve branch, add agent:blocked, post findings)
+  await safeRunGh(["issue", "edit", issueId, "--remove-label", "agent:in-progress"]);
+  await safeRunGh(["issue", "edit", issueId, "--add-label", "agent:blocked"]);
+  await safeRunGh(["issue", "comment", issueId, "--body", body]);
 }
 
 // ---------------------------------------------------------------------------
@@ -350,8 +400,9 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   console.log(`\nClaimed ${claimedIssues.length} issue(s), launching parallel workers...\n`);
 
   // ----- Phase 2: Execute + Review (parallel, isolated) -----
-  const settled = await Promise.allSettled(
-    claimedIssues.map(async (issue) => {
+  type WorkerResult = { commits: string[]; verdict: ReviewVerdict | null; reviewText?: string };
+  const settled = await Promise.allSettled<WorkerResult>(
+    claimedIssues.map(async (issue): Promise<WorkerResult> => {
       const sandbox = await sandcastle.createSandbox({
         branch: issue.branch,
         sandbox: docker(),
@@ -374,24 +425,68 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
           },
         });
         if (implement.commits.length > 0) {
-          const review = await sandbox.run({
-            name: "reviewer",
-            maxIterations: 1,
-            agent: sandcastle.muse("muse-spark-1.2-contributor"),
-            promptFile: "./.sandcastle/review-prompt.md",
-            promptArgs: { BRANCH: issue.branch },
-          });
-          return { ...review, commits: [...implement.commits, ...review.commits] };
+          // Fresh fetch of original issue body - no stale caching.
+          const issueBody = await fetchIssueBody(issue.id);
+          const targetBranch = "main";
+          let verdict: ReviewVerdict | null = null;
+          let reviewText = "";
+          try {
+            const review = (await sandbox.run({
+              name: "reviewer",
+              maxIterations: 1,
+              agent: sandcastle.muse("muse-spark-1.2-contributor"),
+              promptFile: "./.sandcastle/review-prompt.md",
+              promptArgs: {
+                BRANCH: issue.branch,
+                TARGET_BRANCH: targetBranch,
+                ISSUE_NUMBER: issue.id,
+                ISSUE_TITLE: issue.title,
+                ISSUE_BODY: issueBody,
+              },
+              output: sandcastle.Output.object({ tag: "verdict", schema: reviewVerdictSchema }),
+            })) as unknown as { commits: string[]; output?: unknown; text?: string };
+            // Try structured output first
+            if (review.output && typeof review.output === "object") {
+              const parsed = parseReviewVerdict(review.output);
+              if (parsed) verdict = parsed;
+              // Some sandcastle versions nest under verdict key
+              else if ((review.output as Record<string, unknown>).verdict) {
+                verdict = parseReviewVerdict((review.output as Record<string, unknown>).verdict);
+              }
+            }
+            // Fallback: parse <verdict> from text if structured output missing
+            if (!verdict && typeof review.text === "string") {
+              reviewText = review.text;
+              verdict = parseVerdictFromText(review.text);
+            }
+            // Also try stringified output
+            if (!verdict && review.output && typeof review.output === "string") {
+              verdict = parseVerdictFromText(String(review.output));
+            }
+            return {
+              commits: [...implement.commits, ...(review.commits ?? [])],
+              verdict,
+              reviewText,
+            };
+          } catch (reviewError: unknown) {
+            // Reviewer failure - treat as rejected to avoid merging unreviewed code
+            console.warn(`  Reviewer failed for #${issue.id}: ${String(reviewError).slice(0, 500)} - treating as rejected`);
+            return { commits: [...implement.commits], verdict: null, reviewText: String(reviewError) };
+          }
         }
-        return implement;
+        return { commits: implement.commits, verdict: null };
       } finally {
         await sandbox.close();
       }
     }),
   );
 
-  // ----- Failure visibility per worker -----
+  // ----- Failure visibility per worker + review verdict gating -----
   const failedIndices: number[] = [];
+  const reviewRejectedIndices: number[] = [];
+  // Track verdicts for gating (null for rejected/zero-commits)
+  const verdictsByIndex: Array<ReviewVerdict | null> = new Array(claimedIssues.length).fill(null);
+
   for (const [i, outcome] of settled.entries()) {
     if (outcome.status === "rejected") {
       const reason = String(outcome.reason ?? "unknown error").slice(0, WORKER_REASON_TRUNCATE);
@@ -399,27 +494,47 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
       failedIndices.push(i);
       await markBlocked(claimedIssues[i]!.id, claimedIssues[i]!.branch, reason);
     } else if (outcome.value.commits.length === 0) {
-      // No commits -- treat as no-op, not failure, but remove in-progress so it can be retried?
-      // Spec says failure must leave blocked; no-op we treat as blocked with diagnostics.
       console.warn(`  ⚠ ${claimedIssues[i]!.id} produced no commits -- marking blocked for inspection`);
       await markBlocked(claimedIssues[i]!.id, claimedIssues[i]!.branch, "Implementer produced no commits (no work or error without throw). Branch preserved.");
       failedIndices.push(i);
+    } else {
+      // Commit-bearing worker - capture verdict for gating
+      verdictsByIndex[i] = outcome.value.verdict;
+      const verdict = outcome.value.verdict;
+      if (!isVerdictApproved(verdict)) {
+        const reason = !verdict
+          ? "reviewer produced no verdict (treated as rejected - branch preserved, not merged)"
+          : `reviewer rejected (approved=false): ${verdict.findings.map((f) => f.message).join("; ") || verdict.summary || "unmet criteria"}`;
+        console.warn(`  ⚠ ${claimedIssues[i]!.id} review rejected - not eligible for merger: ${reason.slice(0, 500)}`);
+        reviewRejectedIndices.push(i);
+        // Do NOT push to failedIndices yet - handled separately as review rejection with verdict findings
+        await markReviewRejected(claimedIssues[i]!.id, claimedIssues[i]!.branch, verdict, reason);
+      }
     }
   }
 
-  const completedIssues = settled
-    .map((outcome, i) => ({ outcome, issue: claimedIssues[i]! }))
+  // Completed = fulfilled + commits + review approved
+  const completedEntries = settled
+    .map((outcome, i) => ({ outcome, issue: claimedIssues[i]!, index: i }))
     .filter(
-      (entry) => entry.outcome.status === "fulfilled" && entry.outcome.value.commits.length > 0,
-    )
-    .map((entry) => entry.issue);
+      (entry) =>
+        entry.outcome.status === "fulfilled" &&
+        entry.outcome.value.commits.length > 0 &&
+        !failedIndices.includes(entry.index) &&
+        !reviewRejectedIndices.includes(entry.index) &&
+        isVerdictApproved(entry.outcome.value.verdict),
+    );
 
+  const completedIssues = completedEntries.map((entry) => entry.issue);
   const completedBranches = completedIssues.map((i) => i.branch);
 
-  console.log(`\nExecution complete. ${completedBranches.length} branch(es) with commits:`);
+  console.log(`\nExecution complete. ${completedBranches.length} branch(es) approved for merger:`);
   for (const b of completedBranches) console.log(`  ${b}`);
   if (failedIndices.length > 0) {
     console.log(`  ${failedIndices.length} branch(es) failed and were marked agent:blocked`);
+  }
+  if (reviewRejectedIndices.length > 0) {
+    console.log(`  ${reviewRejectedIndices.length} branch(es) review-rejected (approved=false) - preserved, marked agent:blocked, not merged`);
   }
 
   if (completedBranches.length === 0) {
