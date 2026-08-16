@@ -14,4 +14,4 @@ These documents are **historical truth for the named upstream version** — not 
 * `minecraft-1.21.11-worldgen-seams.md` — Minecraft 1.21.11 worldgen seams (NoiseRouter, DensityFunction, NoiseChunk, NoiseSettings, RandomState, noise stack, Climate/BiomeSource, Aquifer, Beardifier, Blender, SurfaceSystem, Carvers, etc.)
 * `voxy-0.2.11-alpha-storage-and-lod-seams.md` — Voxy 0.2.11-alpha storage and LOD seams (WorldSection geometry, key encoding, per-voxel packing, Mapper, VoxelizedSection, Mipper, nonEmptyChildren, WorldEngine lifecycle, RocksDB/ZSTD serialization)
 
-Both carry a provenance header with status, upstream project/version, commit/jar hash, inspected corpus, research date, scope, and invalidation rule.
+Both carry a provenance header with status, upstream project/version, version/revision/hash metadata as available (commit + jar SHA-256 for Voxy; decompiled snapshot corpus for Minecraft 1.21.11), inspected corpus, research date, scope, and invalidation rule.

@@ -91,7 +91,6 @@ bit 26..0  (27 bits): unused (zero in practice)
 | string form | `BlockState.toString()` full property string (e.g. `minecraft:grass_block[snowy=false]`) | `Mapper.java` |
 | maps | `ConcurrentHashMap<BlockState,Integer> block2stateEntry` + `ObjectArrayList<BlockState> blockId2stateEntry` + mirrored biome maps + `ReentrantLock` per table | `Mapper.java` |
 | stability | stable **intra-world**, **different between worlds** — no canonical cross-world mapping | audited fact |
-| Voxygen-mapped stable IDs | not part of this upstream — this document records only Voxy Mapper as upstream; any canonical 0..N vocabulary is Voxygen-side | — |
 
 ## 5. VoxelizedSection — ingestion-only pyramid
 
@@ -106,12 +105,7 @@ bit 26..0  (27 bits): unused (zero in practice)
 | 4 | 1³=1 | 4680 | `(1<<12)\|(1<<9)\|(1<<6)\|(1<<3)` |
 
 * Built by `WorldConversionFactory.convert()` (fills L0) then `mipSection()` (fills 1..4). Passed to `WorldUpdater.insertUpdate()` which scatters into persistent `WorldSection` (32³) array — never persisted itself.
-* Direct higher-Level `WorldSection` write (LOD generation path) does **not** go through `mipSection()`:
-
-  * Write each model-output `WorldSection` at the LOD corresponding to model resolution (L4 output → L4 section, L3 → L3, etc.) using the same low-level `long`-packing as the runtime writer.
-  * Set `nonEmptyChildren` bits in parent sections via `propagateChildExistence` to reflect populated octants.
-  * Renderer traverses from first non-empty child until leaf or missing — coarse at distance, finer on refinement.
-  * See `VOXY-FORMAT.md §4.1` (top-down generated section writes / sparse-octree workflow).
+* Upstream also supports direct higher-Level `WorldSection` creation without `mipSection()`: a `WorldSection` can be constructed at any `lvl` using the same per-voxel `long` packing (§3), `nonEmptyChildren` bits in ancestors set via `propagateChildExistence` to reflect populated octants, and renderer traversal from the first non-empty child until leaf or missing. In this path `mipSection()` is only for ingesting full-resolution vanilla chunk sections (see `VOXY-FORMAT.md §4.1`).
 
 ## 6. Mip / downsampling (`Mipper.java`)
 
@@ -122,7 +116,7 @@ bit 26..0  (27 bits): unused (zero in practice)
   3. Return highest-score voxel (max opacity, tie-break by corner).
   4. If all 8 are air: `skyLight = ceil(mean of 8 skyLights)`, `blockLight = floor(mean of 8 blockLights)`, return `I111` with averaged light (still air).
 
-* Consequence: opaque (stone, dirt) always beats transparent (water, glass). Any training data that targets Voxy LODs must replicate this rule exactly — majority vote or probability pooling produces distribution shift. This is the distribution shift noted in `research-scratch.md:160` and verified in `Mipper.java`.
+* Consequence: opaque blocks win over transparent blocks under this rule.
 
 ## 7. `nonEmptyChildren` and octant geometry
 
@@ -145,7 +139,7 @@ int childY = (parentY << 1) + ((octant >> 2) & 1);
 WorldEngine {
   MAX_LOD_LAYER=4; PosFormatVersion=1;
   SectionStorage storage; Mapper mapper; ActiveSectionTracker sectionTracker;
-  acquire(int lvl,int x,int y,int z) / acquire(long pos)  // L3 entry: acquire(lvl, wsX, wsY, wsZ)
+  acquire(int lvl,int x,int y,int z) / acquire(long pos)
   getWorldSectionId(lvl,x,y,z) // §2
 }
 ```
@@ -162,7 +156,7 @@ WorldEngine {
 | eviction target | `SectionSavingService` save queue (`saveQueueDepth()`) | `WorldEngine` / `ActiveSectionTracker` |
 | tracker type | MRU (most-recently-used) eviction | `ActiveSectionTracker.java` |
 
- Horizon fill at `32` sections radius implies ~4k `WorldSection`s at L0; at L4 far fewer — the 1024/2048 entry cache must be sized against horizon working set or thrash on save queue.
+ 
 
 ## 10. Default storage backend — RocksDB + ZSTD
 
