@@ -13,3 +13,5 @@ Run typechecking regularly, single test files regularly, and the full test suite
 Once done, use /code-review to review the work.
 
 Commit your work to the current branch.
+
+Preserve authoritative sources. Before creating or materially expanding Markdown, follow `docs/agents/documentation.md`. Do not create implementation, status, plan, TODO, handoff, deliverables, or summary docs to explain code — improve code, types, interfaces, or point to authoritative artifacts instead. Authoritative source: code/tests/contracts/config or GitHub Issue/PR.

@@ -35,6 +35,10 @@ Use Red-Green-Refactor where applicable.
 
 Before committing, run `npm run typecheck` and `npm run test`.
 
+# DOCUMENTATION
+
+Repository prose is not a shadow source of truth. Before committing any Markdown change, apply `docs/agents/documentation.md`. Current mechanics belong in executable artifacts; current/planned work belongs in the GitHub issue/PR. Do not create implementation summaries, plans, status, TODO, handoff, deliverables, or checklist documents. Authoritative source: code/tests/contracts/config or GitHub.
+
 # COMMIT
 
 Commit message must start with `RALPH:` and concisely record task + key decisions + files changed + blockers.

@@ -13,10 +13,11 @@ Review the code changes on branch `{{BRANCH}}` and improve clarity, consistency,
 # REVIEW PROCESS
 
 1. Understand intent from diff and commits.
-2. Look for unnecessary complexity, redundant code, poor naming, or security issues.
-3. Check correctness: does it match intent, handle edge cases, have tests, avoid unsafe casts/any?
-4. Apply standards from `@.sandcastle/CODING_STANDARDS.md`.
-5. Preserve functionality — never change what the code does, only how.
+2. Check changed prose against `docs/agents/documentation.md`. Remove documentation that duplicates executable truth or GitHub work state. Prefer improving code, types, tests, or navigation over preserving an explanatory implementation doc.
+3. Look for unnecessary complexity, redundant code, poor naming, or security issues.
+4. Check correctness: does it match intent, handle edge cases, have tests, avoid unsafe casts/any?
+5. Apply standards from `@.sandcastle/CODING_STANDARDS.md`.
+6. Preserve functionality — never change what the code does, only how.
 
 # EXECUTION
 
