@@ -275,10 +275,34 @@ class TestCatalogContracts:
         ("level", "input_names", "head_width", "output_shape", "byte_size"),
         [
             (4, ["climate_2d", "biome_2d", "y_position"], 24, ("batch", 24, 32, 32), 196_608),
-            (3, ["climate_2d", "biome_2d", "y_position", "parent_blocks"], 24, ("batch", 32, 32, 32), 262_144),
-            (2, ["climate_2d", "biome_2d", "y_position", "parent_blocks"], 32, ("batch", 32, 32, 32), 262_144),
-            (1, ["noise_3d", "biome_3d", "y_position", "parent_blocks"], 48, ("batch", 32, 32, 32), 262_144),
-            (0, ["noise_3d", "biome_3d", "y_position", "parent_blocks"], 48, ("batch", 32, 32, 32), 262_144),
+            (
+                3,
+                ["climate_2d", "biome_2d", "y_position", "parent_blocks"],
+                24,
+                ("batch", 32, 32, 32),
+                262_144,
+            ),
+            (
+                2,
+                ["climate_2d", "biome_2d", "y_position", "parent_blocks"],
+                32,
+                ("batch", 32, 32, 32),
+                262_144,
+            ),
+            (
+                1,
+                ["noise_3d", "biome_3d", "y_position", "parent_blocks"],
+                48,
+                ("batch", 32, 32, 32),
+                262_144,
+            ),
+            (
+                0,
+                ["noise_3d", "biome_3d", "y_position", "parent_blocks"],
+                48,
+                ("batch", 32, 32, 32),
+                262_144,
+            ),
         ],
     )
     def test_live_voxy_level_contracts(
