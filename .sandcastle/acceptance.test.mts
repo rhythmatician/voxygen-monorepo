@@ -9,6 +9,15 @@ import {
 } from "./dispatch.mts";
 import type { IssueInput } from "./dispatch.mts";
 
+const TRACER_BODY = `Scope bounded observable outcome
+no unresolved design decided
+acceptance criteria done when
+verification path verify
+dependencies blocked by none
+small enough for one session
+vertical tracer bullet slice end-to-end
+Execution is carried into this map`;
+
 function issue(overrides: Partial<IssueInput> = {}): IssueInput {
   return {
     number: 1,
@@ -16,6 +25,7 @@ function issue(overrides: Partial<IssueInput> = {}): IssueInput {
     state: "open",
     labels: ["agent:implement"],
     assignees: [],
+    body: TRACER_BODY,
     ...overrides,
   };
 }
@@ -200,7 +210,7 @@ describe("Factory v0 acceptance dry runs G1-G6 (issue #32)", () => {
       }
       const withNotes = issue({
         labels: ["agent:implement", "wayfinder:task"],
-        body: "Part of #14\nExecution is carried into this map",
+        body: TRACER_BODY,
       });
       expect(isEligible(withNotes).eligible).toBe(true);
       expect(withNotes.body).toContain(WAYFINDER_TASK_MAP_SIGNAL);

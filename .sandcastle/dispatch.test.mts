@@ -7,6 +7,15 @@ import {
 } from "./dispatch.mts";
 import type { IssueInput } from "./dispatch.mts";
 
+const TRACER_BODY = `Scope bounded observable outcome
+no unresolved design decided
+acceptance criteria done when
+verification path verify
+dependencies blocked by none
+small enough for one session
+vertical tracer bullet slice end-to-end
+Execution is carried into this map`;
+
 function issue(overrides: Partial<IssueInput> = {}): IssueInput {
   return {
     number: 1,
@@ -14,6 +23,7 @@ function issue(overrides: Partial<IssueInput> = {}): IssueInput {
     state: "open",
     labels: ["agent:implement"],
     assignees: [],
+    body: TRACER_BODY,
     ...overrides,
   };
 }
@@ -107,8 +117,8 @@ describe("isEligible", () => {
   });
 
   it("wayfinder:task is allowed (seam for future routing)", () => {
-    // wayfinder:task is AFK-task — allowed if explicitly authorized via triple-signal.
-    const i = issue({ labels: ["agent:implement", "wayfinder:task"], body: "Part of #14\nExecution is carried into this map" });
+    // wayfinder:task is AFK-task — allowed if explicitly authorized via triple-signal + tracer.
+    const i = issue({ labels: ["agent:implement", "wayfinder:task"], body: TRACER_BODY });
     expect(isEligible(i).eligible).toBe(true);
   });
 
@@ -122,7 +132,7 @@ describe("isEligible", () => {
   });
 
   it("wayfinder:task without body is not dispatched", () => {
-    const i = issue({ labels: ["agent:implement", "wayfinder:task"] });
+    const i = issue({ labels: ["agent:implement", "wayfinder:task"], body: undefined });
     expect(isEligible(i).eligible).toBe(false);
   });
 
