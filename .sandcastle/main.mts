@@ -32,7 +32,7 @@ const VERDICT_JSON_TRUNCATE = 2000;
 const REVIEW_ERROR_TRUNCATE = 500;
 const TARGET_BRANCH = "main";
 
-// Worker result after implement + review — commits plus machine-readable verdict.
+// Worker result after implement + review -- commits plus machine-readable verdict.
 type WorkerResult = { commits: string[]; verdict: ReviewVerdict | null; reviewText?: string };
 
 const hooks = {
@@ -457,7 +457,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
               reviewText,
             };
           } catch (reviewError: unknown) {
-            // Reviewer failure — fail-closed: preserve branch, never merge unreviewed code
+            // Reviewer failure -- fail-closed: preserve branch, never merge unreviewed code
             console.warn(`  Reviewer failed for #${issue.id}: ${String(reviewError).slice(0, REVIEW_ERROR_TRUNCATE)} - treating as rejected`);
             return { commits: [...implement.commits], verdict: null, reviewText: String(reviewError) };
           }
@@ -621,6 +621,14 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     await safeRunGh(["issue", "comment", iss.id, "--body", `Sandcastle produced and reviewed \`${iss.branch}\`. Awaiting exact-SHA Factory / Merge Oracle evidence and PR merge; this issue remains open.`]);
     console.log(`  #${iss.id} remains open pending authoritative PR merge`);
   }
+
+  // Immediate GC for ephemeral batch artefacts -- same-process lifecycle (not weekly cron)
+  try {
+    execSync("git branch --list 'preserve-local-*' | xargs -r git branch -D", { stdio: "ignore" });
+  } catch {}
+  try {
+    execSync("git worktree prune", { stdio: "ignore" });
+  } catch {}
 
   console.log("\nBatch submitted -- authoritative CI and merge remain pending.");
 }
