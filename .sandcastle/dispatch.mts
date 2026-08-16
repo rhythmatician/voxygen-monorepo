@@ -105,10 +105,11 @@ export function isEligible(issue: IssueInput): EligibilityResult {
     if (!notesAllowsExecution) return { eligible: false, reason: WAYFINDER_TASK_REASON };
   }
 
-  // 7. Tracer-bullet contract — fail-closed on agent:implement only.
+  // 7. Tracer-bullet contract — fail-closed. By gate 2 REQUIRED_LABEL is
+  //    guaranteed present, so no second includes() check is needed.
   //    ready-for-agent remains triage/readiness, not an execution gate.
   //    Alias-tolerant: see docs/agents/tracer-contract.md + tracer-contract.mts.
-  if (issue.labels.includes(REQUIRED_LABEL)) {
+  {
     const missing = missingTracerConcepts(issue.body);
     if (missing.length > 0) {
       return {

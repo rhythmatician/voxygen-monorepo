@@ -6,15 +6,7 @@ import {
   FORBIDDEN_WAYFINDER_LABELS,
 } from "./dispatch.mts";
 import type { IssueInput } from "./dispatch.mts";
-
-const TRACER_BODY = `Scope bounded observable outcome
-no unresolved design decided
-acceptance criteria done when
-verification path verify
-dependencies blocked by none
-small enough for one session
-vertical tracer bullet slice end-to-end
-Execution is carried into this map`;
+import { TRACER_BODY } from "./fixtures.mts";
 
 function issue(overrides: Partial<IssueInput> = {}): IssueInput {
   return {

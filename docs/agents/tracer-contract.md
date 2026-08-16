@@ -4,17 +4,17 @@ Every `agent:implement` issue must be a **tracer bullet**: a bounded vertical sl
 
 ## The 7 concepts
 
-An AFK-ready ticket must convey each concept. Recommended canonical headings are shown, but the validator is alias-tolerant and accepts headings, synonyms, or a structured schema.
+An AFK-ready ticket must convey each concept. Recommended canonical headings are shown, but the validator is alias-tolerant and accepts headings, synonyms, or a structured schema. The authoritative alias patterns live in `.sandcastle/tracer-contract.mts`; this table summarizes them for authors.
 
-| # | Concept | Canonical heading | Aliases accepted by validator |
-|---|---------|-------------------|-------------------------------|
-| 1 | Bounded observable outcome | Scope / Goal | `bounded observable outcome`, `observable outcome`, `outcome`, `goal`, `objective`, `problem`, `scope` |
-| 2 | No unresolved design decision | Decision / Design | `no unresolved design decision`, `no unresolved`, `no open questions`, `design is decided`, `decided` |
-| 3 | Explicit acceptance criteria | Acceptance criteria / Done when | `acceptance criteria`, `acceptance`, `done when` |
-| 4 | Explicit verification path | Verification | `verification`, `verification path`, `verify`, `how to verify`, `validation` |
-| 5 | Dependencies / blockers | Dependencies | `dependencies`, `dependency`, `blocker`, `blocked by` |
-| 6 | Small enough for one session | Scope (sizing) | `small enough`, `one implementation session`, `one fresh implementation session`, `one session`, `single session`, `sized for one` |
-| 7 | Prefer vertical / tracer-bullet decomposition | Scope (shape) | `vertical`, `tracer bullet`, `tracer-bullet`, `tracer`, `end-to-end`, `slice` |
+| # | Concept (id) | Canonical heading | Aliases |
+|---|--------------|-------------------|---------|
+| 1 | Bounded observable outcome (`bounded-outcome`) | Scope / Goal | `bounded observable outcome`, `observable outcome`, `outcome`, `goal`, `objective`, `problem`, `scope` |
+| 2 | No unresolved design decision (`no-unresolved-design`) | Decision / Design | `no unresolved design decision`, `no unresolved`, `no open questions`, `design is decided`, `decided` |
+| 3 | Explicit acceptance criteria (`acceptance-criteria`) | Acceptance criteria / Done when | `acceptance criteria`, `acceptance`, `done when` |
+| 4 | Explicit verification path (`verification-path`) | Verification | `verification`, `verification path`, `verify`, `how to verify`, `validation` |
+| 5 | Dependencies / blockers (`dependencies-blockers`) | Dependencies | `dependencies`, `dependency`, `blocker`, `blocked by` |
+| 6 | Small enough for one session (`small-for-one-session`) | Scope (sizing) | `small enough`, `one implementation session`, `one fresh implementation session`, `one session`, `single session`, `sized for one` |
+| 7 | Prefer vertical / tracer-bullet (`vertical-tracer-bullet`) | Scope (shape) | `vertical`, `tracer bullet`, `tracer-bullet`, `tracer`, `end-to-end`, `slice` |
 
 A structured front-matter / fenced JSON/YAML schema is also accepted when it carries the same concept keys (e.g. `boundedOutcome`, `acceptanceCriteria`, `verification`, `dependencies`, `sizing`, `shape`), because the alias patterns match key names.
 
@@ -27,6 +27,4 @@ A structured front-matter / fenced JSON/YAML schema is also accepted when it car
 
 ## Validation
 
-`.sandcastle/tracer-contract.mts` implements alias-tolerant concept detection (see file). `.sandcastle/dispatch.mts` calls it fail-closed **only** when `agent:implement` is present, returning `tracer contract missing: …` if any concept is absent. `ready-for-agent` alone is not an execution gate.
-
-This issue (#56) itself passes validation — it uses `Problem`/`Scope`/`Acceptance criteria`/`Verification`/`Dependencies`, not `Goal`/`Done when`, yet satisfies all 7 concepts.
+Implemented in `.sandcastle/tracer-contract.mts` (alias-tolerant detection) and enforced in `.sandcastle/dispatch.mts` fail-closed on `agent:implement`. `ready-for-agent` alone is not an execution gate.

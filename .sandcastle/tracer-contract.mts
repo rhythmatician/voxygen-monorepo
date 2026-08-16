@@ -2,8 +2,13 @@
  * Tracer-bullet ticket contract — concept detection (alias-tolerant).
  *
  * Every agent:implement issue must convey 7 concepts. Validator is intentionally
- * permissive on headings/synonyms/schema (not literal `Goal`/`Done when`).
- * See docs/agents/tracer-contract.md for canonical names + aliases.
+ * permissive on headings / synonyms / schema — not literal `Goal` / `Done when`.
+ * See docs/agents/tracer-contract.md for canonical names and aliases.
+ *
+ * Patterns per concept are intentionally broad (single-word aliases like
+ * "scope", "decided", "verify" etc. match loosely). That breadth is the
+ * contract: we preserve exact OR semantics while removing strictly subsumed
+ * alternates so each regex adds distinct coverage.
  */
 
 export interface TracerConcept {
@@ -16,27 +21,21 @@ export const TRACER_CONCEPTS: readonly TracerConcept[] = [
   {
     id: "bounded-outcome",
     name: "bounded observable outcome",
-    patterns: [
-      /bounded observable outcome/i,
-      /observable outcome/i,
-      /^##\s*(Scope|Goal|Objective|Problem)\b/im,
-      /Scope/i,
-      /Goal/i,
-      /Objective/i,
-      /Problem/i,
-      /outcome/i,
-      /boundedOutcome/i,
-    ],
+    // Covers: bounded observable outcome, observable outcome, outcome, scope,
+    // goal, objective, problem, headings, schema key boundedOutcome.
+    // Narrower literals (bounded observable outcome, boundedOutcome, heading)
+    // are subsumed by outcome / bare-word patterns and omitted.
+    patterns: [/outcome/i, /scope/i, /goal/i, /objective/i, /problem/i],
   },
   {
     id: "no-unresolved-design",
     name: "no unresolved design decision",
+    // Covers: no unresolved design decision, no unresolved, no open questions,
+    // design is decided, decided, headings. Narrower design.*decided variants
+    // are subsumed by decided / no unresolved.
     patterns: [
-      /no unresolved design decision/i,
       /no unresolved/i,
       /no open questions/i,
-      /design is decided/i,
-      /design.*decided/i,
       /decided/i,
       /^##\s*Decision\b/im,
       /^##\s*Design\b/im,
@@ -45,41 +44,32 @@ export const TRACER_CONCEPTS: readonly TracerConcept[] = [
   {
     id: "acceptance-criteria",
     name: "explicit acceptance criteria",
-    patterns: [
-      /acceptance criteria/i,
-      /done when/i,
-      /^##\s*Acceptance\b/im,
-      /acceptance/i,
-      /criteria/i,
-      /acceptanceCriteria/i,
-    ],
+    // Covers: acceptance criteria, done when, acceptance, criteria, heading,
+    // schema key acceptanceCriteria. Narrower acceptance criteria literal and
+    // heading are subsumed by acceptance / criteria.
+    patterns: [/acceptance/i, /criteria/i, /done when/i],
   },
   {
     id: "verification-path",
     name: "explicit verification path",
-    patterns: [
-      /verification path/i,
-      /^##\s*Verification\b/im,
-      /verification/i,
-      /verify/i,
-      /how to verify/i,
-      /validation/i,
-    ],
+    // Covers: verification path, verification, verify, how to verify,
+    // validation, heading. Narrower verification path and heading are
+    // subsumed by verification.
+    patterns: [/verification/i, /verify/i, /how to verify/i, /validation/i],
   },
   {
     id: "dependencies-blockers",
     name: "dependencies / blockers",
-    patterns: [
-      /dependencies/i,
-      /dependency/i,
-      /blocker/i,
-      /blocked by/i,
-      /^##\s*Dependencies\b/im,
-    ],
+    // Covers: dependencies, dependency, blocker, blocked by, heading.
+    // Heading is subsumed by dependencies.
+    patterns: [/dependencies/i, /dependency/i, /blocker/i, /blocked by/i],
   },
   {
     id: "small-for-one-session",
     name: "small enough for one session",
+    // Each phrasing is distinct — "one fresh implementation session" does not
+    // contain the contiguous substring "one session", so all three length
+    // variants are needed for exact OR preservation.
     patterns: [
       /small enough/i,
       /one fresh implementation session/i,
@@ -93,13 +83,9 @@ export const TRACER_CONCEPTS: readonly TracerConcept[] = [
   {
     id: "vertical-tracer-bullet",
     name: "prefer vertical / tracer-bullet",
-    patterns: [
-      /tracer.?bullet/i,
-      /vertical/i,
-      /tracer/i,
-      /end.?to.?end/i,
-      /slice/i,
-    ],
+    // Covers: tracer bullet, tracer, vertical, end-to-end, slice.
+    // tracer bullet is subsumed by tracer.
+    patterns: [/vertical/i, /tracer/i, /end.?to.?end/i, /slice/i],
   },
 ] as const;
 

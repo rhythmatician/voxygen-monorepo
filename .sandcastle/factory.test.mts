@@ -1,16 +1,9 @@
 import { describe, it, expect } from "vitest";
 import { isEligible, partitionWorkers } from "./dispatch.mts";
 import type { IssueInput } from "./dispatch.mts";
+import { TRACER_BODY } from "./fixtures.mts";
 
 // Helpers
-const TRACER_BODY = `Scope bounded observable outcome
-no unresolved design decided
-acceptance criteria done when
-verification path verify
-dependencies blocked by none
-small enough for one session
-vertical tracer bullet slice end-to-end
-Execution is carried into this map`;
 
 function issue(overrides: Partial<IssueInput> = {}): IssueInput {
   return {
