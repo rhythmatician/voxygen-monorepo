@@ -60,7 +60,7 @@ _Y_BITS = 8
 _LVL_BITS = 4
 
 SECTION_EXTENT = 32
-SECTION_VOLUME = SECTION_EXTENT ** 3  # 32768
+SECTION_VOLUME = SECTION_EXTENT**3  # 32768
 
 
 # ---------------------------------------------------------------------------

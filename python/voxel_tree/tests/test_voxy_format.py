@@ -172,7 +172,9 @@ class TestLightNibbles:
 
 class TestVoxelFields:
     def test_block_biome_masks(self) -> None:
-        v = encode_voxel(block_id=BLOCK_ID_MASK, biome_id=BIOME_ID_MASK, sky_light=15, block_light=15)
+        v = encode_voxel(
+            block_id=BLOCK_ID_MASK, biome_id=BIOME_ID_MASK, sky_light=15, block_light=15
+        )
         block, biome, sky, block_l = decode_voxel(v)
         assert block == BLOCK_ID_MASK
         assert biome == BIOME_ID_MASK
@@ -200,25 +202,25 @@ class TestMortonHelpers:
     """
 
     def test_full_domain_inverse(self) -> None:
-        for idx in range(32 ** 3):
+        for idx in range(32**3):
             morton = lin2z(idx)
             back = z2lin(morton)
             assert back == idx, f"inverse failed idx={idx} morton={morton} back={back}"
 
     def test_uniqueness_over_domain(self) -> None:
         seen: set[int] = set()
-        for idx in range(32 ** 3):
+        for idx in range(32**3):
             m = lin2z(idx)
             assert m not in seen, f"duplicate morton {m} for idx {idx}"
             seen.add(m)
-        assert len(seen) == 32 ** 3
+        assert len(seen) == 32**3
         # Morton code fits in 15 bits (5 bits *3 =15, max 0..32767)
         assert max(seen) < (1 << 15)
         assert min(seen) == 0
 
     def test_z2lin_inverse_morton(self) -> None:
         # z2lin(lin2z(i)) == i already, but also lin2z(z2lin(m)) == m for all m in range
-        morts = {lin2z(i) for i in range(32 ** 3)}
+        morts = {lin2z(i) for i in range(32**3)}
         for m in morts:
             assert lin2z(z2lin(m)) == m
 
@@ -235,6 +237,7 @@ class TestMortonHelpers:
         # De-interleave should recover original xyz
         back_idx = z2lin(morton)
         assert back_idx == idx
+
         # Brute: y and z differ, so swapping would give different morton
         # Compute swapped version (old bug: y=(idx>>5)&31, z=(idx>>10)&31)
         # and show it differs for this sentinel
@@ -277,7 +280,7 @@ class TestSentinelVolume:
     def test_xyz_to_yzx_to_xyz(self) -> None:
         xyz = self._make_sentinel_xyz()
         # Flatten to YZX linear order (Voxy in-memory long[32768])
-        yzx_linear = np.zeros(32 ** 3, dtype=np.int32)
+        yzx_linear = np.zeros(32**3, dtype=np.int32)
         for y in range(32):
             for z in range(32):
                 for x in range(32):
@@ -298,7 +301,7 @@ class TestSentinelVolume:
         Voxy's ``Arrays.copyData`` + ``reshape`` pattern assumes axis 0=y, 1=z, 2=x.
         """
         xyz = self._make_sentinel_xyz()
-        yzx = np.zeros(32 ** 3, dtype=np.int32)
+        yzx = np.zeros(32**3, dtype=np.int32)
         for y in range(32):
             for z in range(32):
                 for x in range(32):
@@ -313,20 +316,20 @@ class TestSentinelVolume:
 
     def test_morton_order_round_trip(self) -> None:
         xyz = self._make_sentinel_xyz()
-        yzx = np.zeros(32 ** 3, dtype=np.int32)
+        yzx = np.zeros(32**3, dtype=np.int32)
         for y in range(32):
             for z in range(32):
                 for x in range(32):
                     yzx[yzx_index(x, y, z)] = int(xyz[x, y, z])
         # Morton-serialized view: morton code indexes yzx
-        morton_view = np.zeros(32 ** 3, dtype=np.int32)
-        for idx in range(32 ** 3):
+        morton_view = np.zeros(32**3, dtype=np.int32)
+        for idx in range(32**3):
             m = lin2z(idx)
             # Store yzx[idx] at position m → mortonView[m] = yzx[idx]
             morton_view[m] = yzx[idx]
         # Inverse: for each morton position, recover yzx via z2lin
-        yzx_back = np.zeros(32 ** 3, dtype=np.int32)
-        for m in range(32 ** 3):
+        yzx_back = np.zeros(32**3, dtype=np.int32)
+        for m in range(32**3):
             idx = z2lin(m)
             yzx_back[idx] = morton_view[m]
         assert np.array_equal(yzx, yzx_back)
@@ -351,16 +354,16 @@ class TestSentinelVolume:
           1. argsort(lin2z) equals z2lin (bijection check).
           2. Correct inversion is morton[lin2z] == linear, not morton[argsort].
         """
-        lin2z_table = np.array([lin2z(i) for i in range(32 ** 3)], dtype=np.int32)
+        lin2z_table = np.array([lin2z(i) for i in range(32**3)], dtype=np.int32)
         order_via_argsort = np.argsort(lin2z_table)
-        order_via_z2lin = np.array([z2lin(m) for m in range(32 ** 3)], dtype=np.int32)
+        order_via_z2lin = np.array([z2lin(m) for m in range(32**3)], dtype=np.int32)
         assert np.array_equal(order_via_argsort, order_via_z2lin)
         # Build a Morton-ordered view of a linear identity array: morton[m] = linear[z2lin(m)]
-        yzx = np.arange(32 ** 3, dtype=np.int32)
+        yzx = np.arange(32**3, dtype=np.int32)
         morton_view = np.empty_like(yzx)
-        for i in range(32 ** 3):
+        for i in range(32**3):
             morton_view[lin2z(i)] = yzx[i]  # morton[lin2z(i)] = linear[i]
         # Correct inverse: linear[i] = morton[lin2z(i)]
-        assert np.array_equal(np.array([morton_view[lin2z(i)] for i in range(32 ** 3)]), yzx)
+        assert np.array_equal(np.array([morton_view[lin2z(i)] for i in range(32**3)]), yzx)
         # The doc's ``morton[argsort] == linear`` would be double-application and is false:
         assert not np.array_equal(morton_view[order_via_argsort], yzx)
