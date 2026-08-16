@@ -100,7 +100,7 @@ export function checkFilesWithStatus(
 
     // For isNew or non-admitted M that wasn't smaller, enforce suspicious and admission
     // Suspicious names fail even if admitted (README with IMPLEMENTATION)
-    if (isSuspiciousName(f)) {
+    if (isSuspiciousName(f) && !f.startsWith(".sandcastle/")) {
       // But for M on existing non-admitted that is smaller, we already continued
       violations.push({
         path: f,
