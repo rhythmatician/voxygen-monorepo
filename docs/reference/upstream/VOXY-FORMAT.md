@@ -1,10 +1,29 @@
-# Voxy On-Disk & In-Memory Format
+# Voxy On-Disk & In-Memory Format — Version-Bound Upstream Reference
 
-> **Source:** Audited from `MCRcortex/voxy` source code (v0.2.11-alpha) at
-> `python/tools/fabric-server/runtime/mods/voxy-0.2.11-alpha.jar`
-> (sha256 `63d1747017041b659ef620f589006d079d3574e3124dbdb165f9998533a7920c`),
-> mirrored at `MCRcortex/voxy` commit `337b919` (`dev` branch). All claims below
-> are grounded in specific Java files (see per-section citations).
+> **Status:** version-bound upstream reference — do not edit to describe a different upstream version
+>
+> doc-type: external-reference
+> source-revision: 337b919 (voxy dev branch, jar sha256 63d1747017041b659ef620f589006d079d3574e3124dbdb165f9998533a7920c)
+>
+> **Upstream project:** Voxy (MCRcortex/voxy)
+>
+> **Upstream version:** 0.2.11-alpha
+>
+> **Exact source revision / commit:** `337b919` (`dev` branch, mirrored at `MCRcortex/voxy`)
+>
+> **Artifact inspected:** `python/tools/fabric-server/runtime/mods/voxy-0.2.11-alpha.jar`
+>
+> **Artifact SHA-256:** `63d1747017041b659ef620f589006d079d3574e3124dbdb165f9998533a7920c`
+>
+> **Source corpus inspected:** Voxy source inside the jar and the mirrored `external/voxy` checkout (`WorldSection.java`, `WorldEngine.java`, `Mapper.java`, `Mipper.java`, `VoxelizedSection.java`, `WorldConversionFactory.java`, `WorldUpdater.java`) — all claims below are grounded in specific Java files (see per-section citations)
+>
+> **Symlink:** `external/voxy → /mnt/c/Users/JeffHall/git/MC/reference-code/voxy` — the `external/voxy` path resolves to the mirrored checkout at the commit above.
+>
+> **Research completion date:** 2026-08-16
+>
+> **Scope:** This document describes **only** the named Voxy upstream version. It does not describe current Voxygen implementation, architecture, or decisions.
+>
+> **Invalidation rule:** A newer Voxy upstream version (different jar SHA or commit) requires re-verification against its own jar/source. Do not silently edit this file to describe a different Voxy version — create a separately versioned artifact.
 
 ---
 
