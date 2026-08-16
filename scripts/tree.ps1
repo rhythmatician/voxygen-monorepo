@@ -121,9 +121,18 @@ if ($useGit) {
   $writer = [System.IO.StreamWriter]::new($OutputFile, $false, [System.Text.Encoding]::UTF8)
   try {
     $repoRoot = (Get-Location).Path
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $gitHash = ""
+    if (Get-Command git -ErrorAction SilentlyContinue) {
+      $gitHash = & git rev-parse --short HEAD 2>$null
+      if ($LASTEXITCODE -ne 0) { $gitHash = "" }
+    }
     $writer.WriteLine("Folder PATH listing for volume $([System.IO.Path]::GetPathRoot($repoRoot))")
     $writer.WriteLine("Volume serial number is 0000-0000")
     $writer.WriteLine($repoRoot)
+    $writer.WriteLine("Generated: $timestamp")
+    if ($gitHash) { $writer.WriteLine("Git commit: $gitHash") }
+    $writer.WriteLine("")
     Write-Tree -Nodes $root -Prefix "" -Writer $writer
   } finally {
     $writer.Close()
@@ -150,7 +159,20 @@ $excludePatterns = @(
 )
 
 "" | Out-File -FilePath $OutputFile -Encoding utf8
-Write-Host "Generating tree output..." -ForegroundColor Cyan
+  $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+  $gitHash = ""
+  if (Get-Command git -ErrorAction SilentlyContinue) {
+    $gitHash = & git rev-parse --short HEAD 2>$null
+    if ($LASTEXITCODE -ne 0) { $gitHash = "" }
+  }
+  $repoRoot = (Get-Location).Path
+  "Folder PATH listing for volume $([System.IO.Path]::GetPathRoot($repoRoot))" | Out-File -FilePath $OutputFile -Encoding utf8 -Append
+  "Volume serial number is 0000-0000" | Out-File -FilePath $OutputFile -Encoding utf8 -Append
+  $repoRoot | Out-File -FilePath $OutputFile -Encoding utf8 -Append
+  "Generated: $timestamp" | Out-File -FilePath $OutputFile -Encoding utf8 -Append
+  if ($gitHash) { "Git commit: $gitHash" | Out-File -FilePath $OutputFile -Encoding utf8 -Append }
+  "" | Out-File -FilePath $OutputFile -Encoding utf8 -Append
+  Write-Host "Generating tree output..." -ForegroundColor Cyan
 foreach ($dir in $directories) {
   if (Test-Path $dir) {
     Write-Host "Scanning $dir..." -ForegroundColor Gray
