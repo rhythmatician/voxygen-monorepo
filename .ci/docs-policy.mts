@@ -201,25 +201,18 @@ if (import.meta.url.endsWith("docs-policy.mts") && process.argv.some((a) => a.en
   if (baseIdx >= 0 && candIdx >= 0) {
     const base = args[baseIdx + 1];
     const candidate = args[candIdx + 1];
+    if (!base || !candidate) {
+      console.error("R-02 --base and --candidate require values");
+      process.exit(1);
+    }
     let buf: Buffer;
     try {
       buf = execFileSync("git", ["diff", "--name-status", "-z", "--diff-filter=ADMR", base, candidate], { encoding: "buffer" }) as Buffer;
-      // If base == candidate and there are staged changes, git diff with two commits shows nothing; also check HEAD
-      if (buf.length === 0 && base === candidate) {
-        try {
-          buf = execFileSync("git", ["diff", "--name-status", "-z", "--diff-filter=ADMR", "HEAD"], { encoding: "buffer" }) as Buffer;
-        } catch {}
-      }
-      // Also include staged vs HEAD if needed
-      if (buf.length === 0) {
-        try {
-          const staged = execFileSync("git", ["diff", "--cached", "--name-status", "-z", "--diff-filter=ADMR"], { encoding: "buffer" }) as Buffer;
-          if (staged.length > 0) buf = staged;
-        } catch {}
-      }
-    } catch {
-      buf = Buffer.alloc(0);
+    } catch (e) {
+      console.error(`R-02 failed to compute diff between ${base} and ${candidate}: ${(e as Error).message}`);
+      process.exit(1);
     }
+    // Empty diff is simply empty — do not inspect HEAD/index in authoritative mode
     entries = parseNameStatusZ(buf);
   } else if (nameStatusIdx >= 0) {
     const fileArg = args[nameStatusIdx + 1];
@@ -273,9 +266,12 @@ if (import.meta.url.endsWith("docs-policy.mts") && process.argv.some((a) => a.en
     baseSha = args[baseIdx + 1];
     candidateSha = args[candIdx + 1];
   }
+  const isAuthoritative = baseSha !== null && candidateSha !== null;
   const getBaseContent = (p: string): string | null => {
     try {
-      if (baseSha) return execFileSync("git", ["show", `${baseSha}:${p}`], { encoding: "utf-8" });
+      if (isAuthoritative) {
+        return execFileSync("git", ["show", `${baseSha}:${p}`], { encoding: "utf-8" });
+      }
       return execFileSync("git", ["show", `HEAD:${p}`], { encoding: "utf-8" });
     } catch {
       return null;
@@ -283,17 +279,8 @@ if (import.meta.url.endsWith("docs-policy.mts") && process.argv.some((a) => a.en
   };
   const getCandidateContent = (p: string): string | null => {
     try {
-      if (candidateSha) {
-        try {
-          return execFileSync("git", ["show", `${candidateSha}:${p}`], { encoding: "utf-8" });
-        } catch {
-          // For staged but not yet committed (candidate == HEAD with staged new file), try index
-          try {
-            return execFileSync("git", ["show", `:0:${p}`], { encoding: "utf-8" });
-          } catch {
-            return fs.readFileSync(p, "utf-8");
-          }
-        }
+      if (isAuthoritative) {
+        return execFileSync("git", ["show", `${candidateSha}:${p}`], { encoding: "utf-8" });
       }
       return fs.readFileSync(p, "utf-8");
     } catch {

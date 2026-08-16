@@ -422,4 +422,103 @@ describe("R-02 Documentation policy", () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  it("authoritative mode does not consult staged/working-tree file", { timeout: 15000 }, async () => {
+    const { mkdtemp, writeFile, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const path = await import("node:path");
+    const { execSync, spawnSync } = await import("node:child_process");
+    const { readFileSync, existsSync } = await import("node:fs");
+    const dir = await mkdtemp(path.join(tmpdir(), "r02-authoritative-"));
+    const run = (cmd: string) => execSync(cmd, { cwd: dir, encoding: "utf-8" });
+    const runCheck = (base: string, cand: string) => {
+      const r = spawnSync("npx", ["tsx", path.join(process.cwd(), ".ci/docs-policy.mts"), "--base", base, "--candidate", cand], {
+        cwd: dir,
+        encoding: "utf-8",
+      });
+      return r;
+    };
+    try {
+      run("git init -q");
+      run("git config user.email 'test@test.com'");
+      run("git config user.name 'Test'");
+      await writeFile(path.join(dir, "base.txt"), "base");
+      run("git add base.txt");
+      run("git commit -qm base");
+      const baseSha = run("git rev-parse HEAD").trim();
+
+      // candidate: adds inadmissible file with bad content (should FAIL in authoritative mode)
+      const badPath = path.join(dir, "docs/bad.md");
+      execSync(`mkdir -p ${path.dirname(badPath)}`, { cwd: dir });
+      await writeFile(badPath, "# Bad\nThis is not admitted");
+      run("git add docs/bad.md");
+      run("git commit -qm 'add bad'");
+      const candSha = run("git rev-parse HEAD").trim();
+
+      // Now mutate working tree and index to hide the violation:
+      // Overwrite with an admitted external doc with proper provenance, stage it
+      await writeFile(badPath, "---\ndoc-type: external-reference\nsource-revision: abc\n---\n# Bad fixed");
+      // Also stage it so index differs from candidate
+      run("git add docs/bad.md");
+      // Further mutate working tree again to a passing ADR-like content
+      await writeFile(badPath, "# Title\nstatus: accepted\ncontext: x\ndecision: y\nalternatives: z");
+      // Do NOT commit — authoritative mode must still see candidate's original bad content, not index/working tree
+      const r1 = runCheck(baseSha, candSha);
+      expect(r1.status).toBe(1);
+      expect(r1.stderr).toMatch(/not an admitted|Documentation policy violation/);
+
+      // Reverse: candidate is GOOD (admitted external), but working tree/index is BAD
+      // Create a new good candidate from base
+      run("git checkout -f -q " + baseSha);
+      run("git clean -fd -q");
+      const goodPath = path.join(dir, "docs/external/good.md");
+      execSync(`mkdir -p ${path.dirname(goodPath)}`, { cwd: dir });
+      await writeFile(goodPath, "---\ndoc-type: external-reference\nsource-revision: abc\n---\n# Research");
+      run("git add docs/external/good.md");
+      run("git commit -qm 'add good'");
+      const goodCandSha = run("git rev-parse HEAD").trim();
+      // Mutate working tree/index to a violation that would fail if consulted
+      const badForGood = path.join(dir, "docs/inadmissible.md");
+      await writeFile(badForGood, "# Bad leak");
+      run("git add docs/inadmissible.md");
+      await writeFile(badForGood, "# Even worse");
+      const r2 = runCheck(baseSha, goodCandSha);
+      // Authoritative diff base->goodCand only contains docs/external/good.md, not docs/inadmissible.md, so should PASS
+      expect(r2.status).toBe(0);
+      expect(r2.stdout).toMatch(/ok/i);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("invalid/missing candidate revision fails closed (git diff error)", { timeout: 15000 }, async () => {
+    const { mkdtemp, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const path = await import("node:path");
+    const { execSync, spawnSync } = await import("node:child_process");
+    const dir = await mkdtemp(path.join(tmpdir(), "r02-invalid-"));
+    const run = (cmd: string) => execSync(cmd, { cwd: dir, encoding: "utf-8" });
+    try {
+      run("git init -q");
+      run("git config user.email 'test@test.com'");
+      run("git config user.name 'Test'");
+      run("git commit --allow-empty -qm base");
+      const baseSha = run("git rev-parse HEAD").trim();
+      const bogus = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+      const r = spawnSync("npx", ["tsx", path.join(process.cwd(), ".ci/docs-policy.mts"), "--base", baseSha, "--candidate", bogus], {
+        cwd: dir,
+        encoding: "utf-8",
+      });
+      expect(r.status).toBe(1);
+      expect((r.stderr || "") + (r.stdout || "")).toMatch(/failed to compute diff|not found|unknown revision|fatal/i);
+      // Also test missing candidate arg (empty) — should fail
+      const r2 = spawnSync("npx", ["tsx", path.join(process.cwd(), ".ci/docs-policy.mts"), "--base", baseSha, "--candidate", ""], {
+        cwd: dir,
+        encoding: "utf-8",
+      });
+      expect(r2.status).toBe(1);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });
