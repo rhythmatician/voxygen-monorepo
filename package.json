@@ -1,4 +1,10 @@
 {
+  "devEngines": {
+    "os": {
+      "name": "linux",
+      "onFail": "error"
+    }
+  },
   "devDependencies": {
     "@ai-hero/sandcastle": "file:../../sandcastle",
     "@types/node": "^26.2.0",
