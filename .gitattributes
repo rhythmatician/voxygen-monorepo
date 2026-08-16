@@ -5,3 +5,4 @@
 *.bat           text eol=crlf
 *.onnx filter=lfs diff=lfs merge=lfs -text
 graphify-out/graph.json merge=graphify
+.husky/* text eol=lf
