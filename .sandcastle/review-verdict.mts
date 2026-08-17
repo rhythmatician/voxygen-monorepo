@@ -35,7 +35,7 @@ export type AcceptanceCriterionResult = z.infer<typeof acceptanceCriterionSchema
 export type ReviewVerdict = z.infer<typeof reviewVerdictSchema>;
 
 // Keep tag regex in one place — main.mts and tests rely on the same `<verdict>` contract.
-const VERDICT_TAG_RE = /<verdict>([\s\S]*?)<\/verdict>/i;
+const VERDICT_TAG_RE = /<verdict>([\s\S]*?)<\/verdict>/gi;
 
 /**
  * Parse a verdict from raw JSON (e.g., extracted from <verdict> tags or LLM output).
@@ -51,7 +51,7 @@ export function parseReviewVerdict(raw: unknown): ReviewVerdict | null {
  * Returns parsed verdict or null.
  */
 export function parseVerdictFromText(text: string): ReviewVerdict | null {
-  const match = text.match(VERDICT_TAG_RE);
+  const match = Array.from(text.matchAll(VERDICT_TAG_RE)).at(-1);
   if (!match) return null;
   const jsonText = match[1]!.trim();
   try {
@@ -72,8 +72,8 @@ export function parseVerdictFromText(text: string): ReviewVerdict | null {
  * Pure and testable; main.mts delegates to this instead of reimplementing
  * the chain inline.
  */
-export function extractVerdict(review: { output?: unknown; text?: string }): ReviewVerdict | null {
-  const { output, text } = review;
+export function extractVerdict(review: { output?: unknown; stdout?: string; text?: string }): ReviewVerdict | null {
+  const { output, stdout, text } = review;
 
   if (output && typeof output === "object") {
     const direct = parseReviewVerdict(output);
@@ -85,9 +85,10 @@ export function extractVerdict(review: { output?: unknown; text?: string }): Rev
     }
   }
 
-  if (typeof text === "string") {
-    const fromText = parseVerdictFromText(text);
-    if (fromText) return fromText;
+  for (const candidate of [stdout, text]) {
+    if (typeof candidate !== "string") continue;
+    const parsed = parseVerdictFromText(candidate);
+    if (parsed) return parsed;
   }
 
   if (typeof output === "string") {

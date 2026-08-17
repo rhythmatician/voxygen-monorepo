@@ -12,12 +12,12 @@ import * as path from "node:path";
 import { isEligible, branchForIssue, type IssueInput } from "./dispatch.mts";
 import { mayAutonomouslyMerge } from "./ci-policy.mts";
 import {
-  reviewVerdictSchema,
   isVerdictApproved,
   extractVerdict,
   blockedReasonForVerdict,
   type ReviewVerdict,
 } from "./review-verdict.mts";
+import { getErrorMessage, getGhErrorDetails } from "./gh-errors.mts";
 
 const execFileAsync = promisify(execFile);
 
@@ -97,23 +97,14 @@ function ghBinary(): string {
 // ENV PATH="/home/agent/.local/bin:$PATH" after install.sh).
 // Do not introduce a host absolute path (same host-only principle as ghBinary).
 
-function getErrorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  return String(error);
-}
-
-function getGhErrorDetails(error: unknown): string {
-  if (error !== null && typeof error === "object" && "stderr" in error) {
-    const stderr = (error as { stderr?: unknown }).stderr;
-    if (stderr !== undefined && stderr !== null) return String(stderr);
-  }
-  return getErrorMessage(error);
-}
-
-async function safeRunGh(args: string[]): Promise<void> {
+async function safeRunGh(args: string[], failureContext?: string): Promise<boolean> {
   try {
     await runGh(args);
-  } catch {}
+    return true;
+  } catch (error: unknown) {
+    if (failureContext) console.warn(`${failureContext}: ${getErrorMessage(error)}`);
+    return false;
+  }
 }
 
 function ghToken(): string {
@@ -240,8 +231,14 @@ async function claimIssue(issue: IssueInput): Promise<boolean> {
 }
 
 async function transitionToBlocked(issueId: string): Promise<void> {
-  await safeRunGh(["issue", "edit", issueId, "--remove-label", "agent:in-progress"]);
-  await safeRunGh(["issue", "edit", issueId, "--add-label", "agent:blocked"]);
+  await safeRunGh(
+    ["issue", "edit", issueId, "--remove-label", "agent:in-progress"],
+    `Failed to remove agent:in-progress from #${issueId}`,
+  );
+  await safeRunGh(
+    ["issue", "edit", issueId, "--add-label", "agent:blocked"],
+    `Failed to add agent:blocked to #${issueId}`,
+  );
 }
 
 async function markBlocked(issueId: string, branch: string, reason: string): Promise<void> {
@@ -467,6 +464,8 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
           let verdict: ReviewVerdict | null = null;
           let reviewText = "";
           try {
+            // Sandbox handles currently return combined agent output as stdout;
+            // unlike top-level run(), they do not implement Output.object().
             const review = (await sandbox.run({
               name: "reviewer",
               maxIterations: 1,
@@ -478,10 +477,9 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
                 ISSUE_TITLE: issue.title,
                 ISSUE_BODY: issueBody,
               },
-              output: sandcastle.Output.object({ tag: "verdict", schema: reviewVerdictSchema }),
-            })) as unknown as { commits: string[]; output?: unknown; text?: string };
+            })) as unknown as { commits: string[]; output?: unknown; stdout?: string; text?: string };
             verdict = extractVerdict(review);
-            if (typeof review.text === "string") reviewText = review.text;
+            reviewText = review.stdout ?? review.text ?? "";
             return {
               commits: [...implement.commits, ...(review.commits ?? [])],
               verdict,

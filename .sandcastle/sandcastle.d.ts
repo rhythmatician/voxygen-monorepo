@@ -16,7 +16,7 @@ declare module "@ai-hero/sandcastle" {
     [key: string]: unknown;
   }>;
   export function createSandbox(opts: Record<string, unknown>): Promise<{
-    run(opts: Record<string, unknown>): Promise<{ commits: string[]; output?: unknown; [key: string]: unknown }>;
+    run(opts: Record<string, unknown>): Promise<{ commits: string[]; stdout: string; [key: string]: unknown }>;
     close(): Promise<void>;
   }>;
   export function muse(model: string): unknown;
