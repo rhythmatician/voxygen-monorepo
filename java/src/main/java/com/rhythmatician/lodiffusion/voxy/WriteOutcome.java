@@ -15,6 +15,8 @@ public record WriteOutcome(Status status, int nonAirWritten) {
         return new WriteOutcome(Status.SKIPPED_AIR, 0);
     }
 
+    public int nonAirCount() { return nonAirWritten; }
+
     public static WriteOutcome skippedExists() {
         return new WriteOutcome(Status.SKIPPED_EXISTS, 0);
     }

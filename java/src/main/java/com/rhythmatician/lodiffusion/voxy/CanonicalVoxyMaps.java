@@ -31,6 +31,7 @@ final class CanonicalVoxyMaps {
         return VoxyBlockMapper.resolveBiomeMappings(voxyMapper, biomeRegistry);
     }
 
+    // Object: Voxy Mapper not on compile classpath — narrowed via reflection immediately (deep-module seam, see RealVoxyVolumeWriter)
     static int[] buildBlockMap(Object voxyMapper) {
         try {
             java.lang.reflect.Method m =

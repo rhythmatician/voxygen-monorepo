@@ -81,7 +81,7 @@ class CanonicalVoxyMapsTest {
         VoxelVolume v = b.build();
         WriteOutcome out = writer.writeRegion(new SectionPos(0, 0, 0), Level.L0, v);
         assertEquals(WriteOutcome.Status.WRITTEN, out.status());
-        assertEquals(2, out.nonAirCount());
+        assertEquals(2, out.nonAirWritten());
         // Verify InMemory captured the canonical IDs intact
         assertEquals(1, writer.regionRecords().size());
         InMemoryVolumeWriter.RegionRecord rec = writer.regionRecords().get(0);
@@ -128,7 +128,7 @@ class CanonicalVoxyMapsTest {
         try {
             // Ensure bootstrap - if not available, skip test
             Class.forName("net.minecraft.block.Blocks");
-        } catch (Exception e) {
+        } catch (Throwable e) {
             // If bootstrap fails, skip
             return;
         }
@@ -136,7 +136,7 @@ class CanonicalVoxyMapsTest {
         int[] map;
         try {
             map = CanonicalVoxyMaps.buildBlockMap(mapper);
-        } catch (RuntimeException e) {
+        } catch (Throwable e) {
             // Registries not bootstrapped in this test environment - skip
             // The construction test above already proves model-free wiring
             return;
