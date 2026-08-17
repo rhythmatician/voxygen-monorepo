@@ -3,6 +3,7 @@ import {
   reviewVerdictSchema,
   parseReviewVerdict,
   parseVerdictFromText,
+  extractVerdict,
   isVerdictApproved,
   gateBranchesByVerdict,
   verdictFixture,
@@ -51,6 +52,39 @@ describe("parseVerdictFromText", () => {
 
   it("returns null on invalid JSON inside tags", () => {
     expect(parseVerdictFromText("<verdict>{not json}</verdict>")).toBeNull();
+  });
+
+  it("uses the last verdict when the reviewer self-corrects", () => {
+    const approved = verdictFixture({ approved: true, summary: "initial review" });
+    const rejected = verdictFixture({
+      approved: false,
+      findings: [{ message: "verification failed", severity: "blocking" }],
+      acceptanceCriteriaMet: [{ criterion: "tests pass", met: false }],
+      summary: "final review",
+    });
+    const text = `<verdict>${JSON.stringify(approved)}</verdict>\n<verdict>${JSON.stringify(rejected)}</verdict>`;
+
+    expect(parseVerdictFromText(text)).toEqual(rejected);
+  });
+});
+
+describe("extractVerdict", () => {
+  it("extracts a verdict from the stdout returned by sandbox.run", () => {
+    const verdict = verdictFixture({ approved: false, summary: "from sandbox stdout" });
+
+    expect(extractVerdict({ stdout: `<verdict>${JSON.stringify(verdict)}</verdict>` })).toEqual(verdict);
+  });
+
+  it("prefers validated structured output when a future sandbox result provides it", () => {
+    const structured = verdictFixture({ approved: false, summary: "structured" });
+    const stdout = verdictFixture({ approved: true, summary: "stdout" });
+
+    expect(
+      extractVerdict({
+        output: structured,
+        stdout: `<verdict>${JSON.stringify(stdout)}</verdict>`,
+      }),
+    ).toEqual(structured);
   });
 });
 

@@ -18,6 +18,7 @@ import {
   blockedReasonForVerdict,
   type ReviewVerdict,
 } from "./review-verdict.mts";
+import { formatGhFailure, getErrorMessage, getGhErrorDetails } from "./gh-errors.mts";
 
 const execFileAsync = promisify(execFile);
 
@@ -97,23 +98,14 @@ function ghBinary(): string {
 // ENV PATH="/home/agent/.local/bin:$PATH" after install.sh).
 // Do not introduce a host absolute path (same host-only principle as ghBinary).
 
-function getErrorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  return String(error);
-}
-
-function getGhErrorDetails(error: unknown): string {
-  if (error !== null && typeof error === "object" && "stderr" in error) {
-    const stderr = (error as { stderr?: unknown }).stderr;
-    if (stderr !== undefined && stderr !== null) return String(stderr);
-  }
-  return getErrorMessage(error);
-}
-
-async function safeRunGh(args: string[]): Promise<void> {
+async function safeRunGh(args: string[], failureContext?: string): Promise<boolean> {
   try {
     await runGh(args);
-  } catch {}
+    return true;
+  } catch (error: unknown) {
+    if (failureContext) console.warn(formatGhFailure(failureContext, error));
+    return false;
+  }
 }
 
 function ghToken(): string {
@@ -240,8 +232,14 @@ async function claimIssue(issue: IssueInput): Promise<boolean> {
 }
 
 async function transitionToBlocked(issueId: string): Promise<void> {
-  await safeRunGh(["issue", "edit", issueId, "--remove-label", "agent:in-progress"]);
-  await safeRunGh(["issue", "edit", issueId, "--add-label", "agent:blocked"]);
+  await safeRunGh(
+    ["issue", "edit", issueId, "--remove-label", "agent:in-progress"],
+    `Failed to remove agent:in-progress from #${issueId}`,
+  );
+  await safeRunGh(
+    ["issue", "edit", issueId, "--add-label", "agent:blocked"],
+    `Failed to add agent:blocked to #${issueId}`,
+  );
 }
 
 async function markBlocked(issueId: string, branch: string, reason: string): Promise<void> {
@@ -260,7 +258,10 @@ async function markIntegrated(issueId: string, branch: string): Promise<void> {
   // TODO(factory-v1): Wayfinder close ownership -- host closes ordinary impl
   // only; Wayfinder skill will own Wayfinder ticket close. See plan-prompt.
   for (const label of ["agent:in-progress", "agent:implement", "agent:blocked"]) {
-    await safeRunGh(["issue", "edit", issueId, "--remove-label", label]);
+    await safeRunGh(
+      ["issue", "edit", issueId, "--remove-label", label],
+      `Failed to remove ${label} from integrated issue #${issueId}`,
+    );
   }
   // Close with audit comment
   try {
@@ -467,7 +468,9 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
           let verdict: ReviewVerdict | null = null;
           let reviewText = "";
           try {
-            const review = (await sandbox.run({
+            // Current sandbox handles ignore Output.object() and return stdout;
+            // retaining the request lets an upgraded Sandcastle return output.
+            const review = await sandbox.run({
               name: "reviewer",
               maxIterations: 1,
               agent: sandcastle.muse("muse-spark-1.2-contributor"),
@@ -479,9 +482,9 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
                 ISSUE_BODY: issueBody,
               },
               output: sandcastle.Output.object({ tag: "verdict", schema: reviewVerdictSchema }),
-            })) as unknown as { commits: string[]; output?: unknown; text?: string };
+            });
             verdict = extractVerdict(review);
-            if (typeof review.text === "string") reviewText = review.text;
+            reviewText = review.stdout;
             return {
               commits: [...implement.commits, ...(review.commits ?? [])],
               verdict,
