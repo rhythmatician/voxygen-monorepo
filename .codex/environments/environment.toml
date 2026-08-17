@@ -54,37 +54,70 @@ echo "[setup] Done."
 """
 
 [setup.win32]
-script = """
+script = '''
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 Write-Host "[setup.win32] Windows environment setup..."
 
-# Node 22 - Codex Windows images may already have Node; ensure version
-try { node --version; npm --version } catch { Write-Host "Installing Node 22..."; winget install OpenJS.NodeJS.LTS --version 22 --silent }
+# Node 22 - ensure exact v22 with accept flags; reinstalls if non-22 version present
+$needNode = $true
+try {
+  $v = (node --version 2>$null)
+  if ($v -match "v22\.") { $needNode = $false; Write-Host "Node $v already satisfies v22" }
+  else { Write-Host "Node $v does not satisfy v22, will reinstall" }
+} catch { Write-Host "Node not found, will install v22" }
+if ($needNode) {
+  Write-Host "Installing Node 22..."
+  winget install --id OpenJS.NodeJS.LTS --version 22 --silent --accept-package-agreements --accept-source-agreements
+  $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+}
+node --version
+$nodeVer = (node --version)
+if (-not ($nodeVer -match "v22\.")) { throw "Node 22 required, found $nodeVer" }
+npm --version
 
-Write-Host "[setup.win32] Installing Node dependencies..."
-# devEngines in package.json enforces os=linux; Windows Codex envs should still install
-# for isolated Windows runs. WSL users should use the default [setup] instead.
-npm ci
+Write-Host "[setup.win32] Node project is WSL-only (devEngines.os=linux, onFail=error)"
+Write-Host "Skipping 'npm ci' on Windows - EBADDEVENGINES is expected per .sandcastle/dev-engines.test.mts. Use WSL/Ubuntu default [setup] for Node dependencies."
 
 Write-Host "[setup.win32] Ensuring uv 0.8.8..."
-try { uv --version } catch { powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex" }
+$needUv = $true
+try {
+  $uvVer = (uv --version 2>$null)
+  if ($uvVer -match "0\.8\.8") { $needUv = $false; Write-Host "uv $uvVer already satisfies 0.8.8" }
+  else { Write-Host "uv $uvVer does not satisfy 0.8.8, will reinstall" }
+} catch { Write-Host "uv not found, will install 0.8.8" }
+if ($needUv) {
+  Write-Host "Installing uv 0.8.8..."
+  powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+  $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User") + ";" + "$env:USERPROFILE\.cargo\bin"
+  try { uv self update --version 0.8.8 } catch { Write-Host "uv self update failed, continuing with installed version" }
+}
 uv --version
+$uvVer = (uv --version)
+if (-not ($uvVer -match "0\.8\.8")) { throw "uv 0.8.8 required, found $uvVer - check astral-sh/setup-uv@v6 pin" }
 
 Write-Host "[setup.win32] Syncing Python environment..."
 uv lock --project python --check
 uv sync --project python --locked --group dev --extra test --extra type_stubs
 
-Write-Host "[setup.win32] Verifying Voxy artifact (requires jq + sha256sum)..."
-bash .ci/install-voxy.sh verify
-bash .ci/install-voxy.sh install
+Write-Host "[setup.win32] Verifying pinned Voxy artifact (PowerShell-native, no bash/jq)..."
+$manifest = Get-Content .ci/voxy-artifact.json -Raw | ConvertFrom-Json
+$sourcePath = $manifest.path
+$expectedSha = $manifest.sha256.ToLower()
+if (-not (Test-Path $sourcePath)) { throw "Voxy artifact not found at $sourcePath" }
+$actualSha = (Get-FileHash -Algorithm SHA256 $sourcePath).Hash.ToLower()
+if ($actualSha -ne $expectedSha) { throw "Voxy sha256 mismatch: expected $expectedSha got $actualSha for $sourcePath" }
+Write-Host "Voxy artifact verified: $sourcePath ($actualSha)"
+New-Item -ItemType Directory -Force -Path java/mods | Out-Null
+Copy-Item $sourcePath "java/mods/$(Split-Path $sourcePath -Leaf)" -Force
+Write-Host "Voxy artifact installed to java/mods/"
 
 Write-Host "[setup.win32] Java 21 required - ensure Temurin 21 is on PATH"
 java -version
 
 Write-Host "[setup.win32] Done."
-"""
+'''
 
 [cleanup]
 script = """
