@@ -57,7 +57,7 @@ echo "[setup] Done."
 
 [setup.win32]
 script = '''
-Set-StrictMode Off
+Set-StrictMode -Off
 $ErrorActionPreference = "Stop"
 # FIX: StrictMode breaks C:\Program Files\nodejs\npm.ps1 ($MyInvocation.Statement) - use npm.cmd
 
