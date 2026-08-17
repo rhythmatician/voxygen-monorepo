@@ -39,14 +39,6 @@ public class LodiffusionClient implements ClientModInitializer {
         // Publish the singleton so server-side command handlers can query stats.
         LodGenerationService.setInstance(LOD_SERVICE);
 
-        // --- Connection init: pre-load ONNX models during "Logging in..." screen ---
-        ClientPlayConnectionEvents.INIT.register((handler, client) -> {
-            if (VoxyCompat.isAvailable() && Config.useOnnxTerrain()) {
-                HelloTerrainMod.LOGGER.info("[LODiffusion] Connection init — pre-loading ONNX models");
-                LOD_SERVICE.preloadModel();
-            }
-        });
-
         // --- World join: start LOD generation and dataset export ---
         ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> {
             if (!VoxyCompat.isAvailable()) {
