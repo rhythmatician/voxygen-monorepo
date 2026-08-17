@@ -11,7 +11,7 @@ repos:
       - id: docs-policy
         name: R-02 Documentation policy
         language: system
-        entry: npx --yes tsx .ci/docs-policy.mts --base origin/main --candidate HEAD
+        entry: bash -c 'npx --yes tsx .ci/docs-policy.mts --base origin/main --candidate HEAD'
         types: [markdown]
         pass_filenames: false
         require_serial: true
