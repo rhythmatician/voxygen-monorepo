@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "authoritativeCheck": "Factory / Merge Oracle",
   "lanes": {
     "repository": [
@@ -98,19 +98,51 @@
       "SEC-01"
     ]
   },
-  "controlPlanePrefixes": [
-    ".ci/",
-    ".github/CODEOWNERS",
-    ".github/workflows/",
-    ".muse/",
-    ".sandcastle/",
-    "CONTEXT.md",
-    "docs/adr/",
-    "docs/agents/",
-    "java/src/test/java/com/rhythmatician/lodiffusion/voxy/",
-    "python/voxel_tree/contracts/tests/"
+  "pathSets": {
+    "software-factory-control-plane": {
+      "rationale": "These files define agent behavior, CI evidence, or merge authority. A candidate must not rewrite the machinery that judges that same candidate without independent review.",
+      "prefixes": [
+        ".ci/",
+        ".github/hooks/",
+        ".github/workflows/",
+        ".muse/",
+        ".sandcastle/",
+        "docs/agents/",
+        "java/gradle/wrapper/"
+      ],
+      "files": [
+        ".github/CODEOWNERS",
+        "AGENTS.md",
+        "package.json",
+        "package-lock.json",
+        "tsconfig.json",
+        "java/build.gradle",
+        "java/gradle.properties",
+        "java/gradlew",
+        "java/gradlew.bat",
+        "java/settings.gradle",
+        "python/pyproject.toml",
+        "python/uv.lock"
+      ]
+    },
+    "accepted-policy-roots": {
+      "rationale": "These files carry accepted domain language or architectural decisions that agents use as normative inputs; changing them in the same candidate can redefine the basis of review.",
+      "prefixes": [
+        "docs/adr/"
+      ],
+      "files": [
+        "CONTEXT.md"
+      ]
+    }
+  },
+  "evidencePathRules": [
+    {
+      "pathSet": "software-factory-control-plane",
+      "changeClass": "C1_FACTORY"
+    }
   ],
-  "controlPlaneFiles": [
-    "AGENTS.md"
+  "humanApprovalPathSets": [
+    "software-factory-control-plane",
+    "accepted-policy-roots"
   ]
 }

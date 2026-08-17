@@ -21,7 +21,7 @@ jobs:
     name: Classify candidate
     runs-on: ubuntu-latest
     outputs:
-      control-plane: ${{ steps.plan.outputs.control-plane }}
+      human-approval: ${{ steps.plan.outputs.human-approval }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -37,8 +37,8 @@ jobs:
           CANDIDATE_SHA: ${{ github.sha }}
         run: |
           git diff --name-only "$BASE_SHA" "$CANDIDATE_SHA" > changed-files.txt
-          npm run --silent ci:oracle -- --command plan --files changed-files.txt > plan.json
-          node -e "const p=require('./plan.json'); console.log('control-plane='+p.changeClasses.includes('C5'))" >> "$GITHUB_OUTPUT"
+          npm run --silent ci:oracle -- --command plan --files changed-files.txt | tee plan.json
+          node -e "const p=require('./plan.json'); console.log('human-approval='+p.humanApproval.required)" >> "$GITHUB_OUTPUT"
 
   repository:
     name: Repository integrity
@@ -117,7 +117,7 @@ jobs:
       - name: Compile against real Voxy
         run: ./gradlew lint compileJava compileClientJava
         working-directory: java
-      - name: Run isolated unit and protected contract tests
+      - name: Run isolated unit and contract tests
         run: ./gradlew test -PexcludeVoxyTestRuntime
         working-directory: java
       - name: Assemble deployable mod against real Voxy
@@ -167,14 +167,14 @@ jobs:
       - uses: actions/dependency-review-action@v4
         if: github.event_name == 'pull_request'
 
-  control-plane-approval:
-    name: Approve control-plane change
+  protected-root-approval:
+    name: Approve protected-root change
     needs: [classify]
-    if: needs.classify.outputs.control-plane == 'true'
+    if: needs.classify.outputs.human-approval == 'true'
     environment: factory-control-plane
     runs-on: ubuntu-latest
     steps:
-      - run: echo "Control-plane activation approved through protected environment"
+      - run: echo "Protected-root activation approved through protected environment"
 
   merge-oracle:
     name: Factory / Merge Oracle
@@ -189,7 +189,7 @@ jobs:
         cross-language,
         performance,
         security,
-        control-plane-approval,
+        protected-root-approval,
       ]
     runs-on: ubuntu-latest
     steps:
@@ -214,7 +214,7 @@ jobs:
         env:
           CANDIDATE_SHA: ${{ github.sha }}
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-          HUMAN_APPROVED: ${{ needs.classify.outputs.control-plane != 'true' || needs.control-plane-approval.result == 'success' }}
+          HUMAN_APPROVED: ${{ needs.classify.outputs.human-approval != 'true' || needs.protected-root-approval.result == 'success' }}
         run: npm run ci:oracle -- --command decide --files changed-files.txt --candidate "$CANDIDATE_SHA" --base "$BASE_SHA" --evidence evidence.json --human-approved "$HUMAN_APPROVED" --issue "${{ github.event.pull_request.number }}" --output factory-evidence-manifest.json
       - uses: actions/upload-artifact@v4
         if: always()

@@ -594,13 +594,13 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
               prBody,
             ]);
             console.log(`Created PR: ${prUrl}`);
-            // C5 changes may never grant themselves autonomous merge authority.
+            // Privileged changes may never grant themselves autonomous merge authority.
             try {
               const prNumber = prUrl.match(/\/pull\/(\d+)/)?.[1];
               if (prNumber) {
                 const changed = execSync("git diff --name-only origin/main...HEAD", { encoding: "utf8" }).split(/\r?\n/).filter(Boolean);
                 if (!mayAutonomouslyMerge(changed)) {
-                  console.log(`PR #${prNumber} changes the control plane; independent human approval is required`);
+                  console.log(`PR #${prNumber} changes a protected root; independent human approval is required`);
                 } else {
                   await runGh(["pr", "merge", prNumber, "--auto", "--merge"]);
                   console.log(`Auto-merge enabled for PR #${prNumber}; Factory / Merge Oracle remains authoritative`);
