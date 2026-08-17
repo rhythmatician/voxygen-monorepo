@@ -12,6 +12,7 @@ These documents are **historical truth for the named upstream version** — not 
 ## Current references
 
 * `minecraft-1.21.11-worldgen-seams.md` — Minecraft 1.21.11 worldgen seams (NoiseRouter, DensityFunction, NoiseChunk, NoiseSettings, RandomState, noise stack, Climate/BiomeSource, Aquifer, Beardifier, Blender, SurfaceSystem, Carvers, etc.)
+* `minecraft-1.21.11-terrain-signal-lattices.md` — dimension-aware signal spacing, phase, halo, resampling proofs, and cache-key constraints; executable mirror in `voxel_tree.contracts.terrain_signals`
 * `voxy-0.2.11-alpha-storage-and-lod-seams.md` — Voxy 0.2.11-alpha storage and LOD seams (WorldSection geometry, key encoding, per-voxel packing, Mapper, VoxelizedSection, Mipper, nonEmptyChildren, WorldEngine lifecycle, RocksDB/ZSTD serialization)
 
 Both carry a provenance header with status, upstream project/version, version/revision/hash metadata as available (commit + jar SHA-256 for Voxy; decompiled snapshot corpus for Minecraft 1.21.11), inspected corpus, research date, scope, and invalidation rule.
