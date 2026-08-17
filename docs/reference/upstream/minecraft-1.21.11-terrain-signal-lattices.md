@@ -3,6 +3,9 @@
 > **Status:** version-bound upstream reference; executable mirror:
 > `python/voxel_tree/contracts/terrain_signals.py`
 >
+> doc-type: external-reference
+> source-revision: Minecraft 26.1-snapshot-11 (CFR 0.152 decompiled) + Voxy 337b919
+>
 > **Upstream revision:** Minecraft 1.21.11 / `26.1-snapshot-11`, decompiled with
 > CFR 0.152. The inspected corpus is `external/minecraft-src/src`; no upstream
 > Git SHA is available. Re-verify against the Mojang artifact before applying
