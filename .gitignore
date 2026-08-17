@@ -38,3 +38,8 @@ node_modules/
 # VS Code internal diagnostics
 .vscode/prompt-diagnostics.json
 tree_output.txt
+
+# Research scratch (uncommitted exploration, not docs/external)
+research-scratch.md
+research-vanilla-seams.md
+verify.tmp
