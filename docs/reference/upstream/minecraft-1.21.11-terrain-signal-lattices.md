@@ -8,16 +8,20 @@
 > Git SHA is available. Re-verify against the Mojang artifact before applying
 > this contract to another version.
 >
+> **Secondary upstream:** Voxy `0.2.11-alpha` WorldSection geometry, provenance
+> recorded in `voxy-0.2.11-alpha-storage-and-lod-seams.md`.
+>
 > **Research completion date:** 2026-08-16
 >
-> **Scope:** upstream signal geometry and the sampling consequences for Voxygen.
-> Current implementation facts are linked to code/tests rather than repeated.
+> **Scope:** the named upstream revisions' signal and WorldSection geometry.
 
 ## Coordinate and phase contract
 
-All integer division is floor division. This matters at negative coordinates:
-the quart containing block `-1` is `-1`, not `0`. A Voxy WorldSection at Level
-`L` is always 32 voxels wide and covers `W(L) = 32 * 2^L` blocks per axis.
+Quart, density-cell, and aquifer ownership use floor division. This matters at
+negative coordinates: the quart containing block `-1` is `-1`, not `0`. The
+End island function is the exception: Java integer division truncates its
+`blockX/8` and `blockZ/8` inputs toward zero. A Voxy WorldSection at Level `L`
+is always 32 voxels wide and covers `W(L) = 32 * 2^L` blocks per axis.
 
 | lattice | spacing in blocks | phase / ownership | interpolation and cache boundary |
 |---|---:|---|---|
@@ -48,11 +52,23 @@ Nether are 8×4×8. End island density also uses a dedicated seeded simplex
 function; Nether has its own blended-noise scales and a ceiling-oriented
 surface rule.
 
+Router climate availability also differs by dimension:
+
+| dimension | temperature / vegetation | continents | erosion | depth / ridges |
+|---|---|---|---|---|
+| Overworld | shifted octave noise | octave noise | octave noise | derived terrain fields |
+| Nether | unshifted octave noise; each first octave -7 with amplitudes 1,1 | constant zero | constant zero | constant zero |
+| End | constant zero | constant zero | seeded End-island field at truncating 8-block XZ inputs | constant zero |
+
 ## Quantity contract
 
 | quantity | dimensionality and vertical dependence | native frequency statement | exact cache context / safe resampling |
 |---|---|---|---|
-| temperature, vegetation, continents, erosion, ridges | effectively 2D; Y ignored by their shifted-noise inputs | continuous octave noise, not proven band-limited | cache by dimension, seed/router identity and quart-aligned XZ; evaluate at destination coordinates or low-pass before decimation |
+| temperature | effectively 2D; Y ignored by shifted-noise input | first octave -10; amplitudes 1.5,0,1,0,0,0; not band-limited | cache by dimension, seed/router identity and quart-aligned XZ; evaluate at destination coordinates or low-pass before decimation |
+| vegetation | effectively 2D; Y ignored by shifted-noise input | first octave -8; amplitudes 1,1,0,0,0,0; not band-limited | same |
+| continents | effectively 2D; Y ignored by shifted-noise input | first octave -9; amplitudes 1,1,2,2,2,1,1,1,1; not band-limited | same |
+| erosion | effectively 2D; Y ignored by shifted-noise input | first octave -9; amplitudes 1,1,0,1,1; not band-limited | same |
+| ridges | effectively 2D; Y ignored by shifted-noise input | first octave -7; amplitudes 1,2,1,0,0,0; not band-limited | same |
 | depth | 3D: terrain offset plus an explicit Y-clamped gradient | dimension density lattice; Y phase is dimension-dependent | one density-cell corner halo; trilinear is exact only for the already sampled piecewise-trilinear representation |
 | preliminary surface level | 2D result of a vertical density search | quart-aligned XZ queries; discontinuous height result | `NoiseChunk` quart-keyed cache; recompute or declare a height reducer, never assume linear exactness |
 | final density | 3D | density lattice above; upstream represents each cell trilinearly | one upper corner per axis is required to reconstruct a closed tile |
@@ -71,8 +87,8 @@ three Y cells, and two Z cells. Computing an anchor's fluid status then samples
 preliminary surface at chunk offsets extending to `(-3,0)` and `(+1,+1)`.
 Four anchor cells in X/Z and two in Y are a conservative symmetric cache halo
 that includes both the nearest-anchor search and the farthest surface context.
-The executable contract deliberately stores this halo in **anchor cells**, not
-blocks, so a cache key cannot silently reuse density-cell geometry.
+The halo is measured in **anchor cells**, not blocks; density-cell geometry is
+not interchangeable.
 
 ## Per-Level tile derivation
 
@@ -87,6 +103,18 @@ upper corner halo. Applying this formula gives:
 | L2 | 128 | 32×16×32 | 16×32×16 | 32×32×32 |
 | L3 | 256 | 64×32×64 | 32×64×32 | 64×64×64 |
 | L4 | 512 | 128×64×128 | 64×128×64 | 128×128×128 |
+
+That quotient applies only when spacing divides the footprint and phase aligns.
+Aquifer anchors do neither in Y. Counting ownership cells with the exact
+`floor((coordinate-offset)/spacing)` rule instead gives:
+
+| Level | aquifer X/Z cells | aquifer Y cells (depends on WorldSection Y phase) |
+|---:|---:|---:|
+| L0 | 3 | 3–4 |
+| L1 | 5 | 6–7 |
+| L2 | 9 | 11–12 |
+| L3 | 17 | 22–23 |
+| L4 | 33 | 43–44 |
 
 The full Overworld generated height is only 48 density cells; Nether is 16 and
 End is 32. A cache covering a nominal cubic WorldSection must clip or mark
@@ -113,30 +141,13 @@ conditioning grid over one WorldSection has the following hard limits:
 
 The upstream octave fields are not band-limited at those cutoffs. Therefore
 plain point subsampling from the native grid cannot prove reconstruction of all
-frequencies visible at the target voxel spacing (4, 8, and 16 blocks). The
-current L2-L4 8×8 feature reduction may be an empirically good predictor, but
-it is not an alias-free reconstruction contract. A production decimator must
-name its low-pass filter and boundary halo, or record that it is a measured
-lossy feature-selection decision.
+frequencies visible at 4-, 8-, or 16-block target voxels. A decimator needs an
+explicit low-pass filter and boundary halo to make an alias-free claim.
 
-L0 and L1 model grids preserve the Overworld native XZ density samples
-(8 samples over 32 blocks and 16 over 64); they still cannot reconstruct
-block-level veins, aquifer topology, thresholded surfaces, carvers, or features
-from density samples alone. Those quantities require direct generation,
-post-classification aggregation, or an explicitly measured learned residual.
-
-| Level | current conditioning geometry | target voxel | strict sufficiency result |
-|---:|---|---:|---|
-| L0 | noise 15×8×4×8; biome 8×4×8 | 1 block | preserves Overworld density cells, but halves native biome Y and cannot encode block-frequency/topological stages |
-| L1 | noise 15×16×8×16; biome 16×8×16 | 2 blocks | preserves Overworld density cells, but halves native biome Y and cannot prove aquifer/vein reconstruction |
-| L2 | 7 continuous channels + biome on 8×8 XZ | 4 blocks | 16-block sample spacing aliases wavelengths below 32 blocks; measured-lossy only |
-| L3 | 6 climate channels + biome on 8×8 XZ | 8 blocks | 32-block sample spacing aliases wavelengths below 64 blocks; measured-lossy only |
-| L4 | 6 climate channels + biome on 8×8 XZ | 16 blocks | 64-block sample spacing aliases wavelengths below 128 blocks; measured-lossy only |
-
-No Level therefore has a proof of reconstructing every upstream frequency
-visible at its voxel scale. L0/L1 preserve the density representation; L2-L4
-trade exactness for an empirical feature budget. That distinction is the gate
-for any future conditioning-cache tiling decision.
+Even a grid that preserves every density cell cannot reconstruct block-level
+veins, aquifer topology, thresholded surfaces, carvers, or features from density
+alone. Those quantities require their own upstream generation or a declared
+post-classification aggregation rule.
 
 ## Conditioning-cache key and invalidation
 
@@ -144,21 +155,10 @@ The minimum safe key is:
 
 ```text
 (contractRevision, dimension, seed/routerIdentity, signalMask,
- nativeSpacing, interpolationPolicy, haloCells, Level, WorldSectionXYZ)
+ nativeSpacing, ownershipPhase, interpolationPolicy, haloCells,
+ Level, WorldSectionXYZ)
 ```
 
-`terrain_signals.cache_key()` encodes every geometry field except
-`seed/routerIdentity` and `signalMask`, which belong to the future cache owner.
-That owner must add them rather than weakening this key. Tile origin is always
-derived by floor-aligned WorldSection coordinates, so negative coordinates do
-not require a special case.
-
-## Preserve Futures disposition
-
-This audit permits dimension-aware cache/tile work to proceed, with three hard
-guards:
-
-1. End density tensors use 8×4×8 cells, not Overworld's 4×8×4.
-2. Aquifer, biome, and density caches retain distinct lattice and halo policy.
-3. L2-L4 8×8 conditioning is labelled measured-lossy until a filter plus
-   per-Level error bound proves otherwise.
+Tile origins use floor-aligned WorldSection coordinates, so the same key rule
+holds at negative coordinates. Omitting dimension, phase, or halo permits two
+geometrically different upstream evaluations to collide.
