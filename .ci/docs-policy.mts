@@ -19,6 +19,7 @@ const ADMITTED = [
   /^\.sandcastle\/CODING_STANDARDS\.md$/,
   /^docs\/external\/.+\.md$/,
   /^docs\/reference\/upstream\/.+\.md$/,
+  /^docs\/FUTURES\.md$/,
   // grandfathered version-pinned external-reference — prefer docs/external/ for new
   /^python\/docs\/VOXY-FORMAT\.md$/,
 ];
