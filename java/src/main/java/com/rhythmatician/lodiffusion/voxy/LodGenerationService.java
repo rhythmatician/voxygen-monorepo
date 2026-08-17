@@ -22,34 +22,39 @@ import net.minecraft.world.World;
 public final class LodGenerationService {
 
     /** How many sections of Y range to generate (from y=-64 upward). */
-    private static final int Y_SECTIONS = 16;
-    private static final int Y_BASE_SECTION = -4;
+    // Source of truth: GenerationSession.Y_SECTIONS
+    static final int Y_SECTIONS = GenerationSession.Y_SECTIONS;
+    static final int Y_BASE_SECTION = GenerationSession.Y_BASE_SECTION;
 
     /** Minimum block Y in the Minecraft world (floor of bedrock). */
-    static final int MIN_WORLD_BLOCK_Y = Y_BASE_SECTION * 16;
+    static final int MIN_WORLD_BLOCK_Y = GenerationSession.MIN_WORLD_BLOCK_Y;
     /** Maximum block Y in the Minecraft world (exclusive). */
-    static final int MAX_WORLD_BLOCK_Y = (Y_BASE_SECTION + Y_SECTIONS) * 16;
+    static final int MAX_WORLD_BLOCK_Y = GenerationSession.MAX_WORLD_BLOCK_Y;
 
     /**
      * Returns {@code true} if the entire world-section at the given level and
      * Y coordinate falls outside the Minecraft world Y range.
      */
     static boolean isOutOfWorldY(int level, int wsY) {
-        int blockYMin = WorldSectionCoord.worldSectionToBlockMin(wsY, level);
-        int blockYMaxExcl = WorldSectionCoord.worldSectionToBlockMax(wsY, level) + 1;
-        return blockYMaxExcl <= MIN_WORLD_BLOCK_Y || blockYMin >= MAX_WORLD_BLOCK_Y;
+        return GenerationSession.isOutOfWorldY(level, wsY);
     }
 
     /** Generation radius (in sections). */
-    private static final int GENERATION_RADIUS = Config.getInt("generationRadius", 32);
+    // Mirrors GenerationSession.GENERATION_RADIUS — same config key
+    private static final int GENERATION_RADIUS = GenerationSession.GENERATION_RADIUS;
 
     // Synthetic heightmap constants for test-visible fallback (mirrors GenerationSession)
-    private static final float SEA_LEVEL = 62f;
-    private static final float HEIGHT_AMPLITUDE = 24f;
+    // Mirrors GenerationSession.SEA_LEVEL — source of truth in session
+    private static final float SEA_LEVEL = GenerationSession.SEA_LEVEL;
+    private static final float HEIGHT_AMPLITUDE = GenerationSession.HEIGHT_AMPLITUDE;
 
     /**
      * Pre-sampled conditioning data for a single 16x16 column.
      * Retained here for {@code ChunkScheduler.ColumnContextProvider} and {@code SectionTask}.
+     * Shape mirrors {@link GenerationSession.ColumnContext} — source of truth is the session;
+     * this public record is kept for external callers and is kept in sync via the shared
+     * field names and fallback heightmap logic. A future extraction to a shared
+     * {@code ColumnContext} type can replace both if the API stabilizes.
      */
     public record ColumnContext(
         float[][] rawHm,
@@ -84,27 +89,13 @@ public final class LodGenerationService {
      * Each axis uses 20 bits, supporting +/-524287 sections.
      */
     static long sectionKey(int x, int y, int z) {
-        return ((long) (x & 0xFFFFF) << 40) | ((long) (y & 0xFFFFF) << 20) | (z & 0xFFFFFL);
+        return GenerationSession.sectionKey(x, y, z);
     }
 
     // Synthetic fallback retained for L1AvailabilityContractTest reflection.
-    private float[][] buildHeightmap(int sectionX, int sectionZ) {
-        float[][] hm = new float[16][16];
-        for (int lx = 0; lx < 16; lx++) {
-            for (int lz = 0; lz < 16; lz++) {
-                float bx = sectionX * 16f + lx;
-                float bz = sectionZ * 16f + lz;
-                float h = SEA_LEVEL;
-                h += HEIGHT_AMPLITUDE * 0.50f * (float) Math.sin(bx * 0.005 + 1.7)
-                                              * (float) Math.cos(bz * 0.007 + 0.3);
-                h += HEIGHT_AMPLITUDE * 0.25f * (float) Math.sin(bx * 0.013 + 3.1)
-                                              * (float) Math.sin(bz * 0.011 + 2.2);
-                h += HEIGHT_AMPLITUDE * 0.12f * (float) Math.cos(bx * 0.037 + 0.9)
-                                              * (float) Math.sin(bz * 0.029 + 4.1);
-                hm[lx][lz] = Math.max(0f, Math.min(320f, h));
-            }
-        }
-        return hm;
+    // Delegates to GenerationSession — source of truth for synthetic fallback
+    float[][] buildHeightmap(int sectionX, int sectionZ) {
+        return GenerationSession.buildHeightmap(sectionX, sectionZ);
     }
 
     /**

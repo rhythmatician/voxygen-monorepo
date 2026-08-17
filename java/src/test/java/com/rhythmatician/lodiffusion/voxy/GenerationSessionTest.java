@@ -187,9 +187,9 @@ class GenerationSessionTest {
     }
 
     @Test
-    void noPublicTerrainCandidateInterface() throws Exception {
-        // Ensure TerrainCandidate is not public
-        Class<?> c = Class.forName("com.rhythmatician.lodiffusion.voxy.GenerationSession$TerrainCandidate");
+    void noPublicTerrainCandidateInterface() {
+        // Ensure TerrainCandidate is not public — uses compile-time reference, not dynamic lookup
+        Class<?> c = GenerationSession.TerrainCandidate.class;
         assertFalse(java.lang.reflect.Modifier.isPublic(c.getModifiers()), "TerrainCandidate must be package-private, not public");
     }
 }

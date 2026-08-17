@@ -47,8 +47,8 @@ import net.minecraft.world.chunk.ChunkStatus;
 public final class GenerationSession {
 
     /** How many sections of Y range to generate (from y=-64 upward). */
-    private static final int Y_SECTIONS = 16;  // y sections -4..11 → blocks -64..191
-    private static final int Y_BASE_SECTION = -4;  // start at y=-64
+    static final int Y_SECTIONS = 16;  // y sections -4..11 → blocks -64..191
+    static final int Y_BASE_SECTION = -4;  // start at y=-64
 
     /**
      * Extra margin (in sections) above and below the surface to generate.
@@ -78,7 +78,7 @@ public final class GenerationSession {
      * Generation radius (in sections).  All sections within this Manhattan
      * distance from the player are generated, closest first.
      */
-    private static final int GENERATION_RADIUS =
+    static final int GENERATION_RADIUS =
             Config.getInt("generationRadius", 32);
 
         /** Demand-driven queue poll sleep when there is no pending job. */
@@ -197,6 +197,14 @@ public final class GenerationSession {
     private final TerrainCandidate learnedCandidate = new TerrainCandidate() {
         @Override
         public VoxelVolume produceSection(SectionPos pos, ColumnContext ctx) {
+            // L0 heightmap path is shared between fallback and learned for the simple
+            // produceSection seam (ColumnContext conditioning). True learned inference
+            // for L0-L4 with 3D noise/climate and parentInput is exercised via the
+            // demand pipeline: processDemandRequest -> voxyModelRunner.runL* ->
+            // VoxelPredictionDecoder.fromOctreeArgmax, which writes regions (extent 32)
+            // through VoxelVolumeWriter.writeRegion. Keeping produceSection on the
+            // fallback decoder here preserves the internal seam shape without broadening
+            // its conditioning inputs; the demand pipeline remains the ONNX entry point.
             return VoxelPredictionDecoder.fromFallback(
                     pos.y(), ctx.rawHm(), ctx.oceanFloorHm(), ctx.biomeIdx());
         }
@@ -225,7 +233,7 @@ public final class GenerationSession {
      * candidate seam and write via the provided writer. No Voxy jar required.
      */
     WriteOutcome produceAndWriteSection(SectionPos pos, ColumnContext ctx, VoxelVolumeWriter writer) {
-        TerrainCandidate c = candidateOverride != null ? candidateOverride : fallbackCandidate;
+        TerrainCandidate c = candidateOverride != null ? candidateOverride : selectCandidate();
         VoxelVolume vol = c.produceSection(pos, ctx);
         if (vol.extent() != 16) {
             throw new IllegalArgumentException("Section candidate must return extent 16");
@@ -237,7 +245,7 @@ public final class GenerationSession {
      * Compose helper for tests: produce a region via candidate and write.
      */
     WriteOutcome produceAndWriteRegion(SectionPos origin, Level level, VoxelVolumeWriter writer) {
-        TerrainCandidate c = candidateOverride != null ? candidateOverride : fallbackCandidate;
+        TerrainCandidate c = candidateOverride != null ? candidateOverride : selectCandidate();
         VoxelVolume vol;
         try {
             vol = c.produceRegion(level, origin, null);
@@ -797,10 +805,10 @@ public final class GenerationSession {
     // ------------------------------------------------------------------ //
 
     /** Sea level in block Y coordinates. */
-    private static final float SEA_LEVEL = 62f;
+    static final float SEA_LEVEL = 62f;
 
     /** Amplitude of terrain height variation (blocks). */
-    private static final float HEIGHT_AMPLITUDE = 24f;
+    static final float HEIGHT_AMPLITUDE = 24f;
 
     /**
      * Build a raw heightmap (in block Y coordinates) for a 16×16 section
@@ -810,7 +818,7 @@ public final class GenerationSession {
      *
      * @return float[16][16] of raw block-Y heights (approx 40–90 range)
      */
-    private float[][] buildHeightmap(int sectionX, int sectionZ) {
+    static float[][] buildHeightmap(int sectionX, int sectionZ) {
         float[][] hm = new float[16][16];
         for (int lx = 0; lx < 16; lx++) {
             for (int lz = 0; lz < 16; lz++) {
@@ -1034,9 +1042,9 @@ public final class GenerationSession {
                         continue;
                     }
 
-                    VoxelVolume vol = VoxelPredictionDecoder.fromFallback(
-                            sy, ctx.rawHm(), ctx.oceanFloorHm(), ctx.biomeIdx());
                     SectionPos pos = new SectionPos(sx, sy, sz);
+                    // Route through internal candidate seam (currently fallback for L0 sections)
+                    VoxelVolume vol = selectCandidate().produceSection(pos, ctx);
                     WriteOutcome outcome;
                     try {
                         outcome = writer.writeSection(pos, vol);
