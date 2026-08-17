@@ -2,7 +2,8 @@
 
 > **Status:** version-bound upstream research — do not edit to describe a different upstream version.
 >
-> **doc-type:** external-research (Documentation Policy §F) — source archaeology, not a Voxygen architecture description.
+> doc-type: external-reference
+> source-revision: 26.1-snapshot-11 (CFR 0.152 decompiled, jar SHA-256 `556C0FA70D367A2D0EC2DF5C9796C77EABE164BF08E0C581FC9CE17FA7436822`; no git SHA)
 >
 > **Research question (GitHub `rhythmatician/voxygen-monorepo#82`, part of #22):** source-grounded ordered DAG of Minecraft worldgen for **Overworld, Nether, and End**, from seed/configuration through climate/noise, biome placement, terrain shaping, aquifers, surface rules, carvers, and placed/configured features (ores, vegetation), recording per stage: I/O + dimensionality, ordering/dependencies, input-completeness + spatial halo, cost, determinism/entropy, and distant-visible impact across Voxy Levels L0–L4.
 >
