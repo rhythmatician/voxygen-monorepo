@@ -1,7 +1,22 @@
-# Factory control plane and protected oracles require independent human review.
-/.github/workflows/ @rhythmatician
+# Independent review protects the software factory and explicitly designated policy roots.
 /.ci/ @rhythmatician
+/.github/hooks/ @rhythmatician
+/.github/workflows/ @rhythmatician
+/.muse/ @rhythmatician
 /.sandcastle/ @rhythmatician
+/docs/agents/ @rhythmatician
+/java/gradle/wrapper/ @rhythmatician
+/.github/CODEOWNERS @rhythmatician
 /AGENTS.md @rhythmatician
-/java/src/test/java/com/rhythmatician/lodiffusion/voxy/ @rhythmatician
-/python/voxel_tree/contracts/tests/ @rhythmatician
+/package.json @rhythmatician
+/package-lock.json @rhythmatician
+/tsconfig.json @rhythmatician
+/java/build.gradle @rhythmatician
+/java/gradle.properties @rhythmatician
+/java/gradlew @rhythmatician
+/java/gradlew.bat @rhythmatician
+/java/settings.gradle @rhythmatician
+/python/pyproject.toml @rhythmatician
+/python/uv.lock @rhythmatician
+/docs/adr/ @rhythmatician
+/CONTEXT.md @rhythmatician

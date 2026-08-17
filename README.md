@@ -40,7 +40,7 @@ Push-Location java; rtk proxy .\gradlew.bat :compileJava; Pop-Location
 GitHub only discovers workflows in `.github/workflows/` at the repository root.
 The single authoritative workflow is:
 
-- `.github/workflows/factory-ci.yml` — `Factory / Merge Oracle` is the only authoritative repository check; see `.ci/checks.json` for the check and protected-path registry and `.ci/README.md` for the policy engine.
+- `.github/workflows/factory-ci.yml` — `Factory / Merge Oracle` is the authoritative automated-evidence check; see `.ci/checks.json` for evidence and human-approval path policy and `.ci/README.md` for the trust-boundary invariant.
 
 ## Python from the monorepo root
 

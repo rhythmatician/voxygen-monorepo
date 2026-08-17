@@ -96,7 +96,7 @@ docs/agents/*
 .sandcastle/CODING_STANDARDS.md
 ```
 
-These control the factory and receive stronger protection (C5) than ordinary docs.
+These control the factory and require independent human approval. Ordinary product documentation and tests do not become privileged merely because they are important; protected roots are explicit in `.ci/checks.json` and enforced through base-branch CODEOWNERS review.
 
 ## H. No duplication
 
