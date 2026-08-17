@@ -175,11 +175,17 @@ public final class RealVoxyVolumeWriter implements VoxelVolumeWriter {
         if (volume.extent() != 16) {
             throw new IllegalArgumentException("writeSection requires extent 16, got " + volume.extent());
         }
-        if (!VoxyCompat.isAvailable()) {
-            throw new VolumeUnavailableException("Voxy not available");
-        }
-        if (VoxyCompat.sectionExists(worldEngine, pos.x(), pos.y(), pos.z())) {
-            return WriteOutcome.skippedExists();
+        try {
+            if (!VoxyCompat.isAvailable()) {
+                throw new VolumeUnavailableException("Voxy not available");
+            }
+            if (VoxyCompat.sectionExists(worldEngine, pos.x(), pos.y(), pos.z())) {
+                return WriteOutcome.skippedExists();
+            }
+        } catch (VolumeUnavailableException e) {
+            throw e;
+        } catch (IllegalStateException | LinkageError e) {
+            throw new VolumeUnavailableException("Voxy not available: " + e.getMessage(), e);
         }
         if (volume.isAllAir()) {
             return WriteOutcome.skippedAir();
@@ -203,20 +209,26 @@ public final class RealVoxyVolumeWriter implements VoxelVolumeWriter {
             throw new IllegalArgumentException(
                     "origin " + origin + " not aligned to " + level + " regionSections=" + level.regionSections());
         }
-        if (!VoxyCompat.isAvailable()) {
-            throw new VolumeUnavailableException("Voxy not available");
+        try {
+            if (!VoxyCompat.isAvailable()) {
+                throw new VolumeUnavailableException("Voxy not available");
+            }
+            if (isRegionFullyPopulated(origin, level)) {
+                return WriteOutcome.skippedExists();
+            }
+            if (volume.isAllAir()) {
+                return WriteOutcome.skippedAir();
+            }
+            int nonAir = writeRegionInternal(origin, level, volume);
+            if (nonAir == 0) {
+                return WriteOutcome.skippedAir();
+            }
+            return WriteOutcome.written(nonAir);
+        } catch (VolumeUnavailableException e) {
+            throw e;
+        } catch (IllegalStateException | LinkageError e) {
+            throw new VolumeUnavailableException("Voxy not available: " + e.getMessage(), e);
         }
-        if (isRegionFullyPopulated(origin, level)) {
-            return WriteOutcome.skippedExists();
-        }
-        if (volume.isAllAir()) {
-            return WriteOutcome.skippedAir();
-        }
-        int nonAir = writeRegionInternal(origin, level, volume);
-        if (nonAir == 0) {
-            return WriteOutcome.skippedAir();
-        }
-        return WriteOutcome.written(nonAir);
     }
 
     /**
@@ -237,6 +249,10 @@ public final class RealVoxyVolumeWriter implements VoxelVolumeWriter {
                 }
             }
             return false;
+        } catch (VolumeUnavailableException e) {
+            throw e;
+        } catch (IllegalStateException | LinkageError e) {
+            throw new VolumeUnavailableException("Voxy not available: " + e.getMessage(), e);
         } catch (Exception e) {
             LOGGER.warn("checkExistsViaAcquire failed lvl={} ws=({},{},{}): {}", lvl, wsX, wsY, wsZ, e.toString());
             // Conservative: if we cannot verify, do not claim existence; caller will write.
