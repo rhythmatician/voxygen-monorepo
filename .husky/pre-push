@@ -1,4 +1,25 @@
 #!/bin/sh
-if command -v git-lfs >/dev/null 2>&1; then
-  git lfs pre-push "$@"
+# Block direct pushes from or to main — use a branch + PR instead.
+
+branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
+if [ "$branch" = "main" ]; then
+  echo "Direct pushes from 'main' are blocked. Push from a feature branch instead." >&2
+  exit 1
 fi
+
+# Block pushes that target refs/heads/main on the remote.
+# stdin: <local ref> <local sha> <remote ref> <remote sha> per ref.
+tmpfile="$(mktemp 2>/dev/null || echo /tmp/husky-pre-push.$$.tmp)"
+cat > "$tmpfile"
+while read local_ref local_sha remote_ref remote_sha; do
+  if [ "$remote_ref" = "refs/heads/main" ]; then
+    echo "Direct pushes to 'origin/main' are blocked. Open a pull request instead." >&2
+    rm -f "$tmpfile"
+    exit 1
+  fi
+done < "$tmpfile"
+
+if command -v git-lfs >/dev/null 2>&1; then
+  git lfs pre-push "$@" < "$tmpfile"
+fi
+rm -f "$tmpfile"
