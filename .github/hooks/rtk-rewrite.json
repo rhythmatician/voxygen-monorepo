@@ -4,7 +4,7 @@
     "PreToolUse": [
       {
         "type": "command",
-        "command": "rtk hook copilot",
+        "command": "sh -c 'command -v rtk >/dev/null 2>&1 && rtk hook copilot || exit 0'",
         "cwd": ".",
         "timeout": 5
       }
@@ -12,8 +12,8 @@
     "preToolUse": [
       {
         "type": "command",
-        "bash": "rtk hook copilot",
-        "powershell": "rtk hook copilot",
+        "bash": "command -v rtk >/dev/null 2>&1 && rtk hook copilot || exit 0",
+        "powershell": "Get-Command rtk -ErrorAction SilentlyContinue | Out-Null; if ($?) { rtk hook copilot } else { exit 0 }",
         "cwd": ".",
         "timeoutSec": 5
       }
