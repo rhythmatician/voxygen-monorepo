@@ -587,12 +587,8 @@ public final class GenerationSession {
             Registry<Biome> biomeRegistry =
                     world.getRegistryManager().getOrThrow(RegistryKeys.BIOME);
 
-                    if (voxyModelRunner != null && noiseAccess != null
-                        && voxyModelRunner.vocabulary() != null) {
-                int[] canonicalBiomeToVoxy = RealVoxyVolumeWriter.buildBiomeMap(voxyMapper, biomeRegistry);
-                int[] canonicalBlockToVoxy = RealVoxyVolumeWriter.buildBlockMap(
-                        voxyModelRunner.vocabulary(), voxyMapper);
-                VoxyIdMaps idMaps = new VoxyIdMaps(canonicalBiomeToVoxy, canonicalBlockToVoxy);
+                    if (voxyModelRunner != null && noiseAccess != null) {
+                VoxyIdMaps idMaps = CanonicalVoxyMaps.from(voxyMapper, biomeRegistry);
                 // Message-Chains fix: factory encapsulates VoxyCompat.getMapper chain.
                 VoxelVolumeWriter writer = RealVoxyVolumeWriter.create(worldEngine, idMaps);
 
@@ -601,9 +597,7 @@ public final class GenerationSession {
 
                 HelloTerrainMod.LOGGER.info(
                     "[LodGen] VoxyModelRunner loaded — starting demand-driven generation "
-                    + "(vocab={}, inFlight={})",
-                    voxyModelRunner.vocabulary() != null
-                        ? voxyModelRunner.vocabulary().size() : "none",
+                    + "(inFlight={})",
                     ShadowRouterJobQueue.inFlightSize());
 
                 boolean produced = runDemandVoxyPipeline(world, writer);
@@ -625,12 +619,7 @@ public final class GenerationSession {
                     "[LodGen] No Voxy model set found — using heightmap fallback generator");
             }
 
-            HeightmapFallbackGenerator.FallbackBlockIds fallbackBlocks =
-                    HeightmapFallbackGenerator.resolveBlockIds(voxyMapper);
-            int[] fallbackBiomeMappings =
-                    HeightmapFallbackGenerator.resolveBiomeMappings(voxyMapper, biomeRegistry);
-            int[] fallbackBlockMap = RealVoxyVolumeWriter.buildFallbackBlockMap(fallbackBlocks);
-            VoxyIdMaps fallbackMaps = new VoxyIdMaps(fallbackBiomeMappings, fallbackBlockMap);
+            VoxyIdMaps fallbackMaps = CanonicalVoxyMaps.from(voxyMapper, biomeRegistry);
             VoxelVolumeWriter fallbackWriter = RealVoxyVolumeWriter.create(worldEngine, fallbackMaps);
 
             waitForPlayerPosition();

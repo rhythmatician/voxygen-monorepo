@@ -127,25 +127,6 @@ public final class RealVoxyVolumeWriter implements VoxelVolumeWriter {
         return VoxyBlockMapper.resolveBiomeMappings(voxyMapper, biomeRegistry);
     }
 
-    public static int[] buildBlockMap(com.rhythmatician.lodiffusion.onnx.BlockVocabulary vocab, Object voxyMapper) {
-        try {
-            java.lang.reflect.Method m =
-                    voxyMapper.getClass().getMethod("getIdForBlockState", net.minecraft.block.BlockState.class);
-            int[] map = new int[vocab.size()];
-            for (int i = 0; i < vocab.size(); i++) {
-                net.minecraft.block.BlockState st = vocab.getState(i);
-                Object id = m.invoke(voxyMapper, st);
-                map[i] = id instanceof Number n ? n.intValue() : 0;
-            }
-            int[] canonical = new int[CanonicalRegistries.BLOCK_COUNT];
-            int n = Math.min(map.length, canonical.length);
-            System.arraycopy(map, 0, canonical, 0, n);
-            return canonical;
-        } catch (Exception e) {
-            throw new RuntimeException("buildBlockMap failed", e);
-        }
-    }
-
     public Object getWorldEngine() {
         return worldEngine;
     }
