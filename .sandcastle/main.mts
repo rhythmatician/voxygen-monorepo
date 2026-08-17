@@ -327,11 +327,30 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
 
   // ----- Phase 0: Deterministic eligibility (host-side, no LLM) -----
   let allCandidates: IssueInput[] = [];
-  try {
-    allCandidates = await fetchOpenImplementIssues();
-  } catch (error: unknown) {
-    console.error(`Failed to fetch issues: ${getErrorMessage(error)}`);
-    break;
+  // Retry fetch with backoff — transient gh/API failures should not kill the whole batch
+  let fetchAttempts = 0;
+  const maxFetchAttempts = 3;
+  while (true) {
+    try {
+      allCandidates = await fetchOpenImplementIssues();
+      break;
+    } catch (error: unknown) {
+      fetchAttempts++;
+      const msg = getErrorMessage(error);
+      console.error(`Failed to fetch issues (attempt ${fetchAttempts}/${maxFetchAttempts}): ${msg}`);
+      if (fetchAttempts >= maxFetchAttempts) {
+        console.error('Max fetch retries reached — skipping iteration, will retry next iteration');
+        await new Promise(r => setTimeout(r, 5000));
+        break;
+      }
+      const backoff = Math.pow(2, fetchAttempts) * 1000;
+      console.log(`Retrying in ${backoff}ms...`);
+      await new Promise(r => setTimeout(r, backoff));
+    }
+  }
+  if (allCandidates.length === 0 && fetchAttempts >= maxFetchAttempts) {
+    console.log('No candidates fetched after retries — continuing to next iteration');
+    continue;
   }
 
   console.log(`Fetched ${allCandidates.length} open issue(s) with agent:implement`);

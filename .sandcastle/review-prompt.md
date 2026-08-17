@@ -14,17 +14,17 @@ This section is the **authoritative source of intent**. It is fetched live for e
 
 > If the body is empty or unavailable, fetch it inside the sandbox with `gh issue view {{ISSUE_NUMBER}} --json body --jq .body` and treat that as authoritative. Never infer acceptance criteria from diff/commits alone.
 
-## Branch diff
+## Branch diff (truncated for prompt size — fetch full diff with tools if needed)
 
-!`git diff {{TARGET_BRANCH}}...{{BRANCH}}`
+!`git diff --stat {{TARGET_BRANCH}}...{{BRANCH}}; echo "---"; git diff {{TARGET_BRANCH}}...{{BRANCH}} | head -c 60000; echo ""; echo "[diff truncated at 60kB — run git diff {{TARGET_BRANCH}}...{{BRANCH}} via Bash tool for full diff]"`
 
 ## Commits on this branch
 
-!`git log {{TARGET_BRANCH}}..{{BRANCH}} --oneline`
+!`git log {{TARGET_BRANCH}}..{{BRANCH}} --oneline --max-count=20`
 
 ## Coding standards
 
-@.sandcastle/CODING_STANDARDS.md
+See `.sandcastle/CODING_STANDARDS.md` — read it via Read tool when needed (not inlined to avoid argv overflow).
 
 # REVIEW PROCESS
 
