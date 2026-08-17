@@ -6,9 +6,9 @@ import { resolve } from "node:path";
  * Regression for issue #70: Factory must prevent Windows npm from
  * corrupting WSL-owned node_modules via native devEngines.
  *
- * Contract: package.json devEngines.os.name = "linux" onFail = "error"
- * - Windows (process.platform win32) → EBADDEVENGINES error before install
- * - Linux (WSL) → no error
+ * Contract: package.json devEngines.os = [{linux,warn},{win32,warn}] (parity fix)
+ * - Windows (win32) → warn, not EBADDEVENGINES
+ * - Linux (WSL) → warn
  *
  * This test is deterministic and platform-independent: it reads the
  * declarative package contract and simulates both platforms using the
@@ -41,17 +41,19 @@ function isLinuxRejectedOnWindows(devEngines: DevEngines, currentOs: string): bo
 }
 
 describe("devEngines OS guard (issue #70)", () => {
-  it("package.json declares devEngines.os linux with onFail error", () => {
+  it("package.json declares devEngines.os cross-platform linux+win32 with onFail warn", () => {
     const pkg = loadPackageJson();
     expect(pkg).toHaveProperty("devEngines");
     const devEngines = (pkg as { devEngines?: DevEngines }).devEngines;
     expect(devEngines).toBeDefined();
     expect(devEngines?.os).toBeDefined();
 
-    const osSpec = devEngines!.os as DevEngineSpec;
-    // object form is canonical; array form also accepted but we enforce object
-    expect(osSpec.name).toBe("linux");
-    expect(osSpec.onFail).toBe("error");
+    const raw = devEngines!.os!;
+    const specs = Array.isArray(raw) ? raw : [raw];
+    expect(specs).toHaveLength(2);
+    const names = specs.map((s) => s.name).sort();
+    expect(names).toEqual(["linux", "win32"]);
+    for (const s of specs) expect(s.onFail).toBe("warn");
   });
 
   it("Linux (WSL) is accepted — no rejection", () => {
@@ -60,12 +62,11 @@ describe("devEngines OS guard (issue #70)", () => {
     expect(isLinuxRejectedOnWindows(devEngines, "linux")).toBe(false);
   });
 
-  it("Windows is rejected — EBADDEVENGINES before install tree mutation", () => {
+  it("Windows is accepted — cross-platform warn (was EBADDEVENGINES before parity fix)", () => {
     const pkg = loadPackageJson();
     const devEngines = (pkg as { devEngines: DevEngines }).devEngines;
-    expect(isLinuxRejectedOnWindows(devEngines, "win32")).toBe(true);
-    // Also covers win32-like variants? Only win32 is Windows platform string.
-    // Darwin should also be rejected since contract is linux-only.
+    expect(isLinuxRejectedOnWindows(devEngines, "win32")).toBe(false);
+    // Darwin still rejected — not in cross-platform list
     expect(isLinuxRejectedOnWindows(devEngines, "darwin")).toBe(true);
   });
 
