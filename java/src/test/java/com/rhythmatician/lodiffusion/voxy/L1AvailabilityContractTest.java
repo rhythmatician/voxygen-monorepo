@@ -41,6 +41,10 @@ class L1AvailabilityContractTest {
     @Test
     void syntheticBuildHeightmap_deterministic_rangeClamped() throws Exception {
         LodGenerationService svc = new LodGenerationService();
+        // Reflection: buildHeightmap is private synthetic fallback with no public accessor.
+        // Direct access would require widening production visibility; reflection keeps
+        // the fallback contract testable without changing the service API.
+        // TODO: consider @VisibleForTesting package-private if this invariant grows.
         Method m = LodGenerationService.class.getDeclaredMethod("buildHeightmap", int.class, int.class);
         m.setAccessible(true);
 
@@ -90,6 +94,9 @@ class L1AvailabilityContractTest {
 
     @Test
     void heightmapFallbackGenerator_hasNoNoiseImports() {
+        // Reflection: structural guard — no architectural hook exposes this constraint without
+        // class-level introspection. Alternative is checkstyle/import-control, but unit-level
+        // reflection gives a failing test immediately when a noise import leaks in.
         // No second sampling stack: HeightmapFallbackGenerator must not reference
         // ChunkNoiseSampler or DensityFunction. Verify via declared imports (source text)
         // and via reflection that it does not declare methods taking those types.
