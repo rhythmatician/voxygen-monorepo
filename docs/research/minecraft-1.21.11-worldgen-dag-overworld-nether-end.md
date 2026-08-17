@@ -60,24 +60,13 @@ Vanilla worldgen is often described as a linear pipeline. That is only half true
 
 **Source:** `external/minecraft-src/src/net/minecraft/world/level/chunk/status/ChunkStatus.java:30-41`.
 
-Each status carries `parent` + `index = parent.index + 1`; `isOrAfter/isBefore` compare `index`. A chunk is promoted status-by-status in this **total order**:
-
-```
-EMPTY(0) → STRUCTURE_STARTS(1) → STRUCTURE_REFERENCES(2) → BIOMES(3) → NOISE(4)
-        → SURFACE(5) → CARVERS(6) → FEATURES(7) → INITIALIZE_LIGHT(8) → LIGHT(9)
-        → SPAWN(10) → FULL(11)
-```
+The exact status indices, parent mechanics, and heightmap sets are recorded in the [worldgen seams reference §1](../reference/upstream/minecraft-1.21.11-worldgen-seams.md#1-chunkstatus-ordering-and-heightmap-validity). This DAG uses their total order:
 
 ```mermaid
 flowchart LR
   E[EMPTY] --> SS[STRUCTURE_STARTS] --> SR[STRUCTURE_REFERENCES] --> B[BIOMES] --> N[NOISE]
   N --> SF[SURFACE] --> C[CARVERS] --> F[FEATURES] --> IL[INITIALIZE_LIGHT] --> L[LIGHT] --> SP[SPAWN] --> FU[FULL]
 ```
-
-Heightmap validity is a function of position on this chain (`ChunkStatus.java:28-29`, `Heightmap.java`):
-
-* `WORLDGEN_HEIGHTMAPS = {OCEAN_FLOOR_WG, WORLD_SURFACE_WG}` — valid from `NOISE` onward.
-* `FINAL_HEIGHTMAPS = {OCEAN_FLOOR, WORLD_SURFACE, MOTION_BLOCKING, MOTION_BLOCKING_NO_LEAVES}` — valid from `CARVERS` onward (after `SURFACE` top-blocks and carver removals mutate the column).
 
 **Consequence for a silhouette/horizon consumer:** `NOISE` provides the first complete base-terrain height as `WORLD_SURFACE_WG` (not `WORLD_SURFACE`, which only exists at `CARVERS`). It is not the final visible geometry: `SURFACE` can add eroded-badlands and frozen-ocean extensions, `CARVERS` subtract, and structure/feature placement during `FEATURES` can add or replace blocks.
 
@@ -131,7 +120,7 @@ Key readings that the linear view hides:
 
 ## 2. Shared side inputs: seed / dimension / config → `RandomState`
 
-Before any per-chunk stage runs, a per-(dimension, seed) `RandomState` is built **once** and shared by every chunk. These are the DAG's global side inputs.
+Before any per-chunk stage runs, a per-(dimension, seed) `RandomState` is built **once** and shared by every chunk. Its wiring and random-source internals are canonical in the [worldgen seams reference §§2, 6](../reference/upstream/minecraft-1.21.11-worldgen-seams.md#2-noiserouter--15-field-record); this table records only their DAG roles.
 
 **Source:** `RandomState.java:47` (`create`), `NoiseGeneratorSettings.java:35`, `NoiseRouter.java:17`, `Climate.java:44`.
 
@@ -140,11 +129,11 @@ Before any per-chunk stage runs, a per-(dimension, seed) `RandomState` is built 
 | world seed | `long` | seeds `PositionalRandomFactory` (Xoroshiro or Legacy per settings) |
 | dimension key | `ResourceKey<NoiseGeneratorSettings>` | selects the whole config bundle (lattice, router, surface rules, flags) |
 | `NoiseGeneratorSettings` | record (registry data) | `noiseSettings`, `defaultBlock/Fluid`, `noiseRouter`, `surfaceRule`, `seaLevel`, `aquifersEnabled`, `oreVeinsEnabled`, `useLegacyRandomSource` |
-| `NoiseRouter` | 15 `DensityFunction` fields | the only downstream terrain interface (§3) |
-| `Climate.Sampler` | 6 `DensityFunction` (temp, veg, cont, erosion, depth, ridges) | biome placement input, quart-addressed |
+| `NoiseRouter` | 15 `DensityFunction` fields | downstream terrain/aquifer/vein interface |
+| `Climate.Sampler` | six router climate functions | biome-source input; the End consumes only erosion after its radial test |
 | noise registry | `HolderGetter<NoiseParameters>` | concrete octave tables instantiated lazily by key |
 
-`RandomState.create` (`RandomState.java:47`) forks positional randoms (`random`, `aquiferRandom=fromHash("aquifer")`, `oreRandom=fromHash("ore")`), builds the `SurfaceSystem`, and calls `router = settings.noiseRouter().mapAll(noiseWiringHelper)` **exactly once** — the `DensityFunction` tree is wired with concrete `NormalNoise`/`BlendedNoise` instances here, not per chunk. `useLegacyRandomSource` selects Legacy (Nether/End/Caves) vs Xoroshiro (Overworld) (`NoiseGeneratorSettings.java`, getRandomSource). This is a shared, cheap, fully deterministic side input; its entropy is entirely a function of (seed, dimension).
+This global node is cheap and deterministic; per-chunk stages consume its already-wired functions rather than rebuilding noise graphs.
 
 ---
 
@@ -158,7 +147,7 @@ The following stages are shared across all three dimensions (which stages are *a
 |---|---|---|---|---|---|---|---|---|---|
 | S0 | `RandomState` build (pre-chunk) | seed, dim key, `NoiseGeneratorSettings`, noise registry | wired `NoiseRouter`, `Climate.Sampler`, `SurfaceSystem` | global scalars → function graph | — | none | cheap, once | deterministic (seed,dim) | prerequisite for all Levels |
 | S1 | Climate / base-noise fields | block/quart pos, wired router | 6 climate values + `preliminarySurfaceLevel` + `finalDensity` + aquifer/vein fields | climate 2D quart (`FlatCache(Cache2D)`); density 3D on cell lattice | S0 | own column; base3D on cell grid | climate cheap; `finalDensity` (BlendedNoise) dominates | deterministic | **L0–L4 (drives all silhouette)** |
-| S2 | Biome placement (`BIOMES`) | `Climate.Sampler` 6-field target | `Holder<Biome>` per quart cell | 3D quart (x>>2,y>>2,z>>2) | S1 climate, `STRUCTURE_STARTS`@8 | quart within chunk; `NOISE` reads `BIOMES`@1 | cheap: nearest-point search over `ParameterList` (O(n) on quantized longs) | deterministic | indirect: selects surface, carver, structure, and feature sets; visible at any Level through those consumers |
+| S2 | Biome placement (`BIOMES`) | quart position + dimension biome source; OW/Nether use six-field `Climate.Sampler`, End uses radial distance then erosion | `Holder<Biome>` per quart cell | 3D quart (x>>2,y>>2,z>>2); End classification is columnar because Y does not affect its erosion router | S1 climate subset, `STRUCTURE_STARTS`@8 | quart within chunk; `NOISE` reads `BIOMES`@1 | cheap: OW/Nether nearest-point lookup; End radial test + one erosion sample | deterministic | indirect: selects surface, carver, structure, and feature sets; visible at any Level through those consumers |
 | S3 | Terrain noise fill (`NOISE`) | wired `finalDensity`, `NoiseChunk` cell grid, biomes@1 | solid/air blocks + `WORLD_SURFACE_WG`/`OCEAN_FLOOR_WG` | 3D cell lattice → trilinear to block | S1, S2, `STRUCTURE_STARTS`@8 | `BIOMES`@1 (aquifer/blend edge) | **dominant compute**: cell grid + trilinear (128× fewer samples than blocks) | deterministic | **L0–L4 — this IS the distant terrain** |
 | S4 | Aquifers (inside `NOISE` fill) | `barrier/fluidLevelFloodedness/fluidLevelSpread/lava` fields, `finalDensity` | fluid vs air substance at `finalDensity≤0` | 3D grid 10×9×10 @ 16×12×16 spacing + Voronoi | S3 (same fill loop) | ±1 chunk grid | high-frequency, moderate; disabled → `createDisabled` flat picker | deterministic | perched water/lava pockets: **L0–L2 only; invisible at L3–L4** |
 | S5 | Surface (`SURFACE`) | `WORLD_SURFACE_WG`, biome@column, `SurfaceRules`, surface noises | near-surface material replacement plus eroded-badlands and frozen-ocean extensions | per-column 2D walk with vertical block edits | S3 height, S2 biome, `BIOMES`@1 | own column (+ biome edge) | moderate: per-column rule tree and extension noises | deterministic | ordinary skinning: L0–L2; badlands pillars/icebergs can alter **L3–L4 geometry** |
@@ -168,27 +157,12 @@ The following stages are shared across all three dimensions (which stages are *a
 
 Notes tying rows to source:
 
-* **S1/S3 threshold:** solid iff `finalDensity > SURFACE_DENSITY_THRESHOLD = 1.5625` (`NoiseRouterData.java`; seams §3). `WORLD_SURFACE_WG` is the highest opaque block from this fill.
+* **S1/S3 thresholds are distinct:** `SURFACE_DENSITY_THRESHOLD = 1.5625` gates the Overworld cave branch and preliminary-surface search; block filling asks `Aquifer.computeSubstance(context, finalDensity)`, which returns no replacement when density is **greater than zero**, leaving the default solid block. See `NoiseRouterData.java:241` and `Aquifer.java:37-41,135-143`.
 * **Ore *veins* (S3, not S7):** `OreVeinifier` (`OreVeinifier.java:15`) is a `BlockStateFiller` consumed by the `NoiseChunk` block-state rule during `fillFromNoise`, gated by `veinToggle/veinRidged/veinGap` — it runs at `NOISE`, and only where `oreVeinsEnabled`. Ordinary ore *deposits* are configured features at `FEATURES` step `UNDERGROUND_ORES` (S7). These are two different mechanisms; both are horizon-invisible.
 * **Aquifer (S4)** is not a separate status; it is decided inside the `NOISE` fill via `Aquifer.computeSubstance`. `createDisabled` (`Aquifer.java`) short-circuits to the flat `FluidPicker` when `aquifersEnabled==false` (Nether/End).
 * **Carver ring (S6)** is verified from the generator loop: `int range = 8; for dx=-8..8 for dz=-8..8` over `region.getChunk(...)` (`NoiseBasedChunkGenerator.java:233`), each source chunk seeded by `random.setLargeFeatureSeed(seed+index, sourcePos.x, sourcePos.z)`.
 * **Feature decoration order (S7):** 11 `GenerationStep.Decoration` steps `RAW_GENERATION, LAKES, LOCAL_MODIFICATIONS, UNDERGROUND_STRUCTURES, SURFACE_STRUCTURES, STRONGHOLDS, UNDERGROUND_ORES, UNDERGROUND_DECORATION, FLUID_SPRINGS, VEGETAL_DECORATION, TOP_LAYER_MODIFICATION` (`GenerationStep.java`), each a `PlacedFeature` list applied via `PlacedFeature.placeWithContext` with per-chunk `WorldgenRandom` unique seeds (`PlacedFeature.java`).
 * **Structures share S7's loop:** for each decoration step, `ChunkGenerator.applyBiomeDecoration` places matching `StructureStart`s first, then that step's `PlacedFeature`s (`ChunkGenerator.java:275-324`). `STRUCTURE_STARTS` decides sparse multi-chunk layouts; `STRUCTURE_REFERENCES` makes starts discoverable from intersected chunks; actual blocks appear at `FEATURES`.
-
-### 3.1 The 15-field router as the single terrain interface
-
-**Source:** `NoiseRouter.java:17` + `NoiseRouterData.java`. Everything in S1/S3/S4 flows through these 15 `DensityFunction` fields, in codec/`RouterField` ordinal order 0..14:
-
-```
-barrier, fluidLevelFloodedness, fluidLevelSpread, lava,            // aquifer (S4)
-temperature, vegetation, continents, erosion, depth, ridges,       // climate (S1→S2)
-preliminarySurfaceLevel, finalDensity,                             // density (S1→S3)
-veinToggle, veinRidged, veinGap                                    // ore veins (S3)
-```
-
-Downstream code (`NoiseChunk`, `SurfaceSystem`, `Aquifer`, `OreVeinifier`) reads only this record; `NoiseRouter.mapAll(Visitor)` rewrites the whole tree once. This record is the DAG's "waist": the only dependency terrain has on noise math.
-
----
 
 ## 4. Input-completeness & spatial-halo contract (per stage)
 
@@ -211,43 +185,42 @@ For a consumer that wants to reconstruct a stage's output without running the wh
 
 ## 5. Per-dimension audits
 
-Each dimension is a **different router + different lattice + different flags**, not the Overworld with parameters tweaked. Bootstrap presets: `NoiseGeneratorSettings.java` (bootstrap) + `NoiseSettings.java` + `NoiseRouterData.{overworld,nether,end}` + `SurfaceRuleData.{overworld,nether,end}`.
+Each dimension is a different router, lattice, fluid policy, and feature registry. Exact router expressions, flags, lattice constants, and noise constructors are canonical in the [worldgen seams reference §§3, 7, 10–12](../reference/upstream/minecraft-1.21.11-worldgen-seams.md#3-densityfunction-algebra); this section records their consequences in the ordered DAG.
 
-### 5.1 Lattice & flags (the dimension seam)
+### 5.1 Overworld
 
-| Dimension | `NoiseSettings(minY,height,sizeH,sizeV)` | cellWidth × cellHeight | sections | default block / fluid | seaLevel | aquifers | oreVeins | randomSource | surface rules |
-|---|---|---|---|---|---|---|---|---|---|
-| Overworld | `(-64, 384, 1, 2)` | **4 × 8** | 24 | STONE / WATER | 63 | **true** | **true** | Xoroshiro | `overworld()` |
-| Nether | `(0, 128, 1, 2)` | **4 × 8** | 8 | NETHERRACK / LAVA | 32 | false | false | Legacy | `nether()` |
-| End | `(0, 128, 2, 1)` | **8 × 4** (swapped) | 8 | END_STONE / **AIR** | 0 | false | false | Legacy | `end()` |
+* **S1–S4:** six-field climate drives 3D `MultiNoiseBiomeSource`; the 4×8 density lattice feeds active aquifers and `OreVeinifier`. Old-world blending and structure `Beardifier` are additional S3 inputs.
+* **S5–S6:** biome surface rules can add badlands/iceberg extensions; cave/canyon carvers use the full range-8 source ring.
+* **S7:** common decoration includes lava lakes, underground structures, stone/soil disks, ordinary ore deposits, water/lava springs, biome vegetation, freezing, and structures. Surface extensions and major structures can survive L3–L4; ores are internal; vegetation is mainly L0–L2.
 
-`cellWidth = QuartPos.toBlock(sizeH)`, `cellHeight = QuartPos.toBlock(sizeV)` (`NoiseSettings.java`). The End's lattice is **swapped** (coarser XZ, finer Y) — any tiling that hardcodes 4×8 is wrong for the End. Invariants (`NoiseSettings.create`, `DimensionType`): `minY%16==0`, `height%16==0`, `minY+height ≤ MAX_Y+1`.
+### 5.2 Nether
 
-### 5.2 Overworld
+* **S1–S4:** two legacy biome noises feed `MultiNoiseBiomeSource`; the 4×8 lattice forms a closed floor/ceiling volume. Aquifers and noise-time ore veins are disabled; the flat fluid picker supplies lava below its level.
+* **S5–S6:** ceiling-aware surface rules and Nether cave carvers operate on the closed volume.
+* **S7:** all five biomes place springs, glowstone, fire, mushrooms/fungi/vines, biome formations (basalt columns/deltas or soul-sand patches), and configured quartz/gold/ancient-debris ores. Formations and large fungi are the most likely coarse-visible features; ores and small vegetation remain L0–L1.
 
-* **Full pipeline S0–S7 active.** Only dimension with **aquifers (S4)** and **ore veins (S3 OreVeinifier)** enabled.
-* **Terrain shape:** `SLOPED_CHEESE = noiseGradientDensity(factor, depth + jaggedness·halfNegative(jagged)) + BASE_3D_NOISE_OVERWORLD` where `BASE_3D_NOISE_OVERWORLD = BlendedNoise.createUnseeded(0.25, 0.125, 80, 160, 8)` (`NoiseRouterData.java`). Continents/erosion/ridges are `flatCache(cache2d(shiftedNoise2d(...)))` 2D climate → `TerrainProvider` cubic splines → offset/factor/jaggedness.
-* **Biomes:** `MultiNoiseBiomeSource` over full 6-D climate; 3D biomes (depth axis 3D).
-* **Surface:** `SurfaceRuleData.overworld()` selects biome material rules and `SurfaceSystem` separately adds eroded-badlands pillars and frozen-ocean icebergs (`SurfaceSystem.java:114-154,189-251`). Those extensions can change coarse visible geometry.
-* **Blending (S3 side):** only non-`EMPTY` for old-world upgrades (`Blender.of` returns `EMPTY` for new worlds); `HEIGHT_BLENDING_RANGE ≈ 7 sections`, `DENSITY_BLENDING_RANGE ≈ 2 cells` — this is the origin of the `BIOMES`@1 / `NOISE`@1 halo.
-* **Distant-visible:** S1/S3 dominate natural terrain at L0–L4; surface extensions and major structures are sparse but can also survive at L3–L4.
+### 5.3 End
 
-### 5.3 Nether
+* **S1–S4:** the 8×4 density lattice uses the End-island field; aquifers and noise-time veins are disabled and the flat fluid picker supplies air.
+* **S2 is a separate branch:** `TheEndBiomeSource.getNoiseBiome` returns `THE_END` inside chunk-radius 64. Outside it samples only router **erosion** at the chunk-center-derived block coordinate, then applies thresholds `>0.25` highlands, `≥-0.0625` midlands, `<-0.21875` small islands, otherwise barrens (`TheEndBiomeSource.java:58-79`). It does not use `MultiNoiseBiomeSource` or six-dimensional nearest-point lookup.
+* **S5–S6:** the surface rule is end stone; the five End biome builders register no carvers.
+* **S7:** `THE_END` places obsidian spikes and the platform; highlands place return gateways and chorus plants; small-island biomes place decorated End islands at `RAW_GENERATION`; midlands/barrens add none (`EndBiomes.java:24-46`). Spikes and decorated islands can survive L3–L4; chorus plants are local.
 
-* **S4 aquifers OFF, ore veins OFF, Legacy random.** `Aquifer.createDisabled` with the fluid picker; fluid is LAVA at seaLevel 32.
-* **Terrain shape:** `BASE_3D_NOISE_NETHER = BlendedNoise.createUnseeded(0.25, 0.375, 80, 60, 8)` — different `yScale`/`yFactor` than Overworld, producing the characteristic vertical closed ceiling+floor (the `finalDensity` field is clamped so both the floor and the y≈128 roof are solid). Same 4×8 lattice as Overworld but only 8 sections (0..128).
-* **Biomes:** `TEMPERATURE_NETHER`/`VEGETATION_NETHER` use `NormalNoise.createLegacyNetherBiome` (legacy init in the wiring `Visitor`, `RandomState.java`), i.e. a **different noise instantiation** than Overworld climate — a genuine dimension-specific seam, not a parameter.
-* **Surface:** `SurfaceRuleData.nether()` — netherrack/soul sand/soul soil/basalt/blackstone bands; `ON_CEILING/UNDER_CEILING` conditions matter here (Overworld mostly uses `ON_FLOOR`).
-* **Distant-visible:** the closed ceiling means the L4 silhouette is a slab, not an open horizon; still driven entirely by S1/S3.
+### 5.4 Feature-stage audit by dimension
 
-### 5.4 End
+All rows use biome `PlacedFeature` lists plus the per-(chunk, step, feature-index) random stream, read `CARVERS` at radius 1, and may write at radius 1. Cost scales with placement attempts and configured-feature volume; all are deterministic but spatially high-entropy.
 
-* **S4 aquifers OFF, ore veins OFF, Legacy random, fluid = AIR, seaLevel 0.** No fluid model at all.
-* **Different terrain primitive:** `slopedCheeseEnd = EndIslandDensityFunction(seed) + BASE_3D_NOISE_END` where `BASE_3D_NOISE_END = BlendedNoise.createUnseeded(0.25, 0.25, 80, 160, 4)` (note `smear=4`, not 8). `EndIslandDensityFunction` uses **`SimplexNoise`** (2D/3D simplex, `SimplexNoise.java`), instantiated with the raw seed in the wiring `Visitor` — the only dimension whose base density is not the Overworld/Nether `ImprovedNoise`-Perlin `BlendedNoise` alone. Central island + radial outer islands are a distance function around origin (`ISLAND_CHUNK_DISTANCE`), not climate splines.
-* **Lattice swapped:** `(0,128,2,1)` → **8×4** cells (2×32×2 cells per chunk), coarser XZ, finer Y.
-* **Biomes:** End biome source is effectively a fixed small set keyed off the same climate machinery but the End preset; `depth`/`ridges` play a reduced role vs Overworld continents.
-* **Surface:** `SurfaceRuleData.end()` — essentially end-stone everywhere (trivial veneer).
-* **Distant-visible:** floating-island archipelago — S1/S3 (simplex island field) fully define the silhouette; there is nothing subtractive (no aquifers) except carvers, which the End effectively does not use for horizon-scale geometry.
+| Dimension / decoration class | Inputs → outputs / dimensionality | Order and cost | L0–L4 impact |
+|---|---|---|---|
+| Overworld lakes, springs, freezing | height/air/fluid predicates → 3D fluid bodies or column-top edits | `LAKES`, `FLUID_SPRINGS`, `TOP_LAYER_MODIFICATION`; moderate | lakes/ice L0–L2; rare broad surfaces coarser |
+| Overworld ores/disks/underground decoration | height providers + replaceable tags → 3D blobs | `UNDERGROUND_ORES` then `UNDERGROUND_DECORATION`; many attempts, expensive | normally internal, L0 only when exposed |
+| Overworld vegetation/local formations | biome surface + placement modifiers → trees, plants, rocks, icebergs | `LOCAL_MODIFICATIONS`, `VEGETAL_DECORATION`; biome-dependent, high variance | plants L0–L2; large trees/icebergs can reach L3 |
+| Nether formations/springs/glowstone | closed-volume predicates → columns, deltas, blobs, fluids, glowstone | local/surface/underground decoration; many cavity probes | formations L0–L3; small patches L0–L1 |
+| Nether ores/vegetation | replaceable tags or floor/ceiling predicates → ore blobs, fungi, vines | underground then vegetal decoration; high attempt count | ores internal; large fungi L0–L2 |
+| End islands/spikes/gateways/platform | radial/height predicates → multi-block 3D structures | raw generation, surface structures, top layer; sparse but large | **L0–L4** for islands/spikes |
+| End chorus | End-stone surface predicate → branching 3D plants | vegetal decoration; sparse | L0–L2 |
+
+Primary feature sources: `BiomeDefaultFeatures.java:19-105,391-423`, `biome/OverworldBiomes.java`, `biome/NetherBiomes.java:39-79`, and `biome/EndBiomes.java:24-46`.
 
 ### 5.5 Shared vs dimension-specific seams
 
@@ -257,7 +230,7 @@ Each dimension is a **different router + different lattice + different flags**, 
 | `RandomState`/`NoiseRouter.mapAll` wiring mechanism | ✅ same code path | seed-fork + Legacy-vs-Xoroshiro choice differs |
 | 15-field router **interface** | ✅ same record | **field *contents* differ per dim** (routers `overworld/nether/end`) |
 | Cell lattice math (`QuartPos.toBlock`) | ✅ same formula | **values differ: 4×8 (OW/Nether) vs 8×4 (End)** |
-| Climate 6-D → biome nearest-point search | ✅ same algorithm | Nether uses legacy nether-biome noise; End uses End preset |
+| Biome lookup | quart-addressed output contract | OW/Nether use multi-noise nearest-point lookup; **End uses radial distance + erosion thresholds** |
 | Base 3D density primitive | mechanism shared | **OW/Nether = BlendedNoise; End = EndIsland(SimplexNoise)+BlendedNoise** |
 | Aquifers (S4) | mechanism shared | **only Overworld active** |
 | Ore veins (S3 OreVeinifier) | mechanism shared | **only Overworld active** |
@@ -294,7 +267,7 @@ Voxy Levels: voxel edge = `1<<lvl` blocks → L0=1, L1=2, L2=4, L3=8, L4=16; `Wo
 |---|---|---|---|
 | S0 RandomState | fully deterministic | seed + dimension | (seed, dim) |
 | S1 climate/base-noise | fully deterministic | wired `NormalNoise`/`BlendedNoise` | (seed, dim, pos) |
-| S2 biomes | fully deterministic | climate target → nearest `ParameterPoint` | (seed, dim, quart pos) |
+| S2 biomes | fully deterministic | OW/Nether climate target → nearest `ParameterPoint`; End radius + erosion thresholds | (seed, dim, quart pos, biome-source config) |
 | S3 terrain fill | fully deterministic | `finalDensity` | (seed, dim, pos) |
 | S4 aquifers | deterministic | `aquiferRandom=fromHash("aquifer")` + fields | (seed, dim, cell) |
 | S5 surface | deterministic | surface/extension noises + `noiseRandom.at(x,0,z)` | (seed, dim, biome, column) |
@@ -323,13 +296,13 @@ All paths are `external/minecraft-src/src/net/minecraft/...` unless noted; line 
 | RandomState wiring (Legacy vs Xoroshiro, once) | `world/level/levelgen/RandomState.java:47`; `PositionalRandomFactory.java` |
 | Noise stack | `world/level/levelgen/synth/{NormalNoise,PerlinNoise,ImprovedNoise,SimplexNoise,BlendedNoise}.java` |
 | Terrain splines | `data/worldgen/TerrainProvider.java`; `world/level/levelgen/DensityFunctions.java` (spline); `util/CubicSpline.java` |
-| Climate / biome source | `world/level/biome/Climate.java:44`; `MultiNoiseBiomeSource.java` |
+| Climate / biome source | `world/level/biome/Climate.java:44`; `MultiNoiseBiomeSource.java`; `TheEndBiomeSource.java:58-79` |
 | Aquifer grid & disabled path | `world/level/levelgen/Aquifer.java` |
 | OreVeinifier (S3, block-state filler) | `world/level/levelgen/OreVeinifier.java:15` |
 | Surface system & rules | `world/level/levelgen/SurfaceSystem.java`; `SurfaceRules.java`; `data/worldgen/SurfaceRuleData.java` |
 | Beardifier / Blender (structure/upgrade density) | `world/level/levelgen/Beardifier.java`; `blending/Blender.java`; `blending/BlendingData.java` |
 | Structure planning/references/placement | `world/level/chunk/ChunkGenerator.java:257-324,380-461`; `world/level/chunk/status/ChunkStatusTasks.java:49-67`; `world/level/levelgen/structure/StructureStart.java` |
-| Feature decoration | `world/level/chunk/ChunkGenerator.java:257-324`; `world/level/levelgen/GenerationStep.java`; `levelgen/placement/PlacedFeature.java` |
+| Feature decoration | `world/level/chunk/ChunkGenerator.java:257-324`; `world/level/levelgen/GenerationStep.java`; `levelgen/placement/PlacedFeature.java`; `data/worldgen/BiomeDefaultFeatures.java`; `data/worldgen/biome/{OverworldBiomes,NetherBiomes,EndBiomes}.java` |
 | Coordinates / lattices | `core/QuartPos.java`; `core/SectionPos.java`; `world/level/dimension/DimensionType.java` |
 
 Sibling reference (class internals, same upstream/hash): [`docs/reference/upstream/minecraft-1.21.11-worldgen-seams.md`](../reference/upstream/minecraft-1.21.11-worldgen-seams.md). Voxy Level semantics: [`docs/reference/upstream/voxy-0.2.11-alpha-storage-and-lod-seams.md`](../reference/upstream/voxy-0.2.11-alpha-storage-and-lod-seams.md).
