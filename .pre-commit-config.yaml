@@ -10,8 +10,9 @@ repos:
         require_serial: true
       - id: docs-policy
         name: R-02 Documentation policy
-        language: system
-        entry: bash -c 'npx --yes tsx .ci/docs-policy.mts --base origin/main --candidate HEAD'
+        language: node
+        entry: tsx .ci/docs-policy.mts --base origin/main --candidate HEAD
+        additional_dependencies: ['tsx@4.23.12']
         types: [markdown]
         pass_filenames: false
         require_serial: true
