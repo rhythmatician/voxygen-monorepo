@@ -43,6 +43,7 @@ const hooks = {
   // forbidden-label guard in implement-prompt.md remains the safety net.
   sandbox: {
     onSandboxReady: [
+      { command: 'if [ ! -d /tmp/mattpocock-skills ]; then git clone --depth 1 https://github.com/rhythmatician/mattpocock-skills.git /tmp/mattpocock-skills 2>&1 | tail -5; fi; for s in /tmp/mattpocock-skills/skills/* /tmp/mattpocock-skills/skills/engineering/*; do [ -f "$s/SKILL.md" ] && muse skills install "$s" --scope user 2>&1 | head -5; done; echo "[skills] Docker user skills from rhythmatician/mattpocock-skills/main installed"' },
       { command: 'for s in .muse/skills/*; do muse skills install "$s" --scope user 2>&1 | head -5; done' },
       { command: 'npm install' },
       // Ensure every worktree agent has a current GRAPH_REPORT.md for its HEAD.

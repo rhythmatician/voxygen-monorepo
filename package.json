@@ -1,9 +1,15 @@
 {
   "devEngines": {
-    "os": {
-      "name": "linux",
-      "onFail": "error"
-    }
+    "os": [
+      {
+        "name": "linux",
+        "onFail": "warn"
+      },
+      {
+        "name": "win32",
+        "onFail": "warn"
+      }
+    ]
   },
   "devDependencies": {
     "@ai-hero/sandcastle": "file:../../sandcastle",

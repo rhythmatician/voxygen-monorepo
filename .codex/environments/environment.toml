@@ -57,8 +57,9 @@ echo "[setup] Done."
 
 [setup.win32]
 script = '''
-Set-StrictMode -Version Latest
+Set-StrictMode -Off
 $ErrorActionPreference = "Stop"
+# FIX: StrictMode breaks C:\Program Files\nodejs\npm.ps1 ($MyInvocation.Statement) - use npm.cmd
 
 Write-Host "[setup.win32] Windows environment setup..."
 
@@ -77,10 +78,11 @@ if ($needNode) {
 node --version
 $nodeVer = (node --version)
 if (-not ($nodeVer -match "v22\.")) { throw "Node 22 required, found $nodeVer" }
-npm --version
+npm.cmd --version
 
-Write-Host "[setup.win32] Node project is WSL-only (devEngines.os=linux, onFail=error)"
-Write-Host "Skipping 'npm ci' on Windows - EBADDEVENGINES is expected per .sandcastle/dev-engines.test.mts. Use WSL/Ubuntu default [setup] for Node dependencies."
+Write-Host "[setup.win32] Node project is cross-platform (devEngines.os=linux,win32 onFail=warn) - see package.json devEngines"
+Write-Host "[setup.win32] Installing Node dependencies (npm.cmd ci --force) - previously WSL-only, now enabled for cross-platform dev (bypasses devEngines on old worktree package.json)"
+npm.cmd ci --force
 
 Write-Host "[setup.win32] Ensuring uv 0.8.8..."
 $needUv = $true
@@ -93,7 +95,7 @@ if ($needUv) {
   Write-Host "Installing uv 0.8.8..."
   powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
   $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User") + ";" + "$env:USERPROFILE\.cargo\bin"
-  try { uv self update --version 0.8.8 } catch { Write-Host "uv self update failed, continuing with installed version" }
+  try { uv self update 0.8.8 } catch { Write-Host "uv self update failed, continuing with installed version" }
 }
 uv --version
 $uvVer = (uv --version)
