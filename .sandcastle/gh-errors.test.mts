@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getGhErrorDetails } from "./gh-errors.mts";
+import { formatGhFailure, getGhErrorDetails } from "./gh-errors.mts";
 
 describe("getGhErrorDetails", () => {
   it("uses non-empty stderr", () => {
@@ -12,5 +12,11 @@ describe("getGhErrorDetails", () => {
     const error = Object.assign(new Error("command failed"), { stderr: "\n" });
 
     expect(getGhErrorDetails(error)).toBe("command failed");
+  });
+
+  it("includes operation context when reporting a failed mutation", () => {
+    expect(formatGhFailure("Failed to add agent:blocked to #117", new Error("network unavailable"))).toBe(
+      "Failed to add agent:blocked to #117: network unavailable",
+    );
   });
 });

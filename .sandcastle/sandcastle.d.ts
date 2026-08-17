@@ -16,7 +16,9 @@ declare module "@ai-hero/sandcastle" {
     [key: string]: unknown;
   }>;
   export function createSandbox(opts: Record<string, unknown>): Promise<{
-    run(opts: Record<string, unknown>): Promise<{ commits: string[]; stdout: string; [key: string]: unknown }>;
+    // output is absent in the current sandbox runtime but reserved for the
+    // upstream structured-output implementation requested by callers.
+    run(opts: Record<string, unknown>): Promise<{ commits: string[]; stdout: string; output?: unknown }>;
     close(): Promise<void>;
   }>;
   export function muse(model: string): unknown;

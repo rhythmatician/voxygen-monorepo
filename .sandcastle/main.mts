@@ -12,12 +12,13 @@ import * as path from "node:path";
 import { isEligible, branchForIssue, type IssueInput } from "./dispatch.mts";
 import { mayAutonomouslyMerge } from "./ci-policy.mts";
 import {
+  reviewVerdictSchema,
   isVerdictApproved,
   extractVerdict,
   blockedReasonForVerdict,
   type ReviewVerdict,
 } from "./review-verdict.mts";
-import { getErrorMessage, getGhErrorDetails } from "./gh-errors.mts";
+import { formatGhFailure, getErrorMessage, getGhErrorDetails } from "./gh-errors.mts";
 
 const execFileAsync = promisify(execFile);
 
@@ -102,7 +103,7 @@ async function safeRunGh(args: string[], failureContext?: string): Promise<boole
     await runGh(args);
     return true;
   } catch (error: unknown) {
-    if (failureContext) console.warn(`${failureContext}: ${getErrorMessage(error)}`);
+    if (failureContext) console.warn(formatGhFailure(failureContext, error));
     return false;
   }
 }
@@ -257,7 +258,10 @@ async function markIntegrated(issueId: string, branch: string): Promise<void> {
   // TODO(factory-v1): Wayfinder close ownership -- host closes ordinary impl
   // only; Wayfinder skill will own Wayfinder ticket close. See plan-prompt.
   for (const label of ["agent:in-progress", "agent:implement", "agent:blocked"]) {
-    await safeRunGh(["issue", "edit", issueId, "--remove-label", label]);
+    await safeRunGh(
+      ["issue", "edit", issueId, "--remove-label", label],
+      `Failed to remove ${label} from integrated issue #${issueId}`,
+    );
   }
   // Close with audit comment
   try {
@@ -464,9 +468,9 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
           let verdict: ReviewVerdict | null = null;
           let reviewText = "";
           try {
-            // Sandbox handles currently return combined agent output as stdout;
-            // unlike top-level run(), they do not implement Output.object().
-            const review = (await sandbox.run({
+            // Current sandbox handles ignore Output.object() and return stdout;
+            // retaining the request lets an upgraded Sandcastle return output.
+            const review = await sandbox.run({
               name: "reviewer",
               maxIterations: 1,
               agent: sandcastle.muse("muse-spark-1.2-contributor"),
@@ -477,9 +481,10 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
                 ISSUE_TITLE: issue.title,
                 ISSUE_BODY: issueBody,
               },
-            })) as unknown as { commits: string[]; output?: unknown; stdout?: string; text?: string };
+              output: sandcastle.Output.object({ tag: "verdict", schema: reviewVerdictSchema }),
+            });
             verdict = extractVerdict(review);
-            reviewText = review.stdout ?? review.text ?? "";
+            reviewText = review.stdout;
             return {
               commits: [...implement.commits, ...(review.commits ?? [])],
               verdict,
