@@ -27,6 +27,10 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
+      - name: Ensure candidate SHA is available
+        env:
+          CANDIDATE_SHA: ${{ github.sha }}
+        run: git cat-file -e "$CANDIDATE_SHA" 2>/dev/null || git fetch origin "$CANDIDATE_SHA" --depth=1 || true
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm }
       - run: npm ci
@@ -49,6 +53,10 @@ jobs:
           fetch-depth: 0
           lfs: true
           ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
+      - name: Ensure candidate SHA is available
+        env:
+          CANDIDATE_SHA: ${{ github.sha }}
+        run: git cat-file -e "$CANDIDATE_SHA" 2>/dev/null || git fetch origin "$CANDIDATE_SHA" --depth=1 || true
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm }
       - run: npm ci --ignore-scripts
@@ -197,6 +205,10 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
+      - name: Ensure candidate SHA is available
+        env:
+          CANDIDATE_SHA: ${{ github.sha }}
+        run: git cat-file -e "$CANDIDATE_SHA" 2>/dev/null || git fetch origin "$CANDIDATE_SHA" --depth=1 || true
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm }
       - run: npm ci
