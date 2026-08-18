@@ -22,6 +22,8 @@ const ADMITTED = [
   /^docs\/FUTURES\.md$/,
   // grandfathered version-pinned external-reference — prefer docs/external/ for new
   /^python\/docs\/VOXY-FORMAT\.md$/,
+  // exception: legacy glossary — narrow factual corrections allowed; prefer CONTEXT.md for new domain language
+  /^GLOSSARY\.md$/,
 ];
 
 const SUSPICIOUS = /IMPLEMENTATION|SUMMARY|STATUS|TODO|PLAN|HANDOFF|DELIVERABLE|CHECKLIST|ROADMAP|PROGRESS/i;
