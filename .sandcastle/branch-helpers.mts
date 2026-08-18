@@ -147,18 +147,33 @@ export function prepareIssueBranch(
       branchExists = true;
     } catch {}
   }
-  // Make branch discovery part of helper: inspect remote when local absent
-  // One definition of existence: local OR remote
+  // Make branch discovery part of helper: unified existence = local OR remote
+  // Handle local+remote divergence explicitly; remote lookup failure is not "remote absent"
+  let originExists = false;
+  try { execSync('git remote get-url origin', { stdio: 'ignore', cwd: repoRoot }); originExists = true; } catch {}
   let remoteSha: string | null = null;
   let remoteExists = false;
-  if (!branchExists) {
+  let remoteLookupError: unknown = null;
+  const getRemoteSha = (): { sha: string | null; exists: boolean; error: unknown | null } => {
     try {
       const out = execSync(`git ls-remote --heads origin ${branch}`, { encoding: 'utf8', cwd: repoRoot }).trim();
       if (out) {
         const sha = out.split(/\s+/)[0]?.trim();
-        if (sha) { remoteSha = sha; remoteExists = true; }
+        if (sha) return { sha, exists: true, error: null };
       }
-    } catch {}
+      return { sha: null, exists: false, error: null };
+    } catch (e) {
+      if (originExists) return { sha: null, exists: false, error: e };
+      return { sha: null, exists: false, error: null };
+    }
+  };
+
+  if (!branchExists) {
+    const r = getRemoteSha();
+    remoteSha = r.sha; remoteExists = r.exists; remoteLookupError = r.error;
+    if (remoteLookupError) {
+      return { ok: false, action: 'error', reason: `remote lookup failed for ${branch}: ${(remoteLookupError as Error).message} — fail closed (origin exists, unknown remote state)`, provPath, branchExists: false };
+    }
     // Remote-only branch handling
     if (remoteExists) {
       // Never create fresh provenance merely because local ref is absent when remote exists
@@ -185,11 +200,47 @@ export function prepareIssueBranch(
       }
     }
   } else {
-    // Local exists — also check if remote exists (for future delete decisions, but discovery is unified)
-    try {
-      const out = execSync(`git ls-remote --heads origin ${branch}`, { encoding: 'utf8', cwd: repoRoot }).trim();
-      if (out) { remoteSha = out.split(/\s+/)[0]?.trim() || null; remoteExists = !!remoteSha; }
-    } catch {}
+    // Local exists — also check remote and make local/remote relationship explicit
+    const r = getRemoteSha();
+    remoteSha = r.sha; remoteExists = r.exists; remoteLookupError = r.error;
+    if (remoteLookupError) {
+      return { ok: false, action: 'error', reason: `remote lookup failed for ${branch}: ${(remoteLookupError as Error).message} — fail closed (origin exists, unknown remote state)`, provPath, branchExists: true };
+    }
+    if (remoteExists && remoteSha) {
+      let localSha: string | null = null;
+      try { localSha = execSync(`git rev-parse ${branch}`, { encoding: 'utf8', cwd: repoRoot }).trim(); } catch {}
+      if (localSha && remoteSha) {
+        if (localSha === remoteSha) {
+          // normal — nothing to do
+        } else {
+          const isRemoteDescendant = (() => { try { execSync(`git merge-base --is-ancestor ${localSha} ${remoteSha}`, { stdio: 'ignore', cwd: repoRoot }); return true; } catch { return false; } })();
+          const isLocalDescendant = (() => { try { execSync(`git merge-base --is-ancestor ${remoteSha} ${localSha}`, { stdio: 'ignore', cwd: repoRoot }); return true; } catch { return false; } })();
+          if (isRemoteDescendant) {
+            // Remote is ahead → fetch/fast-forward local to exact remote SHA before provenance/work checks
+            // Must handle currently-checked-out branch (fetch to branch:branch fails when checked out)
+            try {
+              execSync(`git fetch origin ${branch}`, { stdio: 'ignore', cwd: repoRoot });
+              // Update local ref to remote SHA
+              try { execSync(`git update-ref refs/heads/${branch} ${remoteSha}`, { stdio: 'ignore', cwd: repoRoot }); } catch {}
+              // If currently checked out on this branch, reset working tree to remote
+              try {
+                const cur = execSync('git branch --show-current', { encoding: 'utf8', cwd: repoRoot }).trim();
+                if (cur === branch) {
+                  execSync(`git reset --hard ${remoteSha}`, { stdio: 'ignore', cwd: repoRoot });
+                }
+              } catch {}
+            } catch (e) {
+              return { ok: false, action: 'error', reason: `failed to fast-forward local ${branch} to remote ${remoteSha.slice(0, 7)}: ${(e as Error).message}`, provPath, branchExists: true };
+            }
+          } else if (isLocalDescendant) {
+            // Local is ahead → preserve local, do not treat stale remote as authoritative
+          } else {
+            // Neither is ancestor → diverged
+            return { ok: false, action: 'blocked', reason: `local and remote branches ${branch} have diverged (local ${localSha.slice(0, 7)} vs remote ${remoteSha.slice(0, 7)}) — fail closed, preserve both for inspection`, provPath, branchExists: true };
+          }
+        }
+      }
+    }
   }
 
   if (!branchExists) {

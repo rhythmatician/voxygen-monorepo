@@ -524,5 +524,134 @@ describe("Regression: empty branch lifecycle (126 idle) — quiet worker not mis
       await rm(tmp, {recursive: true, force: true});
     }
   });
+
+  it("local+remote divergence: remote ahead with valid provenance, diverged, and lookup failure", async () => {
+    const helpers = await import("./branch-helpers.mts");
+    const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { execSync } = await import('node:child_process');
+
+    // Case A: valid provenance, local=M (stale at base), remote=M→worker — must recover local to worker SHA, never delete remote
+    {
+      const tmpOrigin = await mkdtemp(join(tmpdir(), 'origin-divA-'));
+      const tmp = await mkdtemp(join(tmpdir(), 'divA-'));
+      try {
+        execSync('git init --bare -q', {cwd: tmpOrigin});
+        execSync('git init -q', {cwd: tmp});
+        execSync('git config user.email "t@t.com"', {cwd: tmp});
+        execSync('git config user.name "t"', {cwd: tmp});
+        execSync(`git remote add origin ${tmpOrigin}`, {cwd: tmp});
+        await writeFile(join(tmp, 'base.txt'), 'base');
+        execSync('git add base.txt && git commit -qm "base"', {cwd: tmp});
+        execSync('git branch -M main', {cwd: tmp});
+        execSync('git push -q origin main', {cwd: tmp});
+        const baseSha = execSync('git rev-parse HEAD', {cwd: tmp, encoding:'utf8'}).trim();
+        // Create issue branch via helper (local at base, provenance valid)
+        const prepCreate = helpers.prepareIssueBranch(tmp, 'sandcastle/issue-2000', baseSha, 'main', baseSha, '2000');
+        expect(prepCreate.ok).toBe(true);
+        // Add worker commit and push to origin
+        execSync('git checkout sandcastle/issue-2000 -q', {cwd: tmp});
+        await writeFile(join(tmp, 'worker.txt'), 'worker');
+        execSync('git add worker.txt && git commit -qm "worker"', {cwd: tmp});
+        const workerSha = execSync('git rev-parse HEAD', {cwd: tmp, encoding:'utf8'}).trim();
+        execSync('git push -q origin sandcastle/issue-2000', {cwd: tmp});
+        // Reset local to base (stale local at M), remote ahead at worker
+        execSync('git checkout sandcastle/issue-2000 -q', {cwd: tmp});
+        execSync(`git reset --hard ${baseSha}`, {cwd: tmp});
+        expect(execSync('git rev-parse sandcastle/issue-2000', {cwd: tmp, encoding:'utf8'}).trim()).toBe(baseSha);
+        const remoteBefore = execSync('git ls-remote --heads origin sandcastle/issue-2000', {cwd: tmp, encoding:'utf8'}).trim().split(/\s+/)[0];
+        expect(remoteBefore).toBe(workerSha);
+        // Preparation must recover local to worker SHA (remote descendant of local) and verify provenance
+        const prep = helpers.prepareIssueBranch(tmp, 'sandcastle/issue-2000', baseSha, 'main', baseSha, '2000');
+        expect(prep.ok).toBe(true);
+        expect(prep.action).toBe('reused');
+        expect(execSync('git rev-parse sandcastle/issue-2000', {cwd: tmp, encoding:'utf8'}).trim()).toBe(workerSha);
+        // Remote never deleted
+        expect(execSync('git ls-remote --heads origin sandcastle/issue-2000', {cwd: tmp, encoding:'utf8'}).trim().split(/\s+/)[0]).toBe(workerSha);
+        // hasCommits should now be based on reconciled state (worker), not stale local empty
+        expect(execSync(`git log ${baseSha}..sandcastle/issue-2000 --oneline`, {cwd: tmp, encoding:'utf8'}).trim()).toContain('worker');
+      } finally {
+        await rm(tmpOrigin, {recursive: true, force: true});
+        await rm(tmp, {recursive: true, force: true});
+      }
+    }
+
+    // Case B: local and remote diverged — block, preserve both
+    {
+      const tmpOrigin = await mkdtemp(join(tmpdir(), 'origin-divB-'));
+      const tmp = await mkdtemp(join(tmpdir(), 'divB-'));
+      try {
+        execSync('git init --bare -q', {cwd: tmpOrigin});
+        execSync('git init -q', {cwd: tmp});
+        execSync('git config user.email "t@t.com"', {cwd: tmp});
+        execSync('git config user.name "t"', {cwd: tmp});
+        execSync(`git remote add origin ${tmpOrigin}`, {cwd: tmp});
+        await writeFile(join(tmp, 'base.txt'), 'base');
+        execSync('git add base.txt && git commit -qm "base"', {cwd: tmp});
+        execSync('git branch -M main', {cwd: tmp});
+        execSync('git push -q origin main', {cwd: tmp});
+        const baseSha = execSync('git rev-parse HEAD', {cwd: tmp, encoding:'utf8'}).trim();
+        // Create branch and push initial
+        const prepCreate = helpers.prepareIssueBranch(tmp, 'sandcastle/issue-2001', baseSha, 'main', baseSha, '2001');
+        expect(prepCreate.ok).toBe(true);
+        execSync('git push -q origin sandcastle/issue-2001', {cwd: tmp});
+        // Make local commit A
+        execSync('git checkout sandcastle/issue-2001 -q', {cwd: tmp});
+        await writeFile(join(tmp, 'a.txt'), 'a');
+        execSync('git add a.txt && git commit -qm "a"', {cwd: tmp});
+        const localSha = execSync('git rev-parse HEAD', {cwd: tmp, encoding:'utf8'}).trim();
+        // Make remote diverged commit B via detached push
+        // Create B from base in detached, then force push
+        execSync(`git checkout --detach ${baseSha} -q`, {cwd: tmp});
+        await writeFile(join(tmp, 'b.txt'), 'b');
+        execSync('git add b.txt && git commit -qm "b"', {cwd: tmp});
+        const remoteSha = execSync('git rev-parse HEAD', {cwd: tmp, encoding:'utf8'}).trim();
+        execSync(`git push -f -q origin HEAD:sandcastle/issue-2001`, {cwd: tmp});
+        // Restore local to A (currently detached at B, need to checkout branch at A)
+        execSync('git checkout -B sandcastle/issue-2001 ' + localSha + ' -q', {cwd: tmp});
+        expect(execSync('git rev-parse sandcastle/issue-2001', {cwd: tmp, encoding:'utf8'}).trim()).toBe(localSha);
+        expect(execSync('git ls-remote --heads origin sandcastle/issue-2001', {cwd: tmp, encoding:'utf8'}).trim().split(/\s+/)[0]).toBe(remoteSha);
+        // Now diverged
+        const prep = helpers.prepareIssueBranch(tmp, 'sandcastle/issue-2001', baseSha, 'main', baseSha, '2001');
+        expect(prep.ok).toBe(false);
+        expect(prep.action).toBe('blocked');
+        expect(prep.reason).toContain('diverged');
+        // Both preserved
+        expect(execSync('git rev-parse sandcastle/issue-2001', {cwd: tmp, encoding:'utf8'}).trim()).toBe(localSha);
+        expect(execSync('git ls-remote --heads origin sandcastle/issue-2001', {cwd: tmp, encoding:'utf8'}).trim().split(/\s+/)[0]).toBe(remoteSha);
+      } finally {
+        await rm(tmpOrigin, {recursive: true, force: true});
+        await rm(tmp, {recursive: true, force: true});
+      }
+    }
+
+    // Case C: remote lookup failure — error/block, never create fresh provenance
+    {
+      const tmp = await mkdtemp(join(tmpdir(), 'divC-'));
+      try {
+        execSync('git init -q', {cwd: tmp});
+        execSync('git config user.email "t@t.com"', {cwd: tmp});
+        execSync('git config user.name "t"', {cwd: tmp});
+        await writeFile(join(tmp, 'base.txt'), 'base');
+        execSync('git add base.txt && git commit -qm "base"', {cwd: tmp});
+        execSync('git branch -M main', {cwd: tmp});
+        const baseSha = execSync('git rev-parse HEAD', {cwd: tmp, encoding:'utf8'}).trim();
+        // Add origin that does not exist (lookup will fail, origin exists)
+        execSync('git remote add origin file:///nonexistent/bare.git', {cwd: tmp});
+        // Try to prepare a new branch — local does not exist, remote lookup fails → should error, not create provenance
+        const provPath = join(tmp, '.sandcastle', 'provenance', 'sandcastle-issue-2002.json');
+        expect(await import('node:fs').then(m=>m.existsSync(provPath))).toBe(false);
+        const prep = helpers.prepareIssueBranch(tmp, 'sandcastle/issue-2002', baseSha, 'main', baseSha, '2002');
+        expect(prep.ok).toBe(false);
+        expect(['error','blocked'].includes(prep.action)).toBe(true);
+        expect(prep.reason).toContain('remote lookup failed');
+        expect(await import('node:fs').then(m=>m.existsSync(provPath))).toBe(false);
+        expect(execSync('git branch --list "sandcastle/issue-2002"', {cwd: tmp, encoding:'utf8'}).trim()).toBe('');
+      } finally {
+        await rm(tmp, {recursive: true, force: true});
+      }
+    }
+  });
 });
 
