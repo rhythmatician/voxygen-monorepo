@@ -190,9 +190,9 @@ describe("Regression: empty branch lifecycle (126 idle) — quiet worker not mis
   });
 
   it("branch isolation: caller checkout is not part of data plane (regression for #126/PR #149)", async () => {
-    // Simulate the bug: start on feature/foo containing a unique caller-only commit and an existing PR,
-    // dispatch #999, assert isolation.
-    const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
+    // Use helpers to test the production seam: factory base freeze, issue/batch from base, caller invariant, and stale-branch reconciliation.
+    const helpers = await import("./branch-helpers.mts");
+    const { mkdtemp, writeFile, rm, mkdir } = await import('node:fs/promises');
     const { tmpdir } = await import('node:os');
     const { join } = await import('node:path');
     const { execSync } = await import('node:child_process');
@@ -201,56 +201,83 @@ describe("Regression: empty branch lifecycle (126 idle) — quiet worker not mis
       execSync('git init -q', {cwd: tmp});
       execSync('git config user.email "test@test.com"', {cwd: tmp});
       execSync('git config user.name "test"', {cwd: tmp});
-      // base
       await writeFile(join(tmp, 'base.txt'), 'base');
       execSync('git add base.txt && git commit -qm "base"', {cwd: tmp});
       execSync('git branch -M main', {cwd: tmp});
       const baseSha = execSync('git rev-parse HEAD', {cwd: tmp, encoding:'utf8'}).trim();
+      // Simulate origin/main for helpers
+      execSync('git branch origin-main-tmp ' + baseSha, {cwd: tmp});
       // feature/foo with unique caller-only commit
       execSync('git checkout -b feature/foo -q', {cwd: tmp});
       await writeFile(join(tmp, 'caller-only.txt'), 'caller-secret');
       execSync('git add caller-only.txt && git commit -qm "caller-only commit"', {cwd: tmp});
       const callerSha = execSync('git rev-parse HEAD', {cwd: tmp, encoding:'utf8'}).trim();
-      const callerBranch = execSync('git branch --show-current', {cwd: tmp, encoding:'utf8'}).trim();
-      // Simulate factory base freeze: factoryBaseSha = origin/main (here main's baseSha)
+      const callerBranch = 'feature/foo';
+      // Helpers: getCallerInfo should report feature/foo
+      const callerInfo = helpers.getCallerInfo(tmp);
+      expect(callerInfo.branch).toBe(callerBranch);
+      expect(callerInfo.sha).toBe(callerSha);
+
+      // Contaminated M → caller-only → issue must be rejected: issue branch created via baseBranch: factoryBaseSha must NOT contain caller-only
       const factoryBaseSha = baseSha;
-      // Simulate issue branch creation via baseBranch: factoryBaseSha (correct)
       execSync(`git branch sandcastle/issue-999 ${factoryBaseSha}`, {cwd: tmp});
       execSync('git checkout sandcastle/issue-999 -q', {cwd: tmp});
       await writeFile(join(tmp, 'issue.txt'), 'issue work');
       execSync('git add issue.txt && git commit -qm "issue work"', {cwd: tmp});
-      const issueSha = execSync('git rev-parse HEAD', {cwd: tmp, encoding:'utf8'}).trim();
-      // Assert issue branch does NOT contain caller-only commit
-      const issueContainsCaller = (() => {
-        try { execSync(`git merge-base --is-ancestor ${callerSha} sandcastle/issue-999`, {cwd: tmp}); return true; } catch { return false; }
-      })();
-      expect(issueContainsCaller).toBe(false);
+      expect(helpers.isBranchAncestor(tmp, callerSha, 'sandcastle/issue-999')).toBe(false);
       expect(execSync(`git log --oneline ${factoryBaseSha}..sandcastle/issue-999`, {cwd: tmp, encoding:'utf8'}).toString()).not.toContain('caller-only');
-      // Simulate batch branch from factoryBaseSha (correct)
+
+      // Legitimate stale branch from older M0 after main advances to M1 must not be destroyed:
+      // Advance origin/main to M1
+      execSync('git checkout main -q', {cwd: tmp});
+      await writeFile(join(tmp, 'm1.txt'), 'm1');
+      execSync('git add m1.txt && git commit -qm "m1 advance"', {cwd: tmp});
+      const m1Sha = execSync('git rev-parse HEAD', {cwd: tmp, encoding:'utf8'}).trim();
+      // Create stale issue branch from old base M0 (simulate earlier factory run)
+      execSync(`git branch sandcastle/issue-998 ${baseSha}`, {cwd: tmp});
+      execSync('git checkout sandcastle/issue-998 -q', {cwd: tmp});
+      await writeFile(join(tmp, 'stale.txt'), 'stale work');
+      execSync('git add stale.txt && git commit -qm "stale work"', {cwd: tmp});
+      // Record provenance for stale branch at M0
+      helpers.recordProvenance(tmp, 'sandcastle/issue-998', baseSha, callerBranch, callerSha, '998');
+      // Now provenance check for stale branch should be OK (descendant of recorded base), not destroyed
+      const provOk = helpers.verifyProvenance(tmp, 'sandcastle/issue-998');
+      expect(provOk.ok).toBe(true);
+      expect(provOk.recordedBase).toBe(baseSha);
+      // But if we check against current origin/main (M1), merge-base heuristic would falsely reject — our helper must not.
+
+      // Provenance-check failure must fail closed: legacy branch with commits and no provenance
+      execSync(`git checkout -b sandcastle/issue-997 ${baseSha} -q`, {cwd: tmp});
+      await writeFile(join(tmp, 'legacy.txt'), 'legacy');
+      execSync('git add legacy.txt && git commit -qm "legacy work"', {cwd: tmp});
+      // Do NOT record provenance — legacy
+      const legacyProv = helpers.verifyProvenance(tmp, 'sandcastle/issue-997');
+      expect(legacyProv.ok).toBe(false);
+      expect(legacyProv.reason).toContain('no provenance');
+
+      // Caller checkout remains on feature/foo throughout batch creation/integration, not merely restored afterward
+      execSync('git checkout feature/foo -q', {cwd: tmp});
+      const beforeBranch = execSync('git branch --show-current', {cwd: tmp, encoding:'utf8'}).trim();
+      const beforeSha = execSync('git rev-parse HEAD', {cwd: tmp, encoding:'utf8'}).trim();
       const batchBranch = `sandcastle/batch-999-${Date.now().toString(36)}`;
-      execSync(`git branch ${batchBranch} ${factoryBaseSha}`, {cwd: tmp});
-      execSync(`git checkout ${batchBranch} -q`, {cwd: tmp});
-      execSync(`git merge sandcastle/issue-999 --no-edit -q`, {cwd: tmp});
-      const batchContainsCaller = (() => {
-        try { execSync(`git merge-base --is-ancestor ${callerSha} ${batchBranch}`, {cwd: tmp}); return true; } catch { return false; }
-      })();
-      expect(batchContainsCaller).toBe(false);
-      // Assert feature/foo ref/SHA unchanged
-      const afterCallerSha = execSync('git rev-parse feature/foo', {cwd: tmp, encoding:'utf8'}).trim();
-      expect(afterCallerSha).toBe(callerSha);
-      // Simulate existing PR head unchanged (we don't have GitHub, but branch ref unchanged proves it)
-      expect(execSync('git branch --show-current', {cwd: tmp, encoding:'utf8'}).trim()).toBe(batchBranch);
-      // Restore caller
+      const worktreePath = join(tmp, '.sandcastle', 'worktrees', batchBranch.replace(/\//g, '-'));
+      await mkdir(join(tmp, '.sandcastle', 'worktrees'), {recursive: true});
+      execSync(`git worktree add -b ${batchBranch} ${worktreePath} ${factoryBaseSha}`, {cwd: tmp});
+      // Verify caller still on feature/foo and ref unchanged (never moved)
+      const afterBranch = execSync('git branch --show-current', {cwd: tmp, encoding:'utf8'}).trim();
+      const afterSha = execSync('git rev-parse HEAD', {cwd: tmp, encoding:'utf8'}).trim();
+      const refSha = execSync(`git rev-parse refs/heads/${callerBranch}`, {cwd: tmp, encoding:'utf8'}).trim();
+      expect(afterBranch).toBe(beforeBranch);
+      expect(afterSha).toBe(beforeSha);
+      expect(refSha).toBe(callerSha);
+      expect(helpers.verifyCallerUnchanged(tmp, callerBranch, callerSha).ok).toBe(true);
+      // Merge issue into batch worktree directly (without moving caller)
+      execSync(`git -C ${worktreePath} merge sandcastle/issue-999 --no-edit -q`, {cwd: tmp});
+      expect(helpers.isBranchAncestor(tmp, callerSha, batchBranch)).toBe(false);
+      // Cleanup
+      execSync(`git worktree remove --force ${worktreePath}`, {cwd: tmp});
+      execSync(`git branch -D ${batchBranch}`, {cwd: tmp});
       execSync(`git checkout ${callerBranch} -q`, {cwd: tmp});
-      expect(execSync('git branch --show-current', {cwd: tmp, encoding:'utf8'}).trim()).toBe(callerBranch);
-      expect(execSync('git rev-parse HEAD', {cwd: tmp, encoding:'utf8'}).trim()).toBe(callerSha);
-      // Issue work only on issue/batch, not on feature/foo
-      const fooLog = execSync(`git log --oneline feature/foo`, {cwd: tmp, encoding:'utf8'}).toString();
-      expect(fooLog).toContain('caller-only');
-      expect(fooLog).not.toContain('issue work');
-      const issueLog = execSync(`git log --oneline sandcastle/issue-999`, {cwd: tmp, encoding:'utf8'}).toString();
-      expect(issueLog).toContain('issue work');
-      expect(issueLog).not.toContain('caller-only');
     } finally {
       await rm(tmp, {recursive: true, force: true});
     }

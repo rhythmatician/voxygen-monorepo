@@ -12,6 +12,7 @@ import * as path from "node:path";
 
 const REPO_ROOT = process.cwd();
 import { isEligible, branchForIssue, type IssueInput } from "./dispatch.mts";
+import * as branchHelpers from "./branch-helpers.mts";
 import { mayAutonomouslyMerge } from "./ci-policy.mts";
 import {
   reviewVerdictSchema,
@@ -505,38 +506,57 @@ async function reconcileInProgressIssues(): Promise<void> {
     } catch { branchExists = false; }
     if(branchExists){
       // Existing stale issue branches must not silently bypass the factory-base invariant.
-      // Prove their ancestry/base is valid (must be from origin/main, never caller's HEAD) or clean/block.
-      let ancestryOk = false;
+      // Use persisted exact factoryBaseSha provenance, not merge-base heuristic.
+      // For legacy branches with commits and no recorded base, fail closed — preserve/block, do not delete.
       let hasCommits = false;
       try {
-        // Fetch to ensure origin/main is current for ancestry check
-        require('child_process').execSync('git fetch origin main --quiet', {stdio:'ignore', cwd: REPO_ROOT});
-        const factoryBase = require('child_process').execSync('git rev-parse origin/main', {encoding:'utf8', cwd: REPO_ROOT}).trim();
         const log = require('child_process').execSync(`git log origin/main..${branch} --oneline`, { encoding: "utf8", cwd: REPO_ROOT }).trim();
         if (log) hasCommits = true;
-        // Check if branch's merge-base is origin/main — if not, it was created from caller's HEAD (e.g., feature/foo) not factory base
-        const mergeBase = require('child_process').execSync(`git merge-base origin/main ${branch}`, {encoding:'utf8', cwd: REPO_ROOT}).trim();
-        const originMainSha = factoryBase;
-        if (mergeBase === originMainSha) {
-          ancestryOk = true;
+      } catch { hasCommits = false; }
+      const provPath = path.join(REPO_ROOT, ".sandcastle", "provenance", `${branch.replace(/[^a-zA-Z0-9-]/g, "-")}.json`);
+      let recordedBase: string | null = null;
+      let provenanceOk = false;
+      try {
+        if (fs.existsSync(provPath)) {
+          const prov = JSON.parse(fs.readFileSync(provPath, 'utf8'));
+          recordedBase = prov.factoryBaseSha as string;
+          // Verify branch was created from recorded base: merge-base should be recordedBase and batch should be descendant
+          const isAncestor = (() => {
+            try { require('child_process').execSync(`git merge-base --is-ancestor ${recordedBase} ${branch}`, {stdio:'ignore', cwd: REPO_ROOT}); return true; } catch { return false; }
+          })();
+          if (isAncestor) {
+            provenanceOk = true;
+            console.log(`  #${id} (${branch}) → provenance OK: branch descendant of recorded factory base ${recordedBase.slice(0,7)}`);
+          } else {
+            console.warn(`  #${id} (${branch}) → provenance FAILED: branch is not descendant of recorded base ${recordedBase.slice(0,7)} — not from factory base`);
+            provenanceOk = false;
+          }
         } else {
-          console.warn(`  #${id} (${branch}) → ancestry check FAILED: merge-base ${mergeBase.slice(0,7)} != origin/main ${originMainSha.slice(0,7)} — branch was not created from factory base (likely caller's HEAD)`);
-          ancestryOk = false;
+          // No provenance recorded — legacy branch
+          if (hasCommits) {
+            console.warn(`  #${id} (${branch}) → no provenance file at ${provPath} but branch has commits — legacy branch, fail closed: preserving/blocking for inspection, not deleting`);
+            console.log(`  #${id} (${branch}) → legacy branch with commits and no recorded base — marking blocked for inspection`);
+            await markBlocked(id, branch, `Legacy branch ${branch} has commits but no recorded factoryBaseSha provenance at ${provPath} — preserved for inspection. Was not created from frozen factory base. To retry: delete branch and remove agent:blocked, re-run factory from clean base.`);
+            continue;
+          } else {
+            // Empty branch with no provenance — treat as stale empty, clean
+            console.log(`  #${id} (${branch}) → branch exists but empty and no provenance — cleaning stale claim, will retry`);
+            try { require('child_process').execSync(`git branch -D ${branch}`, { encoding: "utf8", cwd: REPO_ROOT }); } catch {}
+            try { await runGh(["api", `repos/${parseOwnerRepo()?.owner}/${parseOwnerRepo()?.repo}/git/refs/heads/${branch}`, "--method", "DELETE"]); } catch {}
+            await safeRunGh(["issue", "edit", id, "--remove-label", "agent:in-progress"], `Failed to cleanup stale in-progress for #${id}`);
+            await safeRunGh(["issue", "edit", id, "--remove-label", "agent:blocked"], `Failed to cleanup stale blocked for #${id}`);
+            continue;
+          }
         }
       } catch (e) {
-        console.warn(`  #${id} (${branch}) → ancestry check error: ${getErrorMessage(e)} — treating as valid for now`);
-        ancestryOk = true; // fail open for ancestry check errors, but hasCommits will still be evaluated
-        try {
-          const log = require('child_process').execSync(`git log main..${branch} --oneline`, { encoding: "utf8", cwd: REPO_ROOT }).trim();
-          if (log) hasCommits = true;
-        } catch { hasCommits = false; }
+        // Provenance-check failure must fail closed — do not set provenanceOk=true
+        console.error(`  #${id} (${branch}) → provenance check error: ${getErrorMessage(e)} — fail closed: preserving/blocking for inspection`);
+        await markBlocked(id, branch, `Provenance check failed for ${branch}: ${getErrorMessage(e)} — preserved for inspection. Branch not Proven to be from factory base.`);
+        continue;
       }
-      if (!ancestryOk) {
-        console.log(`  #${id} (${branch}) → branch with invalid ancestry (not from origin/main) — cleaning stale invalid branch, will retry from correct base`);
-        try { require('child_process').execSync(`git branch -D ${branch}`, { encoding: "utf8", cwd: REPO_ROOT }); } catch {}
-        try { await runGh(["api", `repos/${parseOwnerRepo()?.owner}/${parseOwnerRepo()?.repo}/git/refs/heads/${branch}`, "--method", "DELETE"]); } catch {}
-        await safeRunGh(["issue", "edit", id, "--remove-label", "agent:in-progress"], `Failed to cleanup stale in-progress for #${id} (invalid ancestry)`);
-        await safeRunGh(["issue", "edit", id, "--remove-label", "agent:blocked"], `Failed to cleanup stale blocked for #${id} (invalid ancestry)`);
+      if (!provenanceOk) {
+        console.log(`  #${id} (${branch}) → branch provenance invalid (not descendant of recorded base ${recordedBase?.slice(0,7)}) — marking blocked for inspection, not deleting (fail closed)`);
+        await markBlocked(id, branch, `Branch ${branch} provenance invalid: not descendant of recorded factory base ${recordedBase?.slice(0,7)} — preserved for inspection. Expected base from provenance.`);
         continue;
       }
       // If branch exists but has no commits ahead of main, it was claimed but never worked — not a crash with work.
@@ -909,6 +929,20 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     continue;
   }
 
+  // Persist exact factoryBaseSha provenance for each claimed issue branch — for reconciliation.
+  // Do not rely on merge-base heuristic; record the exact base used at creation/claim.
+  for (const p of claimedIssues) {
+    try {
+      const provDir = path.join(REPO_ROOT, ".sandcastle", "provenance");
+      fs.mkdirSync(provDir, { recursive: true });
+      const provPath = path.join(provDir, `${p.branch.replace(/[^a-zA-Z0-9-]/g, "-")}.json`);
+      fs.writeFileSync(provPath, JSON.stringify({ issueId: p.id, branch: p.branch, factoryBaseSha, callerBranch, callerSha, at: new Date().toISOString() }, null, 2));
+      console.log(`  Provenance recorded for ${p.branch}: factoryBase ${factoryBaseSha.slice(0,7)} caller ${callerBranch}@${callerSha.slice(0,7)} → ${provPath}`);
+    } catch (e) {
+      console.warn(`  Failed to record provenance for ${p.branch}: ${getErrorMessage(e)}`);
+    }
+  }
+
   console.log(`\nClaimed ${claimedIssues.length} issue(s), launching parallel workers...\n`);
 
   // ----- Phase 2: Execute + Review (parallel, isolated) -----
@@ -1131,19 +1165,19 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   const batchBranch = `sandcastle/batch-${completedIssues.map(i=>i.id).join('-')}-${Date.now().toString(36)}`;
   console.log(`Creating dedicated batch branch ${batchBranch} from factoryBaseSha ${factoryBaseSha.slice(0,7)} (caller ${callerBranchForBatch}@${callerShaForBatch.slice(0,7)} — will NOT be mutated)`);
   // Prefer dedicated batch worktree so caller checkout never needs to move; if we do switch, restore in finally.
-  let batchWorktreePath = "";
+  // Do NOT git checkout ${batchBranch} in the caller's working tree at all.
+  let batchWorktreePath = path.join(REPO_ROOT, ".sandcastle", "worktrees", batchBranch.replace(/\//g, "-"));
   try {
-    // Create batch branch from factoryBaseSha without moving caller if possible, then checkout for merger
-    // Use git branch + checkout to ensure batch starts from frozen base, not caller's HEAD
-    execSync(`git branch ${batchBranch} ${factoryBaseSha}`, {stdio:'ignore'});
-    execSync(`git checkout ${batchBranch}`, {stdio:'ignore'});
-    console.log(`Checked out ${batchBranch} from ${factoryBaseSha.slice(0,7)}`);
+    // Create batch from factoryBaseSha under .sandcastle/worktrees/, run merger there, push exact batch ref, then close worktree.
+    // This ensures caller checkout never moves.
+    execSync(`git worktree add -b ${batchBranch} ${batchWorktreePath} ${factoryBaseSha}`, {stdio:'ignore'});
+    console.log(`Created batch worktree ${batchWorktreePath} for ${batchBranch} from ${factoryBaseSha.slice(0,7)} — caller ${callerBranchForBatch} never moved`);
   } catch (e) {
-    console.error(`Failed to create batch branch ${batchBranch} from ${factoryBaseSha.slice(0,7)}: ${getErrorMessage(e)}`);
+    console.error(`Failed to create batch worktree ${batchWorktreePath} for ${batchBranch} from ${factoryBaseSha.slice(0,7)}: ${getErrorMessage(e)}`);
     for (const iss of completedIssues) {
-      await markBlocked(iss.id, iss.branch, `Batch branch creation failed for ${batchBranch} from ${factoryBaseSha.slice(0,7)}: ${String(getErrorMessage(e)).slice(0, MERGER_REASON_TRUNCATE)} -- branch preserved`);
+      await markBlocked(iss.id, iss.branch, `Batch worktree creation failed for ${batchBranch} from ${factoryBaseSha.slice(0,7)}: ${String(getErrorMessage(e)).slice(0, MERGER_REASON_TRUNCATE)} -- branch preserved`);
     }
-    try { execSync(`git checkout ${callerBranchForBatch}`, {stdio:'ignore'}); } catch {}
+    try { execSync(`git worktree remove --force ${batchWorktreePath}`, {stdio:'ignore'}); } catch {}
     try { execSync(`git branch -D ${batchBranch}`, {stdio:'ignore'}); } catch {}
     continue;
   }
@@ -1154,20 +1188,21 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
       sandbox: docker({ env: { GH_TOKEN: ghToken() } }),
       name: "merger",
       maxIterations: 1,
+      cwd: batchWorktreePath,
       agent: sandcastle.muse("muse-spark-1.2-contributor"),
-      promptFile: "./.sandcastle/merge-prompt.md",
+      promptFile: path.join(REPO_ROOT, ".sandcastle", "merge-prompt.md"),
       promptArgs: {
         BRANCHES: completedBranches.map((b) => `- ${b}`).join("\n"),
         ISSUES: completedIssues.map((i) => `- ${i.id}: ${i.title}`).join("\n"),
       },
     });
-    console.log(`\nBranches merged locally into ${batchBranch} via merger agent.`);
+    console.log(`\nBranches merged locally into ${batchBranch} via merger agent in worktree ${batchWorktreePath}.`);
   } catch (error: unknown) {
-    console.error(`Merger failed on ${batchBranch}: ${getErrorMessage(error)}`);
+    console.error(`Merger failed on ${batchBranch} in ${batchWorktreePath}: ${getErrorMessage(error)}`);
     for (const iss of completedIssues) {
       await markBlocked(iss.id, iss.branch, `Merger failed on ${batchBranch}: ${String(getErrorMessage(error)).slice(0, MERGER_REASON_TRUNCATE)} -- branch preserved`);
     }
-    try { execSync(`git checkout ${callerBranchForBatch}`, {stdio:'ignore'}); } catch {}
+    try { execSync(`git worktree remove --force ${batchWorktreePath}`, {stdio:'ignore'}); } catch {}
     try { execSync(`git branch -D ${batchBranch}`, {stdio:'ignore'}); } catch {}
     continue;
   }
@@ -1244,29 +1279,27 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   } catch (error: unknown) {
     console.warn(`Post-merge PR handling failed (non-fatal): ${getErrorMessage(error)}`);
   } finally {
-    // Enforce invariant: caller branch ref and caller SHA must be unchanged
+    // Enforce invariant: refs/heads/${callerBranch} still equals callerSha — do not compare currently checked-out batch HEAD
+    // Caller checkout should never have moved (dedicated batch worktree); verify ref, not checkout.
     try {
+      const refSha = execSync(`git rev-parse refs/heads/${callerBranchForBatch}`, {encoding:'utf8'}).trim();
       const afterBranch = execSync('git branch --show-current', {encoding:'utf8'}).trim();
-      const afterSha = execSync('git rev-parse HEAD', {encoding:'utf8'}).trim();
-      if (afterBranch !== callerBranchForBatch || afterSha !== callerShaForBatch) {
-        console.error(`INVARIANT VIOLATION: caller branch/SHA changed! Before ${callerBranchForBatch}@${callerShaForBatch.slice(0,7)} after ${afterBranch}@${afterSha.slice(0,7)} — restoring`);
-        try { execSync(`git checkout ${callerBranchForBatch}`, {stdio:'ignore'}); } catch {}
-        // Verify restore
-        const restoredBranch = execSync('git branch --show-current', {encoding:'utf8'}).trim();
-        const restoredSha = execSync('git rev-parse HEAD', {encoding:'utf8'}).trim();
-        if (restoredBranch !== callerBranchForBatch || restoredSha !== callerShaForBatch) {
-          console.error(`Failed to restore caller branch/SHA — factory may have mutated caller checkout`);
-        } else {
-          console.log(`Restored caller branch ${callerBranchForBatch}@${callerShaForBatch.slice(0,7)} (batch ${batchBranch} remains pushed)`);
-        }
+      if (refSha !== callerShaForBatch) {
+        console.error(`INVARIANT VIOLATION: refs/heads/${callerBranchForBatch} changed! Before ${callerShaForBatch.slice(0,7)} after ${refSha.slice(0,7)} — caller branch was mutated`);
       } else {
-        console.log(`Invariant OK: caller branch/SHA unchanged ${callerBranchForBatch}@${callerShaForBatch.slice(0,7)} (batch ${batchBranch} pushed)`);
-        // Ensure we are back on caller branch (we are on batchBranch, need to checkout caller)
+        console.log(`Invariant OK: refs/heads/${callerBranchForBatch} still equals ${callerShaForBatch.slice(0,7)} (caller checkout ${afterBranch}, batch ${batchBranch} pushed)`);
+      }
+      // Also verify checkout still on caller (should never have left)
+      if (afterBranch !== callerBranchForBatch) {
+        console.warn(`Caller checkout moved from ${callerBranchForBatch} to ${afterBranch} — restoring (should not have happened with dedicated worktree)`);
         try { execSync(`git checkout ${callerBranchForBatch}`, {stdio:'ignore'}); } catch {}
       }
+      // Clean up batch worktree (if used) — keep branch for PR, remove worktree
+      try { execSync(`git worktree remove --force ${batchWorktreePath}`, {stdio:'ignore'}); } catch {}
+      console.log(`Batch worktree ${batchWorktreePath} removed (branch ${batchBranch} remains for PR)`);
     } catch (e) {
-      console.warn(`Failed to verify/restore caller invariant: ${getErrorMessage(e)}`);
-      try { execSync(`git checkout ${callerBranchForBatch}`, {stdio:'ignore'}); } catch {}
+      console.warn(`Failed to verify caller invariant: ${getErrorMessage(e)}`);
+      try { execSync(`git worktree remove --force ${batchWorktreePath}`, {stdio:'ignore'}); } catch {}
     }
   }
 
