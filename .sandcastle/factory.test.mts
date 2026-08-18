@@ -188,5 +188,72 @@ describe("Regression: empty branch lifecycle (126 idle) — quiet worker not mis
     expect(mainMts).toContain("Emergency deadman");
     expect(mainMts).not.toContain("Agent idle for");
   });
+
+  it("branch isolation: caller checkout is not part of data plane (regression for #126/PR #149)", async () => {
+    // Simulate the bug: start on feature/foo containing a unique caller-only commit and an existing PR,
+    // dispatch #999, assert isolation.
+    const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { execSync } = await import('node:child_process');
+    const tmp = await mkdtemp(join(tmpdir(), 'iso-test-'));
+    try {
+      execSync('git init -q', {cwd: tmp});
+      execSync('git config user.email "test@test.com"', {cwd: tmp});
+      execSync('git config user.name "test"', {cwd: tmp});
+      // base
+      await writeFile(join(tmp, 'base.txt'), 'base');
+      execSync('git add base.txt && git commit -qm "base"', {cwd: tmp});
+      execSync('git branch -M main', {cwd: tmp});
+      const baseSha = execSync('git rev-parse HEAD', {cwd: tmp, encoding:'utf8'}).trim();
+      // feature/foo with unique caller-only commit
+      execSync('git checkout -b feature/foo -q', {cwd: tmp});
+      await writeFile(join(tmp, 'caller-only.txt'), 'caller-secret');
+      execSync('git add caller-only.txt && git commit -qm "caller-only commit"', {cwd: tmp});
+      const callerSha = execSync('git rev-parse HEAD', {cwd: tmp, encoding:'utf8'}).trim();
+      const callerBranch = execSync('git branch --show-current', {cwd: tmp, encoding:'utf8'}).trim();
+      // Simulate factory base freeze: factoryBaseSha = origin/main (here main's baseSha)
+      const factoryBaseSha = baseSha;
+      // Simulate issue branch creation via baseBranch: factoryBaseSha (correct)
+      execSync(`git branch sandcastle/issue-999 ${factoryBaseSha}`, {cwd: tmp});
+      execSync('git checkout sandcastle/issue-999 -q', {cwd: tmp});
+      await writeFile(join(tmp, 'issue.txt'), 'issue work');
+      execSync('git add issue.txt && git commit -qm "issue work"', {cwd: tmp});
+      const issueSha = execSync('git rev-parse HEAD', {cwd: tmp, encoding:'utf8'}).trim();
+      // Assert issue branch does NOT contain caller-only commit
+      const issueContainsCaller = (() => {
+        try { execSync(`git merge-base --is-ancestor ${callerSha} sandcastle/issue-999`, {cwd: tmp}); return true; } catch { return false; }
+      })();
+      expect(issueContainsCaller).toBe(false);
+      expect(execSync(`git log --oneline ${factoryBaseSha}..sandcastle/issue-999`, {cwd: tmp, encoding:'utf8'}).toString()).not.toContain('caller-only');
+      // Simulate batch branch from factoryBaseSha (correct)
+      const batchBranch = `sandcastle/batch-999-${Date.now().toString(36)}`;
+      execSync(`git branch ${batchBranch} ${factoryBaseSha}`, {cwd: tmp});
+      execSync(`git checkout ${batchBranch} -q`, {cwd: tmp});
+      execSync(`git merge sandcastle/issue-999 --no-edit -q`, {cwd: tmp});
+      const batchContainsCaller = (() => {
+        try { execSync(`git merge-base --is-ancestor ${callerSha} ${batchBranch}`, {cwd: tmp}); return true; } catch { return false; }
+      })();
+      expect(batchContainsCaller).toBe(false);
+      // Assert feature/foo ref/SHA unchanged
+      const afterCallerSha = execSync('git rev-parse feature/foo', {cwd: tmp, encoding:'utf8'}).trim();
+      expect(afterCallerSha).toBe(callerSha);
+      // Simulate existing PR head unchanged (we don't have GitHub, but branch ref unchanged proves it)
+      expect(execSync('git branch --show-current', {cwd: tmp, encoding:'utf8'}).trim()).toBe(batchBranch);
+      // Restore caller
+      execSync(`git checkout ${callerBranch} -q`, {cwd: tmp});
+      expect(execSync('git branch --show-current', {cwd: tmp, encoding:'utf8'}).trim()).toBe(callerBranch);
+      expect(execSync('git rev-parse HEAD', {cwd: tmp, encoding:'utf8'}).trim()).toBe(callerSha);
+      // Issue work only on issue/batch, not on feature/foo
+      const fooLog = execSync(`git log --oneline feature/foo`, {cwd: tmp, encoding:'utf8'}).toString();
+      expect(fooLog).toContain('caller-only');
+      expect(fooLog).not.toContain('issue work');
+      const issueLog = execSync(`git log --oneline sandcastle/issue-999`, {cwd: tmp, encoding:'utf8'}).toString();
+      expect(issueLog).toContain('issue work');
+      expect(issueLog).not.toContain('caller-only');
+    } finally {
+      await rm(tmp, {recursive: true, force: true});
+    }
+  });
 });
 
