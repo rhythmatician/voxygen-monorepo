@@ -152,6 +152,67 @@ public final class GenerationSession {
                 RouterField.RIDGES.ordinal(),
             };
 
+    // --- End L4 deterministic tracer (model-free, The End, L4-only) ---
+    // Tracer mode is an explicit early session-mode decision before BOTH
+    // preloadModel() and resolveVoxyModel()/worker entry. Single decision,
+    // no scattered if(isEnd). Proven by no preloadFuture / no VoxyModelRunner
+    // / no ONNX file in tracer mode. L4 only; disables L3/L2/L1/L0 seeding
+    // and partial-fill descent. Demand is 121 L4 requests (X/Z -5..5, Y=0)
+    // around player at (0,96,0) in The End — horizon 2048+512 = 2560 blocks.
+    private volatile boolean endL4TracerMode = false;
+    static final int END_L4_TRACER_RADIUS = 5;
+    static final int END_L4_TRACER_WS_Y = 0;
+    static final int END_L4_TRACER_TOTAL = 121; // 11*11
+
+    boolean isEndL4TracerMode() {
+        return endL4TracerMode;
+    }
+
+    void setEndL4TracerModeForTest(boolean enabled) {
+        this.endL4TracerMode = enabled;
+    }
+
+    private boolean decideEndL4TracerMode(World world) {
+        if (world == null) {
+            return false;
+        }
+        try {
+            return World.END.equals(world.getRegistryKey());
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    static int endL4TracerTotalRequests() {
+        return END_L4_TRACER_TOTAL;
+    }
+
+    /**
+     * Enqueue 121 L4 tracer requests (X/Z -5..5, Y=0) around the player's
+     * L4 WorldSection centre. Reuses dedup/backpressure via
+     * ShadowRouterJobQueue; no synchronous blocking barrier.
+     */
+    int enqueueEndL4TracerRequests() {
+        int centerX = WorldSectionCoord.sectionToWorldSection(playerSectionX, 4);
+        int centerZ = WorldSectionCoord.sectionToWorldSection(playerSectionZ, 4);
+        int enqueued = 0;
+        for (int dz = -END_L4_TRACER_RADIUS; dz <= END_L4_TRACER_RADIUS; dz++) {
+            for (int dx = -END_L4_TRACER_RADIUS; dx <= END_L4_TRACER_RADIUS; dx++) {
+                int wsX = centerX + dx;
+                int wsZ = centerZ + dz;
+                int wsY = END_L4_TRACER_WS_Y;
+                VoxyRequestDecoder.VoxyNodeRequest req = new VoxyRequestDecoder.VoxyNodeRequest();
+                req.lodLevel = 4;
+                req.worldX = wsX;
+                req.worldY = wsY;
+                req.worldZ = wsZ;
+                ShadowRouterJobQueue.enqueue(req);
+                enqueued++;
+            }
+        }
+        return enqueued;
+    }
+
     /**
      * Internal terrain-candidate seam — package-private, not a public SPI.
      * Result is a semantic {@link VoxelVolume} (extent 16 for L0 sections,
@@ -334,7 +395,13 @@ public final class GenerationSession {
      * which fires as soon as the network connection is established — well
      * before the "Loading terrain..." screen appears.
      */
+    // Early session-mode decision before BOTH preloadModel() and resolveVoxyModel()/worker entry
     public void preloadModel() {
+        // Early tracer-mode gate: must precede VoxyModelRunner creation
+        if (endL4TracerMode) {
+            HelloTerrainMod.LOGGER.info("[LodGen] End L4 tracer mode — skipping preloadModel (no ONNX)");
+            return;
+        }
         if (preloadFuture != null && !preloadFuture.isDone()) {
             HelloTerrainMod.LOGGER.debug("[LodGen] preloadModel() — already in progress, skipping");
             return;
@@ -389,6 +456,11 @@ public final class GenerationSession {
         }
         noiseAccess = null;
         this.server = server;
+        // Early session-mode decision before BOTH preloadModel() and resolveVoxyModel()/worker entry
+        this.endL4TracerMode = decideEndL4TracerMode(world);
+        if (endL4TracerMode) {
+            HelloTerrainMod.LOGGER.info("[LodGen] End L4 tracer mode enabled — The End, model-free, L4-only");
+        }
 
         workerThread = new Thread(() -> runWorker(world), "LODiffusion-Gen");
         workerThread.setDaemon(true);
@@ -451,6 +523,10 @@ public final class GenerationSession {
 
     private void seedNearPlayerDemandIfNeeded() {
         if (!running.get()) {
+            return;
+        }
+        // End L4 tracer: 121 L4-only (X/Z -5..5, Y=0), disable L3/L2/L1/L0 seeding
+        if (endL4TracerMode) {
             return;
         }
 
@@ -562,10 +638,40 @@ public final class GenerationSession {
             // Try to bind to the integrated server's noise pipeline for real
             // heightmap / biome / router data at any coordinate.
             noiseAccess = WorldNoiseAccess.tryCreate(server, world);
-            if (noiseAccess != null) {
-                HelloTerrainMod.LOGGER.info("[LodGen] Using REAL noise access — " +
-                        "no synthetic fallback needed");
+            if (noiseAccess == null) {
+                HelloTerrainMod.LOGGER.warn("[LodGen] Noise access unavailable — "
+                        + "will fall back to heightmap-only generation");
+            } else {
+                HelloTerrainMod.LOGGER.info("[LodGen] Using REAL noise access — "
+                        + "no synthetic fallback needed");
+            }
 
+            // Early tracer-mode gate: must precede resolveVoxyModel()
+            if (endL4TracerMode) {
+                if (noiseAccess == null) {
+                    HelloTerrainMod.LOGGER.error(
+                            "[LodGen] End L4 tracer mode — noiseAccess unavailable, aborting");
+                    return;
+                }
+                Object tracerMapper = VoxyCompat.getMapper(worldEngine);
+                Registry<Biome> tracerBiomeRegistry =
+                        world.getRegistryManager().getOrThrow(RegistryKeys.BIOME);
+                VoxyIdMaps tracerMaps = CanonicalVoxyMaps.from(tracerMapper, tracerBiomeRegistry);
+                VoxelVolumeWriter tracerWriter = RealVoxyVolumeWriter.create(worldEngine, tracerMaps);
+                waitForPlayerPosition();
+                if (stopRequested.get()) {
+                    return;
+                }
+                HelloTerrainMod.LOGGER.info(
+                        "[LodGen] End L4 tracer mode — enqueuing 121 L4 requests (X/Z -5..5 Y=0)");
+                enqueueEndL4TracerRequests();
+                boolean tracerProduced = runEndL4TracerPipeline(world, tracerWriter);
+                HelloTerrainMod.LOGGER.info(
+                        "[LodGen] End L4 tracer pipeline stopped: produced={}", tracerProduced);
+                return;
+            }
+
+            if (noiseAccess != null) {
                 // Create the hot-swappable sampler factory (reads terrainBackend config).
                 // Full world context enables UpstreamNoiseContext (heightmap + biome providers).
                 samplerFactory = NoiseRouterSamplerFactory.create(
@@ -575,9 +681,6 @@ public final class GenerationSession {
                         noiseAccess.noiseConfig());
                 HelloTerrainMod.LOGGER.info("[LodGen] NoiseRouterSamplerFactory ready — backend={}",
                         samplerFactory.getSampler().backendName());
-            } else {
-                HelloTerrainMod.LOGGER.warn("[LodGen] Noise access unavailable — " +
-                        "will fall back to heightmap-only generation");
             }
 
             // ── Primary path: demand-driven 5-model voxy runtime ────────
@@ -1758,6 +1861,139 @@ public final class GenerationSession {
         }
 
         return mask;
+    }
+
+    // --- End L4 tracer pipeline (L4-only, model-free) ---
+
+    /**
+     * Tracer-mode demand pipeline: services 121 L4 requests via
+     * {@link EndL4DeterministicCandidate} and {@link VoxelVolumeWriter#writeRegion}.
+     * L4 only — disables L3/L2/L1/L0 seeding and partial-fill descent.
+     * Reuses dedup/backpressure via {@link ShadowRouterJobQueue}.
+     * Direct full-WorldSection path via {@link VoxyWorldBinding#writeFullWorldSection}
+     * (owns dirtying/preservation); does not fake nonEmptyChildren on leaf.
+     *
+     * @return true if at least one region was written
+     */
+    private boolean runEndL4TracerPipeline(World world, VoxelVolumeWriter writer) {
+        if (noiseAccess == null) {
+            HelloTerrainMod.LOGGER.warn("[LodGen][Tracer] no noiseAccess — aborting tracer pipeline");
+            return false;
+        }
+        EndL4DeterministicCandidate tracerCandidate = new EndL4DeterministicCandidate(noiseAccess);
+        int written = 0;
+        int skipped = 0;
+        int failed = 0;
+        long startMs = System.currentTimeMillis();
+        long lastProgressLogMs = startMs;
+
+        while (!stopRequested.get()) {
+            VoxyRequestDecoder.VoxyNodeRequest req = ShadowRouterJobQueue.dequeueAny();
+            if (req == null) {
+                try {
+                    Thread.sleep(DEMAND_IDLE_SLEEP_MS);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+                // In tracer mode, idle after 121 means horizon filled — keep idling
+                // until stopRequested; do not busy-loop.
+                continue;
+            }
+
+            // Tracer enqueues only L4 Y=0; skip any stray levels (L3..L0 not seeded)
+            if (req.lodLevel != 4 || req.worldY != END_L4_TRACER_WS_Y) {
+                ShadowRouterJobQueue.markCompleted(req);
+                skipped++;
+                continue;
+            }
+
+            int wsX = req.worldX;
+            int wsY = req.worldY;
+            int wsZ = req.worldZ;
+
+            if (isOutOfWorldY(4, wsY)) {
+                ShadowRouterJobQueue.markCompleted(req);
+                skipped++;
+                continue;
+            }
+
+            // Preserve vanilla octants where present (Handoff Q7 B zero-gap: vanilla wins)
+            byte preserveMask = loadedChunkOctantMask(world, 4, wsX, wsY, wsZ);
+            if (preserveMask == (byte) 0xFF) {
+                ShadowRouterJobQueue.markCompleted(req);
+                skipped++;
+                continue;
+            }
+
+            int sx0 = WorldSectionCoord.worldSectionToBlockMin(wsX, 4) >> 4;
+            int sy0 = WorldSectionCoord.worldSectionToBlockMin(wsY, 4) >> 4;
+            int sz0 = WorldSectionCoord.worldSectionToBlockMin(wsZ, 4) >> 4;
+            SectionPos origin = new SectionPos(sx0, sy0, sz0);
+
+            if (writer.isRegionFullyPopulated(origin, Level.L4)) {
+                ShadowRouterJobQueue.markCompleted(req);
+                skipped++;
+                continue;
+            }
+
+            try {
+                VoxelVolume vol = tracerCandidate.produceRegion(Level.L4, origin);
+                WriteOutcome outcome = writer.writeRegion(origin, Level.L4, vol);
+                if (outcome.status() == WriteOutcome.Status.WRITTEN) {
+                    written++;
+                } else {
+                    skipped++;
+                }
+            } catch (Exception e) {
+                HelloTerrainMod.LOGGER.warn(
+                        "[LodGen][Tracer] write failed ws=({},{},{}): {}",
+                        wsX, wsY, wsZ, e.getMessage());
+                failed++;
+            } finally {
+                ShadowRouterJobQueue.markCompleted(req);
+            }
+
+            long now = System.currentTimeMillis();
+            if (written == 1 || now - lastProgressLogMs >= DEMAND_PROGRESS_LOG_MS) {
+                HelloTerrainMod.LOGGER.info(
+                        "[LodGen][Tracer] dequeued written={} skipped={} failed={} inFlight={}",
+                        written, skipped, failed, ShadowRouterJobQueue.inFlightSize());
+                lastProgressLogMs = now;
+            }
+        }
+
+        HelloTerrainMod.LOGGER.info(
+                "[LodGen][Tracer] stopped: written={} skipped={} failed={}", written, skipped, failed);
+        return written > 0;
+    }
+
+    // Package-private single-request entry for unit tests (no loop/sleep)
+    WriteOutcome processTracerRequestForTest(VoxyRequestDecoder.VoxyNodeRequest req,
+                                              VoxelVolumeWriter writer, World world) {
+        if (req == null || writer == null || noiseAccess == null) {
+            return null;
+        }
+        if (req.lodLevel != 4 || req.worldY != END_L4_TRACER_WS_Y) {
+            return WriteOutcome.skippedExists();
+        }
+        int wsX = req.worldX;
+        int wsY = req.worldY;
+        int wsZ = req.worldZ;
+        int sx0 = WorldSectionCoord.worldSectionToBlockMin(wsX, 4) >> 4;
+        int sy0 = WorldSectionCoord.worldSectionToBlockMin(wsY, 4) >> 4;
+        int sz0 = WorldSectionCoord.worldSectionToBlockMin(wsZ, 4) >> 4;
+        SectionPos origin = new SectionPos(sx0, sy0, sz0);
+        if (writer.isRegionFullyPopulated(origin, Level.L4)) {
+            return WriteOutcome.skippedExists();
+        }
+        EndL4DeterministicCandidate tracerCandidate = new EndL4DeterministicCandidate(noiseAccess);
+        VoxelVolume vol = tracerCandidate.produceRegion(Level.L4, origin);
+        return writer.writeRegion(origin, Level.L4, vol);
+    }
+
+    void setNoiseAccessForTest(WorldNoiseAccess access) {
+        this.noiseAccess = access;
     }
 
     private VoxyModelRunner resolveVoxyModel() {

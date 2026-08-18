@@ -298,6 +298,9 @@ public final class RealVoxyVolumeWriter implements VoxelVolumeWriter {
     }
 
     private int toVoxyBiome(int canonical) {
+        // Tracer-only rendering concession: End L4 deterministic tracer emits
+        // BIOME_UNKNOWN (255) for all voxels; translating to plains for
+        // display is tolerated only in that tracer path. Not a general contract.
         if (canonical == CanonicalRegistries.BIOME_UNKNOWN) {
             int plains = BiomeMapping.toCanonicalId("minecraft:plains");
             if (plains >= 0 && plains < canonicalBiomeToVoxy.length) {
@@ -308,4 +311,6 @@ public final class RealVoxyVolumeWriter implements VoxelVolumeWriter {
         if (canonical < 0 || canonical >= canonicalBiomeToVoxy.length) return 0;
         return canonicalBiomeToVoxy[canonical];
     }
+
+    // Direct full-WorldSection path owns dirtying/preservation via VoxyWorldBinding.writeFullWorldSection; leaf L4 writes does not fake nonEmptyChildren — SKIPPED_EXISTS / WRITTEN via allOctantsPopulated only.
 }

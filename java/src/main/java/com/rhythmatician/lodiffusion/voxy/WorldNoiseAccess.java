@@ -499,6 +499,40 @@ public final class WorldNoiseAccess {
         return noiseConfig.getNoiseRouter();
     }
 
+    // ------------------------------------------------------------------
+    // Seeded source-grounded FINAL_DENSITY point query (End L4 tracer)
+    // ------------------------------------------------------------------
+
+    /**
+     * Seeded source-grounded point query of {@code NoiseRouter.FINAL_DENSITY}
+     * at the given block coordinate via the already-bound {@link NoiseConfig}.
+     *
+     * <p>This is a pure computation backed by the world-bound
+     * {@code NoiseRouter.FINAL_DENSITY} (via {@link NoiseConfig}); it does
+     * not create or access chunks and has no side effects. The query is
+     * seeded: the same seed/profile/dimension yields the same value at the
+     * same coordinate.
+     *
+     * <p><b>Does NOT claim equality with NoiseChunk's interpolated block density.</b>
+     * {@code NoiseChunk} wraps the router with {@code Interpolated} /
+     * {@code CacheAllInCell} trilinear interpolation over the dimension-specific
+     * cell grid (End 8x4 vs Overworld 4x8); reproducing that exact interpolated
+     * block value requires cell interpolation. This point query samples
+     * {@code FINAL_DENSITY} directly at the block centre via
+     * {@link DensityFunction.UnblendedNoisePos}. Disagreement is measured by
+     * the bounded Voxy-mip any-solid oracle (L4 solid iff any of 4096 blocks
+     * solid), not by assumed equality.
+     *
+     * @param blockX block X coordinate
+     * @param blockY block Y coordinate
+     * @param blockZ block Z coordinate
+     * @return FINAL_DENSITY value at the block position; &gt;0 is solid
+     */
+    public double sampleFinalDensity(int blockX, int blockY, int blockZ) {
+        DensityFunction df = noiseConfig.getNoiseRouter().finalDensity();
+        return df.sample(new DensityFunction.UnblendedNoisePos(blockX, blockY, blockZ));
+    }
+
     // -------------------------------------------------------------------------
     // Block-resolution sampling (WS-1.3 parity validation)
     // -------------------------------------------------------------------------
