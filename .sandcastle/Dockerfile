@@ -1,7 +1,12 @@
 FROM node:22-bookworm
 
 # Install system dependencies (python3 + pip for graphify code-only updates)
-RUN apt-get update && apt-get install -y git curl jq python3 python3-pip python3-venv && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y git curl jq python3 python3-pip python3-venv wget gnupg && rm -rf /var/lib/apt/lists/*
+
+# Install Temurin 21 JDK (required for java/gradlew lint compileJava compileClientJava — mirrors factory-ci.yml setup-java Temurin 21)
+RUN mkdir -p /etc/apt/keyrings && wget -O - https://packages.adoptium.net/artifactory/api/gpg/key/public | gpg --dearmor -o /etc/apt/keyrings/adoptium.gpg && echo "deb [signed-by=/etc/apt/keyrings/adoptium.gpg] https://packages.adoptium.net/artifactory/deb bookworm main" | tee /etc/apt/sources.list.d/adoptium.list > /dev/null && apt-get update && apt-get install -y temurin-21-jdk && rm -rf /var/lib/apt/lists/*
+ENV JAVA_HOME=/usr/lib/jvm/temurin-21-jdk-amd64
+ENV PATH="$JAVA_HOME/bin:$PATH"
 
 # Install graphify (code-only graph rebuild, no LLM needed) system-wide so sandcastle agents
 # can run `graphify update .` on worktree startup. --break-system-packages is required on
