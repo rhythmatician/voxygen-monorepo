@@ -1,0 +1,8 @@
+{
+  "at": "2026-08-18T21:56:55Z",
+  "note": "Preserved valid planner output that previously would have been reported as invalid JSON if Output.object parsing glitched. This is the expected <plan> content for eligible [151,152] — planner correctly serialized to only #151 due to same Wayfinder map #22 and GenerationSession overlap.",
+  "eligible": [151, 152],
+  "rawPlan": "<plan>{\"issues\": [{\"id\": \"151\", \"title\": \"End L4 tracer: dimension-change-aware rebind — teleport to the_end activates tracer without rejoin\", \"branch\": \"sandcastle/issue-151\"}]}</plan>",
+  "parsed": {"issues": [{"id": "151", "title": "End L4 tracer: dimension-change-aware rebind — teleport to the_end activates tracer without rejoin", "branch": "sandcastle/issue-151"}]},
+  "expectedPolicy": "planner success → use returned subset [151]; planner failure → FAIL CLOSED dispatch nothing (never fallback to all eligible)"
+}

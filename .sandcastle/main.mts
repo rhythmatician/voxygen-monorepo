@@ -589,11 +589,16 @@ async function reconcileInProgressIssues(): Promise<void> {
   console.log("=== Reconciliation complete ===\n");
 }
 
+import { doctorWorktreePath, cleanupDoctorBranchAndWorktree, reconcileStaleDoctorResources } from "./doctor-helpers.mts";
+
 // ---------------------------------------------------------------------------
 // Factory doctor — fail-closed preflight before any claim
 // ---------------------------------------------------------------------------
 async function runDoctor(): Promise<boolean> {
   console.log("\n=== Factory Doctor (preflight — proves real worker boundary) ===\n");
+  // 0. Reconcile stale doctor-* worktrees left by previous crash/kill before creating another Doctor sandbox
+  // Strictly scoped to doctor-*; never sweep arbitrary human worktrees. Idempotent.
+  try { await reconcileStaleDoctorResources(); } catch (e) { console.warn(`  [doctor] stale reconciliation failed: ${getErrorMessage(e)}`); }
   // 1. Control-plane SHA + image identity (cache key)
   let sha = "";
   let imageId = "";
@@ -704,6 +709,7 @@ async function runDoctor(): Promise<boolean> {
   console.log('  Proving worker sandbox — creating docker sandbox with onSandboxReady hooks...');
   let sandbox: Awaited<ReturnType<typeof sandcastle.createSandbox>> | null = null;
   const doctorBranch = `doctor-${Date.now()}`;
+  let doctorSuccess = true;
   try {
     sandbox = await sandcastle.createSandbox({
       branch: doctorBranch,
@@ -730,27 +736,30 @@ async function runDoctor(): Promise<boolean> {
       console.log(`  [doctor] ${c.label}: exit ${res.exitCode} — ${out.slice(0,200)}`);
       if(res.exitCode !== 0){
         console.error(`  FAIL: ${c.label} failed inside sandbox (exit ${res.exitCode})`);
-        try{ await sandbox.close(); }catch{}
-        try{ execSync(`git branch -D ${doctorBranch} 2>/dev/null || true`, {stdio:'ignore'}); }catch{}
-        return false;
+        doctorSuccess = false;
+        break;
       }
       if(c.mustContain && !out.includes(c.mustContain)){
         console.error(`  FAIL: ${c.label} output missing '${c.mustContain}' — got: ${out.slice(0,300)}`);
-        try{ await sandbox.close(); }catch{}
-        try{ execSync(`git branch -D ${doctorBranch} 2>/dev/null || true`, {stdio:'ignore'}); }catch{}
-        return false;
+        doctorSuccess = false;
+        break;
       }
     }
-    console.log('  worker sandbox bootstrap: all hooks passed');
-    await sandbox.close();
-    try{ execSync(`git branch -D ${doctorBranch} 2>/dev/null || true`, {stdio:'ignore'}); }catch{}
-    execSync('git worktree prune 2>/dev/null || true', {stdio:'ignore'});
+    if (doctorSuccess) {
+      console.log('  worker sandbox bootstrap: all hooks passed');
+    }
   } catch(e){
     console.error(`  FAIL: doctor sandbox creation or exec failed: ${getErrorMessage(e)}`);
-    if(sandbox) try{ await sandbox.close(); }catch{}
-    try{ execSync(`git branch -D ${doctorBranch} 2>/dev/null || true`, {stdio:'ignore'}); }catch{}
-    return false;
+    doctorSuccess = false;
+  } finally {
+    // Wrap Doctor sandbox/worktree creation in try/finally — idempotent cleanup of ephemeral control-plane state
+    // Must never survive a successful Doctor run; startup reconciliation also cleans stale left by crash/kill.
+    // Scope strictly to Sandcastle-owned doctor-*; never sweep arbitrary human worktrees.
+    if (sandbox) { try { await sandbox.close(); } catch {} }
+    // Explicit git worktree remove --force before branch delete; prune alone is insufficient when directory still exists
+    cleanupDoctorBranchAndWorktree(doctorBranch);
   }
+  if (!doctorSuccess) return false;
   // 4. Cache PASS against SHA + image identity + runtime dist provenance (source SHA alone is not enough)
   try {
     let distMtime = "";
@@ -877,24 +886,67 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
       console.log(`Planner selected ${plannedIssues.length}/${eligible.length} issue(s) to run now:`);
       for (const p of plannedIssues) console.log(`  ${p.id}: ${p.title} → ${p.branch}`);
     } catch (error: unknown) {
-      // Preserve failing raw planner output as regression fixture (for Structured output tag <plan> invalid JSON)
-      // The planner log already proves valid <plan> JSON; host extraction via sandcastle.Output.object may still fail due to strict parsing.
-      const maybeRaw = (error as unknown as { cause?: unknown; raw?: unknown; output?: unknown })?.cause ?? (error as unknown as { raw?: unknown })?.raw ?? (error as unknown as { output?: unknown })?.output ?? "";
-      const rawStr = typeof maybeRaw === "string" ? maybeRaw : (() => { try { return JSON.stringify(maybeRaw).slice(0,4000); } catch { return String(maybeRaw).slice(0,4000); } })();
-      if (rawStr) {
+      // False-rejection bypass: sandcastle.Output.object with tag "plan" is strict; planner often emits
+      // surrounding reasoning text + <plan> JSON + trailing text. The preserved valid #151 fixture proves
+      // <plan>{"issues":[{"id":"151",...}]}</plan> is semantically valid even when host reports
+      // "Structured output tag <plan> contains invalid JSON". Try manual extraction before failing closed.
+      const maybeRaw = (error as unknown as { cause?: unknown; raw?: unknown; output?: unknown; stdout?: unknown; stderr?: unknown })?.cause
+        ?? (error as unknown as { raw?: unknown })?.raw
+        ?? (error as unknown as { output?: unknown })?.output
+        ?? (error as unknown as { stdout?: unknown })?.stdout
+        ?? "";
+      const rawStr = typeof maybeRaw === "string" ? maybeRaw : (() => { try { return JSON.stringify(maybeRaw).slice(0,12000); } catch { return String(maybeRaw).slice(0,12000); } })();
+      // Also try to pull raw from error message itself if it contains <plan>...</plan>
+      const errorMsg = getErrorMessage(error);
+      const combinedRaw = rawStr + "\n" + errorMsg;
+      let bypassSucceeded = false;
+      const planTagMatch = combinedRaw.match(/<plan[^>]*>([\s\S]*?)<\/plan>/i);
+      if (planTagMatch) {
+        const inner = planTagMatch[1].trim();
         try {
-          fs.mkdirSync(path.join(REPO_ROOT, ".sandcastle", "fixtures"), { recursive: true });
-          const fixturePath = path.join(REPO_ROOT, ".sandcastle", "fixtures", `planner-fail-${Date.now()}.json`);
-          fs.writeFileSync(fixturePath, JSON.stringify({ at: new Date().toISOString(), error: getErrorMessage(error), raw: rawStr.slice(0,8000), eligible: eligible.map((e) => e.number), eligibleIssues: eligible }, null, 2));
-          console.error(`  Preserved failing raw planner output to ${fixturePath}`);
-        } catch (preserveErr) {
-          console.warn(`  Failed to preserve planner fixture: ${getErrorMessage(preserveErr)}`);
+          const parsed = JSON.parse(inner);
+          const candidate = planSchema.safeParse(parsed);
+          if (candidate.success) {
+            const eligibleIds = new Set(eligible.map((e) => String(e.number)));
+            const filtered = (candidate.data.issues as PlannedIssue[]).filter((p) => eligibleIds.has(p.id));
+            if (filtered.length !== candidate.data.issues.length) {
+              console.warn(`Planner bypass: dropped ${candidate.data.issues.length - filtered.length} hallucinated issue(s)`);
+            }
+            if (filtered.length > 0) {
+              plannedIssues = filtered;
+              console.log(`Planner bypass succeeded via manual <plan> extraction: selected ${plannedIssues.length}/${eligible.length} issue(s) to run now (bypassed Output.object false rejection):`);
+              for (const p of plannedIssues) console.log(`  ${p.id}: ${p.title} → ${p.branch}`);
+              bypassSucceeded = true;
+            } else {
+              console.warn(`Planner bypass: extracted <plan> JSON parsed but filtered to 0 eligible — treating as defer`);
+            }
+          } else {
+            console.warn(`Planner bypass: <plan> JSON failed Zod validation: ${candidate.error.message.slice(0,500)} — inner: ${inner.slice(0,500)}`);
+          }
+        } catch (parseErr) {
+          console.warn(`Planner bypass: manual <plan> extraction failed to parse JSON: ${getErrorMessage(parseErr)} — inner: ${combinedRaw.match(/<plan[^>]*>([\s\S]*?)<\/plan>/i)?.[1].slice(0,500) ?? ""}`);
         }
+        // Persist the static valid fixture as canonical expected output for this edge case (kept under fixtures, not logs)
+        // The fixture `.sandcastle/fixtures/planner-151-success.json` is the intentional static regression input.
       }
-      console.error(`Planner failed: ${getErrorMessage(error)} -- FAIL CLOSED: dispatching nothing (was fallback to all eligible, now disabled). Raw: ${rawStr.slice(0,500)}`);
-      // Fail closed: dispatch nothing this iteration. Never fall back to direct dispatch of all eligible — that defeats Wayfinder overlap serialization.
-      // At most a deterministic single-issue fallback could be allowed, but current policy is zero.
-      plannedIssues = [];
+      if (bypassSucceeded) {
+        // Bypass succeeded — do not treat as failure; plannedIssues already set
+      } else {
+        // Runtime failure capture — under ignored .sandcastle/logs/, not fixtures (fixtures keeps only intentional static inputs)
+        if (rawStr || errorMsg) {
+          try {
+            fs.mkdirSync(path.join(REPO_ROOT, ".sandcastle", "logs"), { recursive: true });
+            const logPath = path.join(REPO_ROOT, ".sandcastle", "logs", `planner-fail-${Date.now()}.json`);
+            fs.writeFileSync(logPath, JSON.stringify({ at: new Date().toISOString(), error: errorMsg, raw: (rawStr || errorMsg).slice(0,12000), eligible: eligible.map((e) => e.number), eligibleIssues: eligible }, null, 2));
+            console.error(`  Preserved failing raw planner output to ${logPath} (ignored, not fixtures)`);
+          } catch (preserveErr) {
+            console.warn(`  Failed to preserve planner failure log: ${getErrorMessage(preserveErr)}`);
+          }
+        }
+        console.error(`Planner failed: ${errorMsg} -- FAIL CLOSED: aborting whole Sandcastle invocation (was fallback to all eligible, now disabled). Raw: ${rawStr.slice(0,500)}`);
+        // Abort whole invocation, not just current iteration — planner is the Wayfinder serialization gate
+        break;
+      }
     }
   }
 
