@@ -250,27 +250,43 @@ async function claimIssue(issue: IssueInput): Promise<boolean> {
   }
 }
 
-async function transitionToBlocked(issueId: string): Promise<void> {
-  await safeRunGh(
+async function transitionToBlocked(issueId: string): Promise<boolean> {
+  const removed = await safeRunGh(
     ["issue", "edit", issueId, "--remove-label", "agent:in-progress"],
     `Failed to remove agent:in-progress from #${issueId}`,
   );
-  await safeRunGh(
+  const added = await safeRunGh(
     ["issue", "edit", issueId, "--add-label", "agent:blocked"],
     `Failed to add agent:blocked to #${issueId}`,
   );
+  return removed && added;
 }
 
-async function markBlocked(issueId: string, branch: string, reason: string): Promise<void> {
+async function markBlocked(issueId: string, branch: string, reason: string): Promise<boolean> {
   const shortReason = reason.slice(0, REASON_TRUNCATE);
-  await transitionToBlocked(issueId);
-  await safeRunGh([
+  const transitionOk = await transitionToBlocked(issueId);
+  const commentOk = await safeRunGh([
     "issue",
     "comment",
     issueId,
     "--body",
     `Sandcastle failed on \`${branch}\` -- not merged. Preserved branch for inspection.\n\n**Reason:** ${shortReason}\n\nBranch: \`${branch}\`\n\nTo retry: remove \`agent:blocked\`, ensure \`agent:implement\` is still present, and re-run factory.`,
   ]);
+  const ok = transitionOk && commentOk;
+  if (!ok) {
+    // GitHub unavailable during failure cleanup — do not falsely report that the branch was marked.
+    // Preserve recoverable local state so next reconciliation can truthfully report status after connectivity returns.
+    try {
+      const recoveryDir = path.join(REPO_ROOT, ".sandcastle", "recovery");
+      fs.mkdirSync(recoveryDir, { recursive: true });
+      const recoveryPath = path.join(recoveryDir, `${issueId}-${branch.replace(/[^a-zA-Z0-9-]/g, "-")}.json`);
+      fs.writeFileSync(recoveryPath, JSON.stringify({ issueId, branch, reason: shortReason, at: new Date().toISOString(), transitionOk, commentOk, githubAvailable: false }, null, 2));
+      console.warn(`  [recovery] Preserved local state at ${recoveryPath} — GitHub mutations failed (transitionOk=${transitionOk} commentOk=${commentOk}), will reconcile truthfully after connectivity returns. Did NOT report as "marked agent:blocked".`);
+    } catch (e) {
+      console.warn(`  [recovery] Failed to preserve local state for #${issueId}: ${getErrorMessage(e)}`);
+    }
+  }
+  return ok;
 }
 
 async function markIntegrated(issueId: string, branch: string): Promise<void> {
@@ -563,9 +579,42 @@ async function runDoctor(): Promise<boolean> {
   try {
     const cached = JSON.parse(fs.readFileSync(cachePath,'utf8'));
     if(cached.sha === sha && (cached.imageId === imageId || cached.imageDigest === imageDigest) && cached.passed) {
-      console.log(`  Doctor cache HIT — SHA ${sha.slice(0,7)} + image ${(imageId||imageDigest).slice(0,12)} already certified`);
-      console.log('=== Doctor PASS (cached) ===\n');
-      return true;
+      // Even on cache HIT, verify runtime artifact provenance — source SHA + image is not enough,
+      // dist must be built from eeae29e and contain liveness strings. Stale dist would otherwise
+      // appear trustworthy while silently executing old orchestration code.
+      try {
+        let distPath = "";
+        try {
+          const { createRequire } = await import('node:module');
+          const require = createRequire(import.meta.url);
+          distPath = require.resolve('@ai-hero/sandcastle');
+        } catch {
+          const resolved = (import.meta as unknown as { resolve?: (spec:string)=>string }).resolve?.('@ai-hero/sandcastle');
+          if (resolved) distPath = new URL(resolved).pathname;
+        }
+        if (distPath && fs.existsSync(distPath)) {
+          const distContent = fs.readFileSync(distPath, 'utf8');
+          const ok = distContent.includes('Agent alive') && distContent.includes('No observable output') && (distContent.includes('verbose log') || distContent.includes('detailed activity'));
+          if (!ok) {
+            console.warn(`  Doctor cache HIT but runtime dist at ${distPath} missing liveness strings — stale build, ignoring cache and re-proving.`);
+          } else {
+            // Also check cached dist mtime/hash if present — if dist changed, re-prove
+            let distMtime = "";
+            try { distMtime = fs.statSync(distPath).mtime.toISOString(); } catch {}
+            if (cached.distMtime && cached.distMtime !== distMtime) {
+              console.warn(`  Doctor cache HIT but dist mtime changed (${cached.distMtime} → ${distMtime}), re-proving.`);
+            } else {
+              console.log(`  Doctor cache HIT — SHA ${sha.slice(0,7)} + image ${(imageId||imageDigest).slice(0,12)} + dist ${distPath.slice(-30)} already certified`);
+              console.log('=== Doctor PASS (cached) ===\n');
+              return true;
+            }
+          }
+        } else {
+          console.warn(`  Doctor cache HIT but dist not found at ${distPath}, re-proving.`);
+        }
+      } catch (e) {
+        console.warn(`  Doctor cache HIT but dist verification failed: ${getErrorMessage(e)}, re-proving.`);
+      }
     }
   } catch {}
   // 2. Static seams — fail fast without sandbox
@@ -578,6 +627,45 @@ async function runDoctor(): Promise<boolean> {
     if(dockerfile.includes('graphifyy')) { console.error('  FAIL: Dockerfile still contains graphifyy typo'); return false; }
     console.log('  Dockerfile graphify check: OK');
   } catch {}
+  // 2b. Runtime artifact provenance — source SHA is not enough, dist must be built from that SHA (eeae29e)
+  // Doctor must fail if imported dist does not correspond to intended Sandcastle revision.
+  try {
+    // Resolve the actual runtime dist that Voxygen imports (file:../../sandcastle/dist/index.js)
+    // Use createRequire for CJS resolution compatible with ESM, fallback to import.meta.resolve
+    let distPath = "";
+    try {
+      const { createRequire } = await import('node:module');
+      const require = createRequire(import.meta.url);
+      distPath = require.resolve('@ai-hero/sandcastle');
+    } catch {
+      // ESM fallback: import.meta.resolve is available in Node 20+
+      const resolved = (import.meta as unknown as { resolve?: (spec:string)=>string }).resolve?.('@ai-hero/sandcastle');
+      if (resolved) distPath = new URL(resolved).pathname;
+    }
+    if (!distPath || !fs.existsSync(distPath)) {
+      console.error(`  FAIL: Sandcastle runtime dist not found at ${distPath || '<unresolved>'} — expected built artifact from eeae29e`);
+      return false;
+    }
+    const distContent = fs.readFileSync(distPath, 'utf8');
+    const hasAlive = distContent.includes('Agent alive');
+    const hasNoObs = distContent.includes('No observable output');
+    const hasVerbose = distContent.includes('verbose log') || distContent.includes('detailed activity');
+    if (!hasAlive || !hasNoObs || !hasVerbose) {
+      console.error(`  FAIL: Sandcastle dist at ${distPath} missing liveness strings (hasAlive=${hasAlive} hasNoObs=${hasNoObs} hasVerbose=${hasVerbose}) — stale build from before eeae29e. Run: cd ../../sandcastle && npm ci && npm run build (then verify: grep -n "Agent alive|No observable output|verbose log" dist/index.js)`);
+      console.error(`  Expected runtime from Sandcastle eeae29e (merged), but dist appears stale. Doctor fail-closed.`);
+      return false;
+    }
+    // Also verify source HEAD is the intended revision (not just branch checkout)
+    let sandcastleHead = "";
+    try { sandcastleHead = execSync('git -C ../../sandcastle rev-parse HEAD', {encoding:'utf8'}).trim(); } catch {}
+    if (sandcastleHead && !sandcastleHead.startsWith('eeae29e') && sandcastleHead !== 'eeae29e42e2b03430acee9cd564ee7bbe24bf782') {
+      console.warn(`  WARN: Sandcastle HEAD is ${sandcastleHead.slice(0,7)} not eeae29e — dist may be from different source. Proceeding since dist check passed, but recommend: cd ../../sandcastle && git checkout main && git reset --hard origin/main (eeae29e)`);
+    }
+    console.log(`  sandcastle runtime dist: ${distPath} — contains liveness strings ✓ (source HEAD ${sandcastleHead.slice(0,7) || 'unknown'}, dist mtime ${fs.statSync(distPath).mtime.toISOString()})`);
+  } catch (e) {
+    console.error(`  FAIL: cannot verify Sandcastle runtime dist: ${getErrorMessage(e)}`);
+    return false;
+  }
   // 3. Prove actual worker boundary: create real docker sandbox and run bootstrap hooks (no LLM)
   console.log('  Proving worker sandbox — creating docker sandbox with onSandboxReady hooks...');
   let sandbox: Awaited<ReturnType<typeof sandcastle.createSandbox>> | null = null;
@@ -629,10 +717,18 @@ async function runDoctor(): Promise<boolean> {
     try{ execSync(`git branch -D ${doctorBranch} 2>/dev/null || true`, {stdio:'ignore'}); }catch{}
     return false;
   }
-  // 4. Cache PASS against SHA + image identity
+  // 4. Cache PASS against SHA + image identity + runtime dist provenance (source SHA alone is not enough)
   try {
-    fs.writeFileSync(cachePath, JSON.stringify({sha, imageId, imageDigest, passed:true, at: new Date().toISOString()}, null, 2));
-    console.log(`  Doctor cache written: ${cachePath}`);
+    let distMtime = "";
+    let distPathForCache = "";
+    try {
+      const { createRequire } = await import('node:module');
+      const require = createRequire(import.meta.url);
+      distPathForCache = require.resolve('@ai-hero/sandcastle');
+      distMtime = fs.statSync(distPathForCache).mtime.toISOString();
+    } catch {}
+    fs.writeFileSync(cachePath, JSON.stringify({sha, imageId, imageDigest, distMtime, distPath: distPathForCache, passed:true, at: new Date().toISOString()}, null, 2));
+    console.log(`  Doctor cache written: ${cachePath} (dist ${distPathForCache.slice(-30)} mtime ${distMtime})`);
   } catch {}
   console.log('=== Doctor PASS (real sandbox) ===\n');
   return true;
@@ -920,16 +1016,19 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   const failedIndices: number[] = [];
   const reviewRejectedIndices: number[] = [];
 
+  const failedMarkResults: boolean[] = [];
   for (const [i, outcome] of settled.entries()) {
     if (outcome.status === "rejected") {
       const reason = String(outcome.reason ?? "unknown error").slice(0, WORKER_REASON_TRUNCATE);
       console.error(`  ✗ ${claimedIssues[i]!.id} (${claimedIssues[i]!.branch}) failed: ${reason}`);
       failedIndices.push(i);
-      await markBlocked(claimedIssues[i]!.id, claimedIssues[i]!.branch, reason);
+      const marked = await markBlocked(claimedIssues[i]!.id, claimedIssues[i]!.branch, reason);
+      failedMarkResults.push(marked);
     } else if (outcome.value.commits.length === 0) {
       console.warn(`  ⚠ ${claimedIssues[i]!.id} produced no commits -- marking blocked for inspection`);
-      await markBlocked(claimedIssues[i]!.id, claimedIssues[i]!.branch, "Implementer produced no commits (no work or error without throw). Branch preserved.");
+      const marked2 = await markBlocked(claimedIssues[i]!.id, claimedIssues[i]!.branch, "Implementer produced no commits (no work or error without throw). Branch preserved.");
       failedIndices.push(i);
+      failedMarkResults.push(marked2);
     } else {
       const verdict = outcome.value.verdict;
       if (!isVerdictApproved(verdict)) {
@@ -959,7 +1058,13 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   console.log(`\nExecution complete. ${completedBranches.length} branch(es) approved for merger:`);
   for (const b of completedBranches) console.log(`  ${b}`);
   if (failedIndices.length > 0) {
-    console.log(`  ${failedIndices.length} branch(es) failed and were marked agent:blocked`);
+    const markedCount = failedMarkResults.filter(Boolean).length;
+    const unmarkedCount = failedIndices.length - markedCount;
+    if (unmarkedCount === 0) {
+      console.log(`  ${failedIndices.length} branch(es) failed and were marked agent:blocked`);
+    } else {
+      console.log(`  ${failedIndices.length} branch(es) failed: ${markedCount} marked agent:blocked, ${unmarkedCount} NOT marked (GitHub unavailable — local recovery at .sandcastle/recovery/*.json, will reconcile truthfully after connectivity returns)`);
+    }
   }
   if (reviewRejectedIndices.length > 0) {
     console.log(`  ${reviewRejectedIndices.length} branch(es) review-rejected (approved=false) - preserved, marked agent:blocked, not merged`);
