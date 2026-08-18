@@ -76,10 +76,12 @@ export function isEligible(issue: IssueInput): EligibilityResult {
     return { eligible: false, reason: `already assigned to ${issue.assignees.join(",")}` };
   }
 
-  // 4. Native blockers must be resolved — undefined treated as 0 here;
-  // fail-closed on API unavailability is enforced at the call site (main.mts)
-  // where fetch of blockedByCount can throw; isEligible itself stays pure.
-  if ((issue.blockedByCount ?? 0) > 0) {
+  // 4. Native blockers must be resolved — fail-closed: unknown (undefined) is ineligible.
+  // Unknown can never become zero; fetchOpenImplementIssues throws or marks unknown.
+  if (issue.blockedByCount === undefined) {
+    return { eligible: false, reason: "blocked state unknown — GitHub dependency API unavailable (fail-closed)" };
+  }
+  if (issue.blockedByCount > 0) {
     return { eligible: false, reason: `blocked by ${issue.blockedByCount} open blocker(s)` };
   }
 

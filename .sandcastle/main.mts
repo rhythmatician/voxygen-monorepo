@@ -184,18 +184,18 @@ async function fetchOpenImplementIssues(): Promise<IssueInput[]> {
     raw.map(async (r) => {
       let blockedByCount: number | undefined = undefined;
       if (ownerRepo) {
-        try {
-          const summary = await runGh([
-            "api",
-            `repos/${ownerRepo.owner}/${ownerRepo.repo}/issues/${r.number}`,
-            "--jq",
-            ".issue_dependencies_summary.blocked_by",
-          ]);
-          const n = parseInt(summary.trim(), 10);
-          if (!isNaN(n)) blockedByCount = n;
-        } catch {
-          // ignore -- fallback to undefined (treated as unblocked)
-        }
+        const summary = await runGh([
+          "api",
+          `repos/${ownerRepo.owner}/${ownerRepo.repo}/issues/${r.number}`,
+          "--jq",
+          ".issue_dependencies_summary.blocked_by",
+        ]);
+        const n = parseInt(summary.trim(), 10);
+        if (!isNaN(n)) blockedByCount = n;
+        else throw new Error(`blocked_by parse failed for #${r.number}: ${JSON.stringify(summary)}`);
+        // No catch: API failure propagates — caller retries or marks unknown as ineligible
+      } else {
+        throw new Error(`cannot determine ownerRepo for blocked_by lookup #${r.number}`);
       }
       return {
         number: r.number,
@@ -334,9 +334,18 @@ To retry: fix implementation to address findings, ensure \`agent:blocked\` is re
 
 // ---------------------------------------------------------------------------
 // Lifecycle reconciliation — restart-safe, before looking for new work
+// Durable batch-PR correlation: batch PR is from host branch (not worker branch).
+// Records exact PR number in issue comments + PR body Closes #N.
+// 3-state: found / definitively absent / unknown (unknown never mutates).
 // ---------------------------------------------------------------------------
 async function reconcileInProgressIssues(): Promise<void> {
   console.log("\n=== Reconciliation: checking Sandcastle-owned agent:in-progress issues ===\n");
+  // Helper: classify gh error as definitively not-found vs transient unknown
+  function isNotFoundError(msg: string): boolean {
+    const m = msg.toLowerCase();
+    return m.includes("no pull requests found") || m.includes("could not find") || m.includes("not found") || m.includes("404");
+  }
+  // 1. Open in-progress issues
   let inProgress: IssueInput[] = [];
   try {
     const rawJson = await runGh([
@@ -353,7 +362,7 @@ async function reconcileInProgressIssues(): Promise<void> {
       state: r.state.toLowerCase() as "open" | "closed",
       labels: r.labels.map((l: any) => l.name),
       assignees: r.assignees.map((a: any) => a.login),
-      blockedByCount: 0, // not needed for reconciliation
+      blockedByCount: 0,
       body: r.body,
     }));
   } catch (e) {
@@ -361,27 +370,89 @@ async function reconcileInProgressIssues(): Promise<void> {
     return;
   }
   if (inProgress.length === 0) {
-    console.log("  No Sandcastle-owned in-progress issues to reconcile.");
-    return;
-  }
+    console.log("  No Sandcastle-owned open in-progress issues to reconcile.");
+  } else {
   for (const issue of inProgress) {
     const id = String(issue.number);
     const branch = branchForIssue(issue.number);
-    // Check for PR on this branch
-    let prState: string | null = null;
-    let prMerged = false;
-    let prExists = false;
+    // Try durable correlation: batch PR number from issue comments
+    let batchPrNumber: string | null = null;
+    let commentsUnknown = false;
     try {
-      const prJson = await runGh(["pr", "view", branch, "--json", "state,mergedAt", "--jq", "{state: .state, mergedAt: .mergedAt}"]);
-      const pr = JSON.parse(prJson);
-      prState = pr.state;
-      prMerged = !!pr.mergedAt;
-      prExists = true;
-    } catch {
-      // No PR for this branch (or gh pr view failed) — treat as no PR
-      prExists = false;
+      const commentsJson = await runGh(["issue", "view", id, "--json", "comments", "--jq", ".comments[].body"]);
+      const match = commentsJson.match(/Batch PR #(\d+)/);
+      if(match) batchPrNumber = match[1];
+    } catch (e) {
+      const msg = getErrorMessage(e);
+      if(isNotFoundError(msg)) {
+        // No comments or issue not found — definitively no batch PR comment
+      } else {
+        console.warn(`  #${id} → failed to read comments: ${msg} — unknown, skipping mutate`);
+        commentsUnknown = true;
+      }
     }
-    // Check if branch exists locally or remotely
+    // Fallback: search open PRs whose body contains Closes #id (if no comment)
+    let prListUnknown = false;
+    if(!batchPrNumber && !commentsUnknown){
+      try {
+        const prListJson = await runGh(["pr", "list", "--state", "open", "--limit", "100", "--json", "number,body"]);
+        const prs: any[] = JSON.parse(prListJson);
+        for(const pr of prs){
+          if(pr.body && pr.body.includes(`Closes #${id}`)){
+            batchPrNumber = String(pr.number);
+            break;
+          }
+        }
+      } catch (e){
+        console.warn(`  #${id} → failed to list PRs: ${getErrorMessage(e)} — unknown`);
+        prListUnknown = true;
+      }
+    }
+    // If we have a batch PR number, query it directly (3-state)
+    if(batchPrNumber){
+      let prState: string | null = null;
+      let prMerged = false;
+      let prFound = false;
+      let prUnknown = false;
+      try {
+        const prJson = await runGh(["pr", "view", batchPrNumber, "--json", "state,mergedAt,number", "--jq", "{state: .state, mergedAt: .mergedAt}"]);
+        const pr = JSON.parse(prJson);
+        prState = pr.state;
+        prMerged = !!pr.mergedAt;
+        prFound = true;
+      } catch (e){
+        const msg = getErrorMessage(e);
+        if(isNotFoundError(msg)){
+          prFound = false;
+        } else {
+          console.warn(`  #${id} batch PR #${batchPrNumber} lookup failed: ${msg} — unknown, skipping mutate`);
+          prUnknown = true;
+        }
+      }
+      if(prUnknown) continue;
+      if(prMerged){
+        console.log(`  #${id} (${branch}) → batch PR #${batchPrNumber} merged, finalizing via markIntegrated`);
+        await markIntegrated(id, branch);
+        continue;
+      }
+      if(prFound && prState === "OPEN"){
+        console.log(`  #${id} (${branch}) → batch PR #${batchPrNumber} OPEN, CI/Merge Oracle pending — recognizing`);
+        continue;
+      }
+      if(!prFound){
+        console.log(`  #${id} (${branch}) → batch PR #${batchPrNumber} not found (was closed without merge?) — marking blocked`);
+        await markBlocked(id, branch, `Batch PR #${batchPrNumber} for ${branch} not found — may have been closed without merge. Branch preserved.`);
+        continue;
+      }
+      console.log(`  #${id} (${branch}) → batch PR #${batchPrNumber} state ${prState} — leaving in-progress`);
+      continue;
+    }
+    // No durable batch PR found — determine definitively absent vs unknown
+    if(commentsUnknown || prListUnknown){
+      console.log(`  #${id} (${branch}) → no batch PR correlation yet, but lookup was unknown — leaving in-progress`);
+      continue;
+    }
+    // Definitively no batch PR recorded — check worker branch existence to decide pre-PR vs stale
     let branchExists = false;
     try {
       const out = execSync(`git branch --list "${branch}"`, { encoding: "utf8" }).trim();
@@ -391,27 +462,39 @@ async function reconcileInProgressIssues(): Promise<void> {
         if (remote && remote.includes(branch)) branchExists = true;
       }
     } catch { branchExists = false; }
-
-    if (prMerged) {
-      console.log(`  #${id} (${branch}) → PR merged, finalizing via markIntegrated`);
-      await markIntegrated(id, branch);
+    if(branchExists){
+      console.log(`  #${id} (${branch}) → branch exists but no batch PR yet (crash before PR creation) — marking blocked`);
+      await markBlocked(id, branch, "Sandcastle claimed but no batch PR found on restart — previous process may have crashed before PR creation. Branch preserved. To retry: remove agent:blocked, keep agent:implement, re-run.");
       continue;
-    }
-    if (prExists && prState === "OPEN") {
-      console.log(`  #${id} (${branch}) → PR open, CI/Merge Oracle pending — recognizing, leaving in-progress`);
-      continue;
-    }
-    if (!prExists && branchExists) {
-      console.log(`  #${id} (${branch}) → branch exists but no PR — previous run likely crashed before PR creation, marking blocked`);
-      await markBlocked(id, branch, "Sandcastle claimed but no PR found on restart — previous process may have crashed before PR creation. Branch preserved. To retry: remove agent:blocked, keep agent:implement, re-run.");
-      continue;
-    }
-    if (!prExists && !branchExists) {
-      console.log(`  #${id} (${branch}) → no branch or PR — stale claim after crash, marking blocked`);
+    } else {
+      console.log(`  #${id} (${branch}) → no branch or batch PR — stale claim after crash, marking blocked`);
       await markBlocked(id, branch, "Sandcastle claimed but no branch/PR found on restart — stale claim, likely crash after claim. To retry: remove agent:blocked, keep agent:implement, re-run.");
       continue;
     }
-    console.log(`  #${id} (${branch}) → unknown state (prExists=${prExists}, branchExists=${branchExists}), leaving for next startup`);
+  }
+  }
+  // 2. Closed in-progress issues — cleanup after GitHub Closes #N auto-close
+  try {
+    const closedJson = await runGh([
+      "issue", "list",
+      "--state", "closed",
+      "--label", "agent:in-progress",
+      "--limit", "100",
+      "--json", "number,title",
+    ]);
+    const closed: any[] = JSON.parse(closedJson);
+    for(const r of closed){
+      const id = String(r.number);
+      console.log(`  closed #${id} still has agent:in-progress — cleaning up stale claim label`);
+      await safeRunGh(["issue", "edit", id, "--remove-label", "agent:in-progress"], `Failed to cleanup closed #${id}`);
+      // Also remove agent:implement/blocked if present — issue is closed via Closes #N, authoritative
+      for(const label of ["agent:implement","agent:blocked"]){
+        try{ await runGh(["issue", "edit", id, "--remove-label", label]); }catch{}
+      }
+    }
+    if(closed.length===0) console.log("  No closed in-progress issues to clean.");
+  } catch (e){
+    console.warn(`  Reconciliation: failed to list closed in-progress issues: ${getErrorMessage(e)}`);
   }
   console.log("=== Reconciliation complete ===\n");
 }
@@ -420,39 +503,93 @@ async function reconcileInProgressIssues(): Promise<void> {
 // Factory doctor — fail-closed preflight before any claim
 // ---------------------------------------------------------------------------
 async function runDoctor(): Promise<boolean> {
-  console.log("\n=== Factory Doctor (preflight) ===\n");
-  // 1. Control-plane SHA + image digest seam (informational, never blocks on unknown)
+  console.log("\n=== Factory Doctor (preflight — proves real worker boundary) ===\n");
+  // 1. Control-plane SHA + image identity (cache key)
+  let sha = "";
+  let imageId = "";
+  let imageDigest = "";
   try {
-    const sha = require('child_process').execSync('git rev-parse HEAD', {encoding:'utf8'}).trim();
+    sha = execSync('git rev-parse HEAD', {encoding:'utf8'}).trim();
     console.log(`  control-plane HEAD: ${sha}`);
+  } catch { console.error('  FAIL: cannot determine HEAD SHA'); return false; }
+  try {
+    imageId = execSync('docker images sandcastle --format "{{.ID}}" 2>/dev/null | head -1', {encoding:'utf8'}).trim();
+    imageDigest = execSync('docker inspect --format "{{.Id}}" sandcastle 2>/dev/null | head -1', {encoding:'utf8'}).trim();
+    if(imageId) console.log(`  docker sandcastle ID: ${imageId}`);
+    if(imageDigest) console.log(`  docker sandcastle digest: ${imageDigest}`);
+    if(!imageId && !imageDigest) console.warn('  WARN: docker sandcastle image not found locally — will build on demand');
+  } catch {}
+  const cachePath = '.sandcastle/.doctor-cache.json';
+  try {
+    const cached = JSON.parse(fs.readFileSync(cachePath,'utf8'));
+    if(cached.sha === sha && (cached.imageId === imageId || cached.imageDigest === imageDigest) && cached.passed) {
+      console.log(`  Doctor cache HIT — SHA ${sha.slice(0,7)} + image ${(imageId||imageDigest).slice(0,12)} already certified`);
+      console.log('=== Doctor PASS (cached) ===\n');
+      return true;
+    }
+  } catch {}
+  // 2. Static seams — fail fast without sandbox
+  try {
+    if(!fs.existsSync('.ci/voxy-artifact.json')) { console.error('  FAIL: .ci/voxy-artifact.json missing'); return false; }
+    console.log('  voxy-artifact.json: present');
   } catch {}
   try {
-    const digest = require('child_process').execSync('docker images sandcastle --format "{{.Digest}}" 2>/dev/null | head -1', {encoding:'utf8'}).trim();
-    if(digest) console.log(`  docker sandcastle digest: ${digest}`);
-  } catch {}
-  // 2. Java toolchain seam — Temurin 21 expected (mirrors factory-ci.yml)
-  try {
-    const jv = require('child_process').execSync('java -version 2>&1 | head -1', {encoding:'utf8'}).trim();
-    console.log(`  ${jv}`);
-    if(!jv.includes('21')) console.warn('  WARN: java version is not 21 — factory may fail Java lane');
-  } catch(e) { console.warn('  WARN: java not found'); }
-  try {
-    const gv = require('child_process').execSync('./java/gradlew --version 2>&1 | tail -5', {encoding:'utf8'}).trim();
-    console.log(`  gradle: ${gv.split('\n')[0] || gv}`);
-  } catch {}
-  // 3. Voxy artifact seam — tracked path must exist
-  try {
-    const stat = require('fs').existsSync('.ci/voxy-artifact.json') ? 'present' : 'missing';
-    console.log(`  voxy-artifact.json: ${stat}`);
-    if(stat==='missing') { console.error('  FAIL: .ci/voxy-artifact.json missing — doctor FAIL'); return false; }
-  } catch {}
-  // 4. Graphify typo seam
-  try {
-    const dockerfile = require('fs').readFileSync('.sandcastle/Dockerfile','utf8');
+    const dockerfile = fs.readFileSync('.sandcastle/Dockerfile','utf8');
     if(dockerfile.includes('graphifyy')) { console.error('  FAIL: Dockerfile still contains graphifyy typo'); return false; }
     console.log('  Dockerfile graphify check: OK');
   } catch {}
-  console.log('=== Doctor PASS ===\n');
+  // 3. Prove actual worker boundary: create real docker sandbox and run bootstrap hooks (no LLM)
+  console.log('  Proving worker sandbox — creating docker sandbox with onSandboxReady hooks...');
+  let sandbox: Awaited<ReturnType<typeof sandcastle.createSandbox>> | null = null;
+  const doctorBranch = `doctor-${Date.now()}`;
+  try {
+    sandbox = await sandcastle.createSandbox({
+      branch: doctorBranch,
+      sandbox: docker(),
+      hooks,
+      timeouts: { worktreeMs: 120_000 },
+    });
+    console.log(`  sandbox created on ${doctorBranch}, running bootstrap verification...`);
+    // Run the same commands that the worker will rely on, inside the sandbox
+    const checks: Array<{cmd: string, label: string, mustContain?: string}> = [
+      {cmd: 'java -version 2>&1 | head -5', label: 'java 21', mustContain: '21'},
+      {cmd: './java/gradlew --version 2>&1 | tail -10', label: 'gradle'},
+      {cmd: 'bash .ci/install-voxy.sh install 2>&1 | tail -20', label: 'voxy install'},
+      {cmd: 'npm install 2>&1 | tail -10', label: 'npm install'},
+    ];
+    for(const c of checks){
+      const res = await (sandbox as any).exec(c.cmd);
+      const out = (res.stdout + res.stderr).trim();
+      console.log(`  [doctor] ${c.label}: exit ${res.exitCode} — ${out.slice(0,200)}`);
+      if(res.exitCode !== 0){
+        console.error(`  FAIL: ${c.label} failed inside sandbox (exit ${res.exitCode})`);
+        try{ await sandbox.close(); }catch{}
+        try{ execSync(`git branch -D ${doctorBranch} 2>/dev/null || true`, {stdio:'ignore'}); }catch{}
+        return false;
+      }
+      if(c.mustContain && !out.includes(c.mustContain)){
+        console.error(`  FAIL: ${c.label} output missing '${c.mustContain}' — got: ${out.slice(0,300)}`);
+        try{ await sandbox.close(); }catch{}
+        try{ execSync(`git branch -D ${doctorBranch} 2>/dev/null || true`, {stdio:'ignore'}); }catch{}
+        return false;
+      }
+    }
+    console.log('  worker sandbox bootstrap: all hooks passed');
+    await sandbox.close();
+    try{ execSync(`git branch -D ${doctorBranch} 2>/dev/null || true`, {stdio:'ignore'}); }catch{}
+    execSync('git worktree prune 2>/dev/null || true', {stdio:'ignore'});
+  } catch(e){
+    console.error(`  FAIL: doctor sandbox creation or exec failed: ${getErrorMessage(e)}`);
+    if(sandbox) try{ await sandbox.close(); }catch{}
+    try{ execSync(`git branch -D ${doctorBranch} 2>/dev/null || true`, {stdio:'ignore'}); }catch{}
+    return false;
+  }
+  // 4. Cache PASS against SHA + image identity
+  try {
+    fs.writeFileSync(cachePath, JSON.stringify({sha, imageId, imageDigest, passed:true, at: new Date().toISOString()}, null, 2));
+    console.log(`  Doctor cache written: ${cachePath}`);
+  } catch {}
+  console.log('=== Doctor PASS (real sandbox) ===\n');
   return true;
 }
 
@@ -814,7 +951,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
             execSync(`git push origin HEAD`, { stdio: "ignore" });
           } catch {}
           try {
-            const prBody = `Sandcastle batch integration -- branches:\n${completedBranches.map((b) => `- \`${b}\``).join("\n")}\n\nIssues:\n${completedIssues.map((i) => `- #${i.id} ${i.title}`).join("\n")}`;
+            const prBody = `Sandcastle batch integration -- branches:\n${completedBranches.map((b) => `- \`${b}\``).join("\n")}\n\n${completedIssues.map((i) => `Closes #${i.id} - ${i.title}`).join("\n")}\n\n<!-- batch-pr-map: ${completedIssues.map(i=>i.id).join(',')} -->`;
             const prUrl = await runGh([
               "pr",
               "create",
@@ -826,6 +963,15 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
               prBody,
             ]);
             console.log(`Created PR: ${prUrl}`);
+            // Durable batch-PR correlation: record exact PR number against every issue (for reconciliation)
+            try {
+              const prNumberForMap = prUrl.match(/\/pull\/(\d+)/)?.[1];
+              if(prNumberForMap){
+                for(const iss of completedIssues){
+                  await safeRunGh(["issue","comment", iss.id, "--body", `Sandcastle batch integration: branch \`${iss.branch}\` merged into \`${currentBranch}\`, batch PR #${prNumberForMap} (${prUrl}) awaiting Factory / Merge Oracle. Closes #${iss.id}`]);
+                }
+              }
+            } catch {}
             // Privileged changes may never grant themselves autonomous merge authority.
             try {
               const prNumber = prUrl.match(/\/pull\/(\d+)/)?.[1];
@@ -834,7 +980,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
                 if (!mayAutonomouslyMerge(changed)) {
                   console.log(`PR #${prNumber} changes a protected root; independent human approval is required`);
                 } else {
-                  await runGh(["pr", "merge", prNumber, "--auto", "--merge"]);
+                  await runGh(["pr", "merge", prNumber, "--auto", "--squash"]);
                   console.log(`Auto-merge enabled for PR #${prNumber}; Factory / Merge Oracle remains authoritative`);
                 }
               }
