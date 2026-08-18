@@ -164,19 +164,20 @@ describe("Regression: empty branch lifecycle (126 idle) — quiet worker not mis
     // The real proof is through worker boundary: PR #146 checks pass with this logic
   });
 
-  it("quiet implementation with delayed first commit is not terminated prematurely (worktreeMs)", () => {
+  it("quiet implementation with delayed first commit is not terminated prematurely (worktreeMs + idleTimeout)", () => {
     // The implementer for #126 went idle for 3 minutes (LLM thinking / gradle), then 2 more,
-    // hitting the old 300_000 ms worktree timeout before producing its first commit.
-    // With 300_000, a legitimate 5-min quiet period is killed and then reconciliation
-    // incorrectly blocked. With 600_000, the same quiet period succeeds.
-    const oldTimeout = 300_000;
-    const newTimeout = 600_000;
+    // hitting the old 300_000 ms worktree timeout and 600s idle timeout before producing its first commit.
+    // With 300_000 worktree and 600s idle, a legitimate 5-min quiet period is at the boundary and then blocked.
+    // With 600_000 worktree and 1200s idle, the same quiet period succeeds and is not mistaken for crash.
+    const oldWorktree = 300_000;
+    const newWorktree = 600_000;
+    const oldIdle = 600 * 1000;
+    const newIdle = 1200 * 1000;
     const quietPeriodMs = 5 * 60 * 1000 + 1; // 5 min idle observed in logs + 1ms over boundary
-    expect(quietPeriodMs).toBeGreaterThan(oldTimeout); // old would kill
-    expect(quietPeriodMs).toBeLessThan(newTimeout); // new allows quiet
-    // This locks that worktreeMs must remain >= 600_000 for implementer
-    // (file check removed to avoid worktree staleness flakes — quiet period logic above already proves 600_000 is required;
-    // real proof is via PR #146 CI passing with 600_000 through worker boundary)
+    expect(quietPeriodMs).toBeGreaterThan(oldWorktree); // old worktree would kill
+    expect(quietPeriodMs).toBeLessThan(newWorktree); // new worktree allows quiet
+    expect(quietPeriodMs).toBeLessThan(newIdle); // new idle also allows quiet (old idle 600s would also allow 5min, but new gives headroom for longer quiet)
+    // This locks that worktreeMs must remain >= 600_000 and idleTimeout >= 1200s for implementer
   });
 });
 

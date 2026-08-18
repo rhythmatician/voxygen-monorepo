@@ -795,6 +795,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
         let implement = await sandbox!.run({
           name: "implementer",
           maxIterations: 100,
+          idleTimeoutSeconds: 1200,
           agent: sandcastle.muse("muse-spark-1.2-contributor"),
           promptFile: "./.sandcastle/implement-prompt.md",
           promptArgs: {
@@ -832,6 +833,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
             const retryImplement = await sandbox!.run({
               name: "implementer-retry",
               maxIterations: 50,
+              idleTimeoutSeconds: 1200,
               agent: sandcastle.muse("muse-spark-1.2-contributor"),
               promptFile: "./.sandcastle/implement-prompt.md",
               promptArgs: {
