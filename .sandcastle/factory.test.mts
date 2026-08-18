@@ -164,20 +164,29 @@ describe("Regression: empty branch lifecycle (126 idle) — quiet worker not mis
     // The real proof is through worker boundary: PR #146 checks pass with this logic
   });
 
-  it("quiet implementation with delayed first commit is not terminated prematurely (worktreeMs + idleTimeout)", () => {
-    // The implementer for #126 went idle for 3 minutes (LLM thinking / gradle), then 2 more,
-    // hitting the old 300_000 ms worktree timeout and 600s idle timeout before producing its first commit.
-    // With 300_000 worktree and 600s idle, a legitimate 5-min quiet period is at the boundary and then blocked.
-    // With 600_000 worktree and 1200s idle, the same quiet period succeeds and is not mistaken for crash.
-    const oldWorktree = 300_000;
-    const newWorktree = 600_000;
-    const oldIdle = 600 * 1000;
-    const newIdle = 1200 * 1000;
-    const quietPeriodMs = 5 * 60 * 1000 + 1; // 5 min idle observed in logs + 1ms over boundary
-    expect(quietPeriodMs).toBeGreaterThan(oldWorktree); // old worktree would kill
-    expect(quietPeriodMs).toBeLessThan(newWorktree); // new worktree allows quiet
-    expect(quietPeriodMs).toBeLessThan(newIdle); // new idle also allows quiet (old idle 600s would also allow 5min, but new gives headroom for longer quiet)
-    // This locks that worktreeMs must remain >= 600_000 and idleTimeout >= 1200s for implementer
+  it("quiet implementation with delayed first commit is not terminated prematurely (worktreeMs + emergency deadman)", () => {
+    // Verified local Sandcastle (file:../../sandcastle/src/run.ts:320-332): Timeouts.worktreeMs
+    // is host-side worktree creation / stale-pruning timeout (default 120_000), distinct
+    // from idleTimeoutSeconds (600s no-output watchdog, run.ts:369) — agent quiet
+    // duration is unrelated to worktreeMs. Main at b0d6c01 has worktreeMs 600_000
+    // and idle 1200s; this PR moves idle to 1800s emergency deadman.
+    // 5 min = 300s, so 5-min quiet is NOT at the 600s boundary — SIGTERM at ~600s (10m)
+    // is the credible evidence for the idle watchdog, not the earlier 5-min observation.
+
+    // worktreeMs: retain 600_000 as configuration lock — described only as
+    // worktree-operation headroom (creation/pruning), not as quiet-agent survival.
+    const mainMts = fs.readFileSync(".sandcastle/main.mts", "utf8");
+    expect(mainMts).toContain("worktreeMs: 600_000");
+
+    // Emergency deadman: idleTimeout is NOT liveness detection. 30m (1800s) is the
+    // absolute backstop; 5-min quiet (300s) is well within both 600s and 1800s, so
+    // 5-min alone does not prove the 600→1800 change — proof is #126 surviving
+    // the old 600s no-output boundary and making observable progress. File must
+    // declare 1800 and label it as emergency deadman, and error wording must be
+    // "No observable output" not "Agent idle" (see Sandcastle 2e14830).
+    expect(mainMts).toContain("idleTimeoutSeconds: 1800");
+    expect(mainMts).toContain("Emergency deadman");
+    expect(mainMts).not.toContain("Agent idle for");
   });
 });
 
