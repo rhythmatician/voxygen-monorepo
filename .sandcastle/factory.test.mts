@@ -282,5 +282,58 @@ describe("Regression: empty branch lifecycle (126 idle) — quiet worker not mis
       await rm(tmp, {recursive: true, force: true});
     }
   });
+
+  it("gh pr create specifies exact batch head --head batchBranch (never caller inference)", async () => {
+    const mainMts = fs.readFileSync(".sandcastle/main.mts", "utf8");
+    // Must create PR with explicit --head batchBranch via helper, not inferring caller checkout
+    // Production should call helper so test and production share seam
+    expect(mainMts).toContain("branchHelpers.buildPrCreateArgs");
+    expect(mainMts).toContain("batchBranch");
+    // Helper must build args with --head
+    const helpers = await import("./branch-helpers.mts");
+    const args = helpers.buildPrCreateArgs("sandcastle/batch-999-abc", [{id:"999"}]);
+    expect(args).toContain("--head");
+    expect(args).toContain("sandcastle/batch-999-abc");
+    expect(args).toContain("--base");
+    expect(args[args.indexOf("--head")+1]).toBe("sandcastle/batch-999-abc");
+    // Ensure no bare gh pr create without --head helper
+    expect(mainMts).not.toMatch(/runGh\(\[\s*"pr",\s*"create",\s*"--base",\s*"main",\s*"--title"/);
+  });
+
+  it("protected-root gate classifies exact batch candidate factoryBaseSha...batchBranch, not origin/main...HEAD", async () => {
+    const mainMts = fs.readFileSync(".sandcastle/main.mts", "utf8");
+    // Must not classify caller HEAD
+    expect(mainMts).not.toMatch(/git diff --name-only origin\/main\.\.\.HEAD/);
+    // Must classify via helper buildProtectedRootDiffSpec(factoryBaseSha, batchBranch)
+    expect(mainMts).toContain("branchHelpers.buildProtectedRootDiffSpec");
+    expect(mainMts).toContain("factoryBaseSha");
+    expect(mainMts).toContain("batchBranch");
+    const helpers = await import("./branch-helpers.mts");
+    const spec = helpers.buildProtectedRootDiffSpec("abc123", "sandcastle/batch-1");
+    expect(spec).toBe("abc123...sandcastle/batch-1");
+  });
+
+  it("provenance and worktrees are gitignored and production uses helpers (no duplication), caller status unchanged", async () => {
+    const mainMts = fs.readFileSync(".sandcastle/main.mts", "utf8");
+    const gitignore = fs.readFileSync(".gitignore", "utf8");
+    expect(gitignore).toContain(".sandcastle/provenance/");
+    expect(gitignore).toContain(".sandcastle/worktrees/");
+    // Production must call helpers, not manually implement provenance/worktree
+    expect(mainMts).toContain("branchHelpers.recordProvenance");
+    expect(mainMts).toContain("branchHelpers.verifyProvenance");
+    expect(mainMts).toContain("branchHelpers.createBatchWorktree");
+    expect(mainMts).toContain("branchHelpers.verifyCallerUnchanged");
+    expect(mainMts).toContain("branchHelpers.cleanupBatchWorktree");
+    // Caller status invariant
+    expect(mainMts).toContain("git status --porcelain");
+    expect(mainMts).toContain("callerStatusBefore");
+    expect(mainMts).toContain("callerStatusAfter");
+    // Helper seam exists
+    const helpers = await import("./branch-helpers.mts");
+    expect(typeof helpers.recordProvenance).toBe("function");
+    expect(typeof helpers.createBatchWorktree).toBe("function");
+    expect(typeof helpers.cleanupBatchWorktree).toBe("function");
+    expect(typeof helpers.verifyCallerUnchanged).toBe("function");
+  });
 });
 

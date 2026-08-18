@@ -92,3 +92,17 @@ export function verifyCallerUnchanged(repoRoot: string, callerBranch: string, ca
 export function isBranchAncestor(repoRoot: string, ancestorSha: string, branch: string): boolean {
   try { execSync(`git merge-base --is-ancestor ${ancestorSha} ${branch}`, {stdio:'ignore', cwd: repoRoot}); return true; } catch { return false; }
 }
+
+export function cleanupBatchWorktree(repoRoot: string, worktreePath: string): void {
+  execSync(`git worktree remove --force ${worktreePath}`, {stdio:'ignore', cwd: repoRoot});
+}
+
+export function buildPrCreateArgs(batchBranch: string, completedIssues: Array<{id: string}>): string[] {
+  // Exact head must be specified — never infer caller branch
+  return ["pr", "create", "--base", "main", "--head", batchBranch, "--title", `Sandcastle batch: ${completedIssues.map(i=>`#${i.id}`).join(", ")}`];
+}
+
+export function buildProtectedRootDiffSpec(factoryBaseSha: string, batchBranch: string): string {
+  // Classify exact batch candidate, not caller HEAD
+  return `${factoryBaseSha}...${batchBranch}`;
+}
