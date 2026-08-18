@@ -76,19 +76,12 @@ export function isEligible(issue: IssueInput): EligibilityResult {
     return { eligible: false, reason: `already assigned to ${issue.assignees.join(",")}` };
   }
 
-  // 4. Native blockers must be resolved
-  if (issue.blockedByCount !== undefined && issue.blockedByCount > 0) {
+  // 4. Native blockers must be resolved — undefined treated as 0 here;
+  // fail-closed on API unavailability is enforced at the call site (main.mts)
+  // where fetch of blockedByCount can throw; isEligible itself stays pure.
+  if ((issue.blockedByCount ?? 0) > 0) {
     return { eligible: false, reason: `blocked by ${issue.blockedByCount} open blocker(s)` };
   }
-
-  // Fallback: `Blocked by: #N` line in body when native dependencies unavailable.
-  // If the body still references an open blocker pattern, the host should have
-  // already resolved blockedByCount; we treat a `Blocked by:` line as a hint
-  // only when blockedByCount is undefined. Conservative: if present and no
-  // native data, treat as blocked (caller can override by closing blockers).
-  // For v0 we do NOT parse this line — the authoritative gate is native
-  // dependencies. This keeps the seam explicit without inventing a second
-  // dependency convention.
 
   // 5. Wayfinder workflow boundary — generic worker must not execute HITL tickets
   // HITL-only: prototype, grilling, map, preserve-futures. Research is AFK via

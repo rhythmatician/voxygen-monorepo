@@ -297,13 +297,10 @@ function formatVerdictForRetry(verdict: ReviewVerdict | null, fallback: string):
 }
 
 async function fetchIssueBody(issueId: string): Promise<string> {
-  // Fresh fetch every time - no caching. Host-side so it is authoritative.
-  try {
-    const body = await runGh(["issue", "view", issueId, "--json", "body", "--jq", ".body"]);
-    return body;
-  } catch {
-    return "";
-  }
+  // Fresh fetch every time - no caching. Host-side so it is authoritative. Fail-closed.
+  // Throw on failure so caller can mark blocked — empty string would hide review contract.
+  const body = await runGh(["issue", "view", issueId, "--json", "body", "--jq", ".body"]);
+  return body;
 }
 
 async function markReviewRejected(
@@ -336,9 +333,97 @@ To retry: fix implementation to address findings, ensure \`agent:blocked\` is re
 }
 
 // ---------------------------------------------------------------------------
+// Lifecycle reconciliation — restart-safe, before looking for new work
+// ---------------------------------------------------------------------------
+async function reconcileInProgressIssues(): Promise<void> {
+  console.log("\n=== Reconciliation: checking Sandcastle-owned agent:in-progress issues ===\n");
+  let inProgress: IssueInput[] = [];
+  try {
+    const rawJson = await runGh([
+      "issue", "list",
+      "--state", "open",
+      "--label", "agent:in-progress",
+      "--limit", "100",
+      "--json", "number,title,body,labels,assignees,state",
+    ]);
+    const raw: any[] = JSON.parse(rawJson);
+    inProgress = raw.map(r => ({
+      number: r.number,
+      title: r.title,
+      state: r.state.toLowerCase() as "open" | "closed",
+      labels: r.labels.map((l: any) => l.name),
+      assignees: r.assignees.map((a: any) => a.login),
+      blockedByCount: 0, // not needed for reconciliation
+      body: r.body,
+    }));
+  } catch (e) {
+    console.warn(`  Reconciliation: failed to list agent:in-progress issues: ${getErrorMessage(e)} — fail-closed, will retry next startup`);
+    return;
+  }
+  if (inProgress.length === 0) {
+    console.log("  No Sandcastle-owned in-progress issues to reconcile.");
+    return;
+  }
+  for (const issue of inProgress) {
+    const id = String(issue.number);
+    const branch = branchForIssue(issue.number);
+    // Check for PR on this branch
+    let prState: string | null = null;
+    let prMerged = false;
+    let prExists = false;
+    try {
+      const prJson = await runGh(["pr", "view", branch, "--json", "state,mergedAt", "--jq", "{state: .state, mergedAt: .mergedAt}"]);
+      const pr = JSON.parse(prJson);
+      prState = pr.state;
+      prMerged = !!pr.mergedAt;
+      prExists = true;
+    } catch {
+      // No PR for this branch (or gh pr view failed) — treat as no PR
+      prExists = false;
+    }
+    // Check if branch exists locally or remotely
+    let branchExists = false;
+    try {
+      const out = execSync(`git branch --list "${branch}"`, { encoding: "utf8" }).trim();
+      if (out) branchExists = true;
+      else {
+        const remote = await runGh(["api", `repos/${parseOwnerRepo()?.owner}/${parseOwnerRepo()?.repo}/git/refs/heads/${branch}`, "--jq", ".ref"]);
+        if (remote && remote.includes(branch)) branchExists = true;
+      }
+    } catch { branchExists = false; }
+
+    if (prMerged) {
+      console.log(`  #${id} (${branch}) → PR merged, finalizing via markIntegrated`);
+      await markIntegrated(id, branch);
+      continue;
+    }
+    if (prExists && prState === "OPEN") {
+      console.log(`  #${id} (${branch}) → PR open, CI/Merge Oracle pending — recognizing, leaving in-progress`);
+      continue;
+    }
+    if (!prExists && branchExists) {
+      console.log(`  #${id} (${branch}) → branch exists but no PR — previous run likely crashed before PR creation, marking blocked`);
+      await markBlocked(id, branch, "Sandcastle claimed but no PR found on restart — previous process may have crashed before PR creation. Branch preserved. To retry: remove agent:blocked, keep agent:implement, re-run.");
+      continue;
+    }
+    if (!prExists && !branchExists) {
+      console.log(`  #${id} (${branch}) → no branch or PR — stale claim after crash, marking blocked`);
+      await markBlocked(id, branch, "Sandcastle claimed but no branch/PR found on restart — stale claim, likely crash after claim. To retry: remove agent:blocked, keep agent:implement, re-run.");
+      continue;
+    }
+    console.log(`  #${id} (${branch}) → unknown state (prExists=${prExists}, branchExists=${branchExists}), leaving for next startup`);
+  }
+  console.log("=== Reconciliation complete ===\n");
+}
+
+// ---------------------------------------------------------------------------
 // Main loop
 // ---------------------------------------------------------------------------
 for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
+  // Reconcile before looking for new work — guarantees liveness, no indefinite claim
+  if (iteration === 1) {
+    await reconcileInProgressIssues();
+  }
   console.log(`\n=== Iteration ${iteration}/${MAX_ITERATIONS} ===\n`);
 
   // ----- Phase 0: Deterministic eligibility (host-side, no LLM) -----
