@@ -488,6 +488,21 @@ async function reconcileInProgressIssues(): Promise<void> {
       }
     } catch { branchExists = false; }
     if(branchExists){
+      // If branch exists but has no commits ahead of main, it was claimed but never worked — not a crash with work.
+      // Clean up stale empty branch and allow retry instead of blocking.
+      let hasCommits = false;
+      try {
+        const log = require('child_process').execSync(`git log main..${branch} --oneline`, { encoding: "utf8", cwd: REPO_ROOT }).trim();
+        if (log) hasCommits = true;
+      } catch { hasCommits = false; }
+      if (!hasCommits) {
+        console.log(`  #${id} (${branch}) → branch exists but empty (no commits ahead of main) — cleaning stale claim, will retry`);
+        try { require('child_process').execSync(`git branch -D ${branch}`, { encoding: "utf8", cwd: REPO_ROOT }); } catch {}
+        try { await runGh(["api", `repos/${parseOwnerRepo()?.owner}/${parseOwnerRepo()?.repo}/git/refs/heads/${branch}`, "--method", "DELETE"]); } catch {}
+        await safeRunGh(["issue", "edit", id, "--remove-label", "agent:in-progress"], `Failed to cleanup stale in-progress for #${id}`);
+        await safeRunGh(["issue", "edit", id, "--remove-label", "agent:blocked"], `Failed to cleanup stale blocked for #${id}`);
+        continue;
+      }
       console.log(`  #${id} (${branch}) → branch exists but no batch PR yet (crash before PR creation) — marking blocked`);
       await markBlocked(id, branch, "Sandcastle claimed but no batch PR found on restart — previous process may have crashed before PR creation. Branch preserved. To retry: remove agent:blocked, keep agent:implement, re-run.");
       continue;
