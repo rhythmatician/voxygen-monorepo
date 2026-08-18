@@ -9,6 +9,8 @@ import { execFile, execSync } from "node:child_process";
 import { promisify } from "node:util";
 import * as fs from "node:fs";
 import * as path from "node:path";
+
+const REPO_ROOT = process.cwd();
 import { isEligible, branchForIssue, type IssueInput } from "./dispatch.mts";
 import { mayAutonomouslyMerge } from "./ci-policy.mts";
 import {
@@ -133,16 +135,25 @@ async function runGh(args: string[]): Promise<string> {
   const env = { ...process.env, GH_TOKEN: token };
   const bin = ghBinary();
   try {
-    const { stdout } = await execFileAsync(bin, args, { env, maxBuffer: 10 * 1024 * 1024 });
+    const { stdout } = await execFileAsync(bin, args, { env, cwd: REPO_ROOT, maxBuffer: 10 * 1024 * 1024 });
     return stdout.trim();
   } catch (error: unknown) {
-    throw new Error(`gh ${args.join(" ")} failed: ${getGhErrorDetails(error)}`);
+    const details = getGhErrorDetails(error);
+    const msg = error instanceof Error ? error.message : String(error);
+    const code = (error as unknown as { code?: unknown })?.code;
+    const signal = (error as unknown as { signal?: unknown })?.signal;
+    const stderr = (error as unknown as { stderr?: unknown })?.stderr;
+    const stdout = (error as unknown as { stdout?: unknown })?.stdout;
+    const stderrStr = stderr ? String(stderr).slice(0,1000) : "<no stderr>";
+    const stdoutStr = stdout ? String(stdout).slice(0,500) : "<no stdout>";
+    console.error(`[runGh] bin=${bin} args=${args.join(" ")} code=${String(code)} signal=${String(signal)} msg=${msg} details=${details.slice(0,500)} stderr=${stderrStr} stdout=${stdoutStr} tokenLen=${token.length} tokenPrefix=${token.slice(0,8)}`);
+    throw new Error(`gh ${args.join(" ")} failed: ${details}`);
   }
 }
 
 function parseOwnerRepo(): { owner: string; repo: string } | null {
   try {
-    const out = execSync("git remote get-url origin", { encoding: "utf8" }).trim();
+    const out = execSync("git remote get-url origin", { encoding: "utf8", cwd: REPO_ROOT }).trim();
     // https://github.com/rhythmatician/voxygen-monorepo.git
     const m = out.match(/github\.com[:/]([^/]+)\/([^/.]+)/);
     if (m) return { owner: m[1], repo: m[2] };
@@ -299,8 +310,22 @@ function formatVerdictForRetry(verdict: ReviewVerdict | null, fallback: string):
 async function fetchIssueBody(issueId: string): Promise<string> {
   // Fresh fetch every time - no caching. Host-side so it is authoritative. Fail-closed.
   // Throw on failure so caller can mark blocked — empty string would hide review contract.
-  const body = await runGh(["issue", "view", issueId, "--json", "body", "--jq", ".body"]);
-  return body;
+  // Retry with backoff for transient GH rate limit / network hiccups (seen after docker GH calls).
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const body = await runGh(["issue", "view", issueId, "--json", "body", "--jq", ".body"]);
+      return body;
+    } catch (e) {
+      lastError = e;
+      if (attempt < 2) {
+        const backoff = 1000 * Math.pow(2, attempt);
+        console.warn(`  fetchIssueBody #${issueId} attempt ${attempt + 1}/3 failed: ${getErrorMessage(e)} — retrying in ${backoff}ms`);
+        await new Promise((r) => setTimeout(r, backoff));
+      }
+    }
+  }
+  throw lastError;
 }
 
 async function markReviewRejected(
@@ -545,7 +570,7 @@ async function runDoctor(): Promise<boolean> {
   try {
     sandbox = await sandcastle.createSandbox({
       branch: doctorBranch,
-      sandbox: docker(),
+      sandbox: docker({ env: { GH_TOKEN: ghToken() } }),
       hooks,
       timeouts: { worktreeMs: 120_000 },
     });
@@ -684,7 +709,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     try {
       const plan = await sandcastle.run({
         hooks,
-        sandbox: docker(),
+        sandbox: docker({ env: { GH_TOKEN: ghToken() } }),
         name: "planner",
         maxIterations: 1,
         agent: sandcastle.muse("muse-spark-1.2-contributor"),
@@ -737,7 +762,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
         try {
           sandbox = await sandcastle.createSandbox({
             branch: issue.branch,
-            sandbox: docker(),
+            sandbox: docker({ env: { GH_TOKEN: ghToken() } }),
             hooks,
             copyToWorktree,
             timeouts: { worktreeMs: 300_000 },
@@ -768,6 +793,20 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
         let reviewVerdict: ReviewVerdict | null = null;
         let reviewTextForRetry = "";
         let allCommits = [...implement.commits];
+        // If no new commits but branch already has implementation (e.g., canary already at target SHA), use existing commits for review
+        if (allCommits.length === 0) {
+          try {
+            const existing = execSync(`git log main..${issue.branch} --oneline`, { encoding: "utf8", cwd: REPO_ROOT }).trim();
+            if (existing) {
+              const shas = existing.split("\n").map((l) => l.split(" ")[0]).filter(Boolean);
+              if (shas.length > 0) {
+                console.log(`  ${issue.id} has existing commits on ${issue.branch} (${shas.join(",")}) - using for review`);
+                allCommits = [...shas];
+                (implement as unknown as { commits: string[] }).commits = [...shas];
+              }
+            }
+          } catch {}
+        }
         let shouldRetryReview = false;
         for (let reviewAttempt = 0; reviewAttempt <= REVIEW_RETRY_BUDGET; reviewAttempt++) {
           if (implement.commits.length === 0) break;
@@ -851,6 +890,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
         return { commits: allCommits.length > 0 ? allCommits : implement.commits, verdict: reviewVerdict, reviewText: reviewTextForRetry };
       } finally {
         await sandbox!.close();
+        try { process.chdir(REPO_ROOT); } catch {}
       }
     }),
   );
@@ -913,7 +953,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   try {
     await sandcastle.run({
       hooks,
-      sandbox: docker(),
+      sandbox: docker({ env: { GH_TOKEN: ghToken() } }),
       name: "merger",
       maxIterations: 1,
       agent: sandcastle.muse("muse-spark-1.2-contributor"),
