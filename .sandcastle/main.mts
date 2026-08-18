@@ -22,6 +22,7 @@ import {
   type ReviewVerdict,
 } from "./review-verdict.mts";
 import { formatGhFailure, getErrorMessage, getGhErrorDetails } from "./gh-errors.mts";
+import { parsePlannerOutput } from "./planner-helpers.mts";
 
 const execFileAsync = promisify(execFile);
 
@@ -759,6 +760,20 @@ async function runDoctor(): Promise<boolean> {
     // Explicit git worktree remove --force before branch delete; prune alone is insufficient when directory still exists
     cleanupDoctorBranchAndWorktree(doctorBranch);
   }
+  // Strict postcondition: after cleanup, no doctor-* worktree / .sandcastle/worktrees/doctor-* dir / local branch may remain.
+  // If any leftover exists, Doctor FAILs and must not write PASS cache — repo must be in same control-plane state as found.
+  try {
+    const { assertNoStaleDoctorResources } = await import("./doctor-helpers.mts");
+    const { ok, leftover } = assertNoStaleDoctorResources();
+    if (!ok) {
+      console.error(`  FAIL: Doctor ephemeral cleanup incomplete — leftover: ${leftover.join(", ")}`);
+      doctorSuccess = false;
+    } else {
+      console.log("  Doctor ephemeral cleanup postcondition: no doctor-* leftover ✓");
+    }
+  } catch (e) {
+    console.warn(`  Doctor postcondition check failed to run: ${getErrorMessage(e)}`);
+  }
   if (!doctorSuccess) return false;
   // 4. Cache PASS against SHA + image identity + runtime dist provenance (source SHA alone is not enough)
   try {
@@ -860,8 +875,12 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     plannedIssues = [{ id: String(eligible[0].number), title: eligible[0].title, branch: branchForIssue(eligible[0].number) }];
     console.log(`Single eligible issue -- skipping LLM planner, direct dispatch #${plannedIssues[0].id}`);
   } else {
+    // Use Output.string (not Output.object) so we get the raw planner stream even if it contains
+    // fences or surrounding reasoning — then parse via testable helper. This fixes the false
+    // rejection where StructuredOutputError.rawMatched already failed JSON.parse and re-parsing it
+    // cannot bypass; we need the independently captured valid planner text stream.
     try {
-      const plan = await sandcastle.run({
+      const planRun = await sandcastle.run({
         hooks,
         sandbox: docker({ env: { GH_TOKEN: ghToken() } }),
         name: "planner",
@@ -869,82 +888,58 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
         agent: sandcastle.muse("muse-spark-1.2-contributor"),
         promptFile: "./.sandcastle/plan-prompt.md",
         promptArgs: { ISSUES_JSON: issuesJson },
-        output: sandcastle.Output.object({ tag: "plan", schema: planSchema }),
+        output: sandcastle.Output.string({ tag: "plan" }),
       });
-      const rawPlanned = plan.output.issues as PlannedIssue[];
-      // Enforce subset of eligible -- drop any hallucinated IDs
-      const eligibleIds = new Set(eligible.map((e) => String(e.number)));
-      plannedIssues = rawPlanned.filter((p) => eligibleIds.has(p.id));
-      if (plannedIssues.length !== rawPlanned.length) {
-        console.warn(`Planner returned ${rawPlanned.length - plannedIssues.length} ineligible hallucinated issue(s) -- dropped`);
-      }
+      const rawPlanString: string = (planRun.output as unknown as string) ?? "";
+      // Wrap with tag so helper can extract last <plan> — if run already returned inner string, re-wrap
+      const planStdout = rawPlanString.includes("<plan>") ? rawPlanString : `<plan>${rawPlanString}</plan>`;
+      plannedIssues = parsePlannerOutput(planStdout, eligible);
       if (plannedIssues.length === 0) {
         console.log("Planner advised to defer all eligible issues due to overlap risk. Will retry next iteration.");
-        // Avoid busy loop: break to let human intervene next run
         break;
       }
       console.log(`Planner selected ${plannedIssues.length}/${eligible.length} issue(s) to run now:`);
       for (const p of plannedIssues) console.log(`  ${p.id}: ${p.title} → ${p.branch}`);
     } catch (error: unknown) {
-      // False-rejection bypass: sandcastle.Output.object with tag "plan" is strict; planner often emits
-      // surrounding reasoning text + <plan> JSON + trailing text. The preserved valid #151 fixture proves
-      // <plan>{"issues":[{"id":"151",...}]}</plan> is semantically valid even when host reports
-      // "Structured output tag <plan> contains invalid JSON". Try manual extraction before failing closed.
-      const maybeRaw = (error as unknown as { cause?: unknown; raw?: unknown; output?: unknown; stdout?: unknown; stderr?: unknown })?.cause
-        ?? (error as unknown as { raw?: unknown })?.raw
-        ?? (error as unknown as { output?: unknown })?.output
-        ?? (error as unknown as { stdout?: unknown })?.stdout
-        ?? "";
-      const rawStr = typeof maybeRaw === "string" ? maybeRaw : (() => { try { return JSON.stringify(maybeRaw).slice(0,12000); } catch { return String(maybeRaw).slice(0,12000); } })();
-      // Also try to pull raw from error message itself if it contains <plan>...</plan>
       const errorMsg = getErrorMessage(error);
-      const combinedRaw = rawStr + "\n" + errorMsg;
-      let bypassSucceeded = false;
-      const planTagMatch = combinedRaw.match(/<plan[^>]*>([\s\S]*?)<\/plan>/i);
-      if (planTagMatch) {
-        const inner = planTagMatch[1].trim();
+      // If Output.string threw (missing tag), try to recover from rawMatched + full stdout if available
+      const rawMatched = (error as unknown as { rawMatched?: string })?.rawMatched;
+      const candidateStdouts: string[] = [];
+      if (typeof rawMatched === "string" && rawMatched) candidateStdouts.push(`<plan>${rawMatched}</plan>`);
+      // StructuredOutputError may have sessionId/sessionFilePath pointing to full output — try to read if present
+      const sessionFile = (error as unknown as { sessionFilePath?: string; sessionId?: string })?.sessionFilePath;
+      if (typeof sessionFile === "string" && sessionFile) {
         try {
-          const parsed = JSON.parse(inner);
-          const candidate = planSchema.safeParse(parsed);
-          if (candidate.success) {
-            const eligibleIds = new Set(eligible.map((e) => String(e.number)));
-            const filtered = (candidate.data.issues as PlannedIssue[]).filter((p) => eligibleIds.has(p.id));
-            if (filtered.length !== candidate.data.issues.length) {
-              console.warn(`Planner bypass: dropped ${candidate.data.issues.length - filtered.length} hallucinated issue(s)`);
-            }
-            if (filtered.length > 0) {
-              plannedIssues = filtered;
-              console.log(`Planner bypass succeeded via manual <plan> extraction: selected ${plannedIssues.length}/${eligible.length} issue(s) to run now (bypassed Output.object false rejection):`);
-              for (const p of plannedIssues) console.log(`  ${p.id}: ${p.title} → ${p.branch}`);
-              bypassSucceeded = true;
-            } else {
-              console.warn(`Planner bypass: extracted <plan> JSON parsed but filtered to 0 eligible — treating as defer`);
-            }
-          } else {
-            console.warn(`Planner bypass: <plan> JSON failed Zod validation: ${candidate.error.message.slice(0,500)} — inner: ${inner.slice(0,500)}`);
+          const sessContent = fs.readFileSync(sessionFile, "utf8");
+          if (sessContent.includes("<plan>")) candidateStdouts.push(sessContent);
+        } catch {}
+      }
+      let bypassSucceeded = false;
+      for (const cand of candidateStdouts) {
+        try {
+          const filtered = parsePlannerOutput(cand, eligible);
+          if (filtered.length > 0) {
+            plannedIssues = filtered;
+            console.log(`Planner bypass succeeded via full stream recovery: selected ${plannedIssues.length}/${eligible.length} issue(s)`);
+            for (const p of plannedIssues) console.log(`  ${p.id}: ${p.title} → ${p.branch}`);
+            bypassSucceeded = true;
+            break;
           }
-        } catch (parseErr) {
-          console.warn(`Planner bypass: manual <plan> extraction failed to parse JSON: ${getErrorMessage(parseErr)} — inner: ${combinedRaw.match(/<plan[^>]*>([\s\S]*?)<\/plan>/i)?.[1].slice(0,500) ?? ""}`);
-        }
-        // Persist the static valid fixture as canonical expected output for this edge case (kept under fixtures, not logs)
-        // The fixture `.sandcastle/fixtures/planner-151-success.json` is the intentional static regression input.
+        } catch {}
       }
       if (bypassSucceeded) {
-        // Bypass succeeded — do not treat as failure; plannedIssues already set
+        // recovered
       } else {
-        // Runtime failure capture — under ignored .sandcastle/logs/, not fixtures (fixtures keeps only intentional static inputs)
-        if (rawStr || errorMsg) {
-          try {
-            fs.mkdirSync(path.join(REPO_ROOT, ".sandcastle", "logs"), { recursive: true });
-            const logPath = path.join(REPO_ROOT, ".sandcastle", "logs", `planner-fail-${Date.now()}.json`);
-            fs.writeFileSync(logPath, JSON.stringify({ at: new Date().toISOString(), error: errorMsg, raw: (rawStr || errorMsg).slice(0,12000), eligible: eligible.map((e) => e.number), eligibleIssues: eligible }, null, 2));
-            console.error(`  Preserved failing raw planner output to ${logPath} (ignored, not fixtures)`);
-          } catch (preserveErr) {
-            console.warn(`  Failed to preserve planner failure log: ${getErrorMessage(preserveErr)}`);
-          }
+        const rawDump = (rawMatched ?? errorMsg).slice(0, 12000);
+        try {
+          fs.mkdirSync(path.join(REPO_ROOT, ".sandcastle", "logs"), { recursive: true });
+          const logPath = path.join(REPO_ROOT, ".sandcastle", "logs", `planner-fail-${Date.now()}.json`);
+          fs.writeFileSync(logPath, JSON.stringify({ at: new Date().toISOString(), error: errorMsg, raw: rawDump, rawMatched, eligible: eligible.map((e) => e.number) }, null, 2));
+          console.error(`  Preserved failing raw planner output to ${logPath} (ignored, not fixtures)`);
+        } catch (preserveErr) {
+          console.warn(`  Failed to preserve planner failure log: ${getErrorMessage(preserveErr)}`);
         }
-        console.error(`Planner failed: ${errorMsg} -- FAIL CLOSED: aborting whole Sandcastle invocation (was fallback to all eligible, now disabled). Raw: ${rawStr.slice(0,500)}`);
-        // Abort whole invocation, not just current iteration — planner is the Wayfinder serialization gate
+        console.error(`Planner failed: ${errorMsg} -- FAIL CLOSED: aborting whole Sandcastle invocation.`);
         break;
       }
     }
