@@ -1,5 +1,10 @@
 # Shell scripts: POSIX sh needs lf (including CI helpers)
 .ci/install-voxy.sh text eol=lf
+.ci/voxy-artifact.json text eol=lf
+# Sandcastle Docker / TS: always LF (Linux containers)
+.sandcastle/Dockerfile text eol=lf
+.sandcastle/*.mts text eol=lf
+.sandcastle/*.ts text eol=lf
 # Gradle wrappers: POSIX shell scripts need lf, Windows batch need crlf
 /gradlew        text eol=lf
 /java/gradlew   text eol=lf
