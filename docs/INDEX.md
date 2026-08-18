@@ -23,10 +23,10 @@
 ### Architecture / specification
 
 * `CONTEXT.md` — domain language only.
-* `docs/adr/0001-wayfinder-task-executor-orthogonal.md` — accepted.
-* `docs/adr/0002-drop-router6-conditioning.md` — accepted.
-* `docs/adr/0003-correct-distant-terrain.md` — accepted.
-* `docs/adr/0004-coarse-first-proximal-refinement.md` — proposed.
+* `docs/adr/0001-wayfinder-task-executor-orthogonal.md`
+* `docs/adr/0002-drop-router6-conditioning.md`
+* `docs/adr/0003-correct-distant-terrain.md`
+* `docs/adr/0004-coarse-first-proximal-refinement.md`
 
 ### Implementation
 
@@ -34,7 +34,7 @@
 
 ### Verification
 
-* Tests (`java/src/test`, `python/tests`, `*.test.mts`) and CI policy gates (`.ci/checks.json`, `.ci/docs-policy.mts` R-02).
+* Tests (`java/src/test`, `python/voxel_tree/tests`, `*.test.mts`) and CI policy gates (`.ci/checks.json`, `.ci/docs-policy.mts` R-02).
 
 ### Grounding / reference
 
@@ -50,9 +50,12 @@
 
 ### Historical evidence
 
-* `docs/external/distant-horizons-v2.3-external.md` — historical (2024-08 DH 2.3.0b era); not current architecture; successor: none (Voxy is the LOD store).
-* `docs/FUTURES.md` — registry of concrete future directions; not current work; consulted selectively by Wayfinder/preserve-futures.
+* `docs/external/distant-horizons-v2.3-external.md` — retained historical artifact; see its own header for date/scope/successor.
 * `docs/adr/*` — ADRs are historical decision records; a superseded ADR is marked superseded with a successor link, not rewritten.
+
+### Future optionality
+
+* `docs/FUTURES.md` — registry of concrete future directions; not current work; consulted selectively by Wayfinder/preserve-futures.
 
 ## Control plane (not product documentation)
 
