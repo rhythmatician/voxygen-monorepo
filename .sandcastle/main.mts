@@ -417,12 +417,61 @@ async function reconcileInProgressIssues(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Factory doctor — fail-closed preflight before any claim
+// ---------------------------------------------------------------------------
+async function runDoctor(): Promise<boolean> {
+  console.log("\n=== Factory Doctor (preflight) ===\n");
+  // 1. Control-plane SHA + image digest seam (informational, never blocks on unknown)
+  try {
+    const sha = require('child_process').execSync('git rev-parse HEAD', {encoding:'utf8'}).trim();
+    console.log(`  control-plane HEAD: ${sha}`);
+  } catch {}
+  try {
+    const digest = require('child_process').execSync('docker images sandcastle --format "{{.Digest}}" 2>/dev/null | head -1', {encoding:'utf8'}).trim();
+    if(digest) console.log(`  docker sandcastle digest: ${digest}`);
+  } catch {}
+  // 2. Java toolchain seam — Temurin 21 expected (mirrors factory-ci.yml)
+  try {
+    const jv = require('child_process').execSync('java -version 2>&1 | head -1', {encoding:'utf8'}).trim();
+    console.log(`  ${jv}`);
+    if(!jv.includes('21')) console.warn('  WARN: java version is not 21 — factory may fail Java lane');
+  } catch(e) { console.warn('  WARN: java not found'); }
+  try {
+    const gv = require('child_process').execSync('./java/gradlew --version 2>&1 | tail -5', {encoding:'utf8'}).trim();
+    console.log(`  gradle: ${gv.split('\n')[0] || gv}`);
+  } catch {}
+  // 3. Voxy artifact seam — tracked path must exist
+  try {
+    const stat = require('fs').existsSync('.ci/voxy-artifact.json') ? 'present' : 'missing';
+    console.log(`  voxy-artifact.json: ${stat}`);
+    if(stat==='missing') { console.error('  FAIL: .ci/voxy-artifact.json missing — doctor FAIL'); return false; }
+  } catch {}
+  // 4. Graphify typo seam
+  try {
+    const dockerfile = require('fs').readFileSync('.sandcastle/Dockerfile','utf8');
+    if(dockerfile.includes('graphifyy')) { console.error('  FAIL: Dockerfile still contains graphifyy typo'); return false; }
+    console.log('  Dockerfile graphify check: OK');
+  } catch {}
+  console.log('=== Doctor PASS ===\n');
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // Main loop
 // ---------------------------------------------------------------------------
 for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
-  // Reconcile before looking for new work — guarantees liveness, no indefinite claim
+  // Reconcile + doctor before looking for new work — guarantees liveness, no indefinite claim
   if (iteration === 1) {
+    const doctorOk = await runDoctor();
+    if (!doctorOk) {
+      console.error("Doctor FAIL — factory unhealthy, not claiming new work. Fix Dockerfile/voxy-artifact/java before retry.");
+      // Still reconcile stale claims so they don't stay indefinite
+    }
     await reconcileInProgressIssues();
+    if (!doctorOk) {
+      console.log("Doctor failed — exiting before claiming new work (reconciliation already done).");
+      break;
+    }
   }
   console.log(`\n=== Iteration ${iteration}/${MAX_ITERATIONS} ===\n`);
 
