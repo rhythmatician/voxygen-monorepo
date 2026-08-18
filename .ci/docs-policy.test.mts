@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { isAdmitted, isSuspiciousName, checkFiles, checkFilesWithStatus, type FileEntry } from "./docs-policy.mts";
 
 describe("R-02 Documentation policy", () => {
-  it("admits CONTEXT.md, docs/adr, docs/agents, README, skills, sandcastle, docs/external, VOXY-FORMAT", () => {
+  it("admits CONTEXT.md, docs/adr, docs/agents, README, skills, sandcastle, docs/external, upstream refs, INDEX", () => {
     expect(isAdmitted("CONTEXT.md")).toBe(true);
     expect(isAdmitted("docs/adr/0001-foo.md")).toBe(true);
     expect(isAdmitted("docs/agents/documentation.md")).toBe(true);
@@ -11,7 +11,9 @@ describe("R-02 Documentation policy", () => {
     expect(isAdmitted(".muse/skills/implement/SKILL.md")).toBe(true);
     expect(isAdmitted(".sandcastle/implement-prompt.md")).toBe(true);
     expect(isAdmitted("docs/external/research.md")).toBe(true);
-    expect(isAdmitted("python/docs/VOXY-FORMAT.md")).toBe(true);
+    expect(isAdmitted("docs/reference/upstream/VOXY-FORMAT.md")).toBe(true);
+    expect(isAdmitted("docs/INDEX.md")).toBe(true);
+    expect(isAdmitted("docs/FUTURES.md")).toBe(true);
   });
 
   it("rejects suspicious names not admitted", () => {
@@ -69,9 +71,9 @@ describe("R-02 Documentation policy", () => {
     expect(v3.length).toBe(1);
     expect(v3[0].error).toMatch(/not an admitted/);
 
-    // VOXY-FORMAT grandfathered with provenance passes
+    // Upstream reference under docs/reference/upstream with proper provenance passes
     const v4 = checkFilesWithStatus(
-      [{ path: "python/docs/VOXY-FORMAT.md", status: "A" }],
+      [{ path: "docs/reference/upstream/VOXY-FORMAT.md", status: "A" }],
       () => null,
       () => "doc-type: external-reference\nsource-revision: v1\n# VOXY"
     );
@@ -80,6 +82,7 @@ describe("R-02 Documentation policy", () => {
 
   it("historical banner does not make prohibited doc admissible", () => {
     expect(isAdmitted("python/docs/NOISE-DESIGN.md")).toBe(false);
+    expect(isAdmitted("python/docs/VOXY-FORMAT.md")).toBe(false);
     expect(isAdmitted("python/docs/NOISETAP-INTERFACE.md")).toBe(false);
     const v = checkFiles(["python/docs/NOISE-DESIGN.md"], () => "> Historical — March 2026\nSome stale mechanics");
     expect(v.length).toBe(1);
@@ -123,11 +126,11 @@ describe("R-02 Documentation policy", () => {
       () => large
     );
     expect(vFail.length).toBe(1);
-    // Also test python/docs/ENVIRONMENT.md (known violation) - modifying without shrinking should fail
+    // Also test python/docs/LEGACY.md (deleted legacy doc) - modifying without shrinking should fail
     const envBase = "x".repeat(1000);
     const envSame = "x".repeat(1000);
     const vEnv = checkFilesWithStatus(
-      [{ path: "python/docs/ENVIRONMENT.md", status: "M" }],
+      [{ path: "python/docs/LEGACY.md", status: "M" }],
       () => envBase,
       () => envSame
     );
@@ -289,40 +292,30 @@ describe("R-02 Documentation policy", () => {
     }
   });
 
-  it("grandfathered python/docs/VOXY-FORMAT.md requires provenance", () => {
-    // Without any provenance, should fail
-    const vNoProvenance = checkFilesWithStatus(
-      [{ path: "python/docs/VOXY-FORMAT.md", status: "A" }],
-      () => null,
-      () => "# VOXY Format\nSome content"
-    );
-    expect(vNoProvenance.length).toBe(2);
-    expect(vNoProvenance[0].error).toMatch(/source-revision|external-reference|provenance/i);
-
-    // With only source-revision but no doc-type, should also fail (requires doc-type)
-    const vOnlySource = checkFilesWithStatus(
-      [{ path: "python/docs/VOXY-FORMAT.md", status: "A" }],
-      () => null,
-      () => "source-revision: abc\n# VOXY"
-    );
-    expect(vOnlySource.length).toBe(1);
-
-    // With both doc-type and source-revision, should pass
-    const vOk = checkFilesWithStatus(
+  it("deleted python/docs/VOXY-FORMAT.md is no longer admitted (moved to docs/reference/upstream)", () => {
+    // The old grandfathered location is gone — new file there is rejected
+    const vA = checkFilesWithStatus(
       [{ path: "python/docs/VOXY-FORMAT.md", status: "A" }],
       () => null,
       () => "---\ndoc-type: external-reference\nsource-revision: abc123\n---\n# VOXY Format"
     );
-    expect(vOk.length).toBe(0);
+    expect(vA.length).toBe(1);
+    expect(vA[0].error).toMatch(/not an admitted/);
 
-    // M with same content but smaller should still require provenance? Actually M on VOXY-FORMAT that is already committed
-    // For this test, we check that even M requires provenance if candidate is the new version
-    const vM = checkFilesWithStatus(
-      [{ path: "python/docs/VOXY-FORMAT.md", status: "M" }],
-      () => "---\ndoc-type: external-reference\nsource-revision: abc\n---\nold",
-      () => "# New without provenance"
+    // The successor location is admitted and enforces provenance
+    const vNoProvenance = checkFilesWithStatus(
+      [{ path: "docs/reference/upstream/VOXY-FORMAT.md", status: "A" }],
+      () => null,
+      () => "# VOXY Format\nSome content"
     );
-    expect(vM.length).toBe(2);
+    expect(vNoProvenance.length).toBeGreaterThan(0);
+
+    const vOk = checkFilesWithStatus(
+      [{ path: "docs/reference/upstream/VOXY-FORMAT.md", status: "A" }],
+      () => null,
+      () => "---\ndoc-type: external-reference\nsource-revision: abc123\n---\n# VOXY Format"
+    );
+    expect(vOk.length).toBe(0);
   });
 
   it("CLI integration: real temp Git repo with base/candidate and -z (covers seam bug)", { timeout: 15000 }, async () => {
