@@ -7,8 +7,8 @@
 > **Authority hierarchy:**
 > 1. `CONTEXT.md` — authoritative project language and architectural meanings.
 > 2. `GLOSSARY.md` (this file) — concise cross-system definitions and disambiguation. Must conform to `CONTEXT.md`; if there is a conflict, `CONTEXT.md` wins.
-> 3. Version-bound upstream references (`docs/reference/upstream/minecraft-1.21.11-worldgen-seams.md`, `docs/reference/upstream/voxy-0.2.11-alpha-storage-and-lod-seams.md`) — authoritative for detailed version-specific external behavior.
-> 4. Grounding docs / external source (`docs/reference/upstream/VOXY-FORMAT.md`, `external/minecraft-src`, `external/voxy`) — source corpus.
+> 3. Version-bound upstream references (`docs/reference/upstream/VOXY-FORMAT.md`, `docs/reference/upstream/minecraft-1.21.11-worldgen-seams.md`, `docs/reference/upstream/voxy-0.2.11-alpha-storage-and-lod-seams.md`) — authoritative for detailed version-specific external behavior.
+> 4. External source corpus (`external/minecraft-src`, `external/voxy`) — mirrored upstream sources.
 
 > **Status legend:** `[External]` stable external system · `[Current]` current project canonical · `[Legacy]` historical / deprecated but still referenced · `[Planned]` design not yet implemented
 
@@ -296,4 +296,3 @@ Inference-boundary module (`java/src/main/java/com/rhythmatician/lodiffusion/vox
 - Noise: `net.minecraft.world.level.levelgen.NoiseRouter`, `DensityFunction`, `NoiseGeneratorSettings` + `docs/adr/0002-drop-router6-conditioning.md` (router6 removed; original NOISE-DESIGN.md deleted — historical rationale retained in the ADR)
 - Voxy store internals: `external/voxy/src/main/java/me/cortex/voxy/common/world/WorldSection.java`, `WorldEngine.java`, `common/world/other/Mapper.java`, `Mipper.java`, `common/voxelization/VoxelizedSection.java`, `docs/reference/upstream/VOXY-FORMAT.md` + `python/voxel_tree/voxy_format`
 - Canonical language: `CONTEXT.md`
-
