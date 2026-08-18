@@ -424,5 +424,105 @@ describe("Regression: empty branch lifecycle (126 idle) — quiet worker not mis
       await rm(tmp, {recursive: true, force: true});
     }
   });
+
+  it("remote-only branch with preserved commits is not freshly certified — bare origin regression (prepareIssueBranch remote discovery)", async () => {
+    const helpers = await import("./branch-helpers.mts");
+    const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { execSync } = await import('node:child_process');
+    const tmpOrigin = await mkdtemp(join(tmpdir(), 'origin-bare-'));
+    const tmp = await mkdtemp(join(tmpdir(), 'remote-test-'));
+    try {
+      // Bare origin
+      execSync('git init --bare -q', {cwd: tmpOrigin});
+      // Local repo with origin
+      execSync('git init -q', {cwd: tmp});
+      execSync('git config user.email "test@test.com"', {cwd: tmp});
+      execSync('git config user.name "test"', {cwd: tmp});
+      execSync(`git remote add origin ${tmpOrigin}`, {cwd: tmp});
+      await writeFile(join(tmp, 'base.txt'), 'base');
+      execSync('git add base.txt && git commit -qm "base"', {cwd: tmp});
+      execSync('git branch -M main', {cwd: tmp});
+      execSync('git push -q origin main', {cwd: tmp});
+      const baseSha = execSync('git rev-parse HEAD', {cwd: tmp, encoding:'utf8'}).trim();
+      // Create worker branch sandcastle/issue-999 with unique commit, push to origin, delete local, omit provenance
+      execSync('git checkout -b sandcastle/issue-999 -q', {cwd: tmp});
+      await writeFile(join(tmp, 'worker.txt'), 'worker-unique');
+      execSync('git add worker.txt && git commit -qm "worker unique commit"', {cwd: tmp});
+      const workerSha = execSync('git rev-parse HEAD', {cwd: tmp, encoding:'utf8'}).trim();
+      execSync('git push -q origin sandcastle/issue-999', {cwd: tmp});
+      // Delete local branch, keep remote
+      execSync('git checkout main -q', {cwd: tmp});
+      execSync('git branch -D sandcastle/issue-999', {cwd: tmp});
+      expect(execSync('git branch --list "sandcastle/issue-999"', {cwd: tmp, encoding:'utf8'}).trim()).toBe('');
+      // Verify remote still has branch
+      const remoteBefore = execSync('git ls-remote --heads origin sandcastle/issue-999', {cwd: tmp, encoding:'utf8'}).trim().split(/\s+/)[0];
+      expect(remoteBefore).toBe(workerSha);
+      // No provenance
+      const provPath = join(tmp, '.sandcastle', 'provenance', 'sandcastle-issue-999.json');
+      expect(await import('node:fs').then(m=>m.existsSync(provPath))).toBe(false);
+      // Simulate retry/reconciliation seam: prepareIssueBranch must see remote-only + no provenance + commits → blocked, preserve remote
+      const prep = helpers.prepareIssueBranch(tmp, 'sandcastle/issue-999', baseSha, 'main', baseSha, '999');
+      expect(prep.ok).toBe(false);
+      expect(prep.action).toBe('blocked');
+      expect(prep.reason).toContain('no provenance');
+      // Must NOT have created provenance merely because local was absent
+      expect(await import('node:fs').then(m=>m.existsSync(provPath))).toBe(false);
+      // Remote SHA unchanged (never deleted based on newly-created local replacement)
+      const remoteAfter = execSync('git ls-remote --heads origin sandcastle/issue-999', {cwd: tmp, encoding:'utf8'}).trim().split(/\s+/)[0];
+      expect(remoteAfter).toBe(workerSha);
+      // Local now should be at remote SHA (fetched for inspection) but still blocked — not recreated at base
+      expect(execSync('git rev-parse sandcastle/issue-999', {cwd: tmp, encoding:'utf8'}).trim()).toBe(workerSha);
+
+      // Valid-provenance remote-only recovery: recreate scenario with provenance
+      const tmp2 = await mkdtemp(join(tmpdir(), 'remote-valid-'));
+      const tmpOrigin2 = await mkdtemp(join(tmpdir(), 'origin-bare2-'));
+      try {
+        execSync('git init --bare -q', {cwd: tmpOrigin2});
+        execSync('git init -q', {cwd: tmp2});
+        execSync('git config user.email "test@test.com"', {cwd: tmp2});
+        execSync('git config user.name "test"', {cwd: tmp2});
+        execSync(`git remote add origin ${tmpOrigin2}`, {cwd: tmp2});
+        await writeFile(join(tmp2, 'base.txt'), 'base');
+        execSync('git add base.txt && git commit -qm "base"', {cwd: tmp2});
+        execSync('git branch -M main', {cwd: tmp2});
+        execSync('git push -q origin main', {cwd: tmp2});
+        const base2 = execSync('git rev-parse HEAD', {cwd: tmp2, encoding:'utf8'}).trim();
+        // Create branch with provenance via helper (so provenance is valid)
+        const prepCreate = helpers.prepareIssueBranch(tmp2, 'sandcastle/issue-1002', base2, 'main', base2, '1002');
+        expect(prepCreate.ok).toBe(true);
+        // Add a worker commit on that branch and push
+        execSync('git checkout sandcastle/issue-1002 -q', {cwd: tmp2});
+        await writeFile(join(tmp2, 'worker2.txt'), 'worker2');
+        execSync('git add worker2.txt && git commit -qm "worker2"', {cwd: tmp2});
+        const worker2Sha = execSync('git rev-parse HEAD', {cwd: tmp2, encoding:'utf8'}).trim();
+        execSync('git push -q origin sandcastle/issue-1002', {cwd: tmp2});
+        // Delete local branch, keep remote + provenance
+        execSync('git checkout main -q', {cwd: tmp2});
+        execSync('git branch -D sandcastle/issue-1002', {cwd: tmp2});
+        expect(execSync('git branch --list "sandcastle/issue-1002"', {cwd: tmp2, encoding:'utf8'}).trim()).toBe('');
+        // Provenance still exists
+        const prov2 = join(tmp2, '.sandcastle', 'provenance', 'sandcastle-issue-1002.json');
+        expect(await import('node:fs').then(m=>m.existsSync(prov2))).toBe(true);
+        const remote2Before = execSync('git ls-remote --heads origin sandcastle/issue-1002', {cwd: tmp2, encoding:'utf8'}).trim().split(/\s+/)[0];
+        expect(remote2Before).toBe(worker2Sha);
+        // Now remote-only + valid provenance → fetch/reconstitute and reuse
+        const prepRecover = helpers.prepareIssueBranch(tmp2, 'sandcastle/issue-1002', base2, 'main', base2, '1002');
+        expect(prepRecover.ok).toBe(true);
+        expect(prepRecover.action).toBe('reused');
+        expect(execSync('git rev-parse sandcastle/issue-1002', {cwd: tmp2, encoding:'utf8'}).trim()).toBe(worker2Sha);
+        // Remote unchanged
+        const remote2After = execSync('git ls-remote --heads origin sandcastle/issue-1002', {cwd: tmp2, encoding:'utf8'}).trim().split(/\s+/)[0];
+        expect(remote2After).toBe(worker2Sha);
+      } finally {
+        await rm(tmpOrigin2, {recursive: true, force: true});
+        await rm(tmp2, {recursive: true, force: true});
+      }
+    } finally {
+      await rm(tmpOrigin, {recursive: true, force: true});
+      await rm(tmp, {recursive: true, force: true});
+    }
+  });
 });
 

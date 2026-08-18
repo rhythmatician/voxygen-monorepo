@@ -147,6 +147,50 @@ export function prepareIssueBranch(
       branchExists = true;
     } catch {}
   }
+  // Make branch discovery part of helper: inspect remote when local absent
+  // One definition of existence: local OR remote
+  let remoteSha: string | null = null;
+  let remoteExists = false;
+  if (!branchExists) {
+    try {
+      const out = execSync(`git ls-remote --heads origin ${branch}`, { encoding: 'utf8', cwd: repoRoot }).trim();
+      if (out) {
+        const sha = out.split(/\s+/)[0]?.trim();
+        if (sha) { remoteSha = sha; remoteExists = true; }
+      }
+    } catch {}
+    // Remote-only branch handling
+    if (remoteExists) {
+      // Never create fresh provenance merely because local ref is absent when remote exists
+      if (fs.existsSync(provPath)) {
+        // Remote-only + valid provenance → fetch/reconstitute local at remote SHA, then verify
+        try {
+          execSync(`git fetch origin ${branch}:${branch}`, { stdio: 'ignore', cwd: repoRoot });
+          branchExists = true;
+        } catch (e) {
+          return { ok: false, action: 'error', reason: `failed to fetch remote-only branch ${branch} with provenance: ${(e as Error).message}`, provPath, branchExists: false };
+        }
+        // Fall through to “Branch exists — never overwrite provenance” handling below
+      } else {
+        // Remote-only + no provenance: fetch to inspect, then decide blocked vs empty
+        // Fetch to local so hasCommits check can run against remote content
+        try {
+          execSync(`git fetch origin ${branch}:${branch}`, { stdio: 'ignore', cwd: repoRoot });
+          branchExists = true;
+        } catch (e) {
+          return { ok: false, action: 'error', reason: `failed to fetch remote-only branch ${branch} without provenance: ${(e as Error).message}`, provPath, branchExists: false };
+        }
+        // Now branchExists true with no provenance — will be handled as legacy/empty below
+        // Preserve remote SHA for later checks (do not delete remote based on newly-created local replacement)
+      }
+    }
+  } else {
+    // Local exists — also check if remote exists (for future delete decisions, but discovery is unified)
+    try {
+      const out = execSync(`git ls-remote --heads origin ${branch}`, { encoding: 'utf8', cwd: repoRoot }).trim();
+      if (out) { remoteSha = out.split(/\s+/)[0]?.trim() || null; remoteExists = !!remoteSha; }
+    } catch {}
+  }
 
   if (!branchExists) {
     // No branch — create with fresh write-once provenance, then create branch from exact base
