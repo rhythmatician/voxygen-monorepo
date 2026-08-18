@@ -28,6 +28,10 @@ python/.venv/
 python/runs/
 python/artifacts/
 
+# Sandcastle mutable provenance (host-side, out of data plane)
+.sandcastle/provenance/
+.sandcastle/worktrees/
+
 # Generic
 *.log
 *.tmp

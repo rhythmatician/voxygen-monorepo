@@ -12,6 +12,7 @@ import * as path from "node:path";
 
 const REPO_ROOT = process.cwd();
 import { isEligible, branchForIssue, type IssueInput } from "./dispatch.mts";
+import * as branchHelpers from "./branch-helpers.mts";
 import { mayAutonomouslyMerge } from "./ci-policy.mts";
 import {
   reviewVerdictSchema,
@@ -504,17 +505,50 @@ async function reconcileInProgressIssues(): Promise<void> {
       }
     } catch { branchExists = false; }
     if(branchExists){
-      // If branch exists but has no commits ahead of main, it was claimed but never worked — not a crash with work.
-      // Clean up stale empty branch and allow retry instead of blocking.
-      let hasCommits = false;
+      // Share single write-once provenance state machine with claim path (prepareIssueBranch)
+      // Never overwrite provenance — fail closed on legacy contaminated branches.
+      let reconcileBase = "";
+      let reconcileCallerBranch = "";
+      let reconcileCallerSha = "";
       try {
-        const log = require('child_process').execSync(`git log main..${branch} --oneline`, { encoding: "utf8", cwd: REPO_ROOT }).trim();
-        if (log) hasCommits = true;
-      } catch { hasCommits = false; }
+        reconcileBase = execSync('git rev-parse origin/main', {encoding:'utf8', cwd: REPO_ROOT}).trim();
+        reconcileCallerBranch = execSync('git branch --show-current', {encoding:'utf8', cwd: REPO_ROOT}).trim();
+        reconcileCallerSha = execSync('git rev-parse HEAD', {encoding:'utf8', cwd: REPO_ROOT}).trim();
+      } catch {
+        try { reconcileBase = execSync('git rev-parse origin/main', {encoding:'utf8', cwd: REPO_ROOT}).trim(); } catch { reconcileBase = execSync('git rev-parse HEAD', {encoding:'utf8', cwd: REPO_ROOT}).trim(); }
+        reconcileCallerBranch = "reconcile";
+        reconcileCallerSha = reconcileBase;
+      }
+      const prep = branchHelpers.prepareIssueBranch(REPO_ROOT, branch, reconcileBase, reconcileCallerBranch, reconcileCallerSha, id);
+      if (!prep.ok) {
+        if (prep.action === 'blocked') {
+          console.warn(`  #${id} (${branch}) → ${prep.reason} — legacy/contaminated branch, fail closed: preserving/blocking`);
+          await markBlocked(id, branch, `${prep.reason} — preserved for inspection. Was not created from frozen factory base. To retry: delete branch ${branch} and remove agent:blocked, re-run factory from clean base.`);
+          continue;
+        }
+        console.error(`  #${id} (${branch}) → prepare error (${prep.action}): ${prep.reason} — blocking`);
+        await markBlocked(id, branch, prep.reason);
+        continue;
+      }
+      if (prep.action === 'recreated') {
+        console.log(`  #${id} (${branch}) → ${prep.reason} — cleaned empty stale branch, allowing retry`);
+        await safeRunGh(["issue", "edit", id, "--remove-label", "agent:in-progress"], `Failed to cleanup stale in-progress for #${id}`);
+        await safeRunGh(["issue", "edit", id, "--remove-label", "agent:blocked"], `Failed to cleanup stale blocked for #${id}`);
+        continue;
+      }
+      // prep.ok with reused/created — provenance valid, now distinguish empty vs crash-with-work
+      console.log(`  #${id} (${branch}) → ${prep.reason}`);
+      const hasCommits = (() => {
+        try {
+          const log = require('child_process').execSync(`git log origin/main..${branch} --oneline`, {encoding:'utf8', cwd: REPO_ROOT}).trim();
+          return !!log;
+        } catch { return false; }
+      })();
       if (!hasCommits) {
-        console.log(`  #${id} (${branch}) → branch exists but empty (no commits ahead of main) — cleaning stale claim, will retry`);
+        console.log(`  #${id} (${branch}) → branch exists but empty (no commits ahead of origin/main) — cleaning stale claim, will retry`);
         try { require('child_process').execSync(`git branch -D ${branch}`, { encoding: "utf8", cwd: REPO_ROOT }); } catch {}
         try { await runGh(["api", `repos/${parseOwnerRepo()?.owner}/${parseOwnerRepo()?.repo}/git/refs/heads/${branch}`, "--method", "DELETE"]); } catch {}
+        try { const p = require('path').join(REPO_ROOT, ".sandcastle", "provenance", `${branch.replace(/[^a-zA-Z0-9-]/g, "-")}.json`); require('fs').unlinkSync(p); } catch {}
         await safeRunGh(["issue", "edit", id, "--remove-label", "agent:in-progress"], `Failed to cleanup stale in-progress for #${id}`);
         await safeRunGh(["issue", "edit", id, "--remove-label", "agent:blocked"], `Failed to cleanup stale blocked for #${id}`);
         continue;
@@ -848,8 +882,26 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     }
   }
 
+  // ----- Freeze explicit factory base before claiming work (isolation invariant) -----
+  // Caller checkout is not part of Sandcastle's data plane — irrelevant whether launching from main, feature/foo, or PR branch.
+  let factoryBaseSha = "";
+  let callerBranch = "";
+  let callerSha = "";
+  let callerStatusBefore: string | null = null;
+  try {
+    execSync('git fetch origin main', {stdio:'ignore'});
+    factoryBaseSha = execSync('git rev-parse origin/main', {encoding:'utf8'}).trim();
+    callerBranch = execSync('git branch --show-current', {encoding:'utf8'}).trim();
+    callerSha = execSync('git rev-parse HEAD', {encoding:'utf8'}).trim();
+    callerStatusBefore = (() => { try { return execSync('git status --porcelain', {encoding:'utf8', cwd: REPO_ROOT}).trim(); } catch { return null; } })();
+    console.log(`Factory base frozen: ${factoryBaseSha.slice(0,7)} (origin/main), caller ${callerBranch}@${callerSha.slice(0,7)} status "${(callerStatusBefore||'').slice(0,80)}" — will NOT be mutated`);
+  } catch (e) {
+    console.error(`Failed to freeze factory base: ${getErrorMessage(e)} — aborting iteration`);
+    continue;
+  }
+
   // ----- Phase 0.5: Claim before work (host-side, before expensive workers) -----
-  const claimedIssues: typeof plannedIssues = [];
+  let claimedIssues: typeof plannedIssues = [];
   for (const p of plannedIssues) {
     const src = eligible.find((e) => String(e.number) === p.id);
     if (!src) continue;
@@ -863,7 +915,39 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     continue;
   }
 
-  console.log(`\nClaimed ${claimedIssues.length} issue(s), launching parallel workers...\n`);
+  // Prepare issue branches via single write-once provenance state machine (claim/retry and reconciliation share it).
+  // Never overwrite provenance — fail closed on legacy contaminated branches, recreate only truly empty stale.
+  const preparedIssues: typeof claimedIssues = [];
+  for (const p of claimedIssues) {
+    const prep = branchHelpers.prepareIssueBranch(REPO_ROOT, p.branch, factoryBaseSha, callerBranch, callerSha, p.id);
+    if (prep.ok) {
+      console.log(`  Prepared ${p.branch}: ${prep.action} — ${prep.reason} → ${prep.provPath}`);
+      // Assert caller still unchanged after prepare (provenance is gitignored, branch creation is isolated)
+      try {
+        const afterPrepareStatus = execSync('git status --porcelain', {encoding:'utf8', cwd: REPO_ROOT}).trim();
+        if (callerStatusBefore !== null && afterPrepareStatus !== callerStatusBefore) {
+          console.warn(`  Prepare left caller status dirty: before "${callerStatusBefore.slice(0,100)}" after "${afterPrepareStatus.slice(0,100)}" — should be gitignored`);
+        }
+      } catch {}
+      preparedIssues.push(p);
+    } else {
+      if (prep.action === 'blocked') {
+        console.warn(`  #${p.id} (${p.branch}) → ${prep.reason} — fail closed, preserving/blocking`);
+        await markBlocked(p.id, p.branch, prep.reason);
+      } else {
+        console.error(`  #${p.id} (${p.branch}) → prepare failed (${prep.action}): ${prep.reason}`);
+        await markBlocked(p.id, p.branch, prep.reason);
+      }
+      // Do not launch worker for blocked branches — already marked, will not be retried until branch removed
+    }
+  }
+  claimedIssues = preparedIssues;
+  if (claimedIssues.length === 0) {
+    console.log("No issues prepared for execution (all blocked/failed) — nothing to execute this iteration.");
+    continue;
+  }
+
+  console.log(`\nClaimed and prepared ${claimedIssues.length} issue(s), launching parallel workers...\n`);
 
   // ----- Phase 2: Execute + Review (parallel, isolated) -----
   const settled = await Promise.allSettled<WorkerResult>(
@@ -873,6 +957,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
         try {
           sandbox = await sandcastle.createSandbox({
             branch: issue.branch,
+            baseBranch: factoryBaseSha,
             sandbox: docker({ env: { GH_TOKEN: ghToken() } }),
             hooks,
             copyToWorktree,
@@ -1076,64 +1161,77 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   }
 
   // ----- Phase 3: Merge (single agent merges all completed branches) -----
+  // INVARIANT: Sandcastle never integrates agent work into the caller's current branch.
+  // Use helper so production and regression test the same batch-worktree seam.
+  const callerBranchForBatch = callerBranch;
+  const callerShaForBatch = callerSha;
+  // Use frozen snapshot from factory-base freeze (whole-run invariant), not a late Phase-3 snapshot
+  const callerStatusBeforeForBatch = callerStatusBefore;
+  const callerHeadBefore = callerSha;
+  const batchBranch = `sandcastle/batch-${completedIssues.map(i=>i.id).join('-')}-${Date.now().toString(36)}`;
+  console.log(`Creating dedicated batch branch ${batchBranch} from factoryBaseSha ${factoryBaseSha.slice(0,7)} (caller ${callerBranchForBatch}@${callerShaForBatch.slice(0,7)} — will NOT be mutated)`);
+  let batchWorktreePath: string | null = null;
+  try {
+    batchWorktreePath = branchHelpers.createBatchWorktree(REPO_ROOT, batchBranch, factoryBaseSha);
+    console.log(`Created batch worktree ${batchWorktreePath} for ${batchBranch} from ${factoryBaseSha.slice(0,7)} — caller ${callerBranchForBatch} never moved`);
+  } catch (e) {
+    console.error(`Failed to create batch worktree for ${batchBranch} from ${factoryBaseSha.slice(0,7)}: ${getErrorMessage(e)}`);
+    for (const iss of completedIssues) {
+      await markBlocked(iss.id, iss.branch, `Batch worktree creation failed for ${batchBranch} from ${factoryBaseSha.slice(0,7)}: ${String(getErrorMessage(e)).slice(0, MERGER_REASON_TRUNCATE)} -- branch preserved`);
+    }
+    if (batchWorktreePath) { try { execSync(`git worktree remove --force ${batchWorktreePath}`, {stdio:'ignore'}); } catch {} }
+    try { execSync(`git branch -D ${batchBranch}`, {stdio:'ignore'}); } catch {}
+    continue;
+  }
+
   try {
     await sandcastle.run({
       hooks,
       sandbox: docker({ env: { GH_TOKEN: ghToken() } }),
       name: "merger",
       maxIterations: 1,
+      cwd: batchWorktreePath,
       agent: sandcastle.muse("muse-spark-1.2-contributor"),
-      promptFile: "./.sandcastle/merge-prompt.md",
+      promptFile: path.join(REPO_ROOT, ".sandcastle", "merge-prompt.md"),
       promptArgs: {
         BRANCHES: completedBranches.map((b) => `- ${b}`).join("\n"),
         ISSUES: completedIssues.map((i) => `- ${i.id}: ${i.title}`).join("\n"),
       },
     });
-    console.log("\nBranches merged locally via merger agent.");
+    console.log(`\nBranches merged locally into ${batchBranch} via merger agent in worktree ${batchWorktreePath}.`);
   } catch (error: unknown) {
-    console.error(`Merger failed: ${getErrorMessage(error)}`);
-    // Mark all completed as blocked since integration failed
+    console.error(`Merger failed on ${batchBranch} in ${batchWorktreePath}: ${getErrorMessage(error)}`);
     for (const iss of completedIssues) {
-      await markBlocked(iss.id, iss.branch, `Merger failed: ${String(getErrorMessage(error)).slice(0, MERGER_REASON_TRUNCATE)} -- branch preserved`);
+      await markBlocked(iss.id, iss.branch, `Merger failed on ${batchBranch}: ${String(getErrorMessage(error)).slice(0, MERGER_REASON_TRUNCATE)} -- branch preserved`);
     }
+    try { execSync(`git worktree remove --force ${batchWorktreePath}`, {stdio:'ignore'}); } catch {}
+    try { execSync(`git branch -D ${batchBranch}`, {stdio:'ignore'}); } catch {}
     continue;
   }
 
-  // Host-side: push + PR + auto-merge is handled by merger prompt's host?
-  // For v0, attempt to push and create a batch PR. Failures are non-fatal -- work is already merged locally.
-  // Attempt host-side audit-close only after local merge succeeded.
-  // The PR creation is best-effort; closing issues indicates integration on current branch.
+  // Host-side: push batch branch + PR + auto-merge. Never push caller's branch.
+  let currentBranch = batchBranch;
   try {
-    // Try to push current branch if remote exists
-    const currentBranch = execSync("git branch --show-current", { encoding: "utf8" }).trim();
-    console.log(`Current branch after merge: ${currentBranch}`);
+    console.log(`Batch branch after merge: ${currentBranch} (caller ${callerBranchForBatch} untouched, caller SHA ${callerShaForBatch.slice(0,7)})`);
 
-    // Attempt to create/update PR for batch -- best effort
+    // Attempt to create/update PR for batch -- best effort. Identify existing PR by exact expected head branch, never by implicit current branch.
     const ownerRepo = parseOwnerRepo();
     if (ownerRepo) {
       try {
-        // Check if PR already exists for this branch
+        // Check if PR already exists for the dedicated batch branch (exact head), not caller's branch
         let existingPr = "";
         try {
-          existingPr = await runGh(["pr", "view", "--json", "number,state", "--jq", ".number"]);
+          existingPr = await runGh(["pr", "list", "--head", batchBranch, "--state", "open", "--json", "number", "--jq", ".[0].number"]);
         } catch {}
         if (!existingPr) {
           try {
-            // Push first
-            execSync(`git push origin HEAD`, { stdio: "ignore" });
+            // Push batch branch explicitly (never caller's branch, never HEAD when HEAD could be caller-controlled)
+            execSync(`git push origin ${batchBranch}`, { stdio: "ignore" });
           } catch {}
           try {
             const prBody = `Sandcastle batch integration -- branches:\n${completedBranches.map((b) => `- \`${b}\``).join("\n")}\n\n${completedIssues.map((i) => `Closes #${i.id} - ${i.title}`).join("\n")}\n\n<!-- batch-pr-map: ${completedIssues.map(i=>i.id).join(',')} -->`;
-            const prUrl = await runGh([
-              "pr",
-              "create",
-              "--base",
-              "main",
-              "--title",
-              `Sandcastle batch: ${completedIssues.map((i) => `#${i.id}`).join(", ")}`,
-              "--body",
-              prBody,
-            ]);
+            const prCreateBase = branchHelpers.buildPrCreateArgs(batchBranch, completedIssues);
+            const prUrl = await runGh([...prCreateBase, "--body", prBody]);
             console.log(`Created PR: ${prUrl}`);
             // Durable batch-PR correlation: record exact PR number against every issue (for reconciliation)
             try {
@@ -1145,10 +1243,12 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
               }
             } catch {}
             // Privileged changes may never grant themselves autonomous merge authority.
+            // Classify the exact batch candidate via helper, not caller HEAD.
             try {
               const prNumber = prUrl.match(/\/pull\/(\d+)/)?.[1];
               if (prNumber) {
-                const changed = execSync("git diff --name-only origin/main...HEAD", { encoding: "utf8" }).split(/\r?\n/).filter(Boolean);
+                const diffSpec = branchHelpers.buildProtectedRootDiffSpec(factoryBaseSha, batchBranch);
+                const changed = execSync(`git diff --name-only ${diffSpec}`, { encoding: "utf8" }).split(/\r?\n/).filter(Boolean);
                 if (!mayAutonomouslyMerge(changed)) {
                   console.log(`PR #${prNumber} changes a protected root; independent human approval is required`);
                 } else {
@@ -1163,9 +1263,9 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
             console.warn(`PR creation skipped: ${getErrorMessage(error)}`);
           }
         } else {
-          console.log(`PR #${existingPr} already exists for ${currentBranch}`);
+          console.log(`PR #${existingPr} already exists for ${batchBranch} (dedicated batch, not caller ${callerBranchForBatch})`);
           try {
-            execSync(`git push origin HEAD`, { stdio: "ignore" });
+            execSync(`git push origin ${batchBranch}`, { stdio: "ignore" });
           } catch {}
         }
       } catch (error: unknown) {
@@ -1174,6 +1274,45 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     }
   } catch (error: unknown) {
     console.warn(`Post-merge PR handling failed (non-fatal): ${getErrorMessage(error)}`);
+  } finally {
+    // Enforce invariant via helper: caller checkout never moved, git status --porcelain unchanged
+    try {
+      const afterBranch = execSync('git branch --show-current', {encoding:'utf8'}).trim();
+      const refSha = execSync(`git rev-parse refs/heads/${callerBranchForBatch}`, {encoding:'utf8'}).trim();
+      const callerStatusAfter = (() => { try { return execSync('git status --porcelain', {encoding:'utf8', cwd: REPO_ROOT}).trim(); } catch { return null; } })();
+      const callerHeadAfter = (() => { try { return execSync('git rev-parse HEAD', {encoding:'utf8', cwd: REPO_ROOT}).trim(); } catch { return null; } })();
+      // Use helper for caller-unchanged check (same seam as tests) — compare against frozen snapshot from iteration start
+      const callerCheck = branchHelpers.verifyCallerUnchanged(REPO_ROOT, callerBranchForBatch, callerShaForBatch);
+      if (!callerCheck.ok) {
+        console.error(`INVARIANT VIOLATION: caller unchanged FAILED — ref ${callerCheck.refSha.slice(0,7)} vs ${callerShaForBatch.slice(0,7)} checkout ${callerCheck.checkoutBranch} vs ${callerBranchForBatch}`);
+      } else {
+        console.log(`Invariant OK: caller ref ${callerCheck.refSha.slice(0,7)} checkout ${callerCheck.checkoutBranch} (batch ${batchBranch} pushed)`);
+      }
+      if (refSha !== callerShaForBatch) {
+        console.error(`INVARIANT VIOLATION: refs/heads/${callerBranchForBatch} changed! Before ${callerShaForBatch.slice(0,7)} after ${refSha.slice(0,7)} — caller branch was mutated`);
+      }
+      if (callerStatusBeforeForBatch !== null && callerStatusAfter !== null && callerStatusBeforeForBatch !== callerStatusAfter) {
+        console.error(`INVARIANT VIOLATION: git status --porcelain changed from "${callerStatusBeforeForBatch.slice(0,200)}" to "${callerStatusAfter.slice(0,200)}" — caller working tree was mutated (whole-run invariant from freeze)`);
+      } else {
+        console.log(`Caller status unchanged (whole-run): "${(callerStatusAfter||'').slice(0,100)}" vs frozen "${(callerStatusBeforeForBatch||'').slice(0,50)}"`);
+      }
+      if (callerHeadBefore !== callerHeadAfter) {
+        console.error(`INVARIANT VIOLATION: caller HEAD moved from ${callerHeadBefore?.slice(0,7)} to ${callerHeadAfter?.slice(0,7)} — should remain on ${callerBranchForBatch}`);
+      }
+      // Also verify checkout still on caller (should never have left)
+      if (afterBranch !== callerBranchForBatch) {
+        console.warn(`Caller checkout moved from ${callerBranchForBatch} to ${afterBranch} — restoring (should not have happened with dedicated worktree)`);
+        try { execSync(`git checkout ${callerBranchForBatch}`, {stdio:'ignore'}); } catch {}
+      }
+      // Clean up batch worktree (if used) — keep branch for PR, remove worktree via helper
+      if (batchWorktreePath) {
+        try { branchHelpers.cleanupBatchWorktree(REPO_ROOT, batchWorktreePath); } catch { try { execSync(`git worktree remove --force ${batchWorktreePath}`, {stdio:'ignore'}); } catch {} }
+        console.log(`Batch worktree ${batchWorktreePath} removed (branch ${batchBranch} remains for PR)`);
+      }
+    } catch (e) {
+      console.warn(`Failed to verify caller invariant: ${getErrorMessage(e)}`);
+      if (batchWorktreePath) { try { branchHelpers.cleanupBatchWorktree(REPO_ROOT, batchWorktreePath); } catch { try { execSync(`git worktree remove --force ${batchWorktreePath}`, {stdio:'ignore'}); } catch {} } }
+    }
   }
 
   // A local merge is not integration into main. Leave tickets open until the
