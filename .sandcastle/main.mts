@@ -91,13 +91,13 @@ type PlannedIssue = z.infer<typeof planSchema>["issues"][number];
 // /usr/bin/gh exists.
 
 function ghBinary(): string {
-  // Probe /usr/bin/gh first so a container or Linux host run never returns
-  // a Windows path.
-  if (fs.existsSync("/usr/bin/gh")) return "/usr/bin/gh";
-  const winPath = "C:\\Program Files\\GitHub CLI\\gh.exe";
-  if (fs.existsSync(winPath)) return winPath;
-  const wslPath = "/mnt/c/Program Files/GitHub CLI/gh.exe";
-  if (fs.existsSync(wslPath)) return wslPath;
+  // Probe Linux gh first (host WSL: ~/.local/bin/gh, container: /usr/bin/gh)
+  // so a Windows path never leaks into Linux/WSL where auth differs.
+  const home = process.env.HOME || "";
+  const linuxPaths = ["/usr/bin/gh", home ? `${home}/.local/bin/gh` : "", "/home/jeff/.local/bin/gh"];
+  for(const p of linuxPaths){ if(p && fs.existsSync(p)) return p; }
+  // Fallback to gh on PATH (resolves to Linux gh in WSL with correct auth)
+  // Avoid Windows gh.exe which has different keyring/config in WSL.
   return "gh";
 }
 
@@ -552,11 +552,16 @@ async function runDoctor(): Promise<boolean> {
     console.log(`  sandbox created on ${doctorBranch}, running bootstrap verification...`);
     // Run the same commands that the worker will rely on, inside the sandbox
     const checks: Array<{cmd: string, label: string, mustContain?: string}> = [
-      {cmd: 'java -version 2>&1 | head -5', label: 'java 21', mustContain: '21'},
-      {cmd: './java/gradlew --version 2>&1 | tail -10', label: 'gradle'},
-      {cmd: 'bash .ci/install-voxy.sh install 2>&1 | tail -20', label: 'voxy install'},
-      {cmd: 'npm install 2>&1 | tail -10', label: 'npm install'},
+      {cmd: 'bash -lc "java -version 2>&1" | head -5', label: 'java 21', mustContain: '21'},
+      {cmd: 'bash -lc "./java/gradlew --version 2>&1" | tail -10', label: 'gradle'},
+      {cmd: 'bash -lc "bash .ci/install-voxy.sh install 2>&1" | tail -20', label: 'voxy install'},
+      {cmd: 'bash -lc "npm install 2>&1" | tail -10', label: 'npm install'},
     ];
+    // Debug PATH inside sandbox
+    try {
+      const dbg = await (sandbox as any).exec('bash -lc "echo PATH=\$PATH; echo JAVA_HOME=\$JAVA_HOME; ls -l \$JAVA_HOME/bin/java 2>&1 | head -3; which java 2>&1 | head -3"');
+      console.log(`  [doctor debug] ${(dbg.stdout+dbg.stderr).slice(0,400)}`);
+    } catch {}
     for(const c of checks){
       const res = await (sandbox as any).exec(c.cmd);
       const out = (res.stdout + res.stderr).trim();
@@ -756,6 +761,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
             TASK_ID: issue.id,
             ISSUE_TITLE: issue.title,
             BRANCH: issue.branch,
+            REVIEW_FEEDBACK: "",
           },
         });
         // Reviewer→implementer feedback loop — one bounded retry for mechanical/semantic misses
