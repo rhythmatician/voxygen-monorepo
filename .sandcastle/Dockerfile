@@ -11,7 +11,7 @@ ENV PATH="$JAVA_HOME/bin:$PATH"
 # Install graphify (code-only graph rebuild, no LLM needed) system-wide so sandcastle agents
 # can run `graphify update .` on worktree startup. --break-system-packages is required on
 # Debian bookworm where pip refuses system installs inside the base image.
-RUN pip install --break-system-packages graphifyy 2>&1 | tail -5
+RUN pip install --break-system-packages graphify 2>&1 | tail -5
 
 # Install GitHub CLI
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
