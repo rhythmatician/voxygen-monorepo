@@ -780,7 +780,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
             sandbox: docker({ env: { GH_TOKEN: ghToken() } }),
             hooks,
             copyToWorktree,
-            timeouts: { worktreeMs: 300_000 },
+            timeouts: { worktreeMs: 600_000 },
           });
           break;
         } catch (e) {
