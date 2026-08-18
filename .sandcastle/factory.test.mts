@@ -318,9 +318,9 @@ describe("Regression: empty branch lifecycle (126 idle) — quiet worker not mis
     const gitignore = fs.readFileSync(".gitignore", "utf8");
     expect(gitignore).toContain(".sandcastle/provenance/");
     expect(gitignore).toContain(".sandcastle/worktrees/");
-    // Production must call helpers, not manually implement provenance/worktree
-    expect(mainMts).toContain("branchHelpers.recordProvenance");
-    expect(mainMts).toContain("branchHelpers.verifyProvenance");
+    // Production must call single state-machine helper, not manually implement provenance/worktree outside it
+    // (recordProvenance/verifyProvenance are now encapsulated in prepareIssueBranch)
+    expect(mainMts).toContain("branchHelpers.prepareIssueBranch");
     expect(mainMts).toContain("branchHelpers.createBatchWorktree");
     expect(mainMts).toContain("branchHelpers.verifyCallerUnchanged");
     expect(mainMts).toContain("branchHelpers.cleanupBatchWorktree");
@@ -328,12 +328,101 @@ describe("Regression: empty branch lifecycle (126 idle) — quiet worker not mis
     expect(mainMts).toContain("git status --porcelain");
     expect(mainMts).toContain("callerStatusBefore");
     expect(mainMts).toContain("callerStatusAfter");
+    expect(mainMts).toContain("callerStatusBeforeForBatch");
+    // Whole-run invariant: snapshot at freeze, not late Phase-3 (frozen before claim, reused in Phase-3)
+    expect(mainMts).toMatch(/let callerStatusBefore[\s\S]*execSync\('git status --porcelain'/);
+    expect(mainMts).toContain("Factory base frozen");
+    expect(mainMts).toContain("callerStatusBeforeForBatch = callerStatusBefore");
+    expect(mainMts).not.toMatch(/\/\/ Capture caller status before mutation[\s\S]*const callerStatusBefore/);
+    expect(mainMts).toContain("prepareIssueBranch");
     // Helper seam exists
     const helpers = await import("./branch-helpers.mts");
     expect(typeof helpers.recordProvenance).toBe("function");
     expect(typeof helpers.createBatchWorktree).toBe("function");
     expect(typeof helpers.cleanupBatchWorktree).toBe("function");
     expect(typeof helpers.verifyCallerUnchanged).toBe("function");
+    expect(typeof helpers.prepareIssueBranch).toBe("function");
+  });
+
+  it("provenance is write-once and contaminated legacy branch is never retroactively certified (prepareIssueBranch)", async () => {
+    const helpers = await import("./branch-helpers.mts");
+    const { mkdtemp, writeFile, rm, mkdir } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { execSync } = await import('node:child_process');
+    const tmp = await mkdtemp(join(tmpdir(), 'writeonce-test-'));
+    try {
+      execSync('git init -q', {cwd: tmp});
+      execSync('git config user.email "test@test.com"', {cwd: tmp});
+      execSync('git config user.name "test"', {cwd: tmp});
+      await writeFile(join(tmp, 'base.txt'), 'base');
+      execSync('git add base.txt && git commit -qm "base"', {cwd: tmp});
+      execSync('git branch -M main', {cwd: tmp});
+      const baseSha = execSync('git rev-parse HEAD', {cwd: tmp, encoding:'utf8'}).trim();
+      // Simulate origin/main at baseSha (helpers use origin/main if exists, else fallback)
+      // Create feature/foo with caller-only commit
+      execSync('git checkout -b feature/foo -q', {cwd: tmp});
+      await writeFile(join(tmp, 'caller-only.txt'), 'caller-secret');
+      execSync('git add caller-only.txt && git commit -qm "caller-only commit"', {cwd: tmp});
+      const callerSha = execSync('git rev-parse HEAD', {cwd: tmp, encoding:'utf8'}).trim();
+      // Pre-create contaminated sandcastle/issue-999 as M -> caller-only -> issue (omit provenance)
+      // Branch ancestry: base -> caller-only (feature/foo) -> issue work, so includes caller-only
+      execSync('git checkout -b sandcastle/issue-999 feature/foo -q', {cwd: tmp});
+      await writeFile(join(tmp, 'issue.txt'), 'issue contaminated');
+      execSync('git add issue.txt && git commit -qm "issue contaminated"', {cwd: tmp});
+      const contaminatedSha = execSync('git rev-parse HEAD', {cwd: tmp, encoding:'utf8'}).trim();
+      expect(execSync(`git log --oneline ${baseSha}..sandcastle/issue-999`, {cwd: tmp, encoding:'utf8'}).toString()).toContain('caller-only');
+      // No provenance file — simulate legacy retry
+      const provPath = join(tmp, '.sandcastle', 'provenance', 'sandcastle-issue-999.json');
+      expect(await import('node:fs').then(m=>m.existsSync(provPath))).toBe(false);
+      // Factory retry must NOT write fresh provenance and accept it — must fail closed via prepareIssueBranch
+      const prep = helpers.prepareIssueBranch(tmp, 'sandcastle/issue-999', baseSha, 'feature/foo', callerSha, '999');
+      expect(prep.ok).toBe(false);
+      expect(prep.action).toBe('blocked');
+      expect(prep.reason).toContain('no provenance');
+      // Must NOT have created provenance — write-once would have falsely certified if it had overwritten
+      expect(await import('node:fs').then(m=>m.existsSync(provPath))).toBe(false);
+      // Branch still contaminated (not silently recreated)
+      expect(execSync(`git rev-parse sandcastle/issue-999`, {cwd: tmp, encoding:'utf8'}).trim()).toBe(contaminatedSha);
+      // Second retry with same contaminated branch still blocked (idempotent)
+      const prep2 = helpers.prepareIssueBranch(tmp, 'sandcastle/issue-999', baseSha, 'feature/foo', callerSha, '999');
+      expect(prep2.ok).toBe(false);
+      expect(prep2.action).toBe('blocked');
+
+      // Fresh branch (does not exist) should create with write-once provenance and be reusable
+      const freshPrep = helpers.prepareIssueBranch(tmp, 'sandcastle/issue-1000', baseSha, 'feature/foo', callerSha, '1000');
+      expect(freshPrep.ok).toBe(true);
+      expect(['created','recreated'].includes(freshPrep.action)).toBe(true);
+      const freshProvPath = join(tmp, '.sandcastle', 'provenance', 'sandcastle-issue-1000.json');
+      expect(await import('node:fs').then(m=>m.existsSync(freshProvPath))).toBe(true);
+      // Direct recordProvenance must now fail with EEXIST (write-once)
+      expect(() => helpers.recordProvenance(tmp, 'sandcastle/issue-1000', baseSha, 'feature/foo', callerSha, '1000')).toThrow();
+      // Second prepare on fresh branch with existing provenance should reuse, not overwrite
+      const reusePrep = helpers.prepareIssueBranch(tmp, 'sandcastle/issue-1000', baseSha, 'feature/foo', callerSha, '1000');
+      expect(reusePrep.ok).toBe(true);
+      expect(reusePrep.action).toBe('reused');
+
+      // Empty stale branch without provenance should be deleted and recreated, not blocked
+      execSync(`git checkout ${baseSha} -q`, {cwd: tmp});
+      execSync('git checkout -b sandcastle/issue-1001 -q', {cwd: tmp});
+      // No commits ahead of base, no provenance — truly empty
+      const emptyLog = execSync(`git log ${baseSha}..sandcastle/issue-1001 --oneline`, {cwd: tmp, encoding:'utf8'}).trim();
+      expect(emptyLog).toBe('');
+      const emptyPrep = helpers.prepareIssueBranch(tmp, 'sandcastle/issue-1001', baseSha, 'feature/foo', callerSha, '1001');
+      expect(emptyPrep.ok).toBe(true);
+      expect(emptyPrep.action).toBe('recreated');
+      expect(await import('node:fs').then(m=>m.existsSync(join(tmp, '.sandcastle', 'provenance', 'sandcastle-issue-1001.json')))).toBe(true);
+      // After recreation, branch tip should be baseSha
+      expect(execSync('git rev-parse sandcastle/issue-1001', {cwd: tmp, encoding:'utf8'}).trim()).toBe(baseSha);
+
+      // Main.mts must use prepareIssueBranch for both claim and reconciliation (single state machine)
+      const mainMts = (await import('node:fs')).readFileSync('.sandcastle/main.mts', 'utf8');
+      expect(mainMts).toContain('prepareIssueBranch');
+      // Must not contain old direct overwrite pattern outside helper
+      expect(mainMts).not.toMatch(/recordProvenance\(REPO_ROOT, p\.branch, factoryBaseSha[^)]+\)\s*;\s*\n\s*console\.log\(`\s*Provenance recorded/);
+    } finally {
+      await rm(tmp, {recursive: true, force: true});
+    }
   });
 });
 
