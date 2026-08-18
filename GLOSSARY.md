@@ -1,14 +1,14 @@
 # Glossary — Terrain Generation (Minecraft / Voxy / Fabric / Voxygen)
 
 > **Scope:** Only terms that appear when you generate, store, or render terrain in this monorepo.
-> Read alongside `CONTEXT.md` (canonical project language), `python/docs/VOXY-FORMAT.md` (grounded Voxy audit), and the version-bound upstream references `docs/reference/upstream/minecraft-1.21.11-worldgen-seams.md` and `docs/reference/upstream/voxy-0.2.11-alpha-storage-and-lod-seams.md` for detailed version-specific behavior.
+> Read alongside `CONTEXT.md` (canonical project language), `docs/reference/upstream/VOXY-FORMAT.md` (grounded Voxy audit), and the version-bound upstream references `docs/reference/upstream/minecraft-1.21.11-worldgen-seams.md` and `docs/reference/upstream/voxy-0.2.11-alpha-storage-and-lod-seams.md` for detailed version-specific behavior.
 > Sources are noted per entry: `minecraft-src` = decompiled `net.minecraft.*`, `voxy` = `external/voxy/src/main/java/me/cortex/voxy/**`, `fabric` = `external/fabric-api`, `project` = `java/src/main/java/com/rhythmatician/lodiffusion/**`.
 
 > **Authority hierarchy:**
 > 1. `CONTEXT.md` — authoritative project language and architectural meanings.
 > 2. `GLOSSARY.md` (this file) — concise cross-system definitions and disambiguation. Must conform to `CONTEXT.md`; if there is a conflict, `CONTEXT.md` wins.
-> 3. Version-bound upstream references (`docs/reference/upstream/minecraft-1.21.11-worldgen-seams.md`, `docs/reference/upstream/voxy-0.2.11-alpha-storage-and-lod-seams.md`) — authoritative for detailed version-specific external behavior.
-> 4. Grounding docs / external source (`python/docs/VOXY-FORMAT.md`, `external/minecraft-src`, `external/voxy`) — source corpus.
+> 3. Version-bound upstream references (`docs/reference/upstream/VOXY-FORMAT.md`, `docs/reference/upstream/minecraft-1.21.11-worldgen-seams.md`, `docs/reference/upstream/voxy-0.2.11-alpha-storage-and-lod-seams.md`) — authoritative for detailed version-specific external behavior.
+> 4. External source corpus (`external/minecraft-src`, `external/voxy`) — mirrored upstream sources.
 
 > **Status legend:** `[External]` stable external system · `[Current]` current project canonical · `[Legacy]` historical / deprecated but still referenced · `[Planned]` design not yet implemented
 
@@ -130,7 +130,7 @@ Reports `getMinY()`, `getHeight()`, `getSectionsCount()`, `getMinSection()`. Ove
 
 ## 2. Voxy — Sparse Voxel LOD Store [External]
 
-Version audited: `reference-code/voxy` v0.2.11-alpha. See `python/docs/VOXY-FORMAT.md` for full byte-level spec.
+Version audited: `reference-code/voxy` v0.2.11-alpha. See `docs/reference/upstream/VOXY-FORMAT.md` for full byte-level spec.
 
 ### Voxel [External]
 
@@ -209,7 +209,7 @@ See `docs/reference/upstream/voxy-0.2.11-alpha-storage-and-lod-seams.md §8-§9`
 `SectionStorage` pluggable backend — see `docs/reference/upstream/voxy-0.2.11-alpha-storage-and-lod-seams.md §10` for default composition (`RocksDBStorageBackend` + `CompressionStorageAdaptor(ZSTD level 1)` + `SectionSerializationStorage`). Alternatives: LMDB, Redis, in-memory.
 
 ### Serialization Format and Morton (Z-curve) Order [External]
-Serialized section — see `docs/reference/upstream/voxy-0.2.11-alpha-storage-and-lod-seams.md §11` for layout (`SaveLoadSystem3` little-endian, YZX-linear `(y<<10)|(z<<5)|x`, metadata low 2 bytes lutLen + next byte nonEmptyChildren). `SaveLoadSystem` (older) is big-endian. Morton helpers exist but are not the storage path. Tested specs: `python/docs/VOXY-FORMAT.md`, `python/voxel_tree/voxy_format`.
+Serialized section — see `docs/reference/upstream/voxy-0.2.11-alpha-storage-and-lod-seams.md §11` for layout (`SaveLoadSystem3` little-endian, YZX-linear `(y<<10)|(z<<5)|x`, metadata low 2 bytes lutLen + next byte nonEmptyChildren). `SaveLoadSystem` (older) is big-endian. Morton helpers exist but are not the storage path. Tested specs: `docs/reference/upstream/VOXY-FORMAT.md`, `python/voxel_tree/voxy_format`.
 
 ---
 
@@ -248,7 +248,7 @@ Gradle plugin that deobfuscates/maps Minecraft jars, remaps mod code per Yarn/Mo
 | **VoxelVolumeWriter** | Deep module seam between generation and storage with two explicit operations: `writeSection(SectionPos, VoxelVolume[16])` and `writeRegion(SectionPos origin, Level, VoxelVolume[32])`. No extent is inferred; contract violations throw `IllegalArgumentException`, binding unavailability throws unchecked `VolumeUnavailableException`. Hides storage details; `WorldSection` mapping stays private. | Storage backends (see below) | VoxySectionWriter, VoxyCompat, VoxyEngine direct |
 | **HeightPlanes / HeightmapFallbackGenerator** | `[5,32,32]` tensor `(surface, ocean_floor, slope_x, slope_z, curvature)` tiled per WorldSection. Fallback synthesizes when chunk not loaded. | Minecraft `Heightmap` WORLD_SURFACE_WG etc. | heightmap 16x16 only |
 | **WorldNoiseAccess / AnchorSampler** | Runtime sampler that produces `(HeightPlanes, biome[32x32], y_index, level)` per section from loaded chunks or `NoiseConfig` sampling. Successor to abandoned `NoiseTap`. | `NoiseTap` (legacy), `NoiseConfig` sampling | router6, RouterField |
-| **Router6 / Noise Router (legacy) [Legacy]** | Former 6-channel conditioning `temperature, vegetation, continentalness, erosion, depth, ridges` sampled from `DensityFunction`s via `NoiseTap`. **Dropped March 2026** — redundant with biome+heightmap (see `python/docs/NOISE-DESIGN.md`). Remains in interfaces for reference. | Minecraft `NoiseRouter` 6 climate DensityFunctions | still required |
+| **Router6 / Noise Router (legacy) [Legacy]** | Former 6-channel conditioning `temperature, vegetation, continentalness, erosion, depth, ridges` sampled from `DensityFunction`s via `NoiseTap`. **Dropped March 2026** — redundant with biome+heightmap (see `docs/adr/0002-drop-router6-conditioning.md`; original `python/docs/NOISE-DESIGN.md` deleted, rationale retained in the ADR). Remains in interfaces for reference. | Minecraft `NoiseRouter` 6 climate DensityFunctions | still required |
 
 ---
 
@@ -285,7 +285,7 @@ Inference-boundary module (`java/src/main/java/com/rhythmatician/lodiffusion/vox
 - **"Level" vs "LOD" vs "lvl"** — `L0` finest in Voxygen; higher number = coarser. Some renderers invert this. Voxy file uses field name `lvl`; Voxygen uses type `Level`. Always state the scale. `Level` never inferred from `VoxelVolume` extent; the operation (`writeSection` vs `writeRegion`) determines the required extent and whether a `Level` is needed.
 - **"Palette" vs "Mapper" vs "Registry"** — Palette = per-section `PalettedContainer` local compression; Mapper = Voxy per-world global `long` packing; Registry = vanilla `Registries.BLOCK / BIOME` authoritative IDs; Canonical Registry = Voxygen cross-language stable IDs (same number as `BlockVocabulary` canonical index — one ID space).
 - **"VoxelVolume" backing** — Do not freeze to `int[]` or to `x+y*E+z*E*E` or to YZX. The contract is an opaque XYZ coordinate API; backing and linearization are implementation details (currently primitive arrays, but not frozen).
-- **YZX vs XYZ vs Morton** — Voxy in-memory order is YZX `(y<<10)|(z<<5)|x` inside `RealVoxyVolumeWriter` only; `VoxelVolume` API is XYZ; serialized order for `SaveLoadSystem3` is YZX-linear (little-endian; Morton `lin2z`/`z2lin` helpers exist but are not the storage path — see `python/docs/VOXY-FORMAT.md`). Convert only inside the writer.
+- **YZX vs XYZ vs Morton** — Voxy in-memory order is YZX `(y<<10)|(z<<5)|x` inside `RealVoxyVolumeWriter` only; `VoxelVolume` API is XYZ; serialized order for `SaveLoadSystem3` is YZX-linear (little-endian; Morton `lin2z`/`z2lin` helpers exist but are not the storage path — see `docs/reference/upstream/VOXY-FORMAT.md`). Convert only inside the writer.
 
 ---
 
@@ -293,7 +293,6 @@ Inference-boundary module (`java/src/main/java/com/rhythmatician/lodiffusion/vox
 
 - Version-bound upstream facts: `docs/reference/upstream/minecraft-1.21.11-worldgen-seams.md` (§1-§18) and `docs/reference/upstream/voxy-0.2.11-alpha-storage-and-lod-seams.md` (§1-§11)
 - Chunk lattice and generation order: `external/minecraft-src/src/net/minecraft/world/level/chunk/**`, `net.minecraft.core.SectionPos`, `net.minecraft.world.level.ChunkPos`
-- Noise: `net.minecraft.world.level.levelgen.NoiseRouter`, `DensityFunction`, `NoiseGeneratorSettings` + `python/docs/NOISE-DESIGN.md` (current)
-- Voxy store internals: `external/voxy/src/main/java/me/cortex/voxy/common/world/WorldSection.java`, `WorldEngine.java`, `common/world/other/Mapper.java`, `Mipper.java`, `common/voxelization/VoxelizedSection.java`, `python/docs/VOXY-FORMAT.md` + `python/voxel_tree/voxy_format`
+- Noise: `net.minecraft.world.level.levelgen.NoiseRouter`, `DensityFunction`, `NoiseGeneratorSettings` + `docs/adr/0002-drop-router6-conditioning.md` (router6 removed; original NOISE-DESIGN.md deleted — historical rationale retained in the ADR)
+- Voxy store internals: `external/voxy/src/main/java/me/cortex/voxy/common/world/WorldSection.java`, `WorldEngine.java`, `common/world/other/Mapper.java`, `Mipper.java`, `common/voxelization/VoxelizedSection.java`, `docs/reference/upstream/VOXY-FORMAT.md` + `python/voxel_tree/voxy_format`
 - Canonical language: `CONTEXT.md`
-

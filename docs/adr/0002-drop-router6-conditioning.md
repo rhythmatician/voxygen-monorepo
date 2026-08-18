@@ -7,7 +7,7 @@ Status: Accepted
 
 The original model accepted `x_router6 [1,6,16,16] float32` — six 2D noise maps (temperature, vegetation/humidity, continentalness, erosion, depth, ridges) sampled from Minecraft's multi-noise / NoiseRouter via cubiomes. All 53K+ NPZ training files contain only `labels16`, `biome_patch`, `heightmap_patch`, `y_index` — router6 was approximated via `approximate_router6_from_biome()` (inverse biome→noise mapping). Feature-bundle LOD generation is L4→L1 only; L0 (16³ block-level) is vanilla. The shadow-router and NoiseTap wiring were unbuilt infrastructure blocking training.
 
-Extracted from `python/docs/NOISE-DESIGN.md` (Historical — March 2026) — retained rationale only; superseded architecture tables (No LOD0, four transitions) are not preserved here. Successors: `CONTEXT.md` (canonical language), per-Level contracts L0–L4 from PR #36, dense baseline.
+Extracted from `python/docs/NOISE-DESIGN.md` (Historical — March 2026; file deleted per the approved #42 inventory — this ADR is the retained rationale) — superseded architecture tables (No LOD0, four transitions) are not preserved here. Successors: `CONTEXT.md` (canonical language), per-Level contracts L0–L4 from PR #36, dense baseline.
 
 ## Decision
 

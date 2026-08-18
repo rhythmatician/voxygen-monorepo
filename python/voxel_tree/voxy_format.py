@@ -1,4 +1,4 @@
-"""Voxy format reference decoder — source-grounded helpers for ``python/docs/VOXY-FORMAT.md``.
+"""Voxy format reference decoder — source-grounded helpers for ``docs/reference/upstream/VOXY-FORMAT.md``.
 
 Grounding
 ---------

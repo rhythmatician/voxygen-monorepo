@@ -112,6 +112,8 @@ Before committing prose, answer: *Why can this information not live in code, tes
 | Domain language | `CONTEXT.md` |
 | Architectural rationale | ADR |
 | Navigation/onboarding | Thin README/navigation |
+| Documentation authority/traceability index | `docs/INDEX.md` |
+| Concrete future directions | `docs/FUTURES.md` |
 | Current/planned work | GitHub Issue/PR |
 | External expensive-to-reconstruct evidence | Version-pinned reference |
 | Agent behavior | Factory control plane |

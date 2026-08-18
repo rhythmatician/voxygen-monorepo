@@ -15,7 +15,7 @@
 >
 > **Artifact SHA-256:** `63d1747017041b659ef620f589006d079d3574e3124dbdb165f9998533a7920c`
 >
-> **Source corpus inspected:** Voxy source inside the jar and the mirrored `external/voxy` checkout (`WorldSection.java`, `WorldEngine.java`, `Mapper.java`, `Mipper.java`, `VoxelizedSection.java`, `WorldConversionFactory.java`, `WorldUpdater.java`, `SectionStorage.java`, `SaveLoadSystem.java`, `SaveLoadSystem3.java`, `SectionSerializationStorage.java`, `StorageBackend.java` (`RocksDBStorageBackend`, `CompressionStorageAdaptor`, `ZSTDCompressor`), `ActiveSectionTracker.java`, `SectionSavingService.java`, `LoadedPositionTracker.java`, `StorageConfigUtil.java`) — audited via `python/docs/VOXY-FORMAT.md` (283 lines) and `python/voxel_tree/voxy_format/decoder.py` exercised by `tests/test_voxy_format.py`
+> **Source corpus inspected:** Voxy source inside the jar and the mirrored `external/voxy` checkout (`WorldSection.java`, `WorldEngine.java`, `Mapper.java`, `Mipper.java`, `VoxelizedSection.java`, `WorldConversionFactory.java`, `WorldUpdater.java`, `SectionStorage.java`, `SaveLoadSystem.java`, `SaveLoadSystem3.java`, `SectionSerializationStorage.java`, `StorageBackend.java` (`RocksDBStorageBackend`, `CompressionStorageAdaptor`, `ZSTDCompressor`), `ActiveSectionTracker.java`, `SectionSavingService.java`, `LoadedPositionTracker.java`, `StorageConfigUtil.java`) — audited via `docs/reference/upstream/VOXY-FORMAT.md` (283 lines) and `python/voxel_tree/voxy_format/decoder.py` exercised by `tests/test_voxy_format.py`
 >
 > **Symlink:** `external/voxy → /mnt/c/Users/JeffHall/git/MC/reference-code/voxy` — the `external/voxy` path resolves to the mirrored checkout at the commit above.
 >

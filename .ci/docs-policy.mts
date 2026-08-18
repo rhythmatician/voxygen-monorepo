@@ -2,7 +2,7 @@
  * R-02 Documentation policy — deterministic gate.
  * Rejects newly created general-purpose Markdown unless admitted.
  * Admitted classes:
- * - CONTEXT.md, CONTEXT-MAP.md, AGENTS.md, docs/adr/*.md, docs/agents/*.md, README.md (any depth), .muse/skills/** /*.md, .sandcastle/*.md, docs/external/*.md (with provenance), python/docs/VOXY-FORMAT.md (grandfathered)
+ * - CONTEXT.md, CONTEXT-MAP.md, AGENTS.md, docs/adr/*.md, docs/agents/*.md, README.md (any depth), .muse/skills/** /*.md, .sandcastle/*.md, docs/external/*.md (with provenance), docs/reference/upstream/*.md (with provenance), docs/INDEX.md, docs/FUTURES.md, GLOSSARY.md (legacy exception)
  * Fail patterns: *IMPLEMENTATION*, *SUMMARY*, *STATUS*, *TODO*, *PLAN*, *HANDOFF*, *DELIVERABLE*, *CHECKLIST*, *ROADMAP*, *PROGRESS*
  * Incremental debt rule for non-admitted existing files: D→PASS, M→PASS only if candidate < base, A→enforce, R→ destination as new
  */
@@ -19,10 +19,8 @@ const ADMITTED = [
   /^\.sandcastle\/CODING_STANDARDS\.md$/,
   /^docs\/external\/.+\.md$/,
   /^docs\/reference\/upstream\/.+\.md$/,
+  /^docs\/INDEX\.md$/,
   /^docs\/FUTURES\.md$/,
-  /^docs\/canary-tracer\.md$/,
-  // grandfathered version-pinned external-reference — prefer docs/external/ for new
-  /^python\/docs\/VOXY-FORMAT\.md$/,
   // exception: legacy glossary — narrow factual corrections allowed; prefer CONTEXT.md for new domain language
   /^GLOSSARY\.md$/,
 ];
@@ -53,11 +51,6 @@ export function validateAdmitted(path: string, content: string): string[] {
     if (!/source-revision:/i.test(content)) errors.push("external-reference must have source-revision");
   } else if (content.includes("doc-type: external-reference")) {
     if (!/source-revision:/i.test(content)) errors.push("external-reference must have source-revision");
-  }
-  // Grandfathered VOXY-FORMAT is explicitly admitted only with version-pinned provenance
-  if (path === "python/docs/VOXY-FORMAT.md") {
-    if (!content.includes("doc-type: external-reference")) errors.push("VOXY-FORMAT must have doc-type: external-reference");
-    if (!/source-revision:/i.test(content)) errors.push("VOXY-FORMAT must have source-revision");
   }
   return errors;
 }
@@ -121,7 +114,7 @@ export function checkFilesWithStatus(
         path: f,
         error:
           `Documentation policy violation: ${f} is not an admitted documentation class.\n` +
-          `Permitted: CONTEXT.md, docs/adr/*.md, docs/agents/*.md, **/README.md, .muse/skills/**/*.md, .sandcastle/*.md, docs/external/*.md (with doc-type: external-reference + source-revision), version-pinned python/docs/VOXY-FORMAT.md.\n` +
+          `Permitted: AGENTS.md, CONTEXT.md, CONTEXT-MAP.md, docs/adr/*.md, docs/agents/*.md, **/README.md, .muse/skills/**/*.md, .sandcastle/*.md, docs/external/*.md and docs/reference/upstream/*.md (with doc-type: external-reference + source-revision), docs/INDEX.md, docs/FUTURES.md, GLOSSARY.md.\n` +
           `If this is an ADR, use docs/adr/NNNN-*.md with proper structure.`,
       });
       continue;
