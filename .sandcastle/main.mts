@@ -33,6 +33,13 @@ const VERDICT_JSON_TRUNCATE = 2000;
 const REVIEW_ERROR_TRUNCATE = 500;
 const TARGET_BRANCH = "main";
 
+// Retry budgets — small, bounded, behind a deep interface. Reviewer→implementer
+// feedback (semantic/mechanical) gets one retry; transient sandbox/mechanical
+// setup gets two with backoff. Callers see `reviewedImplement` as one call.
+const REVIEW_RETRY_BUDGET = 1;
+const MECHANICAL_RETRY_BUDGET = 2;
+const MECHANICAL_RETRY_BASE_MS = 1000;
+
 // Worker result after implement + review -- commits plus machine-readable verdict.
 type WorkerResult = { commits: string[]; verdict: ReviewVerdict | null; reviewText?: string };
 
@@ -282,6 +289,13 @@ async function markIntegrated(issueId: string, branch: string): Promise<void> {
   }
 }
 
+function formatVerdictForRetry(verdict: ReviewVerdict | null, fallback: string): string {
+  if (!verdict) return fallback.slice(0, REASON_TRUNCATE);
+  const findings = verdict.findings.map(f => `[${f.severity}] ${f.message}`).join("\n");
+  const criteria = verdict.acceptanceCriteriaMet.filter(c => !c.met).map(c => `- [ ] ${c.criterion}${c.evidence ? " - " + c.evidence : ""}`).join("\n");
+  return `Review rejected: ${(verdict.summary ?? '').slice(0, REASON_TRUNCATE)}\n${findings ? "Findings:\n" + findings.slice(0, REASON_TRUNCATE) + "\n" : ""}${criteria ? "Unmet criteria:\n" + criteria.slice(0, REASON_TRUNCATE) : ""}`.trim();
+}
+
 async function fetchIssueBody(issueId: string): Promise<string> {
   // Fresh fetch every time - no caching. Host-side so it is authoritative.
   try {
@@ -442,17 +456,27 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   // ----- Phase 2: Execute + Review (parallel, isolated) -----
   const settled = await Promise.allSettled<WorkerResult>(
     claimedIssues.map(async (issue): Promise<WorkerResult> => {
-      const sandbox = await sandcastle.createSandbox({
-        branch: issue.branch,
-        sandbox: docker(),
-        hooks,
-        copyToWorktree,
-        // Worktree checkout runs through WSL on an NTFS mount and can exceed
-        // Sandcastle's 120-second default even for this modest repository.
-        timeouts: { worktreeMs: 300_000 },
-      });
+      let sandbox: Awaited<ReturnType<typeof sandcastle.createSandbox>> | null = null;
+      for (let attempt = 0; attempt <= MECHANICAL_RETRY_BUDGET; attempt++) {
+        try {
+          sandbox = await sandcastle.createSandbox({
+            branch: issue.branch,
+            sandbox: docker(),
+            hooks,
+            copyToWorktree,
+            timeouts: { worktreeMs: 300_000 },
+          });
+          break;
+        } catch (e) {
+          if (attempt === MECHANICAL_RETRY_BUDGET) throw e;
+          const backoff = MECHANICAL_RETRY_BASE_MS * Math.pow(2, attempt);
+          console.warn(`  sandbox create failed for #${issue.id} (attempt ${attempt+1}/${MECHANICAL_RETRY_BUDGET+1}): ${getErrorMessage(e)} — retrying in ${backoff}ms`);
+          await new Promise(r => setTimeout(r, backoff));
+        }
+      }
+      // sandbox is guaranteed non-null here (otherwise thrown)
       try {
-        const implement = await sandbox.run({
+        let implement = await sandbox!.run({
           name: "implementer",
           maxIterations: 100,
           agent: sandcastle.muse("muse-spark-1.2-contributor"),
@@ -463,16 +487,40 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
             BRANCH: issue.branch,
           },
         });
-        if (implement.commits.length > 0) {
+        // Reviewer→implementer feedback loop — one bounded retry for mechanical/semantic misses
+        let reviewVerdict: ReviewVerdict | null = null;
+        let reviewTextForRetry = "";
+        let allCommits = [...implement.commits];
+        let shouldRetryReview = false;
+        for (let reviewAttempt = 0; reviewAttempt <= REVIEW_RETRY_BUDGET; reviewAttempt++) {
+          if (implement.commits.length === 0) break;
+          // On retry, re-run implementer with reviewer feedback
+          if (reviewAttempt > 0) {
+            const feedback = formatVerdictForRetry(reviewVerdict, reviewTextForRetry);
+            console.log(`  Reviewer requested changes for #${issue.id} (attempt ${reviewAttempt}/${REVIEW_RETRY_BUDGET}) — re-running implementer with feedback`);
+            const retryImplement = await sandbox!.run({
+              name: "implementer-retry",
+              maxIterations: 50,
+              agent: sandcastle.muse("muse-spark-1.2-contributor"),
+              promptFile: "./.sandcastle/implement-prompt.md",
+              promptArgs: {
+                TASK_ID: issue.id,
+                ISSUE_TITLE: issue.title,
+                BRANCH: issue.branch,
+                REVIEW_FEEDBACK: feedback,
+              },
+            });
+            allCommits = [...allCommits, ...(retryImplement.commits ?? [])];
+            implement = retryImplement;
+            if (retryImplement.commits.length === 0) break;
+          }
           // Fresh fetch of original issue body - no stale caching.
           const issueBody = await fetchIssueBody(issue.id);
           let verdict: ReviewVerdict | null = null;
           let reviewText = "";
           try {
-            // Current sandbox handles ignore Output.object() and return stdout;
-            // retaining the request lets an upgraded Sandcastle return output.
-            const review = await sandbox.run({
-              name: "reviewer",
+            const review = await sandbox!.run({
+              name: reviewAttempt === 0 ? "reviewer" : "reviewer-retry",
               maxIterations: 1,
               agent: sandcastle.muse("muse-spark-1.2-contributor"),
               promptFile: "./.sandcastle/review-prompt.md",
@@ -486,20 +534,46 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
             });
             verdict = extractVerdict(review);
             reviewText = review.stdout;
+          } catch (reviewError: unknown) {
+            console.warn(`  Reviewer failed for #${issue.id} (attempt ${reviewAttempt+1}): ${String(reviewError).slice(0, REVIEW_ERROR_TRUNCATE)} - treating as rejected`);
+            verdict = null;
+            reviewText = String(reviewError);
+          }
+          reviewVerdict = verdict;
+          reviewTextForRetry = reviewText;
+          if (isVerdictApproved(verdict)) {
             return {
-              commits: [...implement.commits, ...(review.commits ?? [])],
+              commits: [...allCommits, ...((verdict ? [] : []))],
               verdict,
               reviewText,
             };
-          } catch (reviewError: unknown) {
-            // Reviewer failure -- fail-closed: preserve branch, never merge unreviewed code
-            console.warn(`  Reviewer failed for #${issue.id}: ${String(reviewError).slice(0, REVIEW_ERROR_TRUNCATE)} - treating as rejected`);
-            return { commits: [...implement.commits], verdict: null, reviewText: String(reviewError) };
           }
+          // Not approved — loop will retry if budget remains
+          if (reviewAttempt < REVIEW_RETRY_BUDGET) {
+            shouldRetryReview = true;
+            continue;
+          }
+          // Budget exhausted — return last result for blocked handling
+          return {
+            commits: allCommits,
+            verdict,
+            reviewText,
+          };
         }
-        return { commits: implement.commits, verdict: null };
+        // No commits or loop exhausted without early return
+        if (implement.commits.length > 0 && shouldRetryReview) {
+          return {
+            commits: allCommits,
+            verdict: reviewVerdict,
+            reviewText: reviewTextForRetry,
+          };
+        }
+        if (implement.commits.length > 0) {
+          // (review handled in loop above)
+        }
+        return { commits: allCommits.length > 0 ? allCommits : implement.commits, verdict: reviewVerdict, reviewText: reviewTextForRetry };
       } finally {
-        await sandbox.close();
+        await sandbox!.close();
       }
     }),
   );
