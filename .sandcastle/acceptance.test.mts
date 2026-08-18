@@ -18,6 +18,7 @@ function issue(overrides: Partial<IssueInput> = {}): IssueInput {
     labels: ["agent:implement"],
     assignees: [],
     body: TRACER_BODY,
+    blockedByCount: 0,
     ...overrides,
   };
 }
@@ -140,10 +141,10 @@ describe("Factory v0 acceptance dry runs G1-G6 (issue #32)", () => {
       // Main logs: `SKIP (blocked by 1 open blocker(s))` — contains "blocked by 1" as required by gate.
     });
 
-    it("blocked_by 2 also blocked; 0 is eligible", () => {
+    it("blocked_by 2 also blocked; 0 is eligible; undefined is fail-closed ineligible", () => {
       expect(isEligible(issue({ blockedByCount: 2 })).eligible).toBe(false);
       expect(isEligible(issue({ blockedByCount: 0 })).eligible).toBe(true);
-      expect(isEligible(issue({ blockedByCount: undefined })).eligible).toBe(true);
+      expect(isEligible(issue({ blockedByCount: undefined })).eligible).toBe(false);
     });
 
     it("after blocker B closes, blocked A becomes eligible next iteration", () => {

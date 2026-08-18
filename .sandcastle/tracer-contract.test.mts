@@ -10,6 +10,7 @@ function issue(overrides: Partial<IssueInput> = {}): IssueInput {
     state: "open",
     labels: ["agent:implement"],
     assignees: [],
+    blockedByCount: 0,
     ...overrides,
   };
 }

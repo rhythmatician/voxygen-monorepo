@@ -13,6 +13,7 @@ function issue(overrides: Partial<IssueInput> = {}): IssueInput {
     labels: ["agent:implement"],
     assignees: [],
     body: TRACER_BODY,
+    blockedByCount: 0,
     ...overrides,
   };
 }

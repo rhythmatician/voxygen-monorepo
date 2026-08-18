@@ -102,7 +102,16 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with: { version: "0.8.8", enable-cache: true }
       - name: Install Qt runtime libraries
-        run: sudo apt-get update && sudo apt-get install --yes libegl1
+        run: |
+          # Azure mirror (azure.archive.ubuntu.com) hangs ~10m in CI (Ign loops).
+          # Force main archive + add timeout/retries so apt fails fast instead of infinite hang.
+          sudo sed -i 's|http://azure.archive.ubuntu.com|http://archive.ubuntu.com|g' /etc/apt/sources.list /etc/apt/sources.list.d/*.list 2>/dev/null || true
+          for i in 1 2 3; do
+            timeout 60 sudo apt-get update -o Acquire::Retries=3 -o Acquire::http::Timeout=30 && break
+            echo "apt-get update attempt $i failed, retrying..."
+            sleep 5
+          done
+          timeout 120 sudo apt-get install --yes --no-install-recommends libegl1
       - run: uv sync --locked --group dev --extra test --extra type_stubs
       - run: uv run ruff format --check --exclude docs --exclude notebooks --exclude "*.md" --exclude "*.ipynb" .
       - run: uv run ruff check .
