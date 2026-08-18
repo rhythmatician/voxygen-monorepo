@@ -21,6 +21,7 @@ const ADMITTED = [
   /^docs\/reference\/upstream\/.+\.md$/,
   /^docs\/FUTURES\.md$/,
   /^docs\/canary-tracer\.md$/,
+  /^docs\/canary2-tracer\.md$/,
   // grandfathered version-pinned external-reference — prefer docs/external/ for new
   /^python\/docs\/VOXY-FORMAT\.md$/,
   // exception: legacy glossary — narrow factual corrections allowed; prefer CONTEXT.md for new domain language
