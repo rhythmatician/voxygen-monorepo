@@ -1,3 +1,5 @@
+# Shell scripts: POSIX sh needs lf (including CI helpers)
+.ci/install-voxy.sh text eol=lf
 # Gradle wrappers: POSIX shell scripts need lf, Windows batch need crlf
 /gradlew        text eol=lf
 /java/gradlew   text eol=lf
