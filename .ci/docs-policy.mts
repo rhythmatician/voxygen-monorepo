@@ -114,7 +114,7 @@ export function checkFilesWithStatus(
         path: f,
         error:
           `Documentation policy violation: ${f} is not an admitted documentation class.\n` +
-          `Permitted: CONTEXT.md, docs/adr/*.md, docs/agents/*.md, **/README.md, .muse/skills/**/*.md, .sandcastle/*.md, docs/external/*.md and docs/reference/upstream/*.md (with doc-type: external-reference + source-revision), docs/INDEX.md, docs/FUTURES.md.\n` +
+          `Permitted: AGENTS.md, CONTEXT.md, CONTEXT-MAP.md, docs/adr/*.md, docs/agents/*.md, **/README.md, .muse/skills/**/*.md, .sandcastle/*.md, docs/external/*.md and docs/reference/upstream/*.md (with doc-type: external-reference + source-revision), docs/INDEX.md, docs/FUTURES.md, GLOSSARY.md.\n` +
           `If this is an ADR, use docs/adr/NNNN-*.md with proper structure.`,
       });
       continue;
