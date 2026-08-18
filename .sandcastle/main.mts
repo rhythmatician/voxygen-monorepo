@@ -877,8 +877,24 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
       console.log(`Planner selected ${plannedIssues.length}/${eligible.length} issue(s) to run now:`);
       for (const p of plannedIssues) console.log(`  ${p.id}: ${p.title} → ${p.branch}`);
     } catch (error: unknown) {
-      console.error(`Planner failed: ${getErrorMessage(error)} -- falling back to direct dispatch of all eligible`);
-      plannedIssues = eligible.map((i) => ({ id: String(i.number), title: i.title, branch: branchForIssue(i.number) }));
+      // Preserve failing raw planner output as regression fixture (for Structured output tag <plan> invalid JSON)
+      // The planner log already proves valid <plan> JSON; host extraction via sandcastle.Output.object may still fail due to strict parsing.
+      const maybeRaw = (error as unknown as { cause?: unknown; raw?: unknown; output?: unknown })?.cause ?? (error as unknown as { raw?: unknown })?.raw ?? (error as unknown as { output?: unknown })?.output ?? "";
+      const rawStr = typeof maybeRaw === "string" ? maybeRaw : (() => { try { return JSON.stringify(maybeRaw).slice(0,4000); } catch { return String(maybeRaw).slice(0,4000); } })();
+      if (rawStr) {
+        try {
+          fs.mkdirSync(path.join(REPO_ROOT, ".sandcastle", "fixtures"), { recursive: true });
+          const fixturePath = path.join(REPO_ROOT, ".sandcastle", "fixtures", `planner-fail-${Date.now()}.json`);
+          fs.writeFileSync(fixturePath, JSON.stringify({ at: new Date().toISOString(), error: getErrorMessage(error), raw: rawStr.slice(0,8000), eligible: eligible.map((e) => e.number), eligibleIssues: eligible }, null, 2));
+          console.error(`  Preserved failing raw planner output to ${fixturePath}`);
+        } catch (preserveErr) {
+          console.warn(`  Failed to preserve planner fixture: ${getErrorMessage(preserveErr)}`);
+        }
+      }
+      console.error(`Planner failed: ${getErrorMessage(error)} -- FAIL CLOSED: dispatching nothing (was fallback to all eligible, now disabled). Raw: ${rawStr.slice(0,500)}`);
+      // Fail closed: dispatch nothing this iteration. Never fall back to direct dispatch of all eligible — that defeats Wayfinder overlap serialization.
+      // At most a deterministic single-issue fallback could be allowed, but current policy is zero.
+      plannedIssues = [];
     }
   }
 
@@ -889,15 +905,34 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   let callerSha = "";
   let callerStatusBefore: string | null = null;
   try {
-    execSync('git fetch origin main', {stdio:'ignore'});
+    // Fetch with captured stderr/stdout — previous stdio:'ignore' hid the diagnostic (see #151/#152 preflight).
+    // Surface exit code, stdout, stderr so host fetch failures are actionable. This is a safety boundary.
+    let fetchStdout = "";
+    let fetchStderr = "";
+    try {
+      fetchStdout = execSync('git fetch origin main --verbose', {encoding:'utf8', stdio:'pipe'});
+      console.log(`[factory-base] git fetch origin main ok: ${fetchStdout.slice(0,500).replace(/\n/g, ' ')}`);
+    } catch (fetchErr: unknown) {
+      const fe = fetchErr as unknown as { stdout?: unknown; stderr?: unknown; status?: unknown; code?: unknown; message?: unknown };
+      fetchStdout = fe.stdout ? String(fe.stdout).slice(0,2000) : "";
+      fetchStderr = fe.stderr ? String(fe.stderr).slice(0,2000) : "";
+      const code = (fe as unknown as { status?: unknown })?.status ?? (fe as unknown as { code?: unknown })?.code ?? "unknown";
+      const msg = getErrorMessage(fetchErr);
+      console.error(`Failed to freeze factory base: git fetch origin main failed code=${String(code)} msg=${msg} stdout=${fetchStdout.slice(0,1000)} stderr=${fetchStderr.slice(0,2000)} — aborting run (fail closed, not retrying iteration)`);
+      break;
+    }
     factoryBaseSha = execSync('git rev-parse origin/main', {encoding:'utf8'}).trim();
     callerBranch = execSync('git branch --show-current', {encoding:'utf8'}).trim();
     callerSha = execSync('git rev-parse HEAD', {encoding:'utf8'}).trim();
     callerStatusBefore = (() => { try { return execSync('git status --porcelain', {encoding:'utf8', cwd: REPO_ROOT}).trim(); } catch { return null; } })();
     console.log(`Factory base frozen: ${factoryBaseSha.slice(0,7)} (origin/main), caller ${callerBranch}@${callerSha.slice(0,7)} status "${(callerStatusBefore||'').slice(0,80)}" — will NOT be mutated`);
   } catch (e) {
-    console.error(`Failed to freeze factory base: ${getErrorMessage(e)} — aborting iteration`);
-    continue;
+    const fe = e as unknown as { stdout?: unknown; stderr?: unknown; status?: unknown; code?: unknown };
+    const stdout = fe.stdout ? String(fe.stdout).slice(0,1000) : "";
+    const stderr = fe.stderr ? String(fe.stderr).slice(0,2000) : "";
+    const code = (fe as unknown as { status?: unknown })?.status ?? (fe as unknown as { code?: unknown })?.code ?? "unknown";
+    console.error(`Failed to freeze factory base: ${getErrorMessage(e)} code=${String(code)} stdout=${stdout} stderr=${stderr} — aborting run`);
+    break;
   }
 
   // ----- Phase 0.5: Claim before work (host-side, before expensive workers) -----
