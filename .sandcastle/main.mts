@@ -599,7 +599,27 @@ async function runDoctor(): Promise<boolean> {
   console.log("\n=== Factory Doctor (preflight — proves real worker boundary) ===\n");
   // 0. Reconcile stale doctor-* worktrees left by previous crash/kill before creating another Doctor sandbox
   // Strictly scoped to doctor-*; never sweep arbitrary human worktrees. Idempotent.
-  try { await reconcileStaleDoctorResources(); } catch (e) { console.warn(`  [doctor] stale reconciliation failed: ${getErrorMessage(e)}`); }
+  // FAIL-CLOSED: if reconciliation throws, Doctor FAILs — never WARN-and-continue to a cached PASS.
+  try {
+    await reconcileStaleDoctorResources();
+  } catch (e) {
+    console.error(`  FAIL: Doctor stale reconciliation failed: ${getErrorMessage(e)} — fail-closed`);
+    return false;
+  }
+  // MANDATORY ASSERT CLEAN before any cache-hit return — exact class of bug we eliminate:
+  // stale worktree/dir/branch must not survive to a cached PASS, and inspection failures are FAIL not "nothing found".
+  try {
+    const { assertNoStaleDoctorResources: assertStartup } = await import("./doctor-helpers.mts");
+    const { ok, leftover } = assertStartup();
+    if (!ok) {
+      console.error(`  FAIL: Doctor startup postcondition — stale doctor-* resources remain: ${leftover.join(", ")} — fail-closed`);
+      return false;
+    }
+    console.log("  Doctor startup postcondition: no doctor-* leftover ✓");
+  } catch (e) {
+    console.error(`  FAIL: Doctor startup inspection failed: ${getErrorMessage(e)} — fail-closed`);
+    return false;
+  }
   // 1. Control-plane SHA + image identity (cache key)
   let sha = "";
   let imageId = "";
@@ -762,17 +782,19 @@ async function runDoctor(): Promise<boolean> {
   }
   // Strict postcondition: after cleanup, no doctor-* worktree / .sandcastle/worktrees/doctor-* dir / local branch may remain.
   // If any leftover exists, Doctor FAILs and must not write PASS cache — repo must be in same control-plane state as found.
+  // Second mandatory ASSERT CLEAN after fresh sandbox path (mirrors startup fail-closed gate).
   try {
     const { assertNoStaleDoctorResources } = await import("./doctor-helpers.mts");
     const { ok, leftover } = assertNoStaleDoctorResources();
     if (!ok) {
-      console.error(`  FAIL: Doctor ephemeral cleanup incomplete — leftover: ${leftover.join(", ")}`);
+      console.error(`  FAIL: Doctor ephemeral cleanup incomplete — leftover: ${leftover.join(", ")} — fail-closed`);
       doctorSuccess = false;
     } else {
       console.log("  Doctor ephemeral cleanup postcondition: no doctor-* leftover ✓");
     }
   } catch (e) {
-    console.warn(`  Doctor postcondition check failed to run: ${getErrorMessage(e)}`);
+    console.error(`  FAIL: Doctor postcondition inspection failed: ${getErrorMessage(e)} — fail-closed`);
+    doctorSuccess = false;
   }
   if (!doctorSuccess) return false;
   // 4. Cache PASS against SHA + image identity + runtime dist provenance (source SHA alone is not enough)

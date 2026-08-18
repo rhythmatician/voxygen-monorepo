@@ -33,29 +33,64 @@ export function cleanupDoctorBranchAndWorktree(branch: string): void {
 
 export function assertNoStaleDoctorResources(): { ok: boolean; leftover: string[] } {
   const leftover: string[] = [];
+  const getErrorMessage = (e: unknown) => e instanceof Error ? e.message : String(e);
+  let worktreeOk = false;
+  let branchOk = false;
+
   let worktreeList = "";
-  try { worktreeList = execFileSync("git", ["worktree", "list", "--porcelain"], { encoding: "utf8", stdio: "pipe" }); } catch {}
-  for (const line of worktreeList.split("\n")) {
-    if (line.startsWith("worktree ")) {
-      const p = line.slice("worktree ".length).trim();
-      if (p.includes(".sandcastle/worktrees/doctor-")) leftover.push(`worktree:${p}`);
+  try {
+    worktreeList = execFileSync("git", ["worktree", "list", "--porcelain"], { encoding: "utf8", stdio: "pipe" });
+    worktreeOk = true;
+  } catch (e) {
+    leftover.push(`inspection-error: git worktree list failed: ${getErrorMessage(e).slice(0, 500)}`);
+  }
+  if (worktreeOk) {
+    for (const line of worktreeList.split("\n")) {
+      if (line.startsWith("worktree ")) {
+        const p = line.slice("worktree ".length).trim();
+        if (p.includes(".sandcastle/worktrees/doctor-")) leftover.push(`worktree:${p}`);
+      }
     }
   }
+
+  // Filesystem inspection — readdir must succeed if base exists
   try {
     const base = path.join(process.cwd(), ".sandcastle", "worktrees");
     if (fs.existsSync(base)) {
-      for (const entry of fs.readdirSync(base)) {
+      let entries: string[] = [];
+      try {
+        entries = fs.readdirSync(base);
+      } catch (e) {
+        leftover.push(`inspection-error: filesystem readdir failed: ${getErrorMessage(e).slice(0, 500)}`);
+        entries = [];
+      }
+      for (const entry of entries) {
         if (entry.startsWith("doctor-")) {
           const full = path.join(base, entry);
-          if (fs.existsSync(full)) leftover.push(`dir:${full}`);
+          try {
+            if (fs.existsSync(full)) leftover.push(`dir:${full}`);
+          } catch (e) {
+            leftover.push(`inspection-error: filesystem existsSync failed for ${full}: ${getErrorMessage(e).slice(0, 500)}`);
+          }
         }
       }
     }
-  } catch {}
+  } catch (e) {
+    leftover.push(`inspection-error: filesystem inspection failed: ${getErrorMessage(e).slice(0, 500)}`);
+  }
+
   let branches = "";
-  try { branches = execFileSync("git", ["branch", "--list", "doctor-*"], { encoding: "utf8", stdio: "pipe" }); } catch {}
-  const branchNames = branches.split("\n").map((s) => s.trim().replace(/^\*\s+/, "").trim()).filter((s) => s && s.startsWith("doctor-"));
-  for (const b of branchNames) leftover.push(`branch:${b}`);
+  try {
+    branches = execFileSync("git", ["branch", "--list", "doctor-*"], { encoding: "utf8", stdio: "pipe" });
+    branchOk = true;
+  } catch (e) {
+    leftover.push(`inspection-error: git branch --list failed: ${getErrorMessage(e).slice(0, 500)}`);
+  }
+  if (branchOk) {
+    const branchNames = branches.split("\n").map((s) => s.trim().replace(/^\*\s+/, "").trim()).filter((s) => s && s.startsWith("doctor-"));
+    for (const b of branchNames) leftover.push(`branch:${b}`);
+  }
+
   return { ok: leftover.length === 0, leftover };
 }
 
