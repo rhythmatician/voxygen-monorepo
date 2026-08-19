@@ -8,7 +8,7 @@ import { parsePlannerOutput, fallbackToSingle } from "./planner-helpers.mts";
 import { isEligible, branchForIssue } from "./dispatch.mts";
 import { TRACER_BODY } from "./fixtures.mts";
 import * as branchHelpers from "./branch-helpers.mts";
-import { partitionWorkerOutcomes, type WorkerOutcome } from "./factory-verdict-gate.mts";
+import { canClaimNextOuterIteration, partitionWorkerOutcomes, type WorkerOutcome } from "./factory-verdict-gate.mts";
 import { verdictFixture } from "./review-verdict.mts";
 
 // Adversarial acceptance: local git tmp repos, no GH, no LLM
@@ -96,6 +96,31 @@ describe("Adversarial: reviewer verdict contract", () => {
     // Factory-level stop must block continuation (merge + next outer claim) despite a ready completed branch.
     const shouldRunMerge = result.completed.length > 0 && !result.shouldStopOuterLoop;
     expect(shouldRunMerge).toBe(false);
+  });
+
+  it("FACTORY_ERROR disables the next claim batch (B) and keeps loop on current scope only", () => {
+    const firstIterationIssues = [
+      { id: "151", branch: "sandcastle/issue-151" },
+      { id: "152", branch: "sandcastle/issue-152" },
+    ];
+    const firstIterationSettled = [
+      { status: "fulfilled" as const, value: { commits: ["sha-151"], verdict: null } },
+      { status: "fulfilled" as const, value: { commits: ["sha-152"], verdict: verdictFixture({ approved: true }) } },
+    ] satisfies WorkerOutcome[];
+
+    const firstPartition = partitionWorkerOutcomes(firstIterationIssues, firstIterationSettled);
+
+    // Proof B: a FACTORY_ERROR must block any next-iteration claim, not just merge/transition.
+    expect(canClaimNextOuterIteration(firstPartition)).toBe(false);
+
+    const claimedIssues: string[] = ["151", "152"];
+    const nextIterationPlanned = ["153", "154"];
+
+    if (canClaimNextOuterIteration(firstPartition)) {
+      claimedIssues.push(...nextIterationPlanned);
+    }
+
+    expect(claimedIssues).toEqual(["151", "152"]);
   });
 });
 

@@ -12,7 +12,7 @@ import * as path from "node:path";
 
 const REPO_ROOT = process.cwd();
 import { isEligible, branchForIssue, type IssueInput } from "./dispatch.mts";
-import { partitionWorkerOutcomes, type WorkerOutcome } from "./factory-verdict-gate.mts";
+import { canClaimNextOuterIteration, partitionWorkerOutcomes, type WorkerOutcome } from "./factory-verdict-gate.mts";
 import * as branchHelpers from "./branch-helpers.mts";
 import { mayAutonomouslyMerge } from "./ci-policy.mts";
 import { runReviewerPass } from "./review-pass.mts";
@@ -1232,16 +1232,17 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   );
 
   // ----- Failure visibility per worker + review verdict gating -----
+  const partition = partitionWorkerOutcomes(
+    claimedIssues,
+    settled as unknown as WorkerOutcome[],
+  );
   const {
     completed,
     failed,
     reviewRejected,
     factoryErrors,
     shouldStopOuterLoop,
-  } = partitionWorkerOutcomes(
-    claimedIssues,
-    settled as unknown as WorkerOutcome[],
-  );
+  } = partition;
   const completedIssues = completed;
   const failedMarkResults: boolean[] = [];
 
@@ -1287,7 +1288,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     console.log(`  ${factoryErrors.length} branch(es) produced FACTORY_ERROR - preserved, marked agent:blocked, stopping outer run`);
   }
 
-  if (shouldStopOuterLoop) {
+  if (!canClaimNextOuterIteration(partition)) {
     console.log("Factory error detected during review verdict handling. Stopping outer loop to prevent unsafe progression.");
     break;
   }

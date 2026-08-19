@@ -20,6 +20,10 @@ export type WorkerPartition = {
   shouldStopOuterLoop: boolean;
 };
 
+export function canClaimNextOuterIteration(partition: WorkerPartition): boolean {
+  return partition.factoryErrors.length === 0;
+}
+
 export function partitionWorkerOutcomes(issues: WorkerIssue[], settled: WorkerOutcome[]): WorkerPartition {
   const completed: WorkerIssue[] = [];
   const failed: Array<WorkerIssue & { reason: string }> = [];
