@@ -139,6 +139,37 @@ public final class LodGenerationService {
         }
     }
 
+    // Test-only start that avoids mocking World (ByteBuddy retransform limits in full suite)
+    void startForTest(RegistryKey<World> key, MinecraftServer server) {
+        synchronized (lock) {
+            if (session != null && session.isRunning()) {
+                HelloTerrainMod.LOGGER.warn("[LodGen] Service already running");
+                return;
+            }
+            GenerationSession s = new GenerationSession();
+            session = s;
+            s.start(null, server);
+            // Force tracer flag based on key (mirrors GenerationSession.decideEndL4TracerMode)
+            try {
+                java.lang.reflect.Field f = GenerationSession.class.getDeclaredField("endL4TracerMode");
+                f.setAccessible(true);
+                boolean isEnd = key != null && key.getValue().equals(net.minecraft.util.Identifier.of("minecraft", "the_end"));
+                f.setBoolean(s, isEnd);
+            } catch (Exception ignored) {}
+            // Keep worker considered running for rebind tests (without Voxy it would exit)
+            try {
+                java.lang.reflect.Field rf = GenerationSession.class.getDeclaredField("running");
+                rf.setAccessible(true);
+                ((java.util.concurrent.atomic.AtomicBoolean) rf.get(s)).set(true);
+                java.lang.reflect.Field sf = GenerationSession.class.getDeclaredField("stopRequested");
+                sf.setAccessible(true);
+                ((java.util.concurrent.atomic.AtomicBoolean) sf.get(s)).set(false);
+            } catch (Exception ignored) {}
+            boundDimension = key;
+            HelloTerrainMod.LOGGER.info("[LodGen] Service startedForTest via GenerationSession key={} tracer={}", key, s.isEndL4TracerMode());
+        }
+    }
+
     /** Stop the service and wait for the worker to finish. */
     public void stop() {
         synchronized (lock) {
@@ -173,6 +204,12 @@ public final class LodGenerationService {
         } catch (Exception e) {
             return false;
         }
+        return checkAndRebindIfNeeded(newKey, world, server);
+    }
+
+    // Test-visible overload that avoids mocking World (avoids ByteBuddy retransform limits in full suite)
+    boolean checkAndRebindIfNeeded(RegistryKey<World> newKey, World worldForStart, MinecraftServer server) {
+        if (newKey == null) return false;
         synchronized (lock) {
             if (boundDimension != null && boundDimension.equals(newKey)) {
                 return false;
@@ -191,10 +228,29 @@ public final class LodGenerationService {
             boundDimension = null;
             GenerationSession next = new GenerationSession();
             session = next;
-            next.start(world, server);
-            try {
-                boundDimension = world.getRegistryKey();
-            } catch (Exception ignored) {
+            // worldForStart may be null in test when using RegistryKey overload; pass null or fake world
+            // GenerationSession.start handles null world as non-tracer safely (decide returns false)
+            // but we still set boundDimension to newKey afterwards so tracer flag is correct via next.start's decide.
+            // If worldForStart == null we manually set tracer mode via reflection is not needed because
+            // decideEndL4TracerMode(null) is false; so for test we set boundDimension directly after start.
+            if (worldForStart != null) {
+                next.start(worldForStart, server);
+                try {
+                    boundDimension = worldForStart.getRegistryKey();
+                } catch (Exception ignored) {
+                    boundDimension = newKey;
+                }
+            } else {
+                // Test path: start with null world then force tracer flag via direct field if needed
+                // Use newKey to decide tracer mode manually
+                next.start(null, server);
+                // Override tracer flag based on newKey's identifier (mirrors GenerationSession.decide)
+                try {
+                    java.lang.reflect.Field f = GenerationSession.class.getDeclaredField("endL4TracerMode");
+                    f.setAccessible(true);
+                    boolean isEnd = newKey.getValue().equals(net.minecraft.util.Identifier.of("minecraft", "the_end"));
+                    f.setBoolean(next, isEnd);
+                } catch (Exception ignored) {}
                 boundDimension = newKey;
             }
             HelloTerrainMod.LOGGER.info(

@@ -177,7 +177,10 @@ public final class GenerationSession {
             return false;
         }
         try {
-            return World.END.equals(world.getRegistryKey());
+            net.minecraft.registry.RegistryKey<World> key = world.getRegistryKey();
+            if (key == null || key.getValue() == null) return false;
+            // Avoid direct World.END reference to keep test bootstrap-free; compare identifier
+            return key.getValue().equals(net.minecraft.util.Identifier.of("minecraft", "the_end"));
         } catch (Exception e) {
             return false;
         }
