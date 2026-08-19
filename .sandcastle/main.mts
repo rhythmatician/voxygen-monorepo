@@ -41,6 +41,10 @@ import {
   verifySandcastleRuntimeDist,
   missingSandcastleRuntimeSymbols,
 } from "./sandcastle-runtime-provenance.mts";
+import {
+  makeGitHubCapability,
+  GitHubWriteForbiddenError,
+} from "./github-capability.mts";
 
 const execFileAsync = promisify(execFile);
 
@@ -62,11 +66,27 @@ const REVIEW_RETRY_BUDGET = 1;
 const MECHANICAL_RETRY_BUDGET = 2;
 const MECHANICAL_RETRY_BASE_MS = 1000;
 const ITERATION_CONTROL: IterationControl = makeIterationControl(MAX_ITERATIONS, process.argv);
+const GH_CAPABILITY_MODE = ITERATION_CONTROL.qualification.kind === "qualify" ? "read-only" : "read-write";
 if (ITERATION_CONTROL.qualification.kind === "invalid") {
   const reason = ITERATION_CONTROL.qualification.reason;
   console.error(`Invalid --issue argument (${reason})`);
   process.exit(1);
 }
+
+const gitHubCapability = makeGitHubCapability({
+  mode: GH_CAPABILITY_MODE,
+  exec: async (args: string[]) => {
+    const token = ghToken();
+    const env = { ...process.env, GH_TOKEN: token };
+    const bin = ghBinary();
+    const { stdout } = await execFileAsync(bin, args, {
+      env,
+      cwd: REPO_ROOT,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+    return stdout.trim();
+  },
+});
 
 // Worker result after implement + review -- commits plus machine-readable verdict.
 type WorkerResult = { commits: string[]; verdict: ReviewVerdict | null; reviewText?: string };
@@ -139,6 +159,12 @@ async function safeRunGh(args: string[], failureContext?: string): Promise<boole
     await runGh(args);
     return true;
   } catch (error: unknown) {
+    if (error instanceof GitHubWriteForbiddenError) {
+      if (failureContext) {
+        console.warn(formatGhFailure(failureContext, error));
+      }
+      throw error;
+    }
     if (failureContext) console.warn(formatGhFailure(failureContext, error));
     return false;
   }
@@ -157,12 +183,8 @@ function ghToken(): string {
 }
 
 async function runGh(args: string[]): Promise<string> {
-  const token = ghToken();
-  const env = { ...process.env, GH_TOKEN: token };
-  const bin = ghBinary();
   try {
-    const { stdout } = await execFileAsync(bin, args, { env, cwd: REPO_ROOT, maxBuffer: 10 * 1024 * 1024 });
-    return stdout.trim();
+    return await gitHubCapability.run(args);
   } catch (error: unknown) {
     const details = getGhErrorDetails(error);
     const msg = error instanceof Error ? error.message : String(error);
@@ -172,7 +194,7 @@ async function runGh(args: string[]): Promise<string> {
     const stdout = (error as unknown as { stdout?: unknown })?.stdout;
     const stderrStr = stderr ? String(stderr).slice(0,1000) : "<no stderr>";
     const stdoutStr = stdout ? String(stdout).slice(0,500) : "<no stdout>";
-    console.error(`[runGh] bin=${bin} args=${args.join(" ")} code=${String(code)} signal=${String(signal)} msg=${msg} details=${details.slice(0,500)} stderr=${stderrStr} stdout=${stdoutStr} tokenLen=${token.length} tokenPrefix=${token.slice(0,8)}`);
+    console.error(`[runGh] args=${args.join(" ")} code=${String(code)} signal=${String(signal)} msg=${msg} details=${details.slice(0,500)} stderr=${stderrStr} stdout=${stdoutStr}`);
     throw new Error(`gh ${args.join(" ")} failed: ${details}`);
   }
 }
