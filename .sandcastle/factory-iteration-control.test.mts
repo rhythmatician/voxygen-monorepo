@@ -81,6 +81,24 @@ describe("Qualification selector", () => {
     expect(control.requestedIssueNumber).toBeUndefined();
   });
 
+  it("qualification request that cannot be satisfied never dispatches other issues in that iteration", () => {
+    const eligible = [issue({ number: 151, title: "issue 151" }), issue({ number: 152, title: "issue 152" })];
+    const control = makeIterationControl(10, ["node", "main.mts", "--issue", "999"]);
+
+    expect(control.maxIterations).toBe(1);
+
+    let dispatchedIssues: string[] = [];
+    for (let iteration = 0; iteration < control.maxIterations; iteration += 1) {
+      const plan = planIssuesForIteration(eligible, control);
+      if (plan.skipIteration) {
+        continue;
+      }
+      dispatchedIssues = plan.plannedIssues.map((i) => i.id);
+    }
+
+    expect(dispatchedIssues).toHaveLength(0);
+  });
+
   it("accepts #151 issue syntax and normalizes to 151", () => {
     const control = parseQualificationArgs(["node", "main.mts", "--issue", "#151"]);
     expect(control.requestedIssueNumber).toBe("151");
