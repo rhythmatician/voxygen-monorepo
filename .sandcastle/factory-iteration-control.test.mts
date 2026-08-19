@@ -61,5 +61,9 @@ describe("Qualification selector", () => {
     const control = parseQualificationArgs(["node", "main.mts", "--issue", "#151"]);
     expect(control.requestedIssueNumber).toBe("151");
   });
-});
 
+  it("ignores malformed --issue values and stays in default production mode", () => {
+    const control = parseQualificationArgs(["node", "main.mts", "--issue", "not-a-number"]);
+    expect(control.requestedIssueNumber).toBeUndefined();
+  });
+});
