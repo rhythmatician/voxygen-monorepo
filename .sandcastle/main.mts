@@ -41,6 +41,10 @@ const WORKER_REASON_TRUNCATE = 2000;
 const VERDICT_JSON_TRUNCATE = 2000;
 const REVIEW_ERROR_TRUNCATE = 500;
 const TARGET_BRANCH = "main";
+import {
+  EXPECTED_SANDCASTLE_SOURCE_PREFIX,
+  isExpectedSandcastleSourceHead,
+} from "./sandcastle-runtime-provenance.mts";
 
 // Retry budgets — small, bounded, behind a deep interface. Reviewer→implementer
 // feedback (semantic/mechanical) gets one retry; transient sandbox/mechanical
@@ -645,7 +649,7 @@ async function runDoctor(): Promise<boolean> {
     const cached = JSON.parse(fs.readFileSync(cachePath,'utf8'));
     if(cached.sha === sha && (cached.imageId === imageId || cached.imageDigest === imageDigest) && cached.passed) {
       // Even on cache HIT, verify runtime artifact provenance — source SHA + image is not enough,
-      // dist must be built from eeae29e and contain liveness strings. Stale dist would otherwise
+      // dist must be built from expected Sandcastle source and contain liveness strings. Stale dist would otherwise
       // appear trustworthy while silently executing old orchestration code.
       try {
         let distPath = "";
@@ -692,7 +696,7 @@ async function runDoctor(): Promise<boolean> {
     if(dockerfile.includes('graphifyy')) { console.error('  FAIL: Dockerfile still contains graphifyy typo'); return false; }
     console.log('  Dockerfile graphify check: OK');
   } catch {}
-  // 2b. Runtime artifact provenance — source SHA is not enough, dist must be built from that SHA (eeae29e)
+  // 2b. Runtime artifact provenance — source SHA is not enough, dist must be built from expected Sandcastle revision (95f3a5c...).
   // Doctor must fail if imported dist does not correspond to intended Sandcastle revision.
   try {
     // Resolve the actual runtime dist that Voxygen imports (file:../../sandcastle/dist/index.js)
@@ -708,7 +712,7 @@ async function runDoctor(): Promise<boolean> {
       if (resolved) distPath = new URL(resolved).pathname;
     }
     if (!distPath || !fs.existsSync(distPath)) {
-      console.error(`  FAIL: Sandcastle runtime dist not found at ${distPath || '<unresolved>'} — expected built artifact from eeae29e`);
+      console.error(`  FAIL: Sandcastle runtime dist not found at ${distPath || '<unresolved>'} — expected built artifact from ${EXPECTED_SANDCASTLE_SOURCE_PREFIX}`);
       return false;
     }
     const distContent = fs.readFileSync(distPath, 'utf8');
@@ -716,15 +720,16 @@ async function runDoctor(): Promise<boolean> {
     const hasNoObs = distContent.includes('No observable output');
     const hasVerbose = distContent.includes('verbose log') || distContent.includes('detailed activity');
     if (!hasAlive || !hasNoObs || !hasVerbose) {
-      console.error(`  FAIL: Sandcastle dist at ${distPath} missing liveness strings (hasAlive=${hasAlive} hasNoObs=${hasNoObs} hasVerbose=${hasVerbose}) — stale build from before eeae29e. Run: cd ../../sandcastle && npm ci && npm run build (then verify: grep -n "Agent alive|No observable output|verbose log" dist/index.js)`);
-      console.error(`  Expected runtime from Sandcastle eeae29e (merged), but dist appears stale. Doctor fail-closed.`);
+      console.error(`  FAIL: Sandcastle dist at ${distPath} missing liveness strings (hasAlive=${hasAlive} hasNoObs=${hasNoObs} hasVerbose=${hasVerbose}) — stale build from before ${EXPECTED_SANDCASTLE_SOURCE_PREFIX}. Run: cd ../../sandcastle && npm ci && npm run build (then verify: grep -n "Agent alive|No observable output|verbose log" dist/index.js)`);
+      console.error(`  Expected runtime from Sandcastle ${EXPECTED_SANDCASTLE_SOURCE_PREFIX}, but dist appears stale. Doctor fail-closed.`);
       return false;
     }
     // Also verify source HEAD is the intended revision (not just branch checkout)
     let sandcastleHead = "";
     try { sandcastleHead = execSync('git -C ../../sandcastle rev-parse HEAD', {encoding:'utf8'}).trim(); } catch {}
-    if (sandcastleHead && !sandcastleHead.startsWith('eeae29e') && sandcastleHead !== 'eeae29e42e2b03430acee9cd564ee7bbe24bf782') {
-      console.warn(`  WARN: Sandcastle HEAD is ${sandcastleHead.slice(0,7)} not eeae29e — dist may be from different source. Proceeding since dist check passed, but recommend: cd ../../sandcastle && git checkout main && git reset --hard origin/main (eeae29e)`);
+    if (sandcastleHead && !isExpectedSandcastleSourceHead(sandcastleHead)) {
+      console.error(`  FAIL: Sandcastle HEAD is ${sandcastleHead.slice(0,7)} not ${EXPECTED_SANDCASTLE_SOURCE_PREFIX} — refusing to run factory on unexpected Sandcastle revision.`);
+      return false;
     }
     console.log(`  sandcastle runtime dist: ${distPath} — contains liveness strings ✓ (source HEAD ${sandcastleHead.slice(0,7) || 'unknown'}, dist mtime ${fs.statSync(distPath).mtime.toISOString()})`);
   } catch (e) {
