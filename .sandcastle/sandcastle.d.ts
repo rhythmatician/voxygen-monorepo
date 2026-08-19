@@ -24,6 +24,7 @@ declare module "@ai-hero/sandcastle" {
   export function muse(model: string): unknown;
   export const Output: {
     object(opts: Record<string, unknown>): unknown;
+    string(opts: Record<string, unknown>): unknown;
   };
   const _default: unknown;
   export default _default;

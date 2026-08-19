@@ -22,6 +22,7 @@ import {
   type ReviewVerdict,
 } from "./review-verdict.mts";
 import { formatGhFailure, getErrorMessage, getGhErrorDetails } from "./gh-errors.mts";
+import { parsePlannerOutput } from "./planner-helpers.mts";
 
 const execFileAsync = promisify(execFile);
 
@@ -589,11 +590,36 @@ async function reconcileInProgressIssues(): Promise<void> {
   console.log("=== Reconciliation complete ===\n");
 }
 
+import { doctorWorktreePath, cleanupDoctorBranchAndWorktree, reconcileStaleDoctorResources } from "./doctor-helpers.mts";
+
 // ---------------------------------------------------------------------------
 // Factory doctor — fail-closed preflight before any claim
 // ---------------------------------------------------------------------------
 async function runDoctor(): Promise<boolean> {
   console.log("\n=== Factory Doctor (preflight — proves real worker boundary) ===\n");
+  // 0. Reconcile stale doctor-* worktrees left by previous crash/kill before creating another Doctor sandbox
+  // Strictly scoped to doctor-*; never sweep arbitrary human worktrees. Idempotent.
+  // FAIL-CLOSED: if reconciliation throws, Doctor FAILs — never WARN-and-continue to a cached PASS.
+  try {
+    await reconcileStaleDoctorResources();
+  } catch (e) {
+    console.error(`  FAIL: Doctor stale reconciliation failed: ${getErrorMessage(e)} — fail-closed`);
+    return false;
+  }
+  // MANDATORY ASSERT CLEAN before any cache-hit return — exact class of bug we eliminate:
+  // stale worktree/dir/branch must not survive to a cached PASS, and inspection failures are FAIL not "nothing found".
+  try {
+    const { assertNoStaleDoctorResources: assertStartup } = await import("./doctor-helpers.mts");
+    const { ok, leftover } = assertStartup();
+    if (!ok) {
+      console.error(`  FAIL: Doctor startup postcondition — stale doctor-* resources remain: ${leftover.join(", ")} — fail-closed`);
+      return false;
+    }
+    console.log("  Doctor startup postcondition: no doctor-* leftover ✓");
+  } catch (e) {
+    console.error(`  FAIL: Doctor startup inspection failed: ${getErrorMessage(e)} — fail-closed`);
+    return false;
+  }
   // 1. Control-plane SHA + image identity (cache key)
   let sha = "";
   let imageId = "";
@@ -704,6 +730,7 @@ async function runDoctor(): Promise<boolean> {
   console.log('  Proving worker sandbox — creating docker sandbox with onSandboxReady hooks...');
   let sandbox: Awaited<ReturnType<typeof sandcastle.createSandbox>> | null = null;
   const doctorBranch = `doctor-${Date.now()}`;
+  let doctorSuccess = true;
   try {
     sandbox = await sandcastle.createSandbox({
       branch: doctorBranch,
@@ -730,27 +757,46 @@ async function runDoctor(): Promise<boolean> {
       console.log(`  [doctor] ${c.label}: exit ${res.exitCode} — ${out.slice(0,200)}`);
       if(res.exitCode !== 0){
         console.error(`  FAIL: ${c.label} failed inside sandbox (exit ${res.exitCode})`);
-        try{ await sandbox.close(); }catch{}
-        try{ execSync(`git branch -D ${doctorBranch} 2>/dev/null || true`, {stdio:'ignore'}); }catch{}
-        return false;
+        doctorSuccess = false;
+        break;
       }
       if(c.mustContain && !out.includes(c.mustContain)){
         console.error(`  FAIL: ${c.label} output missing '${c.mustContain}' — got: ${out.slice(0,300)}`);
-        try{ await sandbox.close(); }catch{}
-        try{ execSync(`git branch -D ${doctorBranch} 2>/dev/null || true`, {stdio:'ignore'}); }catch{}
-        return false;
+        doctorSuccess = false;
+        break;
       }
     }
-    console.log('  worker sandbox bootstrap: all hooks passed');
-    await sandbox.close();
-    try{ execSync(`git branch -D ${doctorBranch} 2>/dev/null || true`, {stdio:'ignore'}); }catch{}
-    execSync('git worktree prune 2>/dev/null || true', {stdio:'ignore'});
+    if (doctorSuccess) {
+      console.log('  worker sandbox bootstrap: all hooks passed');
+    }
   } catch(e){
     console.error(`  FAIL: doctor sandbox creation or exec failed: ${getErrorMessage(e)}`);
-    if(sandbox) try{ await sandbox.close(); }catch{}
-    try{ execSync(`git branch -D ${doctorBranch} 2>/dev/null || true`, {stdio:'ignore'}); }catch{}
-    return false;
+    doctorSuccess = false;
+  } finally {
+    // Wrap Doctor sandbox/worktree creation in try/finally — idempotent cleanup of ephemeral control-plane state
+    // Must never survive a successful Doctor run; startup reconciliation also cleans stale left by crash/kill.
+    // Scope strictly to Sandcastle-owned doctor-*; never sweep arbitrary human worktrees.
+    if (sandbox) { try { await sandbox.close(); } catch {} }
+    // Explicit git worktree remove --force before branch delete; prune alone is insufficient when directory still exists
+    cleanupDoctorBranchAndWorktree(doctorBranch);
   }
+  // Strict postcondition: after cleanup, no doctor-* worktree / .sandcastle/worktrees/doctor-* dir / local branch may remain.
+  // If any leftover exists, Doctor FAILs and must not write PASS cache — repo must be in same control-plane state as found.
+  // Second mandatory ASSERT CLEAN after fresh sandbox path (mirrors startup fail-closed gate).
+  try {
+    const { assertNoStaleDoctorResources } = await import("./doctor-helpers.mts");
+    const { ok, leftover } = assertNoStaleDoctorResources();
+    if (!ok) {
+      console.error(`  FAIL: Doctor ephemeral cleanup incomplete — leftover: ${leftover.join(", ")} — fail-closed`);
+      doctorSuccess = false;
+    } else {
+      console.log("  Doctor ephemeral cleanup postcondition: no doctor-* leftover ✓");
+    }
+  } catch (e) {
+    console.error(`  FAIL: Doctor postcondition inspection failed: ${getErrorMessage(e)} — fail-closed`);
+    doctorSuccess = false;
+  }
+  if (!doctorSuccess) return false;
   // 4. Cache PASS against SHA + image identity + runtime dist provenance (source SHA alone is not enough)
   try {
     let distMtime = "";
@@ -851,8 +897,12 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     plannedIssues = [{ id: String(eligible[0].number), title: eligible[0].title, branch: branchForIssue(eligible[0].number) }];
     console.log(`Single eligible issue -- skipping LLM planner, direct dispatch #${plannedIssues[0].id}`);
   } else {
+    // Use Output.string (not Output.object) so we get the raw planner stream even if it contains
+    // fences or surrounding reasoning — then parse via testable helper. This fixes the false
+    // rejection where StructuredOutputError.rawMatched already failed JSON.parse and re-parsing it
+    // cannot bypass; we need the independently captured valid planner text stream.
     try {
-      const plan = await sandcastle.run({
+      const planRun = await sandcastle.run({
         hooks,
         sandbox: docker({ env: { GH_TOKEN: ghToken() } }),
         name: "planner",
@@ -860,25 +910,60 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
         agent: sandcastle.muse("muse-spark-1.2-contributor"),
         promptFile: "./.sandcastle/plan-prompt.md",
         promptArgs: { ISSUES_JSON: issuesJson },
-        output: sandcastle.Output.object({ tag: "plan", schema: planSchema }),
+        output: sandcastle.Output.string({ tag: "plan" }),
       });
-      const rawPlanned = plan.output.issues as PlannedIssue[];
-      // Enforce subset of eligible -- drop any hallucinated IDs
-      const eligibleIds = new Set(eligible.map((e) => String(e.number)));
-      plannedIssues = rawPlanned.filter((p) => eligibleIds.has(p.id));
-      if (plannedIssues.length !== rawPlanned.length) {
-        console.warn(`Planner returned ${rawPlanned.length - plannedIssues.length} ineligible hallucinated issue(s) -- dropped`);
-      }
+      const rawPlanString: string = (planRun.output as unknown as string) ?? "";
+      // Wrap with tag so helper can extract last <plan> — if run already returned inner string, re-wrap
+      const planStdout = rawPlanString.includes("<plan>") ? rawPlanString : `<plan>${rawPlanString}</plan>`;
+      plannedIssues = parsePlannerOutput(planStdout, eligible);
       if (plannedIssues.length === 0) {
         console.log("Planner advised to defer all eligible issues due to overlap risk. Will retry next iteration.");
-        // Avoid busy loop: break to let human intervene next run
         break;
       }
       console.log(`Planner selected ${plannedIssues.length}/${eligible.length} issue(s) to run now:`);
       for (const p of plannedIssues) console.log(`  ${p.id}: ${p.title} → ${p.branch}`);
     } catch (error: unknown) {
-      console.error(`Planner failed: ${getErrorMessage(error)} -- falling back to direct dispatch of all eligible`);
-      plannedIssues = eligible.map((i) => ({ id: String(i.number), title: i.title, branch: branchForIssue(i.number) }));
+      const errorMsg = getErrorMessage(error);
+      // If Output.string threw (missing tag), try to recover from rawMatched + full stdout if available
+      const rawMatched = (error as unknown as { rawMatched?: string })?.rawMatched;
+      const candidateStdouts: string[] = [];
+      if (typeof rawMatched === "string" && rawMatched) candidateStdouts.push(`<plan>${rawMatched}</plan>`);
+      // StructuredOutputError may have sessionId/sessionFilePath pointing to full output — try to read if present
+      const sessionFile = (error as unknown as { sessionFilePath?: string; sessionId?: string })?.sessionFilePath;
+      if (typeof sessionFile === "string" && sessionFile) {
+        try {
+          const sessContent = fs.readFileSync(sessionFile, "utf8");
+          if (sessContent.includes("<plan>")) candidateStdouts.push(sessContent);
+        } catch {}
+      }
+      let bypassSucceeded = false;
+      for (const cand of candidateStdouts) {
+        try {
+          const filtered = parsePlannerOutput(cand, eligible);
+          if (filtered.length > 0) {
+            plannedIssues = filtered;
+            console.log(`Planner bypass succeeded via full stream recovery: selected ${plannedIssues.length}/${eligible.length} issue(s)`);
+            for (const p of plannedIssues) console.log(`  ${p.id}: ${p.title} → ${p.branch}`);
+            bypassSucceeded = true;
+            break;
+          }
+        } catch {}
+      }
+      if (bypassSucceeded) {
+        // recovered
+      } else {
+        const rawDump = (rawMatched ?? errorMsg).slice(0, 12000);
+        try {
+          fs.mkdirSync(path.join(REPO_ROOT, ".sandcastle", "logs"), { recursive: true });
+          const logPath = path.join(REPO_ROOT, ".sandcastle", "logs", `planner-fail-${Date.now()}.json`);
+          fs.writeFileSync(logPath, JSON.stringify({ at: new Date().toISOString(), error: errorMsg, raw: rawDump, rawMatched, eligible: eligible.map((e) => e.number) }, null, 2));
+          console.error(`  Preserved failing raw planner output to ${logPath} (ignored, not fixtures)`);
+        } catch (preserveErr) {
+          console.warn(`  Failed to preserve planner failure log: ${getErrorMessage(preserveErr)}`);
+        }
+        console.error(`Planner failed: ${errorMsg} -- FAIL CLOSED: aborting whole Sandcastle invocation.`);
+        break;
+      }
     }
   }
 
@@ -889,15 +974,34 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   let callerSha = "";
   let callerStatusBefore: string | null = null;
   try {
-    execSync('git fetch origin main', {stdio:'ignore'});
+    // Fetch with captured stderr/stdout — previous stdio:'ignore' hid the diagnostic (see #151/#152 preflight).
+    // Surface exit code, stdout, stderr so host fetch failures are actionable. This is a safety boundary.
+    let fetchStdout = "";
+    let fetchStderr = "";
+    try {
+      fetchStdout = execSync('git fetch origin main --verbose', {encoding:'utf8', stdio:'pipe'});
+      console.log(`[factory-base] git fetch origin main ok: ${fetchStdout.slice(0,500).replace(/\n/g, ' ')}`);
+    } catch (fetchErr: unknown) {
+      const fe = fetchErr as unknown as { stdout?: unknown; stderr?: unknown; status?: unknown; code?: unknown; message?: unknown };
+      fetchStdout = fe.stdout ? String(fe.stdout).slice(0,2000) : "";
+      fetchStderr = fe.stderr ? String(fe.stderr).slice(0,2000) : "";
+      const code = (fe as unknown as { status?: unknown })?.status ?? (fe as unknown as { code?: unknown })?.code ?? "unknown";
+      const msg = getErrorMessage(fetchErr);
+      console.error(`Failed to freeze factory base: git fetch origin main failed code=${String(code)} msg=${msg} stdout=${fetchStdout.slice(0,1000)} stderr=${fetchStderr.slice(0,2000)} — aborting run (fail closed, not retrying iteration)`);
+      break;
+    }
     factoryBaseSha = execSync('git rev-parse origin/main', {encoding:'utf8'}).trim();
     callerBranch = execSync('git branch --show-current', {encoding:'utf8'}).trim();
     callerSha = execSync('git rev-parse HEAD', {encoding:'utf8'}).trim();
     callerStatusBefore = (() => { try { return execSync('git status --porcelain', {encoding:'utf8', cwd: REPO_ROOT}).trim(); } catch { return null; } })();
     console.log(`Factory base frozen: ${factoryBaseSha.slice(0,7)} (origin/main), caller ${callerBranch}@${callerSha.slice(0,7)} status "${(callerStatusBefore||'').slice(0,80)}" — will NOT be mutated`);
   } catch (e) {
-    console.error(`Failed to freeze factory base: ${getErrorMessage(e)} — aborting iteration`);
-    continue;
+    const fe = e as unknown as { stdout?: unknown; stderr?: unknown; status?: unknown; code?: unknown };
+    const stdout = fe.stdout ? String(fe.stdout).slice(0,1000) : "";
+    const stderr = fe.stderr ? String(fe.stderr).slice(0,2000) : "";
+    const code = (fe as unknown as { status?: unknown })?.status ?? (fe as unknown as { code?: unknown })?.code ?? "unknown";
+    console.error(`Failed to freeze factory base: ${getErrorMessage(e)} code=${String(code)} stdout=${stdout} stderr=${stderr} — aborting run`);
+    break;
   }
 
   // ----- Phase 0.5: Claim before work (host-side, before expensive workers) -----
