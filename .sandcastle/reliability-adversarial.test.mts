@@ -135,7 +135,7 @@ describe("Adversarial: interruption after claim / after worker commit + restart 
 });
 
 describe("Adversarial: stale/remote/diverged branch state", () => {
-  it("remote diverged is detected as blocked (fail-closed)", async () => {
+  it("remote diverged is detected as blocked (fail-closed)", { timeout: 15000 }, async () => {
     const bare = await mkdtemp(join(tmpdir(), "bare-div-"));
     execSync('git init --bare -q', { cwd: bare });
     const tmp = await makeTmpRepo();

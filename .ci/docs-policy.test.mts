@@ -199,29 +199,31 @@ describe("R-02 Documentation policy", () => {
 
   it("shell-metachar filename is treated as Git path, not shell (no interpolation)", { timeout: 15000 }, async () => {
     const { mkdtemp, writeFile, rm } = await import("node:fs/promises");
+    const { mkdir } = await import("node:fs/promises");
     const { tmpdir } = await import("node:os");
     const path = await import("node:path");
-    const { execSync, spawnSync } = await import("node:child_process");
+    const { spawnSync, execFileSync } = await import("node:child_process");
     const dir = await mkdtemp(path.join(tmpdir(), "r02-shell-"));
-    const run = (cmd: string) => execSync(cmd, { cwd: dir, encoding: "utf-8" });
+    const runGit = (args: string[]) => execFileSync("git", args, { cwd: dir, encoding: "utf-8" }).toString();
+    const docsPolicyCli = path.join(process.cwd(), ".ci/docs-policy.mts");
     try {
-      run("git init -q");
-      run("git config user.email 'test@test.com'");
-      run("git config user.name 'Test'");
+      runGit(["init", "-q"]);
+      runGit(["config", "user.email", "test@test.com"]);
+      runGit(["config", "user.name", "Test"]);
       await writeFile(path.join(dir, "base.md"), "x");
-      run("git add base.md");
-      run("git commit -qm base");
-      const baseSha = run("git rev-parse HEAD").trim();
+      runGit(["add", "base.md"]);
+      runGit(["commit", "-qm", "base"]);
+      const baseSha = runGit(["rev-parse", "HEAD"]).trim();
       // Create a file with spaces and shell metachars - legal Git filename
       const evilName = "docs/evil; echo pwned.md";
       const evilPath = path.join(dir, evilName);
-      await execSync(`mkdir -p "${path.dirname(evilPath)}"`, { cwd: dir });
+      await mkdir(path.dirname(evilPath), { recursive: true });
       await writeFile(evilPath, "# Evil\n");
-      run(`git add "${evilName}"`);
-      run("git commit -qm 'add evil'");
-      const candSha = run("git rev-parse HEAD").trim();
+      runGit(["add", evilName]);
+      runGit(["commit", "-qm", "add evil"]);
+      const candSha = runGit(["rev-parse", "HEAD"]).trim();
       // Invoke CLI - should treat evilName as path, not execute shell, and should fail as inadmissible (since docs/evil... is not admitted and contains suspicious? but at least not shell)
-      const r = spawnSync("npx", ["tsx", path.join(process.cwd(), ".ci/docs-policy.mts"), "--base", baseSha, "--candidate", candSha], {
+      const r = spawnSync(process.execPath, [docsPolicyCli, "--base", baseSha, "--candidate", candSha], {
         cwd: dir,
         encoding: "utf-8",
       });
@@ -320,95 +322,97 @@ describe("R-02 Documentation policy", () => {
 
   it("CLI integration: real temp Git repo with base/candidate and -z (covers seam bug)", { timeout: 15000 }, async () => {
     const { mkdtemp, writeFile, rm } = await import("node:fs/promises");
+    const { mkdir } = await import("node:fs/promises");
     const { tmpdir } = await import("node:os");
     const path = await import("node:path");
-    const { execSync, spawnSync } = await import("node:child_process");
+    const { execFileSync, spawnSync } = await import("node:child_process");
     const dir = await mkdtemp(path.join(tmpdir(), "r02-cli-test-"));
-    const run = (cmd: string) => execSync(cmd, { cwd: dir, encoding: "utf-8" });
+    const runGit = (args: string[]) => execFileSync("git", args, { cwd: dir, encoding: "utf-8" }).toString();
+    const docsPolicyCli = path.join(process.cwd(), ".ci/docs-policy.mts");
     const runCheck = (base: string, cand: string) => {
-      const r = spawnSync("npx", ["tsx", path.join(process.cwd(), ".ci/docs-policy.mts"), "--base", base, "--candidate", cand], {
+      const r = spawnSync(process.execPath, [docsPolicyCli, "--base", base, "--candidate", cand], {
         cwd: dir,
         encoding: "utf-8",
       });
       return r.status ?? 1;
     };
     try {
-      run("git init -q");
-      run("git config user.email 'test@test.com'");
-      run("git config user.name 'Test'");
+      runGit(["init", "-q"]);
+      runGit(["config", "user.email", "test@test.com"]);
+      runGit(["config", "user.name", "Test"]);
       // base: create legacy file with 1000 bytes
       await writeFile(path.join(dir, "legacy.md"), "x".repeat(1000));
-      run("git add legacy.md");
-      run("git commit -qm base");
-      const baseSha = run("git rev-parse HEAD").trim();
+      runGit(["add", "legacy.md"]);
+      runGit(["commit", "-qm", "base"]);
+      const baseSha = runGit(["rev-parse", "HEAD"]).trim();
 
       // Test M: 1000 -> 999 should PASS (smaller)
       await writeFile(path.join(dir, "legacy.md"), "x".repeat(999));
-      run("git add legacy.md");
-      run("git commit -qm 'shrink'");
-      const shrinkSha = run("git rev-parse HEAD").trim();
+      runGit(["add", "legacy.md"]);
+      runGit(["commit", "-qm", "shrink"]);
+      const shrinkSha = runGit(["rev-parse", "HEAD"]).trim();
       expect(runCheck(baseSha, shrinkSha)).toBe(0);
 
       // Test M: 1000 -> 1000 should FAIL (not strictly smaller) - use different content same size
-      run("git checkout -q " + baseSha);
+      runGit(["checkout", "-q", baseSha]);
       await writeFile(path.join(dir, "legacy.md"), "y".repeat(1000));
-      run("git add legacy.md");
-      run("git commit -qm 'same'");
-      const sameSha = run("git rev-parse HEAD").trim();
+      runGit(["add", "legacy.md"]);
+      runGit(["commit", "-qm", "same"]);
+      const sameSha = runGit(["rev-parse", "HEAD"]).trim();
       expect(runCheck(baseSha, sameSha)).toBe(1);
 
       // Test M: 1000 -> 1001 should FAIL
-      run("git checkout -q " + baseSha);
+      runGit(["checkout", "-q", baseSha]);
       await writeFile(path.join(dir, "legacy.md"), "x".repeat(1001));
-      run("git add legacy.md");
-      run("git commit -qm 'expand'");
-      const expandSha = run("git rev-parse HEAD").trim();
+      runGit(["add", "legacy.md"]);
+      runGit(["commit", "-qm", "expand"]);
+      const expandSha = runGit(["rev-parse", "HEAD"]).trim();
       expect(runCheck(baseSha, expandSha)).toBe(1);
 
       // Test D: delete should PASS
-      run("git checkout -q " + baseSha);
-      run("git rm -q legacy.md");
-      run("git commit -qm 'delete'");
-      const deleteSha = run("git rev-parse HEAD").trim();
+      runGit(["checkout", "-q", baseSha]);
+      runGit(["rm", "-q", "legacy.md"]);
+      runGit(["commit", "-qm", "delete"]);
+      const deleteSha = runGit(["rev-parse", "HEAD"]).trim();
       expect(runCheck(baseSha, deleteSha)).toBe(0);
 
       // Test A inadmissible.md -> FAIL
-      run("git checkout -q " + baseSha);
+      runGit(["checkout", "-q", baseSha]);
       await writeFile(path.join(dir, "inadmissible.md"), "# New");
-      run("git add inadmissible.md");
-      run("git commit -qm 'add inadmissible'");
-      const addBadSha = run("git rev-parse HEAD").trim();
+      runGit(["add", "inadmissible.md"]);
+      runGit(["commit", "-qm", "add inadmissible"]);
+      const addBadSha = runGit(["rev-parse", "HEAD"]).trim();
       expect(runCheck(baseSha, addBadSha)).toBe(1);
 
       // Test A docs/adr valid -> PASS
-      run("git checkout -q " + baseSha);
+      runGit(["checkout", "-q", baseSha]);
       // adr.md temp not needed
       // await writeFile(path.join(dir, "adr.md"), "# Title\nstatus: accepted\ncontext: x\ndecision: y\nalternatives: z");
       // need to create docs/adr path
       const adrPath = path.join(dir, "docs/adr/0001-x.md");
-      execSync(`mkdir -p ${path.dirname(adrPath)}`, {cwd: dir});
+      await mkdir(path.dirname(adrPath), { recursive: true });
       await writeFile(adrPath, "# Title\nstatus: accepted\ncontext: x\ndecision: y\nalternatives: z");
-      run("git add docs/adr/0001-x.md");
-      run("git commit -qm 'add adr'");
-      const adrSha = run("git rev-parse HEAD").trim();
+      runGit(["add", "docs/adr/0001-x.md"]);
+      runGit(["commit", "-qm", "add adr"]);
+      const adrSha = runGit(["rev-parse", "HEAD"]).trim();
       expect(runCheck(baseSha, adrSha)).toBe(0);
 
       // Test A docs/external with provenance -> PASS
-      run("git checkout -q " + baseSha);
+      runGit(["checkout", "-q", baseSha]);
       const extPath = path.join(dir, "docs/external/x.md");
-      execSync(`mkdir -p ${path.dirname(extPath)}`, {cwd: dir});
+      await mkdir(path.dirname(extPath), { recursive: true });
       await writeFile(extPath, "---\ndoc-type: external-reference\nsource-revision: abc\n---\n# Research");
-      run("git add docs/external/x.md");
-      run("git commit -qm 'add external'");
-      const extSha = run("git rev-parse HEAD").trim();
+      runGit(["add", "docs/external/x.md"]);
+      runGit(["commit", "-qm", "add external"]);
+      const extSha = runGit(["rev-parse", "HEAD"]).trim();
       expect(runCheck(baseSha, extSha)).toBe(0);
 
       // Test R: rename old.md -> new.md (new is inadmissible) -> FAIL as A
-      run("git checkout -q " + baseSha);
+      runGit(["checkout", "-q", baseSha]);
       // create old file in base already is legacy.md, rename it
-      run("git mv legacy.md new-location.md");
-      run("git commit -qm 'rename'");
-      const renameSha = run("git rev-parse HEAD").trim();
+      runGit(["mv", "legacy.md", "new-location.md"]);
+      runGit(["commit", "-qm", "rename"]);
+      const renameSha = runGit(["rev-parse", "HEAD"]).trim();
       // Deleting legacy and adding new-location (non-admitted) should fail because new-location is A
       expect(runCheck(baseSha, renameSha)).toBe(1);
     } finally {
@@ -420,39 +424,41 @@ describe("R-02 Documentation policy", () => {
     const { mkdtemp, writeFile, rm } = await import("node:fs/promises");
     const { tmpdir } = await import("node:os");
     const path = await import("node:path");
-    const { execSync, spawnSync } = await import("node:child_process");
-    const { readFileSync, existsSync } = await import("node:fs");
+    const { mkdir } = await import("node:fs/promises");
+    const { execFileSync: execFileSync2, spawnSync } = await import("node:child_process");
+    const { existsSync } = await import("node:fs");
     const dir = await mkdtemp(path.join(tmpdir(), "r02-authoritative-"));
-    const run = (cmd: string) => execSync(cmd, { cwd: dir, encoding: "utf-8" });
+    const runGit = (args: string[]) => execFileSync2("git", args, { cwd: dir, encoding: "utf-8" }).toString();
+    const docsPolicyCli = path.join(process.cwd(), ".ci/docs-policy.mts");
     const runCheck = (base: string, cand: string) => {
-      const r = spawnSync("npx", ["tsx", path.join(process.cwd(), ".ci/docs-policy.mts"), "--base", base, "--candidate", cand], {
+      const r = spawnSync(process.execPath, [docsPolicyCli, "--base", base, "--candidate", cand], {
         cwd: dir,
         encoding: "utf-8",
       });
       return r;
     };
     try {
-      run("git init -q");
-      run("git config user.email 'test@test.com'");
-      run("git config user.name 'Test'");
+      runGit(["init", "-q"]);
+      runGit(["config", "user.email", "test@test.com"]);
+      runGit(["config", "user.name", "Test"]);
       await writeFile(path.join(dir, "base.txt"), "base");
-      run("git add base.txt");
-      run("git commit -qm base");
-      const baseSha = run("git rev-parse HEAD").trim();
+      runGit(["add", "base.txt"]);
+      runGit(["commit", "-qm", "base"]);
+      const baseSha = runGit(["rev-parse", "HEAD"]).trim();
 
       // candidate: adds inadmissible file with bad content (should FAIL in authoritative mode)
       const badPath = path.join(dir, "docs/bad.md");
-      execSync(`mkdir -p ${path.dirname(badPath)}`, { cwd: dir });
+      await mkdir(path.dirname(badPath), { recursive: true });
       await writeFile(badPath, "# Bad\nThis is not admitted");
-      run("git add docs/bad.md");
-      run("git commit -qm 'add bad'");
-      const candSha = run("git rev-parse HEAD").trim();
+      runGit(["add", "docs/bad.md"]);
+      runGit(["commit", "-qm", "add bad"]);
+      const candSha = runGit(["rev-parse", "HEAD"]).trim();
 
       // Now mutate working tree and index to hide the violation:
       // Overwrite with an admitted external doc with proper provenance, stage it
       await writeFile(badPath, "---\ndoc-type: external-reference\nsource-revision: abc\n---\n# Bad fixed");
       // Also stage it so index differs from candidate
-      run("git add docs/bad.md");
+      runGit(["add", "docs/bad.md"]);
       // Further mutate working tree again to a passing ADR-like content
       await writeFile(badPath, "# Title\nstatus: accepted\ncontext: x\ndecision: y\nalternatives: z");
       // Do NOT commit — authoritative mode must still see candidate's original bad content, not index/working tree
@@ -462,18 +468,18 @@ describe("R-02 Documentation policy", () => {
 
       // Reverse: candidate is GOOD (admitted external), but working tree/index is BAD
       // Create a new good candidate from base
-      run("git checkout -f -q " + baseSha);
-      run("git clean -fd -q");
+      runGit(["checkout", "-f", "-q", baseSha]);
+      runGit(["clean", "-fd", "-q"]);
       const goodPath = path.join(dir, "docs/external/good.md");
-      execSync(`mkdir -p ${path.dirname(goodPath)}`, { cwd: dir });
+      await mkdir(path.dirname(goodPath), { recursive: true });
       await writeFile(goodPath, "---\ndoc-type: external-reference\nsource-revision: abc\n---\n# Research");
-      run("git add docs/external/good.md");
-      run("git commit -qm 'add good'");
-      const goodCandSha = run("git rev-parse HEAD").trim();
+      runGit(["add", "docs/external/good.md"]);
+      runGit(["commit", "-qm", "add good"]);
+      const goodCandSha = runGit(["rev-parse", "HEAD"]).trim();
       // Mutate working tree/index to a violation that would fail if consulted
       const badForGood = path.join(dir, "docs/inadmissible.md");
       await writeFile(badForGood, "# Bad leak");
-      run("git add docs/inadmissible.md");
+      runGit(["add", "docs/inadmissible.md"]);
       await writeFile(badForGood, "# Even worse");
       const r2 = runCheck(baseSha, goodCandSha);
       // Authoritative diff base->goodCand only contains docs/external/good.md, not docs/inadmissible.md, so should PASS
@@ -488,24 +494,25 @@ describe("R-02 Documentation policy", () => {
     const { mkdtemp, rm } = await import("node:fs/promises");
     const { tmpdir } = await import("node:os");
     const path = await import("node:path");
-    const { execSync, spawnSync } = await import("node:child_process");
+    const { execFileSync, spawnSync } = await import("node:child_process");
     const dir = await mkdtemp(path.join(tmpdir(), "r02-invalid-"));
-    const run = (cmd: string) => execSync(cmd, { cwd: dir, encoding: "utf-8" });
+    const runGit = (args: string[]) => execFileSync("git", args, { cwd: dir, encoding: "utf-8" }).toString();
+    const docsPolicyCli = path.join(process.cwd(), ".ci/docs-policy.mts");
     try {
-      run("git init -q");
-      run("git config user.email 'test@test.com'");
-      run("git config user.name 'Test'");
-      run("git commit --allow-empty -qm base");
-      const baseSha = run("git rev-parse HEAD").trim();
+      runGit(["init", "-q"]);
+      runGit(["config", "user.email", "test@test.com"]);
+      runGit(["config", "user.name", "Test"]);
+      runGit(["commit", "--allow-empty", "-qm", "base"]);
+      const baseSha = runGit(["rev-parse", "HEAD"]).trim();
       const bogus = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
-      const r = spawnSync("npx", ["tsx", path.join(process.cwd(), ".ci/docs-policy.mts"), "--base", baseSha, "--candidate", bogus], {
+      const r = spawnSync(process.execPath, [docsPolicyCli, "--base", baseSha, "--candidate", bogus], {
         cwd: dir,
         encoding: "utf-8",
       });
       expect(r.status).toBe(1);
       expect((r.stderr || "") + (r.stdout || "")).toMatch(/failed to compute diff|not found|unknown revision|fatal/i);
       // Also test missing candidate arg (empty) — should fail
-      const r2 = spawnSync("npx", ["tsx", path.join(process.cwd(), ".ci/docs-policy.mts"), "--base", baseSha, "--candidate", ""], {
+      const r2 = spawnSync(process.execPath, [docsPolicyCli, "--base", baseSha, "--candidate", ""], {
         cwd: dir,
         encoding: "utf-8",
       });
