@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   makeIterationControl,
+  planIssuesForIteration,
   parseQualificationArgs,
   resolveIterationLimit,
   planQualificationIssue,
@@ -49,6 +50,29 @@ describe("Qualification selector", () => {
     expect(control.requestedIssueNumber).toBe("151");
     expect(resolveIterationLimit(10, { requestedIssueNumber: "151" })).toBe(1);
     expect(resolveIterationLimit(10, {})).toBe(10);
+  });
+
+  it("uses the qualified-only iteration plan when requested issue is present", () => {
+    const eligible = [
+      issue({ number: 151, title: "issue 151" }),
+      issue({ number: 152, title: "issue 152" }),
+    ];
+    const control = makeIterationControl(10, ["node", "main.mts", "--issue", "152"]);
+    const iterationPlan = planIssuesForIteration(eligible, control);
+    expect(iterationPlan.mode).toBe("qualified");
+    expect(iterationPlan.skipIteration).toBe(false);
+    expect(iterationPlan.plannedIssues).toEqual([
+      { id: "152", title: "issue 152", branch: "sandcastle/issue-152" },
+    ]);
+  });
+
+  it("rejects qualification request for ineligible issue and skips iteration", () => {
+    const eligible = [issue({ number: 151, title: "issue 151" })];
+    const control = makeIterationControl(10, ["node", "main.mts", "--issue", "999"]);
+    const iterationPlan = planIssuesForIteration(eligible, control);
+    expect(iterationPlan.mode).toBe("qualify-unsupported");
+    expect(iterationPlan.skipIteration).toBe(true);
+    expect(iterationPlan.plannedIssues).toHaveLength(0);
   });
 
   it("normal mode preserves default planning behavior and does not engage qualification", () => {

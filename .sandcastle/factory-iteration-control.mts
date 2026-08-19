@@ -14,6 +14,18 @@ export interface PlannedFromQualification {
   plannedIssues: Array<{ id: string; title: string; branch: string }>;
 }
 
+export type QualificationDecisionMode =
+  | "qualified"
+  | "qualify-unsupported"
+  | "single-eligible"
+  | "planner-required";
+
+export interface IterationPlanningDecision {
+  mode: QualificationDecisionMode;
+  plannedIssues: Array<{ id: string; title: string; branch: string }>;
+  skipIteration: boolean;
+}
+
 const DEFAULT_MAX_ITERATIONS = 10;
 
 export function parseQualificationArgs(argv: string[]): IterationControlConfig {
@@ -55,6 +67,46 @@ export function planQualificationIssue(
       title: selected.title,
       branch: branchForIssue(selected.number),
     }],
+  };
+}
+
+export function planIssuesForIteration(
+  eligibleIssues: IssueInput[],
+  control: IterationControlConfig,
+): IterationPlanningDecision {
+  const qualificationSelection = planQualificationIssue(eligibleIssues, control);
+  if (qualificationSelection.plannedIssues.length > 0) {
+    return {
+      mode: "qualified",
+      plannedIssues: qualificationSelection.plannedIssues,
+      skipIteration: false,
+    };
+  }
+
+  if (control.requestedIssueNumber) {
+    return {
+      mode: "qualify-unsupported",
+      plannedIssues: [],
+      skipIteration: true,
+    };
+  }
+
+  if (eligibleIssues.length === 1) {
+    return {
+      mode: "single-eligible",
+      plannedIssues: [{
+        id: String(eligibleIssues[0]!.number),
+        title: eligibleIssues[0]!.title,
+        branch: branchForIssue(eligibleIssues[0]!.number),
+      }],
+      skipIteration: false,
+    };
+  }
+
+  return {
+    mode: "planner-required",
+    plannedIssues: [],
+    skipIteration: false,
   };
 }
 

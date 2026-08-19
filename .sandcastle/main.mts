@@ -25,7 +25,7 @@ import { formatGhFailure, getErrorMessage, getGhErrorDetails } from "./gh-errors
 import { parsePlannerOutput, fallbackToSingle } from "./planner-helpers.mts";
 import {
   makeIterationControl,
-  planQualificationIssue,
+  planIssuesForIteration,
   type IterationControl,
 } from "./factory-iteration-control.mts";
 
@@ -899,21 +899,22 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
     break;
   }
 
-  let plannedIssues: PlannedIssue[] = [];
-  const qualificationSelection = planQualificationIssue(eligible, {
+  const iterationPlan = planIssuesForIteration(eligible, {
     requestedIssueNumber: ITERATION_CONTROL.requestedIssueNumber,
   });
-  if (qualificationSelection.plannedIssues.length > 0) {
-    plannedIssues = qualificationSelection.plannedIssues;
-    console.log(`Qualification mode: explicitly selected issue #${plannedIssues[0].id} only.`);
-  } else if (ITERATION_CONTROL.requestedIssueNumber) {
-    console.log(`Qualification mode requested issue #${ITERATION_CONTROL.requestedIssueNumber}, but it is not eligible in this iteration.`);
+
+  let plannedIssues: PlannedIssue[] = [];
+  if (iterationPlan.mode === "qualified") {
+    plannedIssues = iterationPlan.plannedIssues;
+    console.log(`Qualification mode: explicitly selected issue #${plannedIssues[0]!.id} only.`);
+  } else if (iterationPlan.mode === "qualify-unsupported") {
+    const requestedIssueNumber = ITERATION_CONTROL.requestedIssueNumber;
+    console.log(`Qualification mode requested issue #${requestedIssueNumber}, but it is not eligible in this iteration.`);
     continue;
-  } else if (eligible.length === 1) {
-    // Single issue -- no need to invoke LLM
-    plannedIssues = [{ id: String(eligible[0].number), title: eligible[0].title, branch: branchForIssue(eligible[0].number) }];
-    console.log(`Single eligible issue -- skipping LLM planner, direct dispatch #${plannedIssues[0].id}`);
-  } else {
+  } else if (iterationPlan.mode === "single-eligible") {
+    plannedIssues = iterationPlan.plannedIssues;
+    console.log(`Single eligible issue -- skipping LLM planner, direct dispatch #${plannedIssues[0]!.id}`);
+  } else if (iterationPlan.mode === "planner-required") {
     // ----- Phase 1: Overlap-aware planning (LLM may serialize) -----
     // Planner receives only eligible issues; it must return a subset.
     const issuesJson = JSON.stringify(
