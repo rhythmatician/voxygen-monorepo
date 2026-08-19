@@ -168,7 +168,7 @@ describe("gateBranchesByVerdict — tracer bullet fixtures", () => {
     expect(approved[0].branch).toBe("sandcastle/issue-57");
     // Blocked branches are preserved, marked agent:blocked, not merged
     expect(blocked.find((b) => b.id === "58")!.reason).toContain("reviewer rejected");
-    expect(blocked.find((b) => b.id === "59")!.reason).toContain("no verdict");
+    expect(blocked.find((b) => b.id === "59")!.reason).toContain("no machine-readable verdict");
   });
 
   it("partitionWorkers + verdict gating: rejected branch excluded from completedBranches → merger", () => {

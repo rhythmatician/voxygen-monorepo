@@ -121,7 +121,7 @@ export function isVerdictApproved(verdict: ReviewVerdict | null | undefined): bo
  * and gateBranchesByVerdict consistent.
  */
 export function blockedReasonForVerdict(verdict: ReviewVerdict | null): string {
-  if (!verdict) return "reviewer produced no verdict (treated as rejected - branch preserved, not merged)";
+  if (!verdict) return "reviewer produced no machine-readable verdict (FACTORY_ERROR)";
   if (!verdict.approved) {
     const detail = verdict.findings.map((f) => f.message).join("; ") || verdict.summary || "unmet criteria";
     return `reviewer rejected (approved=false): ${detail}`;

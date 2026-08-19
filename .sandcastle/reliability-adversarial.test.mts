@@ -8,6 +8,8 @@ import { parsePlannerOutput, fallbackToSingle } from "./planner-helpers.mts";
 import { isEligible, branchForIssue } from "./dispatch.mts";
 import { TRACER_BODY } from "./fixtures.mts";
 import * as branchHelpers from "./branch-helpers.mts";
+import { partitionWorkerOutcomes, type WorkerOutcome } from "./factory-verdict-gate.mts";
+import { verdictFixture } from "./review-verdict.mts";
 
 // Adversarial acceptance: local git tmp repos, no GH, no LLM
 
@@ -40,6 +42,60 @@ describe("Adversarial: one normal eligible issue", () => {
     // main path: eligible.length===1 => planned = that one, no LLM
     const planned = [{ id: String(eligible[0].number), title: eligible[0].title, branch: branchForIssue(eligible[0].number) }];
     expect(planned[0].id).toBe("151");
+  });
+});
+
+describe("Adversarial: reviewer verdict contract", () => {
+  it("missing or malformed reviewer verdict must be treated as factory error, not review rejection", () => {
+    const issues = [
+      { id: "151", branch: "sandcastle/issue-151" },
+      { id: "152", branch: "sandcastle/issue-152" },
+    ];
+    const settled = [
+      { status: "fulfilled" as const, value: { commits: ["abc"], verdict: null } },
+      { status: "fulfilled" as const, value: { commits: ["def"], verdict: verdictFixture({ approved: true }) } },
+    ] satisfies WorkerOutcome[];
+    const result = partitionWorkerOutcomes(issues, settled);
+
+    expect(result.factoryErrors[0]?.reason).toContain("FACTORY_ERROR");
+    expect(result.factoryErrors).toHaveLength(1);
+    expect(result.factoryErrors[0]?.id).toBe("151");
+    expect(result.reviewRejected).toHaveLength(0);
+    expect(result.shouldStopOuterLoop).toBe(true);
+  });
+
+  it("approved false verdict remains review rejection and does not stop outer loop", () => {
+    const issues = [{ id: "153", branch: "sandcastle/issue-153" }];
+    const verdict = verdictFixture({ approved: false, acceptanceCriteriaMet: [{ criterion: "must be documented", met: false, evidence: "docs/README.md" }] });
+    const settled = [
+      { status: "fulfilled" as const, value: { commits: ["abc"], verdict } },
+    ] satisfies WorkerOutcome[];
+    const result = partitionWorkerOutcomes(issues, settled);
+
+    expect(result.reviewRejected).toHaveLength(1);
+    expect(result.reviewRejected[0]?.id).toBe("153");
+    expect(result.shouldStopOuterLoop).toBe(false);
+    expect(result.completed).toHaveLength(0);
+  });
+
+  it("factory error suppresses merge/continue phase to prevent progressing to another issue", () => {
+    const issues = [
+      { id: "201", branch: "sandcastle/issue-201" },
+      { id: "202", branch: "sandcastle/issue-202" },
+    ];
+    const settled = [
+      { status: "fulfilled" as const, value: { commits: ["sha-201"], verdict: null } },
+      { status: "fulfilled" as const, value: { commits: ["sha-202"], verdict: verdictFixture({ approved: true }) } },
+    ] satisfies WorkerOutcome[];
+    const result = partitionWorkerOutcomes(issues, settled);
+
+    expect(result.completed.map((i) => i.id)).toEqual(["202"]);
+    expect(result.factoryErrors.map((i) => i.id)).toEqual(["201"]);
+    expect(result.shouldStopOuterLoop).toBe(true);
+
+    // Factory-level stop must block continuation (merge + next outer claim) despite a ready completed branch.
+    const shouldRunMerge = result.completed.length > 0 && !result.shouldStopOuterLoop;
+    expect(shouldRunMerge).toBe(false);
   });
 });
 

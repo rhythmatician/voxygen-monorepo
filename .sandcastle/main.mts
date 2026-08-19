@@ -12,13 +12,13 @@ import * as path from "node:path";
 
 const REPO_ROOT = process.cwd();
 import { isEligible, branchForIssue, type IssueInput } from "./dispatch.mts";
+import { partitionWorkerOutcomes, type WorkerOutcome } from "./factory-verdict-gate.mts";
 import * as branchHelpers from "./branch-helpers.mts";
 import { mayAutonomouslyMerge } from "./ci-policy.mts";
+import { runReviewerPass } from "./review-pass.mts";
 import {
   reviewVerdictSchema,
   isVerdictApproved,
-  extractVerdict,
-  blockedReasonForVerdict,
   type ReviewVerdict,
 } from "./review-verdict.mts";
 import { formatGhFailure, getErrorMessage, getGhErrorDetails } from "./gh-errors.mts";
@@ -1157,36 +1157,48 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
           }
           // Fresh fetch of original issue body - no stale caching.
           const issueBody = await fetchIssueBody(issue.id);
-          let verdict: ReviewVerdict | null = null;
-          let reviewText = "";
-          try {
-            const review = await sandbox!.run({
-              name: reviewAttempt === 0 ? "reviewer" : "reviewer-retry",
-              maxIterations: 1,
-              agent: sandcastle.muse("muse-spark-1.2-contributor"),
-              promptFile: "./.sandcastle/review-prompt.md",
-              promptArgs: {
-                BRANCH: issue.branch,
-                ISSUE_NUMBER: issue.id,
-                ISSUE_TITLE: issue.title,
-                ISSUE_BODY: issueBody,
-              },
-              output: sandcastle.Output.object({ tag: "verdict", schema: reviewVerdictSchema }),
-            });
-            verdict = extractVerdict(review);
-            reviewText = review.stdout;
-          } catch (reviewError: unknown) {
-            console.warn(`  Reviewer failed for #${issue.id} (attempt ${reviewAttempt+1}): ${String(reviewError).slice(0, REVIEW_ERROR_TRUNCATE)} - treating as rejected`);
-            verdict = null;
-            reviewText = String(reviewError);
-          }
+          const reviewerResult = await runReviewerPass({
+            issueId: issue.id,
+            issueTitle: issue.title,
+            branch: issue.branch,
+            attempt: reviewAttempt,
+            issueBody,
+            allCommits,
+            runReviewer: async (_issueBody, _attempt, isRetry) => {
+              const review = await sandbox!.run({
+                name: isRetry ? "reviewer-retry" : "reviewer",
+                maxIterations: 1,
+                agent: sandcastle.muse("muse-spark-1.2-contributor"),
+                promptFile: "./.sandcastle/review-prompt.md",
+                promptArgs: {
+                  BRANCH: issue.branch,
+                  ISSUE_NUMBER: issue.id,
+                  ISSUE_TITLE: issue.title,
+                  ISSUE_BODY: _issueBody,
+                },
+                output: sandcastle.Output.object({ tag: "verdict", schema: reviewVerdictSchema }),
+              });
+              return review;
+            },
+            onReviewerFailure: (id, attemptIndex, reviewError) => {
+              console.warn(`  Reviewer failed for #${id} (attempt ${attemptIndex + 1}): ${String(reviewError).slice(0, REVIEW_ERROR_TRUNCATE)} - treating as FACTORY_ERROR (missing/invalid machine-verifiable verdict)`);
+            },
+            onInvalidVerdict: (id, attemptIndex, reason, reviewText) => {
+              console.warn(`  Reviewer produced invalid verdict for #${id} (attempt ${attemptIndex + 1}): ${reason} — ${reviewText.slice(0, REVIEW_ERROR_TRUNCATE)} — treating as FACTORY_ERROR`);
+            },
+          });
+          const verdict = reviewerResult.verdict;
           reviewVerdict = verdict;
-          reviewTextForRetry = reviewText;
+          reviewTextForRetry = reviewerResult.reviewText;
+          if (verdict === null) {
+            return reviewerResult;
+          }
+          allCommits = reviewerResult.commits;
           if (isVerdictApproved(verdict)) {
             return {
-              commits: [...allCommits, ...((verdict ? [] : []))],
+              commits: allCommits,
               verdict,
-              reviewText,
+              reviewText: reviewerResult.reviewText,
             };
           }
           // Not approved — loop will retry if budget remains
@@ -1198,21 +1210,21 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
           return {
             commits: allCommits,
             verdict,
-            reviewText,
+            reviewText: reviewerResult.reviewText,
           };
-        }
-        // No commits or loop exhausted without early return
-        if (implement.commits.length > 0 && shouldRetryReview) {
-          return {
-            commits: allCommits,
-            verdict: reviewVerdict,
-            reviewText: reviewTextForRetry,
-          };
-        }
-        if (implement.commits.length > 0) {
-          // (review handled in loop above)
-        }
-        return { commits: allCommits.length > 0 ? allCommits : implement.commits, verdict: reviewVerdict, reviewText: reviewTextForRetry };
+          }
+          // No commits or loop exhausted without early return
+          if (implement.commits.length > 0 && shouldRetryReview) {
+            return {
+              commits: allCommits,
+              verdict: reviewVerdict,
+              reviewText: reviewTextForRetry,
+            };
+          }
+          if (implement.commits.length > 0) {
+            // (review handled in loop above)
+          }
+          return { commits: allCommits.length > 0 ? allCommits : implement.commits, verdict: reviewVerdict, reviewText: reviewTextForRetry };
       } finally {
         await sandbox!.close();
         try { process.chdir(REPO_ROOT); } catch {}
@@ -1221,47 +1233,42 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   );
 
   // ----- Failure visibility per worker + review verdict gating -----
-  const failedIndices: number[] = [];
-  const reviewRejectedIndices: number[] = [];
-
+  const {
+    completed,
+    failed,
+    reviewRejected,
+    factoryErrors,
+    shouldStopOuterLoop,
+  } = partitionWorkerOutcomes(
+    claimedIssues,
+    settled as unknown as WorkerOutcome[],
+  );
+  const completedIssues = completed;
   const failedMarkResults: boolean[] = [];
-  for (const [i, outcome] of settled.entries()) {
-    if (outcome.status === "rejected") {
-      const reason = String(outcome.reason ?? "unknown error").slice(0, WORKER_REASON_TRUNCATE);
-      console.error(`  ✗ ${claimedIssues[i]!.id} (${claimedIssues[i]!.branch}) failed: ${reason}`);
-      failedIndices.push(i);
-      const marked = await markBlocked(claimedIssues[i]!.id, claimedIssues[i]!.branch, reason);
-      failedMarkResults.push(marked);
-    } else if (outcome.value.commits.length === 0) {
-      console.warn(`  ⚠ ${claimedIssues[i]!.id} produced no commits -- marking blocked for inspection`);
-      const marked2 = await markBlocked(claimedIssues[i]!.id, claimedIssues[i]!.branch, "Implementer produced no commits (no work or error without throw). Branch preserved.");
-      failedIndices.push(i);
-      failedMarkResults.push(marked2);
-    } else {
-      const verdict = outcome.value.verdict;
-      if (!isVerdictApproved(verdict)) {
-        const reason = blockedReasonForVerdict(verdict);
-        console.warn(`  ⚠ ${claimedIssues[i]!.id} review rejected - not eligible for merger: ${reason.slice(0, REVIEW_ERROR_TRUNCATE)}`);
-        reviewRejectedIndices.push(i);
-        await markReviewRejected(claimedIssues[i]!.id, claimedIssues[i]!.branch, verdict, reason);
-      }
-    }
+
+  const failedIssueIds = failed.map((issue) => issue.id);
+  for (const issue of failed) {
+    const reason = issue.reason.slice(0, WORKER_REASON_TRUNCATE);
+    console.error(`  ✗ ${issue.id} (${issue.branch}) failed: ${reason}`);
+    const marked = await markBlocked(issue.id, issue.branch, issue.reason);
+    failedMarkResults.push(marked);
   }
 
-  // Completed = fulfilled + commits + review approved
-  const completedEntries = settled
-    .map((outcome, i) => ({ outcome, issue: claimedIssues[i]!, index: i }))
-    .filter(
-      (entry) =>
-        entry.outcome.status === "fulfilled" &&
-        entry.outcome.value.commits.length > 0 &&
-        !failedIndices.includes(entry.index) &&
-        !reviewRejectedIndices.includes(entry.index) &&
-        isVerdictApproved(entry.outcome.value.verdict),
-    );
+  for (const issue of reviewRejected) {
+    const reason = issue.reason;
+    console.warn(`  ⚠ ${issue.id} review rejected - not eligible for merger: ${reason.slice(0, REVIEW_ERROR_TRUNCATE)}`);
+    await markReviewRejected(issue.id, issue.branch, issue.verdict, reason);
+  }
 
-  const completedIssues = completedEntries.map((entry) => entry.issue);
+  for (const issue of factoryErrors) {
+    const reason = issue.reason;
+    console.warn(`  ⚠ ${issue.id} review verdict contract failed (FACTORY_ERROR): ${reason.slice(0, REVIEW_ERROR_TRUNCATE)} — preserving branch and stopping outer run.`);
+    await markBlocked(issue.id, issue.branch, reason);
+  }
+
   const completedBranches = completedIssues.map((i) => i.branch);
+
+  const failedIndices = failedIssueIds;
 
   console.log(`\nExecution complete. ${completedBranches.length} branch(es) approved for merger:`);
   for (const b of completedBranches) console.log(`  ${b}`);
@@ -1274,8 +1281,16 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
       console.log(`  ${failedIndices.length} branch(es) failed: ${markedCount} marked agent:blocked, ${unmarkedCount} NOT marked (GitHub unavailable — local recovery at .sandcastle/recovery/*.json, will reconcile truthfully after connectivity returns)`);
     }
   }
-  if (reviewRejectedIndices.length > 0) {
-    console.log(`  ${reviewRejectedIndices.length} branch(es) review-rejected (approved=false) - preserved, marked agent:blocked, not merged`);
+  if (reviewRejected.length > 0) {
+    console.log(`  ${reviewRejected.length} branch(es) review-rejected (approved=false) - preserved, marked agent:blocked, not merged`);
+  }
+  if (factoryErrors.length > 0) {
+    console.log(`  ${factoryErrors.length} branch(es) produced FACTORY_ERROR - preserved, marked agent:blocked, stopping outer run`);
+  }
+
+  if (shouldStopOuterLoop) {
+    console.log("Factory error detected during review verdict handling. Stopping outer loop to prevent unsafe progression.");
+    break;
   }
 
   if (completedBranches.length === 0) {
@@ -1457,3 +1472,4 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
 }
 
 console.log("\nAll done.");
+
