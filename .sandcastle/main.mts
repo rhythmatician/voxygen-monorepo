@@ -36,10 +36,13 @@ import {
 } from "./factory-iteration-control.mts";
 import {
   EXPECTED_SANDCASTLE_SOURCE_PREFIX,
+  EXPECTED_SANDCASTLE_RUNTIME_INDEX_SHA256,
   isExpectedSandcastleSourceHead,
   resolveSandcastleRuntimeDistPath,
+  resolveSha256OfFile,
   verifySandcastleRuntimeDist,
   missingSandcastleRuntimeSymbols,
+  hasExpectedSandcastleRuntimeDistHash,
 } from "./sandcastle-runtime-provenance.mts";
 
 const execFileAsync = promisify(execFile);
@@ -731,6 +734,11 @@ async function runDoctor(): Promise<boolean> {
       if (missing.length > 0) {
         console.error(`  Missing symbols: ${missing.join(", ")}`);
       }
+      return false;
+    }
+    if (!hasExpectedSandcastleRuntimeDistHash(distPath)) {
+      const actualDistHash = resolveSha256OfFile(distPath);
+      console.error(`  FAIL: Sandcastle runtime dist hash mismatch. expected=${EXPECTED_SANDCASTLE_RUNTIME_INDEX_SHA256} actual=${actualDistHash}`);
       return false;
     }
     // Also verify source HEAD is the intended revision (not just branch checkout)
