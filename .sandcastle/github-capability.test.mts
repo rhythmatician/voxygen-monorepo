@@ -19,6 +19,7 @@ describe("GitHub capability boundary", () => {
     expect(classifyGhOperation(["api", "issues", "-f", "summary", "value"])).toBe("write");
     expect(classifyGhOperation(["api", "issues", "--input", "{}"])).toBe("write");
     expect(classifyGhOperation(["api", "issues", "--method", "GET", "--input", "{}"])).toBe("read");
+    expect(classifyGhOperation(["api", "issues", "--method", "OPTIONS"])).toBe("unknown");
   });
 
   it("read-only mode blocks claim-like write attempts before any gh execution", async () => {
