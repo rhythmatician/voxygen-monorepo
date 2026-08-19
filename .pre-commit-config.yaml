@@ -11,7 +11,7 @@ repos:
       - id: docs-policy
         name: R-02 Documentation policy
         language: node
-        entry: tsx .ci/docs-policy.mts --base origin/main --candidate HEAD
+        entry: tsx .ci/docs-policy.mts --base origin/main --cached
         additional_dependencies: ['tsx@4.23.12']
         types: [markdown]
         pass_filenames: false
