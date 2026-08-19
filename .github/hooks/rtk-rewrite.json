@@ -13,7 +13,7 @@
       {
         "type": "command",
         "bash": "command -v rtk >/dev/null 2>&1 && rtk hook copilot || exit 0",
-        "powershell": "Get-Command rtk -ErrorAction SilentlyContinue | Out-Null; if ($?) { rtk hook copilot } else { exit 0 }",
+        "powershell": "if (Get-Command rtk -ErrorAction SilentlyContinue) { rtk hook copilot } else { exit 0 }",
         "cwd": ".",
         "timeoutSec": 5
       }
