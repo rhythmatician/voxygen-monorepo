@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { execSync } from "node:child_process";
+import { execSync, execFileSync } from "node:child_process";
 import { mkdtemp, rm, mkdir, writeFile, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -229,9 +229,62 @@ describe("Adversarial: stale/remote/diverged branch state", () => {
       await rm(tmp2, { recursive:true, force:true });
     } finally { await rm(tmp, { recursive:true, force:true }); await rm(bare, { recursive:true, force:true }); }
   });
+
+  it("remote-only branch with shell-special characters fails only if argv-unsafe git calls remain", { timeout: 15000 }, async () => {
+    const tmp = await makeTmpRepo();
+    const bare = await mkdtemp(join(tmpdir(), "bare-special-"));
+    await initRepo(tmp);
+    try {
+      execSync('git init --bare -q', { cwd: bare });
+      execSync(`git remote add origin ${bare}`, { cwd: tmp });
+      const branch = "sandcastle/issue&shell";
+      const baseSha = execSync('git rev-parse HEAD', { cwd: tmp, encoding: 'utf8' }).trim();
+      // Create remote-only branch with special chars and no local copy
+      execFileSync("git", ["branch", branch, baseSha], { cwd: tmp });
+      execFileSync("git", ["checkout", branch], { cwd: tmp });
+      await writeFile(join(tmp, "special.txt"), "special");
+      execSync('git add special.txt && git commit -qm "special"', { cwd: tmp });
+      execFileSync("git", ["checkout", "main"], { cwd: tmp });
+      execFileSync("git", ["push", "origin", `${branch}:refs/heads/${branch}`], { cwd: tmp });
+      execFileSync("git", ["branch", "-D", branch], { cwd: tmp });
+
+      const issueId = "900";
+      const prep = branchHelpers.prepareIssueBranch(tmp, branch, baseSha, "main", baseSha, issueId);
+      expect(prep.ok).toBe(false);
+      expect(prep.action).toBe("blocked");
+      expect(prep.reason).toContain("has commits");
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+      await rm(bare, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("Adversarial: temporary-resource cleanup", () => {
+  it("cleanupPreserveLocalBranches deletes preserve-local branches without shell dependency", async () => {
+    const { tmp } = await initRepo(await makeTmpRepo());
+    try {
+      const branchA = "preserve-local-adv-1";
+      const branchB = "preserve-local-adv-2";
+      const branchKeep = "feature/main";
+      execSync(`git branch ${branchA}`, { cwd: tmp });
+      execSync(`git branch ${branchB}`, { cwd: tmp });
+      execSync(`git branch ${branchKeep}`, { cwd: tmp });
+      const deleted = branchHelpers.cleanupPreserveLocalBranches(tmp);
+      const keep = execSync("git branch", { cwd: tmp, encoding:"utf8" });
+      expect(deleted).toContain(branchA);
+      expect(deleted).toContain(branchB);
+      expect(keep).not.toContain(branchA);
+      expect(keep).not.toContain(branchB);
+      expect(keep).toContain(branchKeep);
+      // idempotent
+      const deletedAgain = branchHelpers.cleanupPreserveLocalBranches(tmp);
+      expect(deletedAgain).toHaveLength(0);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
   it("doctor-* worktree/dir/branch are owned and cleaned; non-doctor untouched", { timeout: 15000 }, async () => {
     const { tmp } = await initRepo(await makeTmpRepo());
     try {
@@ -256,6 +309,69 @@ describe("Adversarial: temporary-resource cleanup", () => {
       cleanupDoctorBranchAndWorktree(tmp, "doctor-nonexistent");
       expect(() => cleanupDoctorBranchAndWorktree(tmp, "doctor-nonexistent")).not.toThrow();
     } finally { await rm(tmp, { recursive:true, force:true }); }
+  });
+});
+
+describe("Adversarial: cross-platform path handling", () => {
+  it("createBatchWorktree handles repository paths with spaces", { timeout: 15000 }, async () => {
+    const root = await mkdtemp(join(tmpdir(), "adv space-"));
+    const tmp = join(root, "repo with spaces");
+    await mkdir(tmp, { recursive: true });
+    try {
+      await writeFile(join(tmp, "base.txt"), "base");
+      execSync('git init -q', { cwd: tmp });
+      execSync('git config user.email "t@t.com"', { cwd: tmp });
+      execSync('git config user.name "t"', { cwd: tmp });
+      execSync('git add base.txt && git commit -qm "base"', { cwd: tmp });
+      execSync('git branch -M main', { cwd: tmp });
+
+      const baseSha = execSync('git rev-parse HEAD', { cwd: tmp, encoding:'utf8' }).trim();
+      const worktreePath = branchHelpers.createBatchWorktree(tmp, "sandcastle/issue-space", baseSha);
+
+      expect(worktreePath).toContain(" ");
+      expect(fs.existsSync(worktreePath)).toBe(true);
+      expect(execSync('git -C "' + worktreePath.replace(/"/g, "\\\"") + '" rev-parse --is-inside-work-tree', { cwd: tmp, encoding:'utf8' }).trim()).toBe("true");
+
+      branchHelpers.cleanupBatchWorktree(tmp, worktreePath);
+      expect(fs.existsSync(worktreePath)).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("prepareIssueBranch creates branches with shell-special characters via argv-safe invocation", { timeout: 15000 }, async () => {
+    const { tmp } = await initRepo(await makeTmpRepo());
+    try {
+      const baseSha = execSync("git rev-parse HEAD", { cwd: tmp, encoding: "utf8" }).trim();
+      const issueId = "999";
+      const branch = "sandcastle/issue&shell";
+
+      const result = branchHelpers.prepareIssueBranch(tmp, branch, baseSha, "main", baseSha, issueId);
+      expect(result.ok).toBe(true);
+      expect(result.action).toBe("created");
+      expect(execSync(`git branch --list "${branch}"`, { cwd: tmp, encoding: "utf8" }).trim()).toContain(branch);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("Adversarial: shell metacharacter handling", () => {
+  it("shell-special issue branch is not safe for inline git log command interpolation", { timeout: 15000 }, async () => {
+    const { tmp } = await initRepo(await makeTmpRepo());
+    try {
+      const baseSha = execSync("git rev-parse HEAD", { cwd: tmp, encoding: "utf8" }).trim();
+      const branch = "sandcastle/issue&shell";
+      execFileSync("git", ["checkout", "-b", branch], { cwd: tmp });
+      await writeFile(join(tmp, "special.txt"), "special");
+      execSync('git add special.txt && git commit -qm "special"', { cwd: tmp });
+
+      // This intentionally mirrors inline production shell interpolation in main.ts and should fail on Windows shell parsing.
+      expect(branchHelpers.hasCommitsAhead(tmp, "main", branch)).toBe(true);
+      expect(() => execSync(`git log main..${branch} --oneline`, { cwd: tmp, encoding: "utf8" })).toThrow();
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
   });
 });
 

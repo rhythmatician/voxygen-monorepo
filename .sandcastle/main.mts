@@ -5,7 +5,7 @@
 import * as sandcastle from "@ai-hero/sandcastle";
 import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
 import { z } from "zod";
-import { execFile, execSync } from "node:child_process";
+import { execFile, execSync, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -541,8 +541,7 @@ async function reconcileInProgressIssues(): Promise<void> {
       console.log(`  #${id} (${branch}) → ${prep.reason}`);
       const hasCommits = (() => {
         try {
-          const log = require('child_process').execSync(`git log origin/main..${branch} --oneline`, {encoding:'utf8', cwd: REPO_ROOT}).trim();
-          return !!log;
+          return branchHelpers.hasCommitsAhead(REPO_ROOT, "origin/main", branch);
         } catch { return false; }
       })();
       if (!hasCommits) {
@@ -1119,9 +1118,9 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
         // If no new commits but branch already has implementation (e.g., canary already at target SHA), use existing commits for review
         if (allCommits.length === 0) {
           try {
-            const existing = execSync(`git log main..${issue.branch} --oneline`, { encoding: "utf8", cwd: REPO_ROOT }).trim();
+            const existing = execFileSync("git", ["log", `main..${issue.branch}`, "--oneline"], { encoding: "utf8", cwd: REPO_ROOT }).toString().trim();
             if (existing) {
-              const shas = existing.split("\n").map((l) => l.split(" ")[0]).filter(Boolean);
+              const shas = existing.split("\n").map((l: string) => l.split(" ")[0]).filter(Boolean);
               if (shas.length > 0) {
                 console.log(`  ${issue.id} has existing commits on ${issue.branch} (${shas.join(",")}) - using for review`);
                 allCommits = [...shas];
@@ -1416,11 +1415,11 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     // Enforce invariant via helper: caller checkout never moved, git status --porcelain unchanged
     try {
       const afterBranch = execSync('git branch --show-current', {encoding:'utf8'}).trim();
-      const refSha = execSync(`git rev-parse refs/heads/${callerBranchForBatch}`, {encoding:'utf8'}).trim();
       const callerStatusAfter = (() => { try { return execSync('git status --porcelain', {encoding:'utf8', cwd: REPO_ROOT}).trim(); } catch { return null; } })();
       const callerHeadAfter = (() => { try { return execSync('git rev-parse HEAD', {encoding:'utf8', cwd: REPO_ROOT}).trim(); } catch { return null; } })();
       // Use helper for caller-unchanged check (same seam as tests) — compare against frozen snapshot from iteration start
       const callerCheck = branchHelpers.verifyCallerUnchanged(REPO_ROOT, callerBranchForBatch, callerShaForBatch);
+      const refSha = callerCheck.refSha;
       if (!callerCheck.ok) {
         console.error(`INVARIANT VIOLATION: caller unchanged FAILED — ref ${callerCheck.refSha.slice(0,7)} vs ${callerShaForBatch.slice(0,7)} checkout ${callerCheck.checkoutBranch} vs ${callerBranchForBatch}`);
       } else {
@@ -1440,7 +1439,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
       // Also verify checkout still on caller (should never have left)
       if (afterBranch !== callerBranchForBatch) {
         console.warn(`Caller checkout moved from ${callerBranchForBatch} to ${afterBranch} — restoring (should not have happened with dedicated worktree)`);
-        try { execSync(`git checkout ${callerBranchForBatch}`, {stdio:'ignore'}); } catch {}
+        try { execFileSync("git", ["checkout", callerBranchForBatch], { stdio: "ignore", cwd: REPO_ROOT }); } catch {}
       }
       // Clean up batch worktree (if used) — keep branch for PR, remove worktree via helper
       if (batchWorktreePath) {
@@ -1461,9 +1460,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   }
 
   // Immediate GC for ephemeral batch artefacts -- same-process lifecycle (not weekly cron)
-  try {
-    execSync("git branch --list 'preserve-local-*' | xargs -r git branch -D", { stdio: "ignore" });
-  } catch {}
+    try { branchHelpers.cleanupPreserveLocalBranches(REPO_ROOT); } catch {}
   try {
     execSync("git worktree prune", { stdio: "ignore" });
   } catch {}
