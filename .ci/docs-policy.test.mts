@@ -490,6 +490,120 @@ describe("R-02 Documentation policy", () => {
     }
   });
 
+  it("pre-commit staged evaluation rejects policy-invalid staged additions", { timeout: 15000 }, async () => {
+    const { mkdtemp, writeFile, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const path = await import("node:path");
+    const { execFileSync, spawnSync } = await import("node:child_process");
+    const { mkdir } = await import("node:fs/promises");
+    const dir = await mkdtemp(path.join(tmpdir(), "r02-precommit-bad-"));
+    const runGit = (args: string[]) => execFileSync("git", args, { cwd: dir, encoding: "utf-8" }).toString();
+    const docsPolicyCli = path.join(process.cwd(), ".ci/docs-policy.mts");
+    const runCheck = (base: string, mode: "candidate-head" | "cached-index") => {
+      const args = mode === "cached-index" ? ["--base", base, "--cached"] : ["--base", base, "--candidate", "HEAD"];
+      return spawnSync(process.execPath, [docsPolicyCli, ...args], {
+        cwd: dir,
+        encoding: "utf-8",
+      });
+    };
+    try {
+      runGit(["init", "-q"]);
+      runGit(["config", "user.email", "test@test.com"]);
+      runGit(["config", "user.name", "Test"]);
+      await writeFile(path.join(dir, "AGENTS.md"), "# Agents\n");
+      runGit(["add", "AGENTS.md"]);
+      runGit(["commit", "-qm", "base"]);
+      const baseSha = runGit(["rev-parse", "HEAD"]).trim();
+
+      const badPath = path.join(dir, "docs/IMPLEMENTATION_SUMMARY.md");
+      await mkdir(path.dirname(badPath), { recursive: true });
+      await writeFile(badPath, "# Implementation notes\n");
+      runGit(["add", "docs/IMPLEMENTATION_SUMMARY.md"]);
+
+      // Legacy mode from pre-commit (--candidate HEAD) misses staged files and can pass incorrectly.
+      const rHead = runCheck(baseSha, "candidate-head");
+      expect(rHead.status).toBe(0);
+
+      // Proper staged/index mode rejects staged policy-invalid additions.
+      const rCached = runCheck(baseSha, "cached-index");
+      expect(rCached.status).toBe(1);
+      expect((rCached.stderr + rCached.stdout)).toMatch(/not an admitted|Documentation policy violation/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("staged pre-commit mode evaluates only staged candidate for fix and unrelated markdown changes", { timeout: 15000 }, async () => {
+    const { mkdtemp, writeFile, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const path = await import("node:path");
+    const { execFileSync, spawnSync } = await import("node:child_process");
+    const { mkdir } = await import("node:fs/promises");
+    const dir = await mkdtemp(path.join(tmpdir(), "r02-precommit-fix-"));
+    const runGit = (args: string[]) => execFileSync("git", args, { cwd: dir, encoding: "utf-8" }).toString();
+    const docsPolicyCli = path.join(process.cwd(), ".ci/docs-policy.mts");
+    const runCheck = (base: string, mode: "candidate-head" | "cached-index" | "candidate-sha", candidate?: string) => {
+      const args =
+        mode === "cached-index"
+          ? ["--base", base, "--cached"]
+          : mode === "candidate-sha"
+            ? ["--base", base, "--candidate", candidate || "HEAD"]
+            : ["--base", base, "--candidate", "HEAD"];
+      return spawnSync(process.execPath, [docsPolicyCli, ...args], {
+        cwd: dir,
+        encoding: "utf-8",
+      });
+    };
+    try {
+      runGit(["init", "-q"]);
+      runGit(["config", "user.email", "test@test.com"]);
+      runGit(["config", "user.name", "Test"]);
+      await writeFile(path.join(dir, "AGENTS.md"), "# Agents\n");
+      runGit(["add", "AGENTS.md"]);
+      runGit(["commit", "-qm", "base"]);
+      const baseSha = runGit(["rev-parse", "HEAD"]).trim();
+
+      const oldName = "docs/wayfinder-plans-work-sandcastle-executes-implementation-work.md";
+      const oldPath = path.join(dir, oldName);
+      await mkdir(path.dirname(oldPath), { recursive: true });
+      await writeFile(oldPath, "# Legacy ADR\nstatus: accepted\ncontext: legacy behavior\ndecision: keep\nalternatives: keep");
+      runGit(["add", "docs/wayfinder-plans-work-sandcastle-executes-implementation-work.md"]);
+      runGit(["commit", "-qm", "add legacy ADR"]);
+      // Base for pre-commit evaluation is still the original clean base.
+      const withHead = runCheck(baseSha, "candidate-head");
+      expect(withHead.status).toBe(1);
+
+      // Stage a fix by renaming to the approved ADR location + valid content.
+      const newName = "docs/adr/0006-wayfinder-sandcastle-lifecycle-boundary.md";
+      const newPath = path.join(dir, newName);
+      await mkdir(path.dirname(newPath), { recursive: true });
+      await execFileSync("git", ["mv", oldName, newName], { cwd: dir, encoding: "utf-8" });
+      await writeFile(newPath, "# Wayfinder lifecycle boundary\nstatus: accepted\ncontext: plan execution\ndecision: separate execution\nalternatives: keep wayfinder scope");
+      runGit(["add", newName]);
+      // unrelated later markdown change should be evaluated only through staging, not blamed.
+      const unrelatedPath = path.join(dir, "docs/FUTURES.md");
+      await mkdir(path.dirname(unrelatedPath), { recursive: true });
+      await writeFile(unrelatedPath, "# Futures\n");
+      runGit(["add", "docs/FUTURES.md"]);
+
+      const staged = runCheck(baseSha, "cached-index");
+      expect(staged.status).toBe(0);
+      expect(staged.stdout).toMatch(/R-02 Documentation policy: ok/);
+
+      // If pre-commit kept using commit HEAD, the bad filename in existing HEAD would continue to block.
+      const head = runCheck(baseSha, "candidate-head");
+      expect(head.status).toBe(1);
+      expect((head.stderr + head.stdout)).toMatch(/not an admitted|implementation/i);
+
+      runGit(["commit", "-qm", "rename and unrelated markdown"]);
+      const committedSha = runGit(["rev-parse", "HEAD"]).trim();
+      const explicitCandidate = runCheck(baseSha, "candidate-sha", committedSha);
+      expect(explicitCandidate.status).toBe(0);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("invalid/missing candidate revision fails closed (git diff error)", { timeout: 15000 }, async () => {
     const { mkdtemp, rm } = await import("node:fs/promises");
     const { tmpdir } = await import("node:os");
