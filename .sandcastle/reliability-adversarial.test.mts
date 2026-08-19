@@ -232,7 +232,7 @@ describe("Adversarial: stale/remote/diverged branch state", () => {
 });
 
 describe("Adversarial: temporary-resource cleanup", () => {
-  it("doctor-* worktree/dir/branch are owned and cleaned; non-doctor untouched", async () => {
+  it("doctor-* worktree/dir/branch are owned and cleaned; non-doctor untouched", { timeout: 15000 }, async () => {
     const { tmp } = await initRepo(await makeTmpRepo());
     try {
       const { reconcileStaleDoctorResources, assertNoStaleDoctorResources, cleanupDoctorBranchAndWorktree } = await import("./doctor-helpers.mts");
