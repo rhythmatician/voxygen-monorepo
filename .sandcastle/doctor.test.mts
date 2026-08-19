@@ -25,12 +25,9 @@ describe("Doctor ephemeral-resource cleanup — try/finally + startup reconcilia
       expect(fs.existsSync(stalePath)).toBe(true);
       expect(execSync(`git branch --list '${staleBranch}'`, { cwd: tmp, encoding: 'utf8' }).trim()).toContain(staleBranch);
 
-      // Run helper directly in this tmp repo (change cwd)
-      const origCwd = process.cwd();
-      process.chdir(tmp);
+      // Pass tmp as explicit repoRoot — no process.chdir
       const { reconcileStaleDoctorResources } = await import("./doctor-helpers.mts");
-      await reconcileStaleDoctorResources();
-      process.chdir(origCwd);
+      await reconcileStaleDoctorResources(tmp);
 
       expect(fs.existsSync(stalePath)).toBe(false);
       const branchesAfter = execSync(`git branch --list 'doctor-*'`, { cwd: tmp, encoding: 'utf8' }).trim();
@@ -39,11 +36,9 @@ describe("Doctor ephemeral-resource cleanup — try/finally + startup reconcilia
       expect(worktreeListAfter).not.toMatch(/\.sandcastle\/worktrees\/doctor-/);
       expect(worktreeListAfter).not.toContain(staleBranch);
 
-      // Idempotent second run
-      process.chdir(tmp);
-      await reconcileStaleDoctorResources();
-      await reconcileStaleDoctorResources();
-      process.chdir(origCwd);
+      // Idempotent second run — pass repoRoot explicitly
+      await reconcileStaleDoctorResources(tmp);
+      await reconcileStaleDoctorResources(tmp);
       expect(fs.existsSync(stalePath)).toBe(false);
     } finally {
       await rm(tmp, { recursive: true, force: true });
@@ -68,11 +63,8 @@ describe("Doctor ephemeral-resource cleanup — try/finally + startup reconcilia
       expect(execSync(`git branch --list '${staleBranch}'`, { cwd: tmp, encoding: 'utf8' }).trim()).toContain(staleBranch);
       expect(execSync('git worktree list --porcelain', { cwd: tmp, encoding: 'utf8' })).toContain(stalePath);
 
-      const origCwd = process.cwd();
-      process.chdir(tmp);
       const { reconcileStaleDoctorResources } = await import("./doctor-helpers.mts");
-      await reconcileStaleDoctorResources();
-      process.chdir(origCwd);
+      await reconcileStaleDoctorResources(tmp);
 
       expect(fs.existsSync(stalePath)).toBe(false);
       expect(execSync(`git branch --list '${staleBranch}'`, { cwd: tmp, encoding: 'utf8' }).trim()).toBe("");
@@ -92,17 +84,14 @@ describe("Doctor ephemeral-resource cleanup — try/finally + startup reconcilia
       execSync('git add base.txt && git commit -qm "base"', { cwd: tmp });
       execSync('git branch -M main', { cwd: tmp });
       execSync('git branch feature/human-keep', { cwd: tmp });
-      const origCwd = process.cwd();
-      process.chdir(tmp);
       const { cleanupDoctorBranchAndWorktree } = await import("./doctor-helpers.mts");
-      // Must NOT delete human branch
-      cleanupDoctorBranchAndWorktree("feature/human-keep");
-      cleanupDoctorBranchAndWorktree("human-keep");
+      // Must NOT delete human branch — pass tmp explicitly
+      cleanupDoctorBranchAndWorktree(tmp, "feature/human-keep");
+      cleanupDoctorBranchAndWorktree(tmp, "human-keep");
       expect(execSync("git branch --list 'feature/human-keep'", { cwd: tmp, encoding: 'utf8' }).trim()).toContain("human-keep");
       // Idempotent on non-existent doctor branch
-      expect(() => cleanupDoctorBranchAndWorktree("doctor-nonexistent-12345")).not.toThrow();
-      expect(() => cleanupDoctorBranchAndWorktree("doctor-nonexistent-12345")).not.toThrow();
-      process.chdir(origCwd);
+      expect(() => cleanupDoctorBranchAndWorktree(tmp, "doctor-nonexistent-12345")).not.toThrow();
+      expect(() => cleanupDoctorBranchAndWorktree(tmp, "doctor-nonexistent-12345")).not.toThrow();
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }
@@ -119,12 +108,9 @@ describe("Doctor ephemeral-resource cleanup — try/finally + startup reconcilia
       execSync('git branch -M main', { cwd: tmp });
       const batchPath = join(tmp, ".sandcastle", "worktrees", "batch-keep");
       execSync(`git worktree add -b sandcastle/issue-9999 "${batchPath}" HEAD`, { cwd: tmp });
-      const origCwd = process.cwd();
-      process.chdir(tmp);
       const { reconcileStaleDoctorResources } = await import("./doctor-helpers.mts");
-      await reconcileStaleDoctorResources();
-      await reconcileStaleDoctorResources();
-      process.chdir(origCwd);
+      await reconcileStaleDoctorResources(tmp);
+      await reconcileStaleDoctorResources(tmp);
       expect(execSync('git worktree list --porcelain', { cwd: tmp, encoding: 'utf8' })).toContain("batch-keep");
       expect(execSync("git branch --list 'doctor-*'", { cwd: tmp, encoding: 'utf8' }).trim()).toBe("");
       // cleanup
@@ -155,21 +141,18 @@ describe("Doctor ephemeral-resource cleanup — try/finally + startup reconcilia
       await mkdir(join(tmp, ".sandcastle"), { recursive: true });
       await writeFile(join(tmp, ".sandcastle", ".doctor-cache.json"), JSON.stringify({ sha, imageId: "test-image", imageDigest: "", passed: true, at: new Date().toISOString() }));
       expect(fs.existsSync(stalePath)).toBe(true);
-      const origCwd = process.cwd();
-      process.chdir(tmp);
       const { reconcileStaleDoctorResources, assertNoStaleDoctorResources } = await import("./doctor-helpers.mts");
-      // Simulate runDoctor startup sequence: reconcile then mandatory ASSERT before cache-hit
+      // Simulate runDoctor startup sequence: reconcile then mandatory ASSERT before cache-hit — pass repoRoot explicitly
       // Before reconcile, assert must be FAIL (proves cache-hit would be blocked)
-      const before = assertNoStaleDoctorResources();
+      const before = assertNoStaleDoctorResources(tmp);
       expect(before.ok).toBe(false);
       expect(before.leftover.join(",")).toMatch(/doctor-.*cache-hit/);
       // This is exactly what runDoctor does at its very top, before checking cache
-      await reconcileStaleDoctorResources();
+      await reconcileStaleDoctorResources(tmp);
       // After reconcile, mandatory startup postcondition must pass before cache-hit is allowed
-      const after = assertNoStaleDoctorResources();
+      const after = assertNoStaleDoctorResources(tmp);
       expect(after.ok).toBe(true);
       expect(after.leftover).toEqual([]);
-      process.chdir(origCwd);
       // Even though cache would have hit, stale resources must be gone
       expect(fs.existsSync(stalePath)).toBe(false);
       expect(execSync(`git branch --list '${staleBranch}'`, { cwd: tmp, encoding: 'utf8' }).trim()).toBe("");
@@ -195,28 +178,99 @@ describe("Doctor ephemeral-resource cleanup — try/finally + startup reconcilia
       await mkdir(stalePath, { recursive: true });
       await writeFile(join(stalePath, ".git"), "gitdir: bogus");
       execSync(`git branch ${staleBranch}`, { cwd: tmp });
-      const origCwd = process.cwd();
-      process.chdir(tmp);
       const { assertNoStaleDoctorResources } = await import("./doctor-helpers.mts");
-      // With stale leftover, assert must fail — this is the gate that prevents a cached PASS
-      const blocked = assertNoStaleDoctorResources();
+      // With stale leftover, assert must fail — this is the gate that prevents a cached PASS — pass repoRoot explicitly
+      const blocked = assertNoStaleDoctorResources(tmp);
       expect(blocked.ok).toBe(false);
       expect(blocked.leftover.some((l) => l.includes(staleBranch))).toBe(true);
-      process.chdir(origCwd);
-      //Inspection-error path: run assert in a non-git directory (git worktree list will fail) → must be inspection-error, not clean
+      //Inspection-error path: run assert in a non-git directory (git worktree list will fail) → must be inspection-error, not clean — pass non-git dir as repoRoot
       const nonGit = await mkdtemp(join(tmpdir(), "doctor-nongit-"));
       try {
-        const orig2 = process.cwd();
-        process.chdir(nonGit);
         const { assertNoStaleDoctorResources: assert2 } = await import("./doctor-helpers.mts");
-        const errResult = assert2();
+        const errResult = assert2(nonGit);
         expect(errResult.ok).toBe(false);
         expect(errResult.leftover.join(",")).toMatch(/inspection-error/);
-        process.chdir(orig2);
       } finally {
         await rm(nonGit, { recursive: true, force: true });
       }
     } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  }, 15000);
+
+  it("disappearing-cwd regression — doctor cleanup succeeds even when process cwd is deleted doctor worktree, explicit repoRoot keeps host git working", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "doctor-cwd-"));
+    const originalCwd = process.cwd();
+    let doctorWorktree = "";
+    let humanWorktree = "";
+    try {
+      execSync('git init -q', { cwd: tmp });
+      execSync('git config user.email "t@t.com"', { cwd: tmp });
+      execSync('git config user.name "t"', { cwd: tmp });
+      await writeFile(join(tmp, "base.txt"), "base");
+      execSync('git add base.txt && git commit -qm "base"', { cwd: tmp });
+      execSync('git branch -M main', { cwd: tmp });
+
+      // Create a real registered doctor worktree (as Doctor does)
+      const doctorBranch = `doctor-${Date.now()}-cwd-reg`;
+      doctorWorktree = join(tmp, ".sandcastle", "worktrees", doctorBranch);
+      execSync(`git worktree add -f --no-checkout "${doctorWorktree}" -b ${doctorBranch}`, { cwd: tmp });
+      expect(fs.existsSync(doctorWorktree)).toBe(true);
+
+      // Also create a human/non-doctor worktree that must survive
+      humanWorktree = join(tmp, ".sandcastle", "worktrees", "batch-keep");
+      execSync(`git worktree add -b sandcastle/issue-9999 "${humanWorktree}" HEAD`, { cwd: tmp });
+      expect(fs.existsSync(humanWorktree)).toBe(true);
+
+      // Simulate the disappearing-cwd condition: chdir into the doctor worktree
+      process.chdir(doctorWorktree);
+      expect(process.cwd()).toBe(doctorWorktree);
+
+      // Restore/stabilize to repo root as production runDoctor finally does, BEFORE cleanup deletes the worktree
+      // If production failed to chdir before cleanup, cwd would be a deleted directory and host git would fail.
+      // Here we prove the explicit-repoRoot path works even when cwd was inside the deletable tree.
+      try { process.chdir(tmp); } catch (e) { throw new Error(`cwd restore failed: ${e}`); }
+      expect(process.cwd()).toBe(tmp);
+
+      // Now simulate the worktree being deleted while cwd was previously inside it
+      // In production this is sandbox.close() + cleanupDoctorBranchAndWorktree
+      // To fully reproduce, chdir into worktree then have cleanup delete it, but we already restored above.
+      // Second sub-case: chdir into worktree and then remove it without restoring first, proving explicit cwd saves host git.
+      process.chdir(doctorWorktree);
+      // Remove worktree via explicit repoRoot cwd — this would fail if helper used ambient cwd
+      const { cleanupDoctorBranchAndWorktree, assertNoStaleDoctorResources } = await import("./doctor-helpers.mts");
+      // Call cleanup with explicit repoRoot while cwd is still inside the to-be-deleted directory
+      cleanupDoctorBranchAndWorktree(tmp, doctorBranch);
+      // Immediately restore cwd to repoRoot (production finally does this before assert)
+      try { process.chdir(tmp); } catch {}
+      expect(process.cwd()).toBe(tmp);
+
+      // Prove postconditions via explicit repoRoot — must succeed despite prior cwd having been deleted
+      const result = assertNoStaleDoctorResources(tmp);
+      expect(result.ok).toBe(true);
+      expect(result.leftover).toEqual([]);
+
+      // Prove no registered doctor worktree, no doctor directory, no doctor branch
+      expect(execSync('git worktree list --porcelain', { cwd: tmp, encoding: 'utf8' })).not.toContain(doctorBranch);
+      expect(execSync('git worktree list --porcelain', { cwd: tmp, encoding: 'utf8' })).not.toContain(doctorWorktree);
+      expect(fs.existsSync(doctorWorktree)).toBe(false);
+      expect(execSync(`git branch --list '${doctorBranch}'`, { cwd: tmp, encoding: 'utf8' }).trim()).toBe("");
+
+      // Prove subsequent host git command from explicit repoRoot still succeeds (would have failed with ambient cwd)
+      const wdList = execSync('git worktree list --porcelain', { cwd: tmp, encoding: 'utf8' });
+      expect(wdList).toContain("batch-keep");
+      expect(wdList).toContain(humanWorktree);
+
+      // Prove human/non-doctor worktrees remain untouched
+      expect(fs.existsSync(humanWorktree)).toBe(true);
+      expect(execSync('git worktree list --porcelain', { cwd: tmp, encoding: 'utf8' })).toContain("batch-keep");
+      expect(execSync("git branch --list 'doctor-*'", { cwd: tmp, encoding: 'utf8' }).trim()).toBe("");
+
+      // Cleanup human worktree
+      execSync(`git worktree remove --force "${humanWorktree}"`, { cwd: tmp });
+      execSync('git branch -D sandcastle/issue-9999', { cwd: tmp });
+    } finally {
+      try { process.chdir(originalCwd); } catch {}
       await rm(tmp, { recursive: true, force: true });
     }
   }, 15000);
