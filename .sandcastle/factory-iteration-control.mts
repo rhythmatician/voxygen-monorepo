@@ -32,6 +32,12 @@ export interface IterationPlanningDecision {
   skipIteration: boolean;
 }
 
+export interface QualificationLifecyclePolicy {
+  claimExternalState: boolean;
+  mutateOutcomeState: boolean;
+  integrate: boolean;
+}
+
 const DEFAULT_MAX_ITERATIONS = 10;
 
 export function parseQualificationArgs(argv: string[]): QualificationRequest {
@@ -126,4 +132,26 @@ export function makeIterationControl(defaultMaxIterations: number, argv: string[
     requestedIssueNumber,
     qualification: config,
   };
+}
+
+export function qualificationLifecyclePolicy(control: QualificationRequest): QualificationLifecyclePolicy {
+  switch (control.kind) {
+    case "normal":
+      return {
+        claimExternalState: true,
+        mutateOutcomeState: true,
+        integrate: true,
+      };
+
+    case "qualify":
+    case "invalid":
+      return {
+        claimExternalState: false,
+        mutateOutcomeState: false,
+        integrate: false,
+      };
+
+    default:
+      throw new Error(`Unhandled qualification kind: ${(control as { kind: string }).kind}`);
+  }
 }

@@ -5,6 +5,7 @@ import {
   parseQualificationArgs,
   resolveIterationLimit,
   planQualificationIssue,
+  qualificationLifecyclePolicy,
 } from "./factory-iteration-control.mts";
 
 function issue(overrides: { number: number; title: string }) {
@@ -121,5 +122,35 @@ describe("Qualification selector", () => {
   it("accepts #151 issue syntax and normalizes to 151", () => {
     const control = parseQualificationArgs(["node", "main.mts", "--issue", "#151"]);
     expect(control).toEqual({ kind: "qualify", issueNumber: "151" });
+  });
+
+  it("qualification lifecycle policy suppresses external claim/outcome/integration", () => {
+    const qualify = makeIterationControl(10, ["node", "main.mts", "--issue", "151"]);
+    const policy = qualificationLifecyclePolicy(qualify.qualification);
+    expect(policy).toEqual({
+      claimExternalState: false,
+      mutateOutcomeState: false,
+      integrate: false,
+    });
+  });
+
+  it("normal lifecycle policy retains all qualification side effects", () => {
+    const control = makeIterationControl(10, ["node", "main.mts"]);
+    const policy = qualificationLifecyclePolicy(control.qualification);
+    expect(policy).toEqual({
+      claimExternalState: true,
+      mutateOutcomeState: true,
+      integrate: true,
+    });
+  });
+
+  it("invalid qualification uses the same no-mutation lifecycle policy as qualify", () => {
+    const invalid = makeIterationControl(10, ["node", "main.mts", "--issue", "not-a-number"]);
+    const policy = qualificationLifecyclePolicy(invalid.qualification);
+    expect(policy).toEqual({
+      claimExternalState: false,
+      mutateOutcomeState: false,
+      integrate: false,
+    });
   });
 });

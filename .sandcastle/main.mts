@@ -33,7 +33,7 @@ import {
   makeIterationControl,
   planIssuesForIteration,
   type IterationControl,
-  type QualificationRequest,
+  qualificationLifecyclePolicy,
 } from "./factory-iteration-control.mts";
 import {
   EXPECTED_SANDCASTLE_SOURCE_PREFIX,
@@ -68,30 +68,16 @@ const REVIEW_RETRY_BUDGET = 1;
 const MECHANICAL_RETRY_BUDGET = 2;
 const MECHANICAL_RETRY_BASE_MS = 1000;
 const ITERATION_CONTROL: IterationControl = makeIterationControl(MAX_ITERATIONS, process.argv);
+const QUALIFICATION_LIFECYCLE = qualificationLifecyclePolicy(ITERATION_CONTROL.qualification);
 if (ITERATION_CONTROL.qualification.kind === "invalid") {
   const reason = ITERATION_CONTROL.qualification.reason;
   console.error(`Invalid --issue argument (${reason})`);
   process.exit(1);
 }
 
-function assertUnreachable(x: never, message: string): never {
-  throw new Error(`${message}: ${JSON.stringify(x)}`);
-}
-
-function githubCapabilityModeForIteration(control: QualificationRequest): "read-only" | "read-write" {
-  switch (control.kind) {
-    case "qualify":
-      return "read-only";
-    case "normal":
-      return "read-write";
-    case "invalid":
-      return "read-only";
-    default:
-      return assertUnreachable(control as never, "Unhandled qualification mode");
-  }
-}
-
-const GH_CAPABILITY_MODE = githubCapabilityModeForIteration(ITERATION_CONTROL.qualification);
+const GH_CAPABILITY_MODE: "read-only" | "read-write" = QUALIFICATION_LIFECYCLE.claimExternalState || QUALIFICATION_LIFECYCLE.mutateOutcomeState || QUALIFICATION_LIFECYCLE.integrate
+  ? "read-write"
+  : "read-only";
 const WORKER_SANDBOX_ENV = resolveWorkerSandboxEnv(GH_CAPABILITY_MODE, ghToken());
 
 const gitHubCapability = makeGitHubCapability({
@@ -1096,16 +1082,21 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
 
   // ----- Phase 0.5: Claim before work (host-side, before expensive workers) -----
   let claimedIssues: typeof plannedIssues = [];
-  for (const p of plannedIssues) {
-    const src = eligible.find((e) => String(e.number) === p.id);
-    if (!src) continue;
-    const ok = await claimIssue(src);
-    if (ok) claimedIssues.push(p);
-    else console.warn(`  Skipping #${p.id} -- claim failed, likely raced`);
+  if (QUALIFICATION_LIFECYCLE.claimExternalState) {
+    for (const p of plannedIssues) {
+      const src = eligible.find((e) => String(e.number) === p.id);
+      if (!src) continue;
+      const ok = await claimIssue(src);
+      if (ok) claimedIssues.push(p);
+      else console.warn(`  Skipping #${p.id} -- claim failed, likely raced`);
+    }
+  } else {
+    console.log("Qualification mode: external claim suppressed (read-only and explicit target selection).");
+    claimedIssues = [...plannedIssues];
   }
 
   if (claimedIssues.length === 0) {
-    console.log("No issues claimed -- nothing to execute this iteration.");
+    console.log("No issues prepared for execution -- nothing to execute this iteration.");
     continue;
   }
 
@@ -1125,14 +1116,18 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
       } catch {}
       preparedIssues.push(p);
     } else {
-      if (prep.action === 'blocked') {
-        console.warn(`  #${p.id} (${p.branch}) → ${prep.reason} — fail closed, preserving/blocking`);
-        await markBlocked(p.id, p.branch, prep.reason);
+      if (QUALIFICATION_LIFECYCLE.mutateOutcomeState) {
+        if (prep.action === "blocked") {
+          console.warn(`  #${p.id} (${p.branch}) → ${prep.reason} — fail closed, preserving/blocking`);
+          await markBlocked(p.id, p.branch, prep.reason);
+        } else {
+          console.error(`  #${p.id} (${p.branch}) → prepare failed (${prep.action}): ${prep.reason}`);
+          await markBlocked(p.id, p.branch, prep.reason);
+        }
       } else {
-        console.error(`  #${p.id} (${p.branch}) → prepare failed (${prep.action}): ${prep.reason}`);
-        await markBlocked(p.id, p.branch, prep.reason);
+        console.log(`  #${p.id} (${p.branch}) → prepare failed (${prep.action}) — preserving for qualification evidence`);
       }
-      // Do not launch worker for blocked branches — already marked, will not be retried until branch removed
+      // Do not launch worker for blocked branches — already preserved, will not be retried until branch removed
     }
   }
   claimedIssues = preparedIssues;
@@ -1321,6 +1316,20 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
   const failedIssueIds = failed.map((issue) => issue.id);
   const mutationPlan = partitionToMutationPlan(partition);
   for (const mutation of mutationPlan) {
+    if (!QUALIFICATION_LIFECYCLE.mutateOutcomeState) {
+      if (mutation.kind === "failed") {
+        const reason = mutation.reason.slice(0, WORKER_REASON_TRUNCATE);
+        console.error(`  ✗ ${mutation.issue.id} (${mutation.issue.branch}) failed: ${reason} [external mutation suppressed by qualification policy]`);
+      } else if (mutation.kind === "reviewRejected") {
+        const reason = mutation.reason;
+        console.warn(`  ⚠ ${mutation.issue.id} review rejected (${reason.slice(0, REVIEW_ERROR_TRUNCATE)}) [external mutation suppressed by qualification policy]`);
+      } else {
+        const reason = mutation.reason;
+        console.warn(`  ⚠ ${mutation.issue.id} review verdict contract failed (FACTORY_ERROR): ${reason.slice(0, REVIEW_ERROR_TRUNCATE)} [external mutation suppressed by qualification policy]`);
+      }
+      continue;
+    }
+
     if (mutation.kind === "failed") {
       const reason = mutation.reason.slice(0, WORKER_REASON_TRUNCATE);
       console.error(`  ✗ ${mutation.issue.id} (${mutation.issue.branch}) failed: ${reason}`);
@@ -1362,10 +1371,18 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
     }
   }
   if (reviewRejected.length > 0) {
-    console.log(`  ${reviewRejected.length} branch(es) review-rejected (approved=false) - preserved, marked agent:blocked, not merged`);
+    if (QUALIFICATION_LIFECYCLE.mutateOutcomeState) {
+      console.log(`  ${reviewRejected.length} branch(es) review-rejected (approved=false) - preserved, marked agent:blocked, not merged`);
+    } else {
+      console.log(`  ${reviewRejected.length} branch(es) review-rejected (approved=false) - external mutation suppressed by qualification policy`);
+    }
   }
   if (factoryErrors.length > 0) {
-    console.log(`  ${factoryErrors.length} branch(es) produced FACTORY_ERROR - preserved for inspection, stopping outer run`);
+    if (QUALIFICATION_LIFECYCLE.mutateOutcomeState) {
+      console.log(`  ${factoryErrors.length} branch(es) produced FACTORY_ERROR - preserved for inspection, stopping outer run`);
+    } else {
+      console.log(`  ${factoryErrors.length} branch(es) produced FACTORY_ERROR - external mutation suppressed by qualification policy, preserved for inspection`);
+    }
   }
 
   if (!canClaimNextOuterIteration(partition)) {
@@ -1375,6 +1392,11 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
 
   if (completedBranches.length === 0) {
     console.log("No commits produced. Nothing to merge this iteration.");
+    continue;
+  }
+
+  if (!QUALIFICATION_LIFECYCLE.integrate) {
+    console.log("Qualification mode: integration suppressed by lifecycle policy; preserving local branches/logs for inspection.");
     continue;
   }
 
