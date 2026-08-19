@@ -46,6 +46,7 @@ import {
   makeGitHubCapability,
   GitHubWriteForbiddenError,
 } from "./github-capability.mts";
+import { resolveWorkerSandboxEnv } from "./sandbox-token-env.mts";
 
 const execFileAsync = promisify(execFile);
 
@@ -91,6 +92,7 @@ function githubCapabilityModeForIteration(control: QualificationRequest): "read-
 }
 
 const GH_CAPABILITY_MODE = githubCapabilityModeForIteration(ITERATION_CONTROL.qualification);
+const WORKER_SANDBOX_ENV = resolveWorkerSandboxEnv(GH_CAPABILITY_MODE, ghToken());
 
 const gitHubCapability = makeGitHubCapability({
   mode: GH_CAPABILITY_MODE,
@@ -794,7 +796,7 @@ async function runDoctor(): Promise<boolean> {
   try {
     sandbox = await sandcastle.createSandbox({
       branch: doctorBranch,
-      sandbox: docker({ env: { GH_TOKEN: ghToken() } }),
+      sandbox: docker({ env: WORKER_SANDBOX_ENV }),
       hooks,
       timeouts: { worktreeMs: 120_000 },
     });
@@ -984,7 +986,7 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
     try {
       const planRun = await sandcastle.run({
         hooks,
-        sandbox: docker({ env: { GH_TOKEN: ghToken() } }),
+        sandbox: docker({ env: WORKER_SANDBOX_ENV }),
         name: "planner",
         maxIterations: 1,
         agent: sandcastle.muse("muse-spark-1.2-contributor"),
@@ -1150,7 +1152,7 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
           sandbox = await sandcastle.createSandbox({
             branch: issue.branch,
             baseBranch: factoryBaseSha,
-            sandbox: docker({ env: { GH_TOKEN: ghToken() } }),
+            sandbox: docker({ env: WORKER_SANDBOX_ENV }),
             hooks,
             copyToWorktree,
             timeouts: { worktreeMs: 600_000 },
@@ -1403,7 +1405,7 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
   try {
     await sandcastle.run({
       hooks,
-      sandbox: docker({ env: { GH_TOKEN: ghToken() } }),
+      sandbox: docker({ env: WORKER_SANDBOX_ENV }),
       name: "merger",
       maxIterations: 1,
       cwd: batchWorktreePath,
