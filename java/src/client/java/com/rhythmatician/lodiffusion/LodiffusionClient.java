@@ -75,8 +75,15 @@ public class LodiffusionClient implements ClientModInitializer {
             stopDatasetExportService();
         });
 
-        // --- Client tick: update player position + drain GPU noise queue ---
+        // --- Client tick: update player position + dimension-change-aware rebind + drain GPU noise queue ---
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
+            // Dimension-change-aware rebind — teleport to the_end activates tracer without rejoin.
+            // Detects client.world.getRegistryKey() != last bound dimension and rebinds
+            // via stop() + queue clear + start() so tracer-mode gate re-evaluates before
+            // worker entry. Debounced via service lock.
+            if (client.world != null) {
+                LOD_SERVICE.checkAndRebindIfNeeded(client.world, client.getServer());
+            }
             if (LOD_SERVICE.isRunning() && client.player != null) {
                 LOD_SERVICE.updatePlayerPosition(client.player.getBlockPos());
             }
