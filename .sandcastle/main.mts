@@ -23,6 +23,11 @@ import {
 } from "./review-verdict.mts";
 import { formatGhFailure, getErrorMessage, getGhErrorDetails } from "./gh-errors.mts";
 import { parsePlannerOutput, fallbackToSingle } from "./planner-helpers.mts";
+import {
+  makeIterationControl,
+  planQualificationIssue,
+  type IterationControl,
+} from "./factory-iteration-control.mts";
 
 const execFileAsync = promisify(execFile);
 
@@ -43,6 +48,7 @@ const TARGET_BRANCH = "main";
 const REVIEW_RETRY_BUDGET = 1;
 const MECHANICAL_RETRY_BUDGET = 2;
 const MECHANICAL_RETRY_BASE_MS = 1000;
+const ITERATION_CONTROL: IterationControl = makeIterationControl(MAX_ITERATIONS, process.argv);
 
 // Worker result after implement + review -- commits plus machine-readable verdict.
 type WorkerResult = { commits: string[]; verdict: ReviewVerdict | null; reviewText?: string };
@@ -827,7 +833,7 @@ async function runDoctor(): Promise<boolean> {
 // ---------------------------------------------------------------------------
 // Main loop
 // ---------------------------------------------------------------------------
-for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
+for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration++) {
   // Reconcile + doctor before looking for new work — guarantees liveness, no indefinite claim
   if (iteration === 1) {
     const doctorOk = await runDoctor();
@@ -888,25 +894,33 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     break;
   }
 
-  // ----- Phase 1: Overlap-aware planning (LLM may serialize) -----
-  // Planner receives only eligible issues; it must return a subset.
-  const issuesJson = JSON.stringify(
-    eligible.map((i) => ({
-      number: i.number,
-      title: i.title,
-      labels: i.labels,
-      branch: branchForIssue(i.number),
-    })),
-    null,
-    2,
-  );
-
   let plannedIssues: PlannedIssue[] = [];
-  if (eligible.length === 1) {
+  const qualificationSelection = planQualificationIssue(eligible, {
+    requestedIssueNumber: ITERATION_CONTROL.requestedIssueNumber,
+  });
+  if (qualificationSelection.plannedIssues.length > 0) {
+    plannedIssues = qualificationSelection.plannedIssues;
+    console.log(`Qualification mode: explicitly selected issue #${plannedIssues[0].id} only.`);
+  } else if (ITERATION_CONTROL.requestedIssueNumber) {
+    console.log(`Qualification mode requested issue #${ITERATION_CONTROL.requestedIssueNumber}, but it is not eligible in this iteration.`);
+    continue;
+  } else if (eligible.length === 1) {
     // Single issue -- no need to invoke LLM
     plannedIssues = [{ id: String(eligible[0].number), title: eligible[0].title, branch: branchForIssue(eligible[0].number) }];
     console.log(`Single eligible issue -- skipping LLM planner, direct dispatch #${plannedIssues[0].id}`);
   } else {
+    // ----- Phase 1: Overlap-aware planning (LLM may serialize) -----
+    // Planner receives only eligible issues; it must return a subset.
+    const issuesJson = JSON.stringify(
+      eligible.map((i) => ({
+        number: i.number,
+        title: i.title,
+        labels: i.labels,
+        branch: branchForIssue(i.number),
+      })),
+      null,
+      2,
+    );
     // Use Output.string (not Output.object) so we get the raw planner stream even if it contains
     // fences or surrounding reasoning — then parse via testable helper. This fixes the false
     // rejection where StructuredOutputError.rawMatched already failed JSON.parse and re-parsing it
