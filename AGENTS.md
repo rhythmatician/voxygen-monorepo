@@ -1,5 +1,13 @@
 # AGENTS.md
 
+## Coding
+
+Use YAGNI and DRY principles.
+
+## Token safety
+
+Prefix terminal commands with rtk to avoid context floods.
+
 ## Agent skills
 
 ### Issue tracker
