@@ -1,15 +1,19 @@
 import { branchForIssue } from "./dispatch.mts";
 import type { IssueInput } from "./dispatch.mts";
 
+export type QualificationRequest =
+  | { kind: "normal" }
+  | { kind: "qualify"; issueNumber: string }
+  | { kind: "invalid"; reason: string };
+
 export interface IterationControlConfig {
   requestedIssueNumber?: string;
-  invalidRequestedIssue?: string;
 }
 
 export interface IterationControl {
   maxIterations: number;
   requestedIssueNumber?: string;
-  invalidRequestedIssue?: string;
+  qualification: QualificationRequest;
 }
 
 export interface PlannedFromQualification {
@@ -19,7 +23,6 @@ export interface PlannedFromQualification {
 export type QualificationDecisionMode =
   | "qualified"
   | "qualify-unsupported"
-  | "qualify-invalid"
   | "single-eligible"
   | "planner-required";
 
@@ -31,35 +34,29 @@ export interface IterationPlanningDecision {
 
 const DEFAULT_MAX_ITERATIONS = 10;
 
-export function parseQualificationArgs(argv: string[]): IterationControlConfig {
+export function parseQualificationArgs(argv: string[]): QualificationRequest {
   let requestedIssueValue: string | undefined;
-  let invalidRequestedIssue: string | undefined;
   for (let i = 2; i < argv.length; i++) {
     const name = argv[i];
     if (name !== "--issue") continue;
     const value = argv[i + 1];
     if (!value || value.startsWith("--")) {
-      invalidRequestedIssue = value ? `${name} ${value}` : name;
-      break;
+      return { kind: "invalid", reason: value ? `${name} ${value}` : name };
     }
     requestedIssueValue = value;
     break;
   }
 
-  if (requestedIssueValue === undefined) {
-    if (invalidRequestedIssue) return { invalidRequestedIssue };
-    return {};
-  }
+  if (requestedIssueValue === undefined) return { kind: "normal" };
 
   const normalized = requestedIssueValue.startsWith("#") ? requestedIssueValue.slice(1) : requestedIssueValue;
   const issueNumber = normalized.trim();
-  if (/^\d+$/.test(issueNumber)) return { requestedIssueNumber: issueNumber };
+  if (/^\d+$/.test(issueNumber)) return { kind: "qualify", issueNumber };
 
-  return { invalidRequestedIssue: requestedIssueValue };
+  return { kind: "invalid", reason: requestedIssueValue };
 }
 
 export function resolveIterationLimit(defaultLimit: number, control: IterationControlConfig): number {
-  if (control.invalidRequestedIssue) return 0;
   return control.requestedIssueNumber ? 1 : defaultLimit;
 }
 
@@ -102,14 +99,6 @@ export function planIssuesForIteration(
     };
   }
 
-  if (control.invalidRequestedIssue) {
-    return {
-      mode: "qualify-invalid",
-      plannedIssues: [],
-      skipIteration: true,
-    };
-  }
-
   if (eligibleIssues.length === 1) {
     return {
       mode: "single-eligible",
@@ -131,9 +120,10 @@ export function planIssuesForIteration(
 
 export function makeIterationControl(defaultMaxIterations: number, argv: string[]): IterationControl {
   const config = parseQualificationArgs(argv);
+  const requestedIssueNumber = config.kind === "qualify" ? config.issueNumber : undefined;
   return {
-    maxIterations: resolveIterationLimit(defaultMaxIterations, config),
-    requestedIssueNumber: config.requestedIssueNumber,
-    invalidRequestedIssue: config.invalidRequestedIssue,
+    maxIterations: resolveIterationLimit(defaultMaxIterations, { requestedIssueNumber }),
+    requestedIssueNumber,
+    qualification: config,
   };
 }

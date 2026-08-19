@@ -62,6 +62,11 @@ const REVIEW_RETRY_BUDGET = 1;
 const MECHANICAL_RETRY_BUDGET = 2;
 const MECHANICAL_RETRY_BASE_MS = 1000;
 const ITERATION_CONTROL: IterationControl = makeIterationControl(MAX_ITERATIONS, process.argv);
+if (ITERATION_CONTROL.qualification.kind === "invalid") {
+  const reason = ITERATION_CONTROL.qualification.reason;
+  console.error(`Invalid --issue argument (${reason})`);
+  process.exit(1);
+}
 
 // Worker result after implement + review -- commits plus machine-readable verdict.
 type WorkerResult = { commits: string[]; verdict: ReviewVerdict | null; reviewText?: string };
@@ -905,7 +910,6 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
 
   const iterationPlan = planIssuesForIteration(eligible, {
     requestedIssueNumber: ITERATION_CONTROL.requestedIssueNumber,
-    invalidRequestedIssue: ITERATION_CONTROL.invalidRequestedIssue,
   });
 
   let plannedIssues: PlannedIssue[] = [];
@@ -915,10 +919,6 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
   } else if (iterationPlan.mode === "qualify-unsupported") {
     const requestedIssueNumber = ITERATION_CONTROL.requestedIssueNumber;
     console.log(`Qualification mode requested issue #${requestedIssueNumber}, but it is not eligible in this iteration.`);
-    continue;
-  } else if (iterationPlan.mode === "qualify-invalid") {
-    const requestedIssue = ITERATION_CONTROL.invalidRequestedIssue ?? "<unknown>";
-    console.log(`Invalid qualification request (${requestedIssue}) — refusing to run production planning in this invocation.`);
     continue;
   } else if (iterationPlan.mode === "single-eligible") {
     plannedIssues = iterationPlan.plannedIssues;

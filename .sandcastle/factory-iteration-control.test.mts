@@ -26,9 +26,10 @@ describe("Qualification selector", () => {
       issue({ number: 152, title: "issue 152" }),
     ];
     const control = parseQualificationArgs(["node", "main.mts", "--issue", "152"]);
-    expect(control.requestedIssueNumber).toBe("152");
+    expect(control).toEqual({ kind: "qualify", issueNumber: "152" });
 
-    const selected = planQualificationIssue(eligible, control);
+    const resolved = makeIterationControl(10, ["node", "main.mts", "--issue", "152"]);
+    const selected = planQualificationIssue(eligible, resolved);
     expect(selected.plannedIssues).toEqual([
       { id: "152", title: "issue 152", branch: "sandcastle/issue-152" },
     ]);
@@ -39,7 +40,7 @@ describe("Qualification selector", () => {
       issue({ number: 151, title: "issue 151" }),
       issue({ number: 152, title: "issue 152" }),
     ];
-    const control = parseQualificationArgs(["node", "main.mts", "--issue", "999"]);
+    const control = makeIterationControl(10, ["node", "main.mts", "--issue", "999"]);
     const selected = planQualificationIssue(eligible, control);
     expect(selected.plannedIssues).toHaveLength(0);
   });
@@ -77,25 +78,20 @@ describe("Qualification selector", () => {
 
   it("malformed --issue fails closed and disables iteration", () => {
     const control = parseQualificationArgs(["node", "main.mts", "--issue", "not-a-number"]);
-    expect(control.requestedIssueNumber).toBeUndefined();
-    expect(control.invalidRequestedIssue).toBe("not-a-number");
-
+    expect(control).toEqual({ kind: "invalid", reason: "not-a-number" });
     const controlFromEntry = makeIterationControl(10, ["node", "main.mts", "--issue", "not-a-number"]);
-    expect(controlFromEntry.maxIterations).toBe(0);
-
+    expect(controlFromEntry.requestedIssueNumber).toBeUndefined();
+    expect(controlFromEntry.qualification).toEqual({ kind: "invalid", reason: "not-a-number" });
     const eligible = [issue({ number: 151, title: "issue 151" }), issue({ number: 152, title: "issue 152" })];
-    const iterationPlan = planIssuesForIteration(eligible, controlFromEntry);
-    expect(iterationPlan.mode).toBe("qualify-invalid");
-    expect(iterationPlan.skipIteration).toBe(true);
-    expect(iterationPlan.plannedIssues).toHaveLength(0);
+    expect(planQualificationIssue(eligible, controlFromEntry).plannedIssues).toHaveLength(0);
   });
 
   it("missing --issue value fails closed and disables iteration", () => {
     const control = parseQualificationArgs(["node", "main.mts", "--issue"]);
-    expect(control.requestedIssueNumber).toBeUndefined();
-    expect(control.invalidRequestedIssue).toBe("--issue");
+    expect(control).toEqual({ kind: "invalid", reason: "--issue" });
     const controlFromEntry = makeIterationControl(10, ["node", "main.mts", "--issue"]);
-    expect(controlFromEntry.maxIterations).toBe(0);
+    expect(controlFromEntry.qualification).toEqual({ kind: "invalid", reason: "--issue" });
+    expect(planQualificationIssue([], controlFromEntry).plannedIssues).toHaveLength(0);
   });
 
   it("normal mode preserves default planning behavior and does not engage qualification", () => {
@@ -124,6 +120,6 @@ describe("Qualification selector", () => {
 
   it("accepts #151 issue syntax and normalizes to 151", () => {
     const control = parseQualificationArgs(["node", "main.mts", "--issue", "#151"]);
-    expect(control.requestedIssueNumber).toBe("151");
+    expect(control).toEqual({ kind: "qualify", issueNumber: "151" });
   });
 });
