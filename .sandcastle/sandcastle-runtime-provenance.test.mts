@@ -2,6 +2,9 @@ import { describe, it, expect } from "vitest";
 import {
   EXPECTED_SANDCASTLE_SOURCE_PREFIX,
   EXPECTED_SANDCASTLE_SOURCE_SHA,
+  resolveSandcastleRuntimeDistPath,
+  verifySandcastleRuntimeDist,
+  missingSandcastleRuntimeSymbols,
   isExpectedSandcastleSourceHead,
 } from "./sandcastle-runtime-provenance.mts";
 
@@ -14,5 +17,14 @@ describe("Sandcastle runtime provenance guard", () => {
     expect(isExpectedSandcastleSourceHead("a95f3a5c")).toBe(false);
     expect(isExpectedSandcastleSourceHead("")).toBe(false);
   });
-});
 
+  it("verifies runtime artifact has required stock Sandcastle symbols (not fork-specific liveness strings)", () => {
+    const distPath = resolveSandcastleRuntimeDistPath();
+    expect(distPath).toBeTruthy();
+    const missing = missingSandcastleRuntimeSymbols(distPath);
+    expect(missing).toEqual([]);
+    const runtime = verifySandcastleRuntimeDist(distPath);
+    expect(runtime.ok).toBe(true);
+    expect(runtime.missing).toEqual([]);
+  });
+});

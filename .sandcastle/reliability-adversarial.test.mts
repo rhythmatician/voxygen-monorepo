@@ -8,7 +8,12 @@ import { parsePlannerOutput, fallbackToSingle } from "./planner-helpers.mts";
 import { isEligible, branchForIssue } from "./dispatch.mts";
 import { TRACER_BODY } from "./fixtures.mts";
 import * as branchHelpers from "./branch-helpers.mts";
-import { canClaimNextOuterIteration, partitionWorkerOutcomes, type WorkerOutcome } from "./factory-verdict-gate.mts";
+import {
+  canClaimNextOuterIteration,
+  partitionToMutationPlan,
+  partitionWorkerOutcomes,
+  type WorkerOutcome,
+} from "./factory-verdict-gate.mts";
 import { verdictFixture } from "./review-verdict.mts";
 
 // Adversarial acceptance: local git tmp repos, no GH, no LLM
@@ -62,6 +67,25 @@ describe("Adversarial: reviewer verdict contract", () => {
     expect(result.factoryErrors[0]?.id).toBe("151");
     expect(result.reviewRejected).toHaveLength(0);
     expect(result.shouldStopOuterLoop).toBe(true);
+  });
+
+  it("FACTORY_ERROR maps to factoryError mutation action (no semantic blocked action)", () => {
+    const issues = [
+      { id: "151", branch: "sandcastle/issue-151" },
+      { id: "152", branch: "sandcastle/issue-152" },
+    ];
+    const settled = [
+      { status: "fulfilled" as const, value: { commits: ["abc"], verdict: null } },
+      { status: "fulfilled" as const, value: { commits: ["def"], verdict: verdictFixture({ approved: true }) } },
+    ] satisfies WorkerOutcome[];
+    const partition = partitionWorkerOutcomes(issues, settled);
+    const actions = partitionToMutationPlan(partition);
+
+    expect(actions).toHaveLength(1);
+    expect(actions.map((a) => a.kind)).toContain("factoryError");
+    expect(actions.some((a) => a.kind === "reviewRejected")).toBe(false);
+    expect(actions.every((a) => a.kind === "factoryError" || a.kind === "reviewRejected" || a.kind === "failed")).toBe(true);
+    expect(actions.find((a) => a.kind === "factoryError")?.issue.id).toBe("151");
   });
 
   it("approved false verdict remains review rejection and does not stop outer loop", () => {

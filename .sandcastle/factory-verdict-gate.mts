@@ -20,6 +20,50 @@ export type WorkerPartition = {
   shouldStopOuterLoop: boolean;
 };
 
+export type WorkerMutationKind = "failed" | "reviewRejected" | "factoryError";
+
+export type WorkerMutationAction = {
+  kind: WorkerMutationKind;
+  issue: WorkerIssue;
+  reason: string;
+  verdict?: ReviewVerdict | null;
+  reviewText?: string;
+};
+
+export function partitionToMutationPlan(partition: WorkerPartition): WorkerMutationAction[] {
+  const actions: WorkerMutationAction[] = [];
+
+  for (const issue of partition.failed) {
+    actions.push({
+      kind: "failed",
+      issue,
+      reason: issue.reason,
+    });
+  }
+
+  for (const issue of partition.reviewRejected) {
+    actions.push({
+      kind: "reviewRejected",
+      issue: { id: issue.id, branch: issue.branch, title: issue.title },
+      reason: issue.reason,
+      verdict: issue.verdict,
+      reviewText: issue.reviewText,
+    });
+  }
+
+  for (const issue of partition.factoryErrors) {
+    actions.push({
+      kind: "factoryError",
+      issue: { id: issue.id, branch: issue.branch, title: issue.title },
+      reason: issue.reason,
+      verdict: issue.verdict,
+      reviewText: issue.reviewText,
+    });
+  }
+
+  return actions;
+}
+
 export function canClaimNextOuterIteration(partition: WorkerPartition): boolean {
   return partition.factoryErrors.length === 0;
 }

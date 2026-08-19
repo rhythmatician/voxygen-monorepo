@@ -66,13 +66,36 @@ describe("Qualification selector", () => {
     ]);
   });
 
-  it("rejects qualification request for ineligible issue and skips iteration", () => {
-    const eligible = [issue({ number: 151, title: "issue 151" })];
+  it("rejects qualification request for ineligible issue and skips iteration without substitution", () => {
+    const eligible = [issue({ number: 151, title: "issue 151" }), issue({ number: 152, title: "issue 152" })];
     const control = makeIterationControl(10, ["node", "main.mts", "--issue", "999"]);
     const iterationPlan = planIssuesForIteration(eligible, control);
     expect(iterationPlan.mode).toBe("qualify-unsupported");
     expect(iterationPlan.skipIteration).toBe(true);
     expect(iterationPlan.plannedIssues).toHaveLength(0);
+  });
+
+  it("malformed --issue fails closed and disables iteration", () => {
+    const control = parseQualificationArgs(["node", "main.mts", "--issue", "not-a-number"]);
+    expect(control.requestedIssueNumber).toBeUndefined();
+    expect(control.invalidRequestedIssue).toBe("not-a-number");
+
+    const controlFromEntry = makeIterationControl(10, ["node", "main.mts", "--issue", "not-a-number"]);
+    expect(controlFromEntry.maxIterations).toBe(0);
+
+    const eligible = [issue({ number: 151, title: "issue 151" }), issue({ number: 152, title: "issue 152" })];
+    const iterationPlan = planIssuesForIteration(eligible, controlFromEntry);
+    expect(iterationPlan.mode).toBe("qualify-invalid");
+    expect(iterationPlan.skipIteration).toBe(true);
+    expect(iterationPlan.plannedIssues).toHaveLength(0);
+  });
+
+  it("missing --issue value fails closed and disables iteration", () => {
+    const control = parseQualificationArgs(["node", "main.mts", "--issue"]);
+    expect(control.requestedIssueNumber).toBeUndefined();
+    expect(control.invalidRequestedIssue).toBe("--issue");
+    const controlFromEntry = makeIterationControl(10, ["node", "main.mts", "--issue"]);
+    expect(controlFromEntry.maxIterations).toBe(0);
   });
 
   it("normal mode preserves default planning behavior and does not engage qualification", () => {
@@ -102,10 +125,5 @@ describe("Qualification selector", () => {
   it("accepts #151 issue syntax and normalizes to 151", () => {
     const control = parseQualificationArgs(["node", "main.mts", "--issue", "#151"]);
     expect(control.requestedIssueNumber).toBe("151");
-  });
-
-  it("ignores malformed --issue values and stays in default production mode", () => {
-    const control = parseQualificationArgs(["node", "main.mts", "--issue", "not-a-number"]);
-    expect(control.requestedIssueNumber).toBeUndefined();
   });
 });

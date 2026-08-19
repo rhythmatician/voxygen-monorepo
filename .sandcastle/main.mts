@@ -12,7 +12,13 @@ import * as path from "node:path";
 
 const REPO_ROOT = process.cwd();
 import { isEligible, branchForIssue, type IssueInput } from "./dispatch.mts";
-import { canClaimNextOuterIteration, partitionWorkerOutcomes, type WorkerOutcome } from "./factory-verdict-gate.mts";
+import {
+  canClaimNextOuterIteration,
+  partitionWorkerOutcomes,
+  partitionToMutationPlan,
+  type WorkerMutationKind,
+  type WorkerOutcome,
+} from "./factory-verdict-gate.mts";
 import * as branchHelpers from "./branch-helpers.mts";
 import { mayAutonomouslyMerge } from "./ci-policy.mts";
 import { runReviewerPass } from "./review-pass.mts";
@@ -28,6 +34,13 @@ import {
   planIssuesForIteration,
   type IterationControl,
 } from "./factory-iteration-control.mts";
+import {
+  EXPECTED_SANDCASTLE_SOURCE_PREFIX,
+  isExpectedSandcastleSourceHead,
+  resolveSandcastleRuntimeDistPath,
+  verifySandcastleRuntimeDist,
+  missingSandcastleRuntimeSymbols,
+} from "./sandcastle-runtime-provenance.mts";
 
 const execFileAsync = promisify(execFile);
 
@@ -41,10 +54,6 @@ const WORKER_REASON_TRUNCATE = 2000;
 const VERDICT_JSON_TRUNCATE = 2000;
 const REVIEW_ERROR_TRUNCATE = 500;
 const TARGET_BRANCH = "main";
-import {
-  EXPECTED_SANDCASTLE_SOURCE_PREFIX,
-  isExpectedSandcastleSourceHead,
-} from "./sandcastle-runtime-provenance.mts";
 
 // Retry budgets — small, bounded, behind a deep interface. Reviewer→implementer
 // feedback (semantic/mechanical) gets one retry; transient sandbox/mechanical
@@ -299,6 +308,22 @@ async function markBlocked(issueId: string, branch: string, reason: string): Pro
     }
   }
   return ok;
+}
+
+async function markFactoryError(issueId: string, branch: string, reason: string): Promise<boolean> {
+  const shortReason = reason.slice(0, REASON_TRUNCATE);
+  const removed = await safeRunGh(
+    ["issue", "edit", issueId, "--remove-label", "agent:in-progress"],
+    `Failed to remove agent:in-progress from #${issueId}`,
+  );
+  const commentOk = await safeRunGh([
+    "issue",
+    "comment",
+    issueId,
+    "--body",
+    `Sandcastle factory infrastructure produced an unrecoverable verdict contract failure on \`${branch}\` — preserved branch for inspection.\n\n**Reason:** ${shortReason}\n\nBranch: \`${branch}\`\n\nTo retry this issue, fix infra/agent contract wiring and re-run factory once valid review text can be emitted.`,
+  ]);
+  return removed && commentOk;
 }
 
 async function markIntegrated(issueId: string, branch: string): Promise<void> {
@@ -649,37 +674,27 @@ async function runDoctor(): Promise<boolean> {
     const cached = JSON.parse(fs.readFileSync(cachePath,'utf8'));
     if(cached.sha === sha && (cached.imageId === imageId || cached.imageDigest === imageDigest) && cached.passed) {
       // Even on cache HIT, verify runtime artifact provenance — source SHA + image is not enough,
-      // dist must be built from expected Sandcastle source and contain liveness strings. Stale dist would otherwise
-      // appear trustworthy while silently executing old orchestration code.
+      // dist must expose required API symbols.
       try {
-        let distPath = "";
-        try {
-          const { createRequire } = await import('node:module');
-          const require = createRequire(import.meta.url);
-          distPath = require.resolve('@ai-hero/sandcastle');
-        } catch {
-          const resolved = (import.meta as unknown as { resolve?: (spec:string)=>string }).resolve?.('@ai-hero/sandcastle');
-          if (resolved) distPath = new URL(resolved).pathname;
+        const distPath = resolveSandcastleRuntimeDistPath();
+        if (!distPath) {
+          console.warn(`  Doctor cache HIT but runtime dist unavailable for package @ai-hero/sandcastle, re-proving.`);
+          return false;
         }
-        if (distPath && fs.existsSync(distPath)) {
-          const distContent = fs.readFileSync(distPath, 'utf8');
-          const ok = distContent.includes('Agent alive') && distContent.includes('No observable output') && (distContent.includes('verbose log') || distContent.includes('detailed activity'));
-          if (!ok) {
-            console.warn(`  Doctor cache HIT but runtime dist at ${distPath} missing liveness strings — stale build, ignoring cache and re-proving.`);
-          } else {
-            // Also check cached dist mtime/hash if present — if dist changed, re-prove
-            let distMtime = "";
-            try { distMtime = fs.statSync(distPath).mtime.toISOString(); } catch {}
-            if (cached.distMtime && cached.distMtime !== distMtime) {
-              console.warn(`  Doctor cache HIT but dist mtime changed (${cached.distMtime} → ${distMtime}), re-proving.`);
-            } else {
-              console.log(`  Doctor cache HIT — SHA ${sha.slice(0,7)} + image ${(imageId||imageDigest).slice(0,12)} + dist ${distPath.slice(-30)} already certified`);
-              console.log('=== Doctor PASS (cached) ===\n');
-              return true;
-            }
-          }
+        const runtimeVerification = verifySandcastleRuntimeDist(distPath);
+        if (!runtimeVerification.ok) {
+          console.warn(`  Doctor cache HIT but runtime dist at ${distPath} missing symbols (${runtimeVerification.missing.join(", ")}) — re-proving.`);
+          return false;
+        }
+        // Also check cached dist mtime/hash if present — if dist changed, re-prove
+        let distMtime = "";
+        try { distMtime = fs.statSync(distPath).mtime.toISOString(); } catch {}
+        if (cached.distMtime && cached.distMtime !== distMtime) {
+          console.warn(`  Doctor cache HIT but dist mtime changed (${cached.distMtime} → ${distMtime}), re-proving.`);
         } else {
-          console.warn(`  Doctor cache HIT but dist not found at ${distPath}, re-proving.`);
+          console.log(`  Doctor cache HIT — SHA ${sha.slice(0,7)} + image ${(imageId||imageDigest).slice(0,12)} + dist ${distPath.slice(-30)} already certified`);
+          console.log('=== Doctor PASS (cached) ===\n');
+          return true;
         }
       } catch (e) {
         console.warn(`  Doctor cache HIT but dist verification failed: ${getErrorMessage(e)}, re-proving.`);
@@ -696,32 +711,21 @@ async function runDoctor(): Promise<boolean> {
     if(dockerfile.includes('graphifyy')) { console.error('  FAIL: Dockerfile still contains graphifyy typo'); return false; }
     console.log('  Dockerfile graphify check: OK');
   } catch {}
-  // 2b. Runtime artifact provenance — source SHA is not enough, dist must be built from expected Sandcastle revision (95f3a5c...).
+  // 2b. Runtime artifact provenance — source SHA is not enough, dist must expose required symbols.
   // Doctor must fail if imported dist does not correspond to intended Sandcastle revision.
   try {
-    // Resolve the actual runtime dist that Voxygen imports (file:../../sandcastle/dist/index.js)
-    // Use createRequire for CJS resolution compatible with ESM, fallback to import.meta.resolve
-    let distPath = "";
-    try {
-      const { createRequire } = await import('node:module');
-      const require = createRequire(import.meta.url);
-      distPath = require.resolve('@ai-hero/sandcastle');
-    } catch {
-      // ESM fallback: import.meta.resolve is available in Node 20+
-      const resolved = (import.meta as unknown as { resolve?: (spec:string)=>string }).resolve?.('@ai-hero/sandcastle');
-      if (resolved) distPath = new URL(resolved).pathname;
-    }
+    const distPath = resolveSandcastleRuntimeDistPath();
     if (!distPath || !fs.existsSync(distPath)) {
-      console.error(`  FAIL: Sandcastle runtime dist not found at ${distPath || '<unresolved>'} — expected built artifact from ${EXPECTED_SANDCASTLE_SOURCE_PREFIX}`);
+      console.error(`  FAIL: Sandcastle runtime dist not found (package main unresolved) — expected built artifact from ${EXPECTED_SANDCASTLE_SOURCE_PREFIX}`);
       return false;
     }
-    const distContent = fs.readFileSync(distPath, 'utf8');
-    const hasAlive = distContent.includes('Agent alive');
-    const hasNoObs = distContent.includes('No observable output');
-    const hasVerbose = distContent.includes('verbose log') || distContent.includes('detailed activity');
-    if (!hasAlive || !hasNoObs || !hasVerbose) {
-      console.error(`  FAIL: Sandcastle dist at ${distPath} missing liveness strings (hasAlive=${hasAlive} hasNoObs=${hasNoObs} hasVerbose=${hasVerbose}) — stale build from before ${EXPECTED_SANDCASTLE_SOURCE_PREFIX}. Run: cd ../../sandcastle && npm ci && npm run build (then verify: grep -n "Agent alive|No observable output|verbose log" dist/index.js)`);
-      console.error(`  Expected runtime from Sandcastle ${EXPECTED_SANDCASTLE_SOURCE_PREFIX}, but dist appears stale. Doctor fail-closed.`);
+    const runtimeVerification = verifySandcastleRuntimeDist(distPath);
+    if (!runtimeVerification.ok) {
+      const missing = missingSandcastleRuntimeSymbols(distPath);
+      console.error(`  FAIL: Sandcastle runtime dist at ${distPath} missing required symbols (${missing.join(", ")}) — expected runtime from ${EXPECTED_SANDCASTLE_SOURCE_PREFIX}.`);
+      if (missing.length > 0) {
+        console.error(`  Missing symbols: ${missing.join(", ")}`);
+      }
       return false;
     }
     // Also verify source HEAD is the intended revision (not just branch checkout)
@@ -731,7 +735,7 @@ async function runDoctor(): Promise<boolean> {
       console.error(`  FAIL: Sandcastle HEAD is ${sandcastleHead.slice(0,7)} not ${EXPECTED_SANDCASTLE_SOURCE_PREFIX} — refusing to run factory on unexpected Sandcastle revision.`);
       return false;
     }
-    console.log(`  sandcastle runtime dist: ${distPath} — contains liveness strings ✓ (source HEAD ${sandcastleHead.slice(0,7) || 'unknown'}, dist mtime ${fs.statSync(distPath).mtime.toISOString()})`);
+    console.log(`  sandcastle runtime dist: ${distPath} — required API symbols ✓ (source HEAD ${sandcastleHead.slice(0,7) || "unknown"}, dist mtime ${fs.statSync(distPath).mtime.toISOString()})`);
   } catch (e) {
     console.error(`  FAIL: cannot verify Sandcastle runtime dist: ${getErrorMessage(e)}`);
     return false;
@@ -901,6 +905,7 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
 
   const iterationPlan = planIssuesForIteration(eligible, {
     requestedIssueNumber: ITERATION_CONTROL.requestedIssueNumber,
+    invalidRequestedIssue: ITERATION_CONTROL.invalidRequestedIssue,
   });
 
   let plannedIssues: PlannedIssue[] = [];
@@ -910,6 +915,10 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
   } else if (iterationPlan.mode === "qualify-unsupported") {
     const requestedIssueNumber = ITERATION_CONTROL.requestedIssueNumber;
     console.log(`Qualification mode requested issue #${requestedIssueNumber}, but it is not eligible in this iteration.`);
+    continue;
+  } else if (iterationPlan.mode === "qualify-invalid") {
+    const requestedIssue = ITERATION_CONTROL.invalidRequestedIssue ?? "<unknown>";
+    console.log(`Invalid qualification request (${requestedIssue}) — refusing to run production planning in this invocation.`);
     continue;
   } else if (iterationPlan.mode === "single-eligible") {
     plannedIssues = iterationPlan.plannedIssues;
@@ -1267,23 +1276,31 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
   const failedMarkResults: boolean[] = [];
 
   const failedIssueIds = failed.map((issue) => issue.id);
-  for (const issue of failed) {
-    const reason = issue.reason.slice(0, WORKER_REASON_TRUNCATE);
-    console.error(`  ✗ ${issue.id} (${issue.branch}) failed: ${reason}`);
-    const marked = await markBlocked(issue.id, issue.branch, issue.reason);
-    failedMarkResults.push(marked);
-  }
+  const mutationPlan = partitionToMutationPlan(partition);
+  for (const mutation of mutationPlan) {
+    if (mutation.kind === "failed") {
+      const reason = mutation.reason.slice(0, WORKER_REASON_TRUNCATE);
+      console.error(`  ✗ ${mutation.issue.id} (${mutation.issue.branch}) failed: ${reason}`);
+      const marked = await markBlocked(mutation.issue.id, mutation.issue.branch, mutation.reason);
+      failedMarkResults.push(marked);
+      continue;
+    }
 
-  for (const issue of reviewRejected) {
-    const reason = issue.reason;
-    console.warn(`  ⚠ ${issue.id} review rejected - not eligible for merger: ${reason.slice(0, REVIEW_ERROR_TRUNCATE)}`);
-    await markReviewRejected(issue.id, issue.branch, issue.verdict, reason);
-  }
+    if (mutation.kind === "reviewRejected") {
+      const reason = mutation.reason;
+      console.warn(`  ⚠ ${mutation.issue.id} review rejected - not eligible for merger: ${reason.slice(0, REVIEW_ERROR_TRUNCATE)}`);
+      await markReviewRejected(
+        mutation.issue.id,
+        mutation.issue.branch,
+        mutation.verdict!,
+        reason,
+      );
+      continue;
+    }
 
-  for (const issue of factoryErrors) {
-    const reason = issue.reason;
-    console.warn(`  ⚠ ${issue.id} review verdict contract failed (FACTORY_ERROR): ${reason.slice(0, REVIEW_ERROR_TRUNCATE)} — preserving branch and stopping outer run.`);
-    await markBlocked(issue.id, issue.branch, reason);
+    const reason = mutation.reason;
+    console.warn(`  ⚠ ${mutation.issue.id} review verdict contract failed (FACTORY_ERROR): ${reason.slice(0, REVIEW_ERROR_TRUNCATE)} — preserving branch and stopping outer run.`);
+    await markFactoryError(mutation.issue.id, mutation.issue.branch, reason);
   }
 
   const completedBranches = completedIssues.map((i) => i.branch);
@@ -1305,7 +1322,7 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
     console.log(`  ${reviewRejected.length} branch(es) review-rejected (approved=false) - preserved, marked agent:blocked, not merged`);
   }
   if (factoryErrors.length > 0) {
-    console.log(`  ${factoryErrors.length} branch(es) produced FACTORY_ERROR - preserved, marked agent:blocked, stopping outer run`);
+    console.log(`  ${factoryErrors.length} branch(es) produced FACTORY_ERROR - preserved for inspection, stopping outer run`);
   }
 
   if (!canClaimNextOuterIteration(partition)) {

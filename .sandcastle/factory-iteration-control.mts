@@ -3,11 +3,13 @@ import type { IssueInput } from "./dispatch.mts";
 
 export interface IterationControlConfig {
   requestedIssueNumber?: string;
+  invalidRequestedIssue?: string;
 }
 
 export interface IterationControl {
   maxIterations: number;
   requestedIssueNumber?: string;
+  invalidRequestedIssue?: string;
 }
 
 export interface PlannedFromQualification {
@@ -17,6 +19,7 @@ export interface PlannedFromQualification {
 export type QualificationDecisionMode =
   | "qualified"
   | "qualify-unsupported"
+  | "qualify-invalid"
   | "single-eligible"
   | "planner-required";
 
@@ -29,26 +32,34 @@ export interface IterationPlanningDecision {
 const DEFAULT_MAX_ITERATIONS = 10;
 
 export function parseQualificationArgs(argv: string[]): IterationControlConfig {
-  const args = new Map<string, string>();
-  for (let i = 2; i < argv.length - 1; i += 2) {
+  let requestedIssueValue: string | undefined;
+  let invalidRequestedIssue: string | undefined;
+  for (let i = 2; i < argv.length; i++) {
     const name = argv[i];
+    if (name !== "--issue") continue;
     const value = argv[i + 1];
-    if (!name || !value || !name.startsWith("--")) continue;
-    args.set(name, value);
+    if (!value || value.startsWith("--")) {
+      invalidRequestedIssue = value ? `${name} ${value}` : name;
+      break;
+    }
+    requestedIssueValue = value;
+    break;
   }
 
-  const rawIssue = args.get("--issue");
-  if (!rawIssue) return {};
+  if (requestedIssueValue === undefined) {
+    if (invalidRequestedIssue) return { invalidRequestedIssue };
+    return {};
+  }
 
-  const normalized = rawIssue.startsWith("#") ? rawIssue.slice(1) : rawIssue;
+  const normalized = requestedIssueValue.startsWith("#") ? requestedIssueValue.slice(1) : requestedIssueValue;
   const issueNumber = normalized.trim();
-  if (/^\d+$/.test(issueNumber)) {
-    return { requestedIssueNumber: issueNumber };
-  }
-  return {};
+  if (/^\d+$/.test(issueNumber)) return { requestedIssueNumber: issueNumber };
+
+  return { invalidRequestedIssue: requestedIssueValue };
 }
 
 export function resolveIterationLimit(defaultLimit: number, control: IterationControlConfig): number {
+  if (control.invalidRequestedIssue) return 0;
   return control.requestedIssueNumber ? 1 : defaultLimit;
 }
 
@@ -91,6 +102,14 @@ export function planIssuesForIteration(
     };
   }
 
+  if (control.invalidRequestedIssue) {
+    return {
+      mode: "qualify-invalid",
+      plannedIssues: [],
+      skipIteration: true,
+    };
+  }
+
   if (eligibleIssues.length === 1) {
     return {
       mode: "single-eligible",
@@ -115,5 +134,6 @@ export function makeIterationControl(defaultMaxIterations: number, argv: string[
   return {
     maxIterations: resolveIterationLimit(defaultMaxIterations, config),
     requestedIssueNumber: config.requestedIssueNumber,
+    invalidRequestedIssue: config.invalidRequestedIssue,
   };
 }
