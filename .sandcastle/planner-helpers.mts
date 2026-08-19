@@ -35,10 +35,51 @@ export function parsePlannerOutput(stdout: string, eligible: IssueInput[]): Plan
   try {
     parsed = JSON.parse(unwrapped);
   } catch (cause) {
-    const err = new Error(`Structured output tag <plan> contains invalid JSON: ${(cause as Error).message}`);
-    (err as unknown as { rawMatched?: string; cause?: unknown }).rawMatched = raw;
-    (err as unknown as { cause?: unknown }).cause = cause;
-    throw err;
+    // Bounded recovery for LLM escaping variants — deterministic, not infinite retry.
+    // Live failure 2026-08-19: planner emitted {\"issues\":...} (single-escaped quotes) inside <plan>.
+    // Direct JSON.parse fails at position 1; unescaping once yields valid JSON.
+    // Try in order: (1) single unescape \" -> ", (2) parse as JSON string wrapping JSON.
+    const candidates: string[] = [];
+    // Candidate 1: unescape \" -> " (covers double-escaped inside <plan>)
+    if (unwrapped.includes('\\"')) {
+      candidates.push(unwrapped.replace(/\\"/g, '"'));
+    }
+    // Candidate 2: if unwrapped is a JSON string literal like "{\"issues\":...}", parse string then inner
+    // Heuristic: starts with " and ends with " and contains \"
+    if (unwrapped.startsWith('"') && unwrapped.endsWith('"') && unwrapped.includes('\\"')) {
+      try {
+        const asString = JSON.parse(unwrapped);
+        if (typeof asString === 'string') candidates.push(asString);
+      } catch {}
+    }
+    // Candidate 3: strip backslash escapes more aggressively (for fenced + escaped combo)
+    // Only if candidate1 still fails, try interpreting via JSON string decode
+    let recovered: unknown | null = null;
+    let lastCause: unknown = cause;
+    for (const cand of candidates) {
+      try {
+        recovered = JSON.parse(cand);
+        break;
+      } catch (e) {
+        lastCause = e;
+      }
+      // Also try unescaping then parsing again (double layer)
+      try {
+        const double = cand.replace(/\\"/g, '"');
+        recovered = JSON.parse(double);
+        break;
+      } catch (e) {
+        lastCause = e;
+      }
+    }
+    if (recovered !== null) {
+      parsed = recovered;
+    } else {
+      const err = new Error(`Structured output tag <plan> contains invalid JSON: ${(lastCause as Error).message}`);
+      (err as unknown as { rawMatched?: string; cause?: unknown }).rawMatched = raw;
+      (err as unknown as { cause?: unknown }).cause = lastCause;
+      throw err;
+    }
   }
   const result = planSchema.safeParse(parsed);
   if (!result.success) {
@@ -72,6 +113,18 @@ function unwrapFences(text: string): string {
   const fenceMatch = text.match(/^```(?:json)?\s*\n([\s\S]*?)\n\s*```\s*$/);
   if (fenceMatch) return fenceMatch[1]!.trim();
   return text;
+}
+
+/**
+ * Deterministic fallback when planner is malformed/unavailable.
+ * Never fallback to all — serial progress only. LLM may improve parallelism
+ * but must not make basic serial progress impossible. Sorted by number for determinism.
+ */
+export function fallbackToSingle(eligible: IssueInput[]): PlannedIssue[] {
+  if (eligible.length === 0) return [];
+  const sorted = [...eligible].sort((a, b) => a.number - b.number);
+  const first = sorted[0]!;
+  return [{ id: String(first.number), title: first.title ?? "", branch: first.branch ?? `sandcastle/issue-${first.number}` }];
 }
 
 /**

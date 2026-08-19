@@ -22,7 +22,7 @@ import {
   type ReviewVerdict,
 } from "./review-verdict.mts";
 import { formatGhFailure, getErrorMessage, getGhErrorDetails } from "./gh-errors.mts";
-import { parsePlannerOutput } from "./planner-helpers.mts";
+import { parsePlannerOutput, fallbackToSingle } from "./planner-helpers.mts";
 
 const execFileAsync = promisify(execFile);
 
@@ -972,8 +972,16 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
         } catch (preserveErr) {
           console.warn(`  Failed to preserve planner failure log: ${getErrorMessage(preserveErr)}`);
         }
-        console.error(`Planner failed: ${errorMsg} -- FAIL CLOSED: aborting whole Sandcastle invocation.`);
-        break;
+        // Deterministic safety does not depend on LLM perfect syntax.
+        // Never fallback-to-all; fallback to single serial progress.
+        // LLM may improve parallelism but must not block basic serial dispatch.
+        const fallback = fallbackToSingle(eligible);
+        if (fallback.length === 0) {
+          console.error(`Planner failed: ${errorMsg} -- no fallback eligible, aborting iteration.`);
+          break;
+        }
+        plannedIssues = fallback;
+        console.warn(`Planner failed: ${errorMsg} -- fallback to deterministic single #${fallback[0].id} (fail-closed single, not all, not abort)`);
       }
     }
   }
