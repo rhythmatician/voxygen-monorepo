@@ -1,37 +1,29 @@
-import { execFileSync, execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-export function doctorWorktreePath(branch: string): string {
-  return path.join(process.cwd(), ".sandcastle", "worktrees", branch);
+export function doctorWorktreePath(repoRoot: string, branch: string): string {
+  return path.join(repoRoot, ".sandcastle", "worktrees", branch);
 }
 
-function execFileNoThrow(file: string, args: string[]): string {
-  try {
-    return execFileSync(file, args, { encoding: "utf8", stdio: "pipe" });
-  } catch {
-    return "";
-  }
-}
-
-export function cleanupDoctorBranchAndWorktree(branch: string): void {
+export function cleanupDoctorBranchAndWorktree(repoRoot: string, branch: string): void {
   if (!branch.startsWith("doctor-")) return;
-  const worktreePath = doctorWorktreePath(branch);
+  const worktreePath = doctorWorktreePath(repoRoot, branch);
   // Prefer argument-based invocation (execFileSync) — no shell interpolation for paths/refnames
   try {
-    const list = execFileSync("git", ["worktree", "list", "--porcelain"], { encoding: "utf8", stdio: "pipe" });
+    const list = execFileSync("git", ["worktree", "list", "--porcelain"], { encoding: "utf8", stdio: "pipe", cwd: repoRoot });
     if (list.includes(worktreePath) || list.includes(branch)) {
-      try { execFileSync("git", ["worktree", "remove", "--force", worktreePath], { encoding: "utf8", stdio: "pipe" }); } catch {}
+      try { execFileSync("git", ["worktree", "remove", "--force", worktreePath], { encoding: "utf8", stdio: "pipe", cwd: repoRoot }); } catch {}
     }
   } catch {}
-  try { execFileSync("git", ["worktree", "remove", "--force", worktreePath], { encoding: "utf8", stdio: "pipe" }); } catch {}
+  try { execFileSync("git", ["worktree", "remove", "--force", worktreePath], { encoding: "utf8", stdio: "pipe", cwd: repoRoot }); } catch {}
   try { if (fs.existsSync(worktreePath)) fs.rmSync(worktreePath, { recursive: true, force: true }); } catch {}
-  try { execFileSync("git", ["worktree", "prune"], { encoding: "utf8", stdio: "pipe" }); } catch {}
-  try { execFileSync("git", ["branch", "-D", branch], { encoding: "utf8", stdio: "pipe" }); } catch {}
-  try { execFileSync("git", ["worktree", "prune"], { encoding: "utf8", stdio: "pipe" }); } catch {}
+  try { execFileSync("git", ["worktree", "prune"], { encoding: "utf8", stdio: "pipe", cwd: repoRoot }); } catch {}
+  try { execFileSync("git", ["branch", "-D", branch], { encoding: "utf8", stdio: "pipe", cwd: repoRoot }); } catch {}
+  try { execFileSync("git", ["worktree", "prune"], { encoding: "utf8", stdio: "pipe", cwd: repoRoot }); } catch {}
 }
 
-export function assertNoStaleDoctorResources(): { ok: boolean; leftover: string[] } {
+export function assertNoStaleDoctorResources(repoRoot: string): { ok: boolean; leftover: string[] } {
   const leftover: string[] = [];
   const getErrorMessage = (e: unknown) => e instanceof Error ? e.message : String(e);
   let worktreeOk = false;
@@ -39,7 +31,7 @@ export function assertNoStaleDoctorResources(): { ok: boolean; leftover: string[
 
   let worktreeList = "";
   try {
-    worktreeList = execFileSync("git", ["worktree", "list", "--porcelain"], { encoding: "utf8", stdio: "pipe" });
+    worktreeList = execFileSync("git", ["worktree", "list", "--porcelain"], { encoding: "utf8", stdio: "pipe", cwd: repoRoot });
     worktreeOk = true;
   } catch (e) {
     leftover.push(`inspection-error: git worktree list failed: ${getErrorMessage(e).slice(0, 500)}`);
@@ -55,7 +47,7 @@ export function assertNoStaleDoctorResources(): { ok: boolean; leftover: string[
 
   // Filesystem inspection — readdir must succeed if base exists
   try {
-    const base = path.join(process.cwd(), ".sandcastle", "worktrees");
+    const base = path.join(repoRoot, ".sandcastle", "worktrees");
     if (fs.existsSync(base)) {
       let entries: string[] = [];
       try {
@@ -81,7 +73,7 @@ export function assertNoStaleDoctorResources(): { ok: boolean; leftover: string[
 
   let branches = "";
   try {
-    branches = execFileSync("git", ["branch", "--list", "doctor-*"], { encoding: "utf8", stdio: "pipe" });
+    branches = execFileSync("git", ["branch", "--list", "doctor-*"], { encoding: "utf8", stdio: "pipe", cwd: repoRoot });
     branchOk = true;
   } catch (e) {
     leftover.push(`inspection-error: git branch --list failed: ${getErrorMessage(e).slice(0, 500)}`);
@@ -94,11 +86,11 @@ export function assertNoStaleDoctorResources(): { ok: boolean; leftover: string[
   return { ok: leftover.length === 0, leftover };
 }
 
-export async function reconcileStaleDoctorResources(): Promise<void> {
+export async function reconcileStaleDoctorResources(repoRoot: string): Promise<void> {
   const getErrorMessage = (e: unknown) => e instanceof Error ? e.message : String(e);
   console.log("  [doctor] reconciling stale doctor-* worktrees/branches (startup)...");
   let worktreeList = "";
-  try { worktreeList = execFileSync("git", ["worktree", "list", "--porcelain"], { encoding: "utf8", stdio: "pipe" }); } catch {}
+  try { worktreeList = execFileSync("git", ["worktree", "list", "--porcelain"], { encoding: "utf8", stdio: "pipe", cwd: repoRoot }); } catch {}
   const registeredDoctorPaths: string[] = [];
   for (const line of worktreeList.split("\n")) {
     if (line.startsWith("worktree ")) {
@@ -108,11 +100,11 @@ export async function reconcileStaleDoctorResources(): Promise<void> {
   }
   for (const wp of registeredDoctorPaths) {
     console.log(`  [doctor] removing stale registered worktree ${wp}`);
-    try { execFileSync("git", ["worktree", "remove", "--force", wp], { encoding: "utf8", stdio: "pipe" }); console.log(`  [doctor] removed worktree ${wp}`); } catch (e) { console.warn(`  [doctor] worktree remove failed for ${wp}: ${getErrorMessage(e)}`); }
+    try { execFileSync("git", ["worktree", "remove", "--force", wp], { encoding: "utf8", stdio: "pipe", cwd: repoRoot }); console.log(`  [doctor] removed worktree ${wp}`); } catch (e) { console.warn(`  [doctor] worktree remove failed for ${wp}: ${getErrorMessage(e)}`); }
     try { if (fs.existsSync(wp)) fs.rmSync(wp, { recursive: true, force: true }); } catch {}
   }
   try {
-    const base = path.join(process.cwd(), ".sandcastle", "worktrees");
+    const base = path.join(repoRoot, ".sandcastle", "worktrees");
     if (fs.existsSync(base)) {
       for (const entry of fs.readdirSync(base)) {
         if (entry.startsWith("doctor-")) {
@@ -124,14 +116,14 @@ export async function reconcileStaleDoctorResources(): Promise<void> {
       }
     }
   } catch {}
-  try { execFileSync("git", ["worktree", "prune"], { encoding: "utf8", stdio: "pipe" }); } catch {}
+  try { execFileSync("git", ["worktree", "prune"], { encoding: "utf8", stdio: "pipe", cwd: repoRoot }); } catch {}
   let branches = "";
-  try { branches = execFileSync("git", ["branch", "--list", "doctor-*"], { encoding: "utf8", stdio: "pipe" }); } catch {}
+  try { branches = execFileSync("git", ["branch", "--list", "doctor-*"], { encoding: "utf8", stdio: "pipe", cwd: repoRoot }); } catch {}
   const branchNames = branches.split("\n").map((s) => s.trim().replace(/^\*\s+/, "").trim()).filter((s) => s && s.startsWith("doctor-"));
   for (const b of branchNames) {
     console.log(`  [doctor] deleting stale branch ${b}`);
-    cleanupDoctorBranchAndWorktree(b);
+    cleanupDoctorBranchAndWorktree(repoRoot, b);
   }
-  try { execFileSync("git", ["worktree", "prune"], { encoding: "utf8", stdio: "pipe" }); } catch {}
+  try { execFileSync("git", ["worktree", "prune"], { encoding: "utf8", stdio: "pipe", cwd: repoRoot }); } catch {}
   if (registeredDoctorPaths.length === 0 && branchNames.length === 0) console.log("  [doctor] no stale doctor-* resources found");
 }

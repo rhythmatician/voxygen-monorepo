@@ -122,9 +122,9 @@ async function safeRunGh(args: string[], failureContext?: string): Promise<boole
 
 function ghToken(): string {
   if (process.env.GH_TOKEN) return process.env.GH_TOKEN;
-  // fallback: read .sandcastle/.env
+  // fallback: read .sandcastle/.env from stable REPO_ROOT, never ambient cwd
   try {
-    const envPath = path.join(process.cwd(), ".sandcastle", ".env");
+    const envPath = path.join(REPO_ROOT, ".sandcastle", ".env");
     const content = fs.readFileSync(envPath, "utf8");
     const m = content.match(/^GH_TOKEN=(.*)$/m);
     if (m) return m[1].trim();
@@ -601,7 +601,7 @@ async function runDoctor(): Promise<boolean> {
   // Strictly scoped to doctor-*; never sweep arbitrary human worktrees. Idempotent.
   // FAIL-CLOSED: if reconciliation throws, Doctor FAILs — never WARN-and-continue to a cached PASS.
   try {
-    await reconcileStaleDoctorResources();
+    await reconcileStaleDoctorResources(REPO_ROOT);
   } catch (e) {
     console.error(`  FAIL: Doctor stale reconciliation failed: ${getErrorMessage(e)} — fail-closed`);
     return false;
@@ -610,7 +610,7 @@ async function runDoctor(): Promise<boolean> {
   // stale worktree/dir/branch must not survive to a cached PASS, and inspection failures are FAIL not "nothing found".
   try {
     const { assertNoStaleDoctorResources: assertStartup } = await import("./doctor-helpers.mts");
-    const { ok, leftover } = assertStartup();
+    const { ok, leftover } = assertStartup(REPO_ROOT);
     if (!ok) {
       console.error(`  FAIL: Doctor startup postcondition — stale doctor-* resources remain: ${leftover.join(", ")} — fail-closed`);
       return false;
@@ -776,16 +776,27 @@ async function runDoctor(): Promise<boolean> {
     // Wrap Doctor sandbox/worktree creation in try/finally — idempotent cleanup of ephemeral control-plane state
     // Must never survive a successful Doctor run; startup reconciliation also cleans stale left by crash/kill.
     // Scope strictly to Sandcastle-owned doctor-*; never sweep arbitrary human worktrees.
+    // Restore stable cwd BEFORE cleanup deletes the Doctor worktree — otherwise host cwd becomes
+    // a deleted directory and all subsequent host git/fs inspection fails with
+    // "Unable to read current working directory".
+    try {
+      process.chdir(REPO_ROOT);
+    } catch (e) {
+      console.error(`  FAIL: Doctor cwd restore to REPO_ROOT failed: ${getErrorMessage(e)} — fail-closed`);
+      doctorSuccess = false;
+    }
     if (sandbox) { try { await sandbox.close(); } catch {} }
     // Explicit git worktree remove --force before branch delete; prune alone is insufficient when directory still exists
-    cleanupDoctorBranchAndWorktree(doctorBranch);
+    cleanupDoctorBranchAndWorktree(REPO_ROOT, doctorBranch);
+    // Ensure we leave the process at REPO_ROOT even if close/cleanup chdir'd
+    try { process.chdir(REPO_ROOT); } catch {}
   }
   // Strict postcondition: after cleanup, no doctor-* worktree / .sandcastle/worktrees/doctor-* dir / local branch may remain.
   // If any leftover exists, Doctor FAILs and must not write PASS cache — repo must be in same control-plane state as found.
   // Second mandatory ASSERT CLEAN after fresh sandbox path (mirrors startup fail-closed gate).
   try {
     const { assertNoStaleDoctorResources } = await import("./doctor-helpers.mts");
-    const { ok, leftover } = assertNoStaleDoctorResources();
+    const { ok, leftover } = assertNoStaleDoctorResources(REPO_ROOT);
     if (!ok) {
       console.error(`  FAIL: Doctor ephemeral cleanup incomplete — leftover: ${leftover.join(", ")} — fail-closed`);
       doctorSuccess = false;
