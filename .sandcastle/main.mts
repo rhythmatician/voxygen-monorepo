@@ -33,6 +33,7 @@ import {
   makeIterationControl,
   planIssuesForIteration,
   type IterationControl,
+  type QualificationRequest,
 } from "./factory-iteration-control.mts";
 import {
   EXPECTED_SANDCASTLE_SOURCE_PREFIX,
@@ -66,12 +67,30 @@ const REVIEW_RETRY_BUDGET = 1;
 const MECHANICAL_RETRY_BUDGET = 2;
 const MECHANICAL_RETRY_BASE_MS = 1000;
 const ITERATION_CONTROL: IterationControl = makeIterationControl(MAX_ITERATIONS, process.argv);
-const GH_CAPABILITY_MODE = ITERATION_CONTROL.qualification.kind === "qualify" ? "read-only" : "read-write";
 if (ITERATION_CONTROL.qualification.kind === "invalid") {
   const reason = ITERATION_CONTROL.qualification.reason;
   console.error(`Invalid --issue argument (${reason})`);
   process.exit(1);
 }
+
+function assertUnreachable(x: never, message: string): never {
+  throw new Error(`${message}: ${JSON.stringify(x)}`);
+}
+
+function githubCapabilityModeForIteration(control: QualificationRequest): "read-only" | "read-write" {
+  switch (control.kind) {
+    case "qualify":
+      return "read-only";
+    case "normal":
+      return "read-write";
+    case "invalid":
+      return "read-only";
+    default:
+      return assertUnreachable(control as never, "Unhandled qualification mode");
+  }
+}
+
+const GH_CAPABILITY_MODE = githubCapabilityModeForIteration(ITERATION_CONTROL.qualification);
 
 const gitHubCapability = makeGitHubCapability({
   mode: GH_CAPABILITY_MODE,

@@ -7,12 +7,18 @@ import {
 
 describe("GitHub capability boundary", () => {
   it("classifies known write commands as writes", () => {
+    expect(classifyGhOperation(["issue", "reopen", "151"])).toBe("write");
     expect(classifyGhOperation(["issue", "edit", "1", "--add-label", "x"])).toBe("write");
     expect(classifyGhOperation(["issue", "comment", "1", "--body", "x"])).toBe("write");
     expect(classifyGhOperation(["issue", "close", "1"])).toBe("write");
     expect(classifyGhOperation(["pr", "create", "-B", "base", "-H", "head"])).toBe("write");
     expect(classifyGhOperation(["pr", "merge", "123", "--auto"])).toBe("write");
     expect(classifyGhOperation(["api", "issues", "--method", "PATCH"])).toBe("write");
+    expect(classifyGhOperation(["api", "issues", "--field", "summary", "value"])).toBe("write");
+    expect(classifyGhOperation(["api", "issues", "-F", "summary=value"])).toBe("write");
+    expect(classifyGhOperation(["api", "issues", "-f", "summary", "value"])).toBe("write");
+    expect(classifyGhOperation(["api", "issues", "--input", "{}"])).toBe("write");
+    expect(classifyGhOperation(["api", "issues", "--method", "GET", "--input", "{}"])).toBe("read");
   });
 
   it("read-only mode blocks claim-like write attempts before any gh execution", async () => {
@@ -49,11 +55,15 @@ describe("GitHub capability boundary", () => {
   it("read-only mode rejects mutating issue/PR write commands used by production", async () => {
     const blocked = [
       ["issue", "edit", "151", "--remove-label", "agent:in-progress"],
+      ["issue", "reopen", "151"],
       ["issue", "comment", "151", "--body", "blocked"],
       ["issue", "close", "151"],
       ["pr", "create", "--title", "x", "--body", "y", "-B", "main", "-H", "feature"],
       ["pr", "merge", "123", "--squash"],
       ["api", "repos/octo/repo/issues", "--method", "POST", "--input", "{}"],
+      ["api", "repos/octo/repo/issues", "--field", "summary", "value"],
+      ["api", "repos/octo/repo/issues", "-F", "summary=value"],
+      ["api", "repos/octo/repo/issues", "-f", "summary", "value"],
     ];
 
     const capability = makeGitHubCapability({

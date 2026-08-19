@@ -5,13 +5,13 @@ export type GhCommandKind = "read" | "write" | "unknown";
 const ISSUE_READ_COMMANDS = new Set([
   "list",
   "view",
-  "reopen",
 ]);
 
 const ISSUE_WRITE_COMMANDS = new Set([
   "edit",
   "comment",
   "close",
+  "reopen",
 ]);
 
 const PR_READ_COMMANDS = new Set([
@@ -25,6 +25,8 @@ const PR_WRITE_COMMANDS = new Set([
 ]);
 
 const API_WRITE_METHODS = new Set(["POST", "PATCH", "PUT", "DELETE"]);
+const API_READ_METHODS = new Set(["GET", "HEAD"]);
+const API_BODY_FLAGS = new Set(["--input", "-F", "--field", "-f", "--raw-field"]);
 
 export function classifyGhOperation(args: string[]): GhCommandKind {
   if (!args || args.length === 0) return "unknown";
@@ -50,9 +52,12 @@ export function classifyGhOperation(args: string[]): GhCommandKind {
     const methodIndex = args.indexOf("--method");
     if (methodIndex !== -1 && methodIndex + 1 < args.length) {
       const method = args[methodIndex + 1].toUpperCase();
-      return API_WRITE_METHODS.has(method) ? "write" : "read";
+      if (API_WRITE_METHODS.has(method)) return "write";
+      if (API_READ_METHODS.has(method)) return "read";
+      return "unknown";
     }
-    return "read";
+    const hasBody = args.some((arg) => API_BODY_FLAGS.has(arg));
+    return hasBody ? "write" : "read";
   }
 
   return "unknown";
