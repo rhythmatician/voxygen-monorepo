@@ -15,11 +15,6 @@ Only work on the issue specified. Work on branch {{BRANCH}}. Make commits and ru
 Reviewer feedback (if any, on retry): {{REVIEW_FEEDBACK}}
 If feedback is present, address all findings and unmet criteria above in this retry; keep prior commits and amend with fixes.
 
-You have the wayfinder skill installed. Invoke it with `/wayfinder` or follow
-`.muse/skills/wayfinder/SKILL.md` directly. The vendored skills at
-`.muse/skills/*` are installed via `muse skills install --scope user` in the
-sandbox ready hook.
-
 # CONTEXT
 
 Last 10 commits:

@@ -22,12 +22,15 @@ describe("GitHub capability boundary", () => {
     expect(classifyGhOperation(["pr", "create", "-B", "base", "-H", "head"])).toBe("write");
     expect(classifyGhOperation(["pr", "merge", "123", "--auto"])).toBe("write");
     expect(classifyGhOperation(["api", "issues", "--method", "PATCH"])).toBe("write");
+    expect(classifyGhOperation(["api", "issues", "-X", "POST"])).toBe("write");
     expect(classifyGhOperation(["api", "issues", "--field", "summary", "value"])).toBe("write");
     expect(classifyGhOperation(["api", "issues", "-F", "summary=value"])).toBe("write");
     expect(classifyGhOperation(["api", "issues", "-f", "summary", "value"])).toBe("write");
     expect(classifyGhOperation(["api", "issues", "--input", "{}"])).toBe("write");
     expect(classifyGhOperation(["api", "issues", "--method", "GET", "--input", "{}"])).toBe("read");
     expect(classifyGhOperation(["api", "issues", "--method", "OPTIONS"])).toBe("unknown");
+    expect(classifyGhOperation(["api", "issues", "-X", "GET"])).toBe("read");
+    expect(classifyGhOperation(["api", "issues", "-X", "OPTIONS"])).toBe("unknown");
   });
 
   it("read-only mode blocks claim-like write attempts before any gh execution", async () => {
@@ -70,6 +73,7 @@ describe("GitHub capability boundary", () => {
       ["pr", "create", "--title", "x", "--body", "y", "-B", "main", "-H", "feature"],
       ["pr", "merge", "123", "--squash"],
       ["api", "repos/octo/repo/issues", "--method", "POST", "--input", "{}"],
+      ["api", "repos/octo/repo/issues", "-X", "PATCH"],
       ["api", "repos/octo/repo/issues", "--field", "summary", "value"],
       ["api", "repos/octo/repo/issues", "-F", "summary=value"],
       ["api", "repos/octo/repo/issues", "-f", "summary", "value"],

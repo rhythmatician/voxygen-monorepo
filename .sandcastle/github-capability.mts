@@ -49,7 +49,7 @@ export function classifyGhOperation(args: string[]): GhCommandKind {
   }
 
   if (command === "api") {
-    const methodIndex = args.indexOf("--method");
+    const methodIndex = args.findIndex((arg) => arg === "--method" || arg === "-X");
     if (methodIndex !== -1 && methodIndex + 1 < args.length) {
       const method = args[methodIndex + 1].toUpperCase();
       if (API_WRITE_METHODS.has(method)) return "write";

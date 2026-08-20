@@ -69,6 +69,7 @@ describe("implementer issue contract grounding", () => {
 
     expect(promptSource).toContain("{{ISSUE_BODY}}");
     expect(promptSource).not.toContain("gh issue view");
+    expect(promptSource).not.toContain("/wayfinder");
   });
 
 });

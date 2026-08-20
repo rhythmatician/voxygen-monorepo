@@ -40,8 +40,7 @@ import {
   EXPECTED_SANDCASTLE_SOURCE_PREFIX,
   isExpectedSandcastleSourceHead,
   resolveSandcastleRuntimeDistPath,
-  verifySandcastleRuntimeDist,
-  missingSandcastleRuntimeSymbols,
+  verifySandcastleRuntimeExports,
 } from "./sandcastle-runtime-provenance.mts";
 import {
   makeGitHubCapability,
@@ -707,6 +706,12 @@ async function runDoctor(): Promise<boolean> {
     if(imageDigest) console.log(`  docker sandcastle digest: ${imageDigest}`);
     if(!imageId && !imageDigest) console.warn('  WARN: docker sandcastle image not found locally — will build on demand');
   } catch {}
+  let sandcastleHead = "";
+  try { sandcastleHead = execSync('git -C ../../sandcastle rev-parse HEAD', {encoding:'utf8'}).trim(); } catch {}
+  if (!isExpectedSandcastleSourceHead(sandcastleHead)) {
+    console.error(`  FAIL: Sandcastle HEAD is ${sandcastleHead.slice(0,7) || "unavailable"}, expected ${EXPECTED_SANDCASTLE_SOURCE_PREFIX} — refusing to run factory.`);
+    return false;
+  }
   const cachePath = '.sandcastle/.doctor-cache.json';
   try {
     const cached = JSON.parse(fs.readFileSync(cachePath,'utf8'));
@@ -719,7 +724,7 @@ async function runDoctor(): Promise<boolean> {
           console.warn(`  Doctor cache HIT but runtime dist unavailable for package @ai-hero/sandcastle, re-proving.`);
           return false;
         }
-        const runtimeVerification = verifySandcastleRuntimeDist(distPath);
+        const runtimeVerification = verifySandcastleRuntimeExports(sandcastle);
         if (!runtimeVerification.ok) {
           console.warn(`  Doctor cache HIT but runtime dist at ${distPath} missing symbols (${runtimeVerification.missing.join(", ")}) — re-proving.`);
           return false;
@@ -757,23 +762,15 @@ async function runDoctor(): Promise<boolean> {
       console.error(`  FAIL: Sandcastle runtime dist not found (package main unresolved) — expected built artifact from ${EXPECTED_SANDCASTLE_SOURCE_PREFIX}`);
       return false;
     }
-    const runtimeVerification = verifySandcastleRuntimeDist(distPath);
+    const runtimeVerification = verifySandcastleRuntimeExports(sandcastle);
     if (!runtimeVerification.ok) {
-      const missing = missingSandcastleRuntimeSymbols(distPath);
-      console.error(`  FAIL: Sandcastle runtime dist at ${distPath} missing required symbols (${missing.join(", ")}) — expected runtime from ${EXPECTED_SANDCASTLE_SOURCE_PREFIX}.`);
-      if (missing.length > 0) {
-        console.error(`  Missing symbols: ${missing.join(", ")}`);
+      console.error(`  FAIL: imported Sandcastle runtime missing required exports (${runtimeVerification.missing.join(", ")}) — expected runtime from ${EXPECTED_SANDCASTLE_SOURCE_PREFIX}.`);
+      if (runtimeVerification.missing.length > 0) {
+        console.error(`  Missing exports: ${runtimeVerification.missing.join(", ")}`);
       }
       return false;
     }
-    // Also verify source HEAD is the intended revision (not just branch checkout)
-    let sandcastleHead = "";
-    try { sandcastleHead = execSync('git -C ../../sandcastle rev-parse HEAD', {encoding:'utf8'}).trim(); } catch {}
-    if (sandcastleHead && !isExpectedSandcastleSourceHead(sandcastleHead)) {
-      console.error(`  FAIL: Sandcastle HEAD is ${sandcastleHead.slice(0,7)} not ${EXPECTED_SANDCASTLE_SOURCE_PREFIX} — refusing to run factory on unexpected Sandcastle revision.`);
-      return false;
-    }
-    console.log(`  sandcastle runtime dist: ${distPath} — required API symbols ✓ (source HEAD ${sandcastleHead.slice(0,7) || "unknown"}, dist mtime ${fs.statSync(distPath).mtime.toISOString()})`);
+    console.log(`  sandcastle runtime dist: ${distPath} — required API exports ✓ (source HEAD ${sandcastleHead.slice(0,7)}, dist mtime ${fs.statSync(distPath).mtime.toISOString()})`);
   } catch (e) {
     console.error(`  FAIL: cannot verify Sandcastle runtime dist: ${getErrorMessage(e)}`);
     return false;

@@ -28,20 +28,9 @@ export function resolveSandcastleRuntimeDistPath(packageRoot: string = RUNTIME_P
   }
 }
 
-export function hasExpectedSandcastleRuntimeSymbols(distPath: string): boolean {
-  if (!distPath || !fs.existsSync(distPath)) return false;
-  const distContent = fs.readFileSync(distPath, "utf8");
-  return RUNTIME_REQUIREMENTS.every((symbol) => distContent.includes(symbol));
-}
-
-export function missingSandcastleRuntimeSymbols(distPath: string): string[] {
-  if (!distPath || !fs.existsSync(distPath)) return [...RUNTIME_REQUIREMENTS];
-  const distContent = fs.readFileSync(distPath, "utf8");
-  return RUNTIME_REQUIREMENTS.filter((symbol) => !distContent.includes(symbol));
-}
-
-export function verifySandcastleRuntimeDist(distPath: string): { ok: boolean; missing: string[] } {
-  const missing = missingSandcastleRuntimeSymbols(distPath);
+export function verifySandcastleRuntimeExports(runtime: unknown): { ok: boolean; missing: string[] } {
+  const runtimeRecord = runtime && typeof runtime === "object" ? runtime as Record<string, unknown> : {};
+  const missing = RUNTIME_REQUIREMENTS.filter((symbol) => runtimeRecord[symbol] === undefined);
   return {
     ok: missing.length === 0,
     missing,
