@@ -16,8 +16,14 @@ export interface IterationControl {
   qualification: QualificationRequest;
 }
 
+export interface PlannedIssue {
+  id: string;
+  title: string;
+  branch: string;
+}
+
 export interface PlannedFromQualification {
-  plannedIssues: Array<{ id: string; title: string; branch: string }>;
+  plannedIssues: PlannedIssue[];
 }
 
 export type QualificationDecisionMode =
@@ -28,8 +34,16 @@ export type QualificationDecisionMode =
 
 export interface IterationPlanningDecision {
   mode: QualificationDecisionMode;
-  plannedIssues: Array<{ id: string; title: string; branch: string }>;
+  plannedIssues: PlannedIssue[];
   skipIteration: boolean;
+}
+
+function toPlannedIssue(issue: IssueInput): PlannedIssue {
+  return {
+    id: String(issue.number),
+    title: issue.title,
+    branch: branchForIssue(issue.number),
+  };
 }
 
 export function issueBodyForPlannedIssue(plannedIssueId: string, eligibleIssues: IssueInput[]): string {
@@ -82,11 +96,7 @@ export function planQualificationIssue(
   const selected = eligibleIssues.find((issue) => String(issue.number) === control.requestedIssueNumber);
   if (!selected) return { plannedIssues: [] };
   return {
-    plannedIssues: [{
-      id: String(selected.number),
-      title: selected.title,
-      branch: branchForIssue(selected.number),
-    }],
+    plannedIssues: [toPlannedIssue(selected)],
   };
 }
 
@@ -114,11 +124,7 @@ export function planIssuesForIteration(
   if (eligibleIssues.length === 1) {
     return {
       mode: "single-eligible",
-      plannedIssues: [{
-        id: String(eligibleIssues[0]!.number),
-        title: eligibleIssues[0]!.title,
-        branch: branchForIssue(eligibleIssues[0]!.number),
-      }],
+      plannedIssues: [toPlannedIssue(eligibleIssues[0]!)],
       skipIteration: false,
     };
   }

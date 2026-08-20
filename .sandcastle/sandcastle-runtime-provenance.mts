@@ -5,7 +5,7 @@ export const EXPECTED_SANDCASTLE_SOURCE_SHA = "95f3a5c7c0ff7c5848bb6f13edaa2ed14
 export const EXPECTED_SANDCASTLE_SOURCE_PREFIX = EXPECTED_SANDCASTLE_SOURCE_SHA.slice(0, 7);
 
 const RUNTIME_PACKAGE_ROOT = path.join(process.cwd(), "node_modules", "@ai-hero", "sandcastle");
-const RUNTIME_REQUIREMENTS = ["createSandbox", "run", "Output", "muse"];
+const CALLABLE_RUNTIME_EXPORTS = ["createSandbox", "run", "muse"] as const;
 
 export function isExpectedSandcastleSourceHead(head: string): boolean {
   return head === EXPECTED_SANDCASTLE_SOURCE_SHA;
@@ -30,7 +30,12 @@ export function resolveSandcastleRuntimeDistPath(packageRoot: string = RUNTIME_P
 
 export function verifySandcastleRuntimeExports(runtime: unknown): { ok: boolean; missing: string[] } {
   const runtimeRecord = runtime && typeof runtime === "object" ? runtime as Record<string, unknown> : {};
-  const missing = RUNTIME_REQUIREMENTS.filter((symbol) => runtimeRecord[symbol] === undefined);
+  const missing = CALLABLE_RUNTIME_EXPORTS.filter((symbol) => typeof runtimeRecord[symbol] !== "function") as string[];
+  const output = runtimeRecord.Output && typeof runtimeRecord.Output === "object"
+    ? runtimeRecord.Output as Record<string, unknown>
+    : {};
+  if (typeof output.object !== "function") missing.push("Output.object");
+  if (typeof output.string !== "function") missing.push("Output.string");
   return {
     ok: missing.length === 0,
     missing,

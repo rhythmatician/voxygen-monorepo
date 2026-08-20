@@ -21,13 +21,24 @@ describe("Sandcastle runtime provenance guard", () => {
     const runtime = verifySandcastleRuntimeExports({
       createSandbox: () => undefined,
       run: () => undefined,
-      Output: {},
+      Output: { object: () => undefined, string: () => undefined },
       muse: () => undefined,
     });
     expect(runtime.ok).toBe(true);
     expect(runtime.missing).toEqual([]);
 
-    expect(verifySandcastleRuntimeExports({ createSandbox: () => undefined }).missing).toEqual(["run", "Output", "muse"]);
+    expect(verifySandcastleRuntimeExports({ createSandbox: () => undefined }).missing).toEqual([
+      "run",
+      "muse",
+      "Output.object",
+      "Output.string",
+    ]);
+    expect(verifySandcastleRuntimeExports({
+      createSandbox: null,
+      run: "not-callable",
+      muse: {},
+      Output: { object: null, string: "not-callable" },
+    }).missing).toEqual(["createSandbox", "run", "muse", "Output.object", "Output.string"]);
   });
 
   it("requires exact source identity before Doctor may reuse cached proof", () => {
