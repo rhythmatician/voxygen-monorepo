@@ -102,7 +102,7 @@ processResources {
 }
 
 tasks.withType(JavaCompile).configureEach {
-	it.options.release = 21
+	it.options.release = 25
 }
 
 java {
@@ -111,8 +111,8 @@ java {
 	// If you remove this line, sources will not be generated.
 	withSourcesJar()
 
-	sourceCompatibility = JavaVersion.VERSION_21
-	targetCompatibility = JavaVersion.VERSION_21
+	sourceCompatibility = JavaVersion.VERSION_25
+	targetCompatibility = JavaVersion.VERSION_25
 }
 
 jar {
@@ -142,7 +142,7 @@ tasks.register('deployToRunMods', Copy) {
 build.dependsOn deployToRunMods
 
 jacoco {
-	toolVersion = "0.8.11"
+	toolVersion = "0.8.15"
 }
 
 checkstyle {
@@ -203,7 +203,7 @@ tasks.register("lint", JavaCompile) {
 		'-Xlint:unchecked'     // Show detailed unchecked conversion warnings
 	])
 	options.encoding = 'UTF-8'
-	options.release = 21
+	options.release = 25
 	options.fork = true
 	options.forkOptions.jvmArgs = ['-Xmx1g'] // Ensure enough memory for analysis
 
