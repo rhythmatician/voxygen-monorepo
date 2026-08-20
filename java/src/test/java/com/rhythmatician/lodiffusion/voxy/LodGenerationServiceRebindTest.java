@@ -40,13 +40,8 @@ class LodGenerationServiceRebindTest {
         ShadowRouterJobQueue.enqueue(req);
     }
 
-    private static void forceRunning(GenerationSession s) throws Exception {
-        java.lang.reflect.Field f = GenerationSession.class.getDeclaredField("running");
-        f.setAccessible(true);
-        ((java.util.concurrent.atomic.AtomicBoolean) f.get(s)).set(true);
-        java.lang.reflect.Field sf = GenerationSession.class.getDeclaredField("stopRequested");
-        sf.setAccessible(true);
-        ((java.util.concurrent.atomic.AtomicBoolean) sf.get(s)).set(false);
+    private static void forceRunning(GenerationSession s) {
+        s.forceRunningForTest();
     }
 
     @Test
@@ -158,28 +153,29 @@ class LodGenerationServiceRebindTest {
 
     @Test
     void worldOverload_delegatesToKeyOverload() throws Exception {
-        // Verify the public World overload still works when a real World is supplied
-        // Use a lightweight mock via Mockito only for this single test; isolated runner handles it.
-        // If ByteBuddy limit hit, this test will be skipped in full suite – but key overload is the source of truth.
+        // ByteBuddy retransform limit can occur in the full suite when many World mocks are created.
+        // If mocking fails, escalate as a test assumption rather than a vacuous pass.
+        net.minecraft.world.World mockWorld;
         try {
-            net.minecraft.world.World mockWorld = org.mockito.Mockito.mock(net.minecraft.world.World.class);
+            mockWorld = org.mockito.Mockito.mock(net.minecraft.world.World.class);
             org.mockito.Mockito.when(mockWorld.getRegistryKey()).thenReturn(END_KEY);
-            LodGenerationService svc = new LodGenerationService();
-            svc.startForTest(OVERWORLD_KEY, null);
+        } catch (Throwable t) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false,
+                    "Skipped worldOverload_delegates: ByteBuddy/mock limit hit: " + t.getMessage());
+            return;
+        }
+        LodGenerationService svc = new LodGenerationService();
+        svc.startForTest(OVERWORLD_KEY, null);
+        Thread.sleep(50);
+        forceRunning(svc.getSessionForTest());
+        try {
+            boolean rebound = svc.checkAndRebindIfNeeded(mockWorld, null);
+            assertTrue(rebound, "World overload must delegate to key overload and rebind on dimension change");
             Thread.sleep(50);
             forceRunning(svc.getSessionForTest());
-            try {
-                boolean rebound = svc.checkAndRebindIfNeeded(mockWorld, null);
-                assertTrue(rebound);
-                Thread.sleep(50);
-                forceRunning(svc.getSessionForTest());
-                assertEquals(END_KEY, svc.getBoundDimensionForTest());
-            } finally {
-                svc.stop();
-            }
-        } catch (Throwable t) {
-            // ByteBuddy retransform limit in full suite – treat as skipped, key overload already proven
-            System.out.println("[TEST] worldOverload_delegates skipped due to mock limit: " + t.getMessage());
+            assertEquals(END_KEY, svc.getBoundDimensionForTest());
+        } finally {
+            svc.stop();
         }
     }
 }

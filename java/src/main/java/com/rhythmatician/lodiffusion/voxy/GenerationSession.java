@@ -172,6 +172,19 @@ public final class GenerationSession {
         this.endL4TracerMode = enabled;
     }
 
+    void setRunningForTest(boolean value) {
+        this.running.set(value);
+    }
+
+    void setStopRequestedForTest(boolean value) {
+        this.stopRequested.set(value);
+    }
+
+    void forceRunningForTest() {
+        this.running.set(true);
+        this.stopRequested.set(false);
+    }
+
     private boolean decideEndL4TracerMode(World world) {
         if (world == null) {
             return false;

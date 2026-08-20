@@ -139,7 +139,8 @@ public final class LodGenerationService {
         }
     }
 
-    // Test-only start that avoids mocking World (ByteBuddy retransform limits in full suite)
+    // Test-visible start that avoids mocking World (ByteBuddy retransform limit in full suite).
+    // Package-private; uses GenerationSession test helpers instead of reflection.
     void startForTest(RegistryKey<World> key, MinecraftServer server) {
         synchronized (lock) {
             if (session != null && session.isRunning()) {
@@ -149,22 +150,9 @@ public final class LodGenerationService {
             GenerationSession s = new GenerationSession();
             session = s;
             s.start(null, server);
-            // Force tracer flag based on key (mirrors GenerationSession.decideEndL4TracerMode)
-            try {
-                java.lang.reflect.Field f = GenerationSession.class.getDeclaredField("endL4TracerMode");
-                f.setAccessible(true);
-                boolean isEnd = key != null && key.getValue().equals(net.minecraft.util.Identifier.of("minecraft", "the_end"));
-                f.setBoolean(s, isEnd);
-            } catch (Exception ignored) {}
-            // Keep worker considered running for rebind tests (without Voxy it would exit)
-            try {
-                java.lang.reflect.Field rf = GenerationSession.class.getDeclaredField("running");
-                rf.setAccessible(true);
-                ((java.util.concurrent.atomic.AtomicBoolean) rf.get(s)).set(true);
-                java.lang.reflect.Field sf = GenerationSession.class.getDeclaredField("stopRequested");
-                sf.setAccessible(true);
-                ((java.util.concurrent.atomic.AtomicBoolean) sf.get(s)).set(false);
-            } catch (Exception ignored) {}
+            boolean isEnd = key != null && key.getValue().equals(net.minecraft.util.Identifier.of("minecraft", "the_end"));
+            s.setEndL4TracerModeForTest(isEnd);
+            s.forceRunningForTest();
             boundDimension = key;
             HelloTerrainMod.LOGGER.info("[LodGen] Service startedForTest via GenerationSession key={} tracer={}", key, s.isEndL4TracerMode());
         }
@@ -241,16 +229,9 @@ public final class LodGenerationService {
                     boundDimension = newKey;
                 }
             } else {
-                // Test path: start with null world then force tracer flag via direct field if needed
-                // Use newKey to decide tracer mode manually
                 next.start(null, server);
-                // Override tracer flag based on newKey's identifier (mirrors GenerationSession.decide)
-                try {
-                    java.lang.reflect.Field f = GenerationSession.class.getDeclaredField("endL4TracerMode");
-                    f.setAccessible(true);
-                    boolean isEnd = newKey.getValue().equals(net.minecraft.util.Identifier.of("minecraft", "the_end"));
-                    f.setBoolean(next, isEnd);
-                } catch (Exception ignored) {}
+                boolean isEnd = newKey.getValue().equals(net.minecraft.util.Identifier.of("minecraft", "the_end"));
+                next.setEndL4TracerModeForTest(isEnd);
                 boundDimension = newKey;
             }
             HelloTerrainMod.LOGGER.info(
