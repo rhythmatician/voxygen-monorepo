@@ -6,7 +6,7 @@ Use YAGNI and DRY principles.
 
 ## Token safety
 
-Prefix terminal commands with rtk to avoid context floods.
+Use RTK for supported commands and potentially large command output. Do not blindly prefix PowerShell cmdlets, aliases, shell built-ins, or shell syntax with rtk. Prefer RTK-native equivalents when available, e.g. rtk read instead of Get-Content. For unsupported PowerShell operations, invoke PowerShell normally and explicitly bound potentially large output.
 
 ## Agent skills
 
