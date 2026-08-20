@@ -68,11 +68,13 @@ dependencies {
 	testImplementation 'org.mockito:mockito-core:5.12.0'
 	testImplementation 'org.mockito:mockito-junit-jupiter:5.12.0'
 
-	// Voxy — compile-time dependency so we can mixin against VoxyClient and
-	// call getOcclusionDebugState() from LodiffusionClient.  Plain compileOnly
-	// (no Loom remapping) because VoxyClient is a mod class, not a MC class,
-	// and the jar was built with a newer Loom version that 1.13.6 cannot process.
-	compileOnly fileTree(dir: 'mods', include: 'voxy-*.jar')
+	// Voxy — modCompileOnly so Loom 1.14.10 remaps VoxyClient against Yarn mappings.
+	// modLocalRuntime was evaluated but not adopted: the remapped jar makes all Voxy engine
+	// bindings succeed in tests (Yarn MC names resolve), so RealVoxyVolumeWriterTest guard
+	// tests no longer see VolumeUnavailableException (they see RuntimeException from dummy
+	// objects reaching mipSection). testRuntimeOnly uses the raw jar, whose intermediary MC
+	// refs fail to load in the Yarn test env → LinkageError → caught → VolumeUnavailableException.
+	modCompileOnly fileTree(dir: 'mods', include: 'voxy-*.jar')
 	if (!providers.gradleProperty('excludeVoxyTestRuntime').isPresent()) {
 		testRuntimeOnly fileTree(dir: 'mods', include: 'voxy-*.jar')
 	}
