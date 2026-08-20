@@ -12,5 +12,12 @@
         "editor.formatOnSave": true
     },
     "java.import.gradle.enabled": true,
-    "java.import.gradle.wrapper.enabled": true
+    "java.import.gradle.wrapper.enabled": true,
+    "java.import.exclusions": [
+        "**/node_modules/**",
+        "**/.metadata/**",
+        "**/archetype-resources/**",
+        "**/META-INF/maven/**",
+        "**/external/**"
+    ]
 }
