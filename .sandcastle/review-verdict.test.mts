@@ -86,6 +86,23 @@ describe("extractVerdict", () => {
       }),
     ).toEqual(structured);
   });
+
+  it("extracts a verdict from the Muse JSONL returned by stock Sandcastle", () => {
+    const verdict = verdictFixture({
+      approved: false,
+      findings: [{ message: "implementation does not match the synthetic contract", severity: "blocking" }],
+      acceptanceCriteriaMet: [{ criterion: "focused test passes", met: false, evidence: "test file missing" }],
+      summary: "captured reviewer rejection",
+    });
+    const taggedVerdict = `<verdict>${JSON.stringify(verdict)}</verdict>`;
+    const stdout = [
+      JSON.stringify({ payload_type: "run.output.delta", payload: { kind: "run_output_delta", text: taggedVerdict.slice(0, 17) } }),
+      JSON.stringify({ payload_type: "run.output.delta", payload: { kind: "run_output_delta", delta: taggedVerdict.slice(17) } }),
+      JSON.stringify({ payload_type: "task.lifecycle.completed", payload: { kind: "task_lifecycle_completed" } }),
+    ].join("\n");
+
+    expect(extractVerdict({ stdout })).toEqual(verdict);
+  });
 });
 
 describe("isVerdictApproved", () => {

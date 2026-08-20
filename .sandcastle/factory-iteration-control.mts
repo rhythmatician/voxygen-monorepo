@@ -32,6 +32,12 @@ export interface IterationPlanningDecision {
   skipIteration: boolean;
 }
 
+export function issueBodyForPlannedIssue(plannedIssueId: string, eligibleIssues: IssueInput[]): string {
+  const issue = eligibleIssues.find((candidate) => String(candidate.number) === plannedIssueId);
+  if (!issue?.body) throw new Error(`No eligible issue contract found for #${plannedIssueId}`);
+  return issue.body;
+}
+
 export interface QualificationLifecyclePolicy {
   claimExternalState: boolean;
   mutateOutcomeState: boolean;

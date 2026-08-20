@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import fs from "node:fs";
 import {
   classifyGhOperation,
   makeGitHubCapability,
@@ -6,6 +7,13 @@ import {
 } from "./github-capability.mts";
 
 describe("GitHub capability boundary", () => {
+  it("preserves read-only capability violations through the host diagnostic wrapper", () => {
+    const main = fs.readFileSync(".sandcastle/main.mts", "utf8");
+    expect(main).toMatch(
+      /catch \(error: unknown\) \{\s*if \(error instanceof GitHubWriteForbiddenError\) \{\s*throw error;\s*\}/,
+    );
+  });
+
   it("classifies known write commands as writes", () => {
     expect(classifyGhOperation(["issue", "reopen", "151"])).toBe("write");
     expect(classifyGhOperation(["issue", "edit", "1", "--add-label", "x"])).toBe("write");

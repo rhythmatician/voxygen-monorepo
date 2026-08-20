@@ -2,6 +2,45 @@ import { describe, it, expect } from "vitest";
 import { isAdmitted, isSuspiciousName, checkFiles, checkFilesWithStatus, type FileEntry } from "./docs-policy.mts";
 
 describe("R-02 Documentation policy", () => {
+  it("--base X --cached reads the supplied base and index, never HEAD or the working tree", { timeout: 15000 }, async () => {
+    const { mkdtemp, writeFile, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const path = await import("node:path");
+    const { execFileSync, spawnSync } = await import("node:child_process");
+    const dir = await mkdtemp(path.join(tmpdir(), "r02-cached-base-"));
+    const runGit = (args: string[]) =>
+      execFileSync("git", args, { cwd: dir, encoding: "utf-8" }).toString();
+    const docsPolicyCli = path.join(process.cwd(), ".ci/docs-policy.mts");
+
+    try {
+      runGit(["init", "-q"]);
+      runGit(["config", "user.email", "test@test.com"]);
+      runGit(["config", "user.name", "Test"]);
+      await writeFile(path.join(dir, "legacy.md"), "x".repeat(1000));
+      runGit(["add", "legacy.md"]);
+      runGit(["commit", "-qm", "base"]);
+      const baseSha = runGit(["rev-parse", "HEAD"]).trim();
+
+      await writeFile(path.join(dir, "legacy.md"), "x".repeat(10));
+      runGit(["add", "legacy.md"]);
+      runGit(["commit", "-qm", "head differs from base"]);
+
+      await writeFile(path.join(dir, "legacy.md"), "x".repeat(999));
+      runGit(["add", "legacy.md"]);
+      await writeFile(path.join(dir, "legacy.md"), "x".repeat(2000));
+
+      const result = spawnSync(
+        process.execPath,
+        [docsPolicyCli, "--base", baseSha, "--cached"],
+        { cwd: dir, encoding: "utf-8" },
+      );
+      expect(result.status).toBe(0);
+      expect(result.stdout).toMatch(/Documentation policy: ok/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("admits CONTEXT.md, docs/adr, docs/agents, README, skills, sandcastle, docs/external, upstream refs, INDEX", () => {
     expect(isAdmitted("CONTEXT.md")).toBe(true);
     expect(isAdmitted("docs/adr/0001-foo.md")).toBe(true);

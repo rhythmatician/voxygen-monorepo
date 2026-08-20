@@ -277,13 +277,15 @@ if (import.meta.url.endsWith("docs-policy.mts") && process.argv.some((a) => a.en
   if (baseIdx >= 0 && candIdx >= 0) {
     baseSha = args[baseIdx + 1];
     candidateSha = args[candIdx + 1];
+  } else if (baseIdx >= 0 && cachedIdx >= 0) {
+    baseSha = args[baseIdx + 1];
   }
   const isAuthoritative = baseSha !== null && candidateSha !== null;
   const isCachedCandidate = baseSha !== null && candidateSha === null && cachedIdx >= 0;
   const getBaseContent = (p: string): string | null => {
     try {
-      if (isAuthoritative) {
-        return execFileSync("git", ["show", `${baseSha}:${p}`], { encoding: "utf-8" });
+    if (isAuthoritative || isCachedCandidate) {
+      return execFileSync("git", ["show", `${baseSha}:${p}`], { encoding: "utf-8" });
       }
       return execFileSync("git", ["show", `HEAD:${p}`], { encoding: "utf-8" });
     } catch {

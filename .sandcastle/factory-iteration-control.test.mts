@@ -6,19 +6,38 @@ import {
   resolveIterationLimit,
   planQualificationIssue,
   qualificationLifecyclePolicy,
+  issueBodyForPlannedIssue,
 } from "./factory-iteration-control.mts";
 
-function issue(overrides: { number: number; title: string }) {
+function issue(overrides: { number: number; title: string; body?: string }) {
   return {
     number: overrides.number,
     title: overrides.title,
-    body: "",
+    body: overrides.body ?? "",
     state: "open" as const,
     labels: ["agent:implement"],
     assignees: [],
     blockedByCount: 0,
   };
 }
+
+describe("planned issue contract", () => {
+  it("recovers the selected host issue body by planned issue id", () => {
+    const eligible = [issue({ number: 990007, title: "synthetic", body: "authoritative local contract" })];
+
+    expect(issueBodyForPlannedIssue("990007", eligible)).toBe("authoritative local contract");
+  });
+
+  it("fails closed when a planned issue has no eligible host contract", () => {
+    expect(() => issueBodyForPlannedIssue("990008", [])).toThrow("No eligible issue contract found for #990008");
+  });
+
+  it("fails closed when the selected host issue contract is empty", () => {
+    expect(() => issueBodyForPlannedIssue("990008", [issue({ number: 990008, title: "empty" })])).toThrow(
+      "No eligible issue contract found for #990008",
+    );
+  });
+});
 
 describe("Qualification selector", () => {
   it("picks exactly the explicitly requested eligible issue and ignores others", () => {

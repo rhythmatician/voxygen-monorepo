@@ -8,8 +8,7 @@ const RUNTIME_PACKAGE_ROOT = path.join(process.cwd(), "node_modules", "@ai-hero"
 const RUNTIME_REQUIREMENTS = ["createSandbox", "run", "Output", "muse"];
 
 export function isExpectedSandcastleSourceHead(head: string): boolean {
-  if (!head) return false;
-  return head.startsWith(EXPECTED_SANDCASTLE_SOURCE_PREFIX);
+  return head === EXPECTED_SANDCASTLE_SOURCE_SHA;
 }
 
 export function resolveSandcastleRuntimePackagePath(): string {

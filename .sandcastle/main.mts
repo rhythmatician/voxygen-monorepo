@@ -31,6 +31,7 @@ import { formatGhFailure, getErrorMessage, getGhErrorDetails } from "./gh-errors
 import { parsePlannerOutput, fallbackToSingle } from "./planner-helpers.mts";
 import {
   makeIterationControl,
+  issueBodyForPlannedIssue,
   planIssuesForIteration,
   type IterationControl,
   qualificationLifecyclePolicy,
@@ -193,6 +194,9 @@ async function runGh(args: string[]): Promise<string> {
   try {
     return await gitHubCapability.run(args);
   } catch (error: unknown) {
+    if (error instanceof GitHubWriteForbiddenError) {
+      throw error;
+    }
     const details = getGhErrorDetails(error);
     const msg = error instanceof Error ? error.message : String(error);
     const code = (error as unknown as { code?: unknown })?.code;
@@ -884,7 +888,11 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
       console.error("Doctor FAIL — factory unhealthy, not claiming new work. Fix Dockerfile/voxy-artifact/java before retry.");
       // Still reconcile stale claims so they don't stay indefinite
     }
-    await reconcileInProgressIssues();
+    if (QUALIFICATION_LIFECYCLE.mutateOutcomeState) {
+      await reconcileInProgressIssues();
+    } else {
+      console.log("Qualification mode: production reconciliation suppressed (read-only external state).");
+    }
     if (!doctorOk) {
       console.log("Doctor failed — exiting before claiming new work (reconciliation already done).");
       break;
@@ -1104,7 +1112,7 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
   // Never overwrite provenance — fail closed on legacy contaminated branches, recreate only truly empty stale.
   const preparedIssues: typeof claimedIssues = [];
   for (const p of claimedIssues) {
-    const prep = branchHelpers.prepareIssueBranch(REPO_ROOT, p.branch, factoryBaseSha, callerBranch, callerSha, p.id);
+    const prep = branchHelpers.prepareIssueBranch(REPO_ROOT, p.branch, factoryBaseSha, callerBranch, callerSha, p.id, QUALIFICATION_LIFECYCLE.integrate);
     if (prep.ok) {
       console.log(`  Prepared ${p.branch}: ${prep.action} — ${prep.reason} → ${prep.provPath}`);
       // Assert caller still unchanged after prepare (provenance is gitignored, branch creation is isolated)
@@ -1141,6 +1149,7 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
   // ----- Phase 2: Execute + Review (parallel, isolated) -----
   const settled = await Promise.allSettled<WorkerResult>(
     claimedIssues.map(async (issue): Promise<WorkerResult> => {
+      const implementationIssueBody = issueBodyForPlannedIssue(issue.id, eligible);
       let sandbox: Awaited<ReturnType<typeof sandcastle.createSandbox>> | null = null;
       for (let attempt = 0; attempt <= MECHANICAL_RETRY_BUDGET; attempt++) {
         try {
@@ -1174,6 +1183,7 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
           promptArgs: {
             TASK_ID: issue.id,
             ISSUE_TITLE: issue.title,
+            ISSUE_BODY: implementationIssueBody,
             BRANCH: issue.branch,
             REVIEW_FEEDBACK: "",
           },
@@ -1213,6 +1223,7 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
               promptArgs: {
                 TASK_ID: issue.id,
                 ISSUE_TITLE: issue.title,
+                ISSUE_BODY: implementationIssueBody,
                 BRANCH: issue.branch,
                 REVIEW_FEEDBACK: feedback,
               },
@@ -1572,4 +1583,3 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
 }
 
 console.log("\nAll done.");
-

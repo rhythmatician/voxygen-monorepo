@@ -172,6 +172,7 @@ export function prepareIssueBranch(
   callerBranch: string,
   callerSha: string,
   issueId: string,
+  allowRemoteDelete = true,
 ): PrepareIssueBranchResult {
   const provPath = path.join(repoRoot, ".sandcastle", "provenance", `${branch.replace(/[^a-zA-Z0-9-]/g, "-")}.json`);
   let branchExists = false;
@@ -370,8 +371,10 @@ export function prepareIssueBranch(
     }
   } catch {}
   try { execFileSync("git", ["branch", "-D", branch], { stdio: 'ignore', cwd: repoRoot }); } catch {}
-  try { execFileSync("git", ["push", "origin", "--delete", branch], { stdio: 'ignore', cwd: repoRoot }); } catch {}
-  try { awaitGetRemoteDelete(repoRoot, branch); } catch {}
+  if (allowRemoteDelete) {
+    try { execFileSync("git", ["push", "origin", "--delete", branch], { stdio: 'ignore', cwd: repoRoot }); } catch {}
+    try { awaitGetRemoteDelete(repoRoot, branch); } catch {}
+  }
   // Write fresh provenance (should be wx — file did not exist)
   try {
     const provDir = path.join(repoRoot, ".sandcastle", "provenance");
@@ -396,4 +399,3 @@ export function prepareIssueBranch(
 function awaitGetRemoteDelete(_repoRoot: string, _branch: string) {
   // placeholder for remote deletion via gh api (best-effort, caller handles gh deletion)
 }
-

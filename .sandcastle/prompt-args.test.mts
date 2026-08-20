@@ -62,3 +62,13 @@ describe("prompt-args built-in collision (regression for #70)", () => {
     expect(promptArgsWithBuiltIn).toBe(false);
   });
 });
+
+describe("implementer issue contract grounding", () => {
+  it("embeds the host-selected issue body instead of requiring worker GitHub access", () => {
+    const promptSource = fs.readFileSync(path.resolve(process.cwd(), ".sandcastle/implement-prompt.md"), "utf8");
+
+    expect(promptSource).toContain("{{ISSUE_BODY}}");
+    expect(promptSource).not.toContain("gh issue view");
+  });
+
+});
