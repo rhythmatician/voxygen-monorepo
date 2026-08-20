@@ -68,6 +68,23 @@ export function canClaimNextOuterIteration(partition: WorkerPartition): boolean 
   return partition.factoryErrors.length === 0;
 }
 
+export function partitionMergerInfrastructureFailure(
+  issues: WorkerIssue[],
+  reason: string,
+): WorkerPartition {
+  return {
+    completed: [],
+    failed: [],
+    reviewRejected: [],
+    factoryErrors: issues.map((issue) => ({
+      ...issue,
+      reason,
+      verdict: null,
+    })),
+    shouldStopOuterLoop: true,
+  };
+}
+
 export function partitionWorkerOutcomes(issues: WorkerIssue[], settled: WorkerOutcome[]): WorkerPartition {
   const completed: WorkerIssue[] = [];
   const failed: Array<WorkerIssue & { reason: string }> = [];

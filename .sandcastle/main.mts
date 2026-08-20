@@ -14,6 +14,7 @@ const REPO_ROOT = process.cwd();
 import { isEligible, branchForIssue, type IssueInput } from "./dispatch.mts";
 import {
   canClaimNextOuterIteration,
+  partitionMergerInfrastructureFailure,
   partitionWorkerOutcomes,
   partitionToMutationPlan,
   type WorkerMutationKind,
@@ -47,6 +48,7 @@ import {
   GitHubWriteForbiddenError,
 } from "./github-capability.mts";
 import { resolveWorkerSandboxEnv } from "./sandbox-token-env.mts";
+import { mergerDockerOptions } from "./merger-control.mts";
 
 const execFileAsync = promisify(execFile);
 
@@ -350,15 +352,15 @@ async function markBlocked(issueId: string, branch: string, reason: string): Pro
 async function markFactoryError(issueId: string, branch: string, reason: string): Promise<boolean> {
   const shortReason = reason.slice(0, REASON_TRUNCATE);
   const removed = await safeRunGh(
-    ["issue", "edit", issueId, "--remove-label", "agent:in-progress"],
-    `Failed to remove agent:in-progress from #${issueId}`,
+    ["issue", "edit", issueId, "--remove-label", "agent:in-progress", "--remove-assignee", "@me"],
+    `Failed to release factory claim from #${issueId}`,
   );
   const commentOk = await safeRunGh([
     "issue",
     "comment",
     issueId,
     "--body",
-    `Sandcastle factory infrastructure produced an unrecoverable verdict contract failure on \`${branch}\` — preserved branch for inspection.\n\n**Reason:** ${shortReason}\n\nBranch: \`${branch}\`\n\nTo retry this issue, fix infra/agent contract wiring and re-run factory once valid review text can be emitted.`,
+    `Sandcastle factory infrastructure failed on \`${branch}\` — preserved branch for inspection.\n\n**Reason:** ${shortReason}\n\nBranch: \`${branch}\`\n\nThe issue was released for retry without being marked semantically blocked.`,
   ]);
   return removed && commentOk;
 }
@@ -1424,19 +1426,21 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
     batchWorktreePath = branchHelpers.createBatchWorktree(REPO_ROOT, batchBranch, factoryBaseSha);
     console.log(`Created batch worktree ${batchWorktreePath} for ${batchBranch} from ${factoryBaseSha.slice(0,7)} — caller ${callerBranchForBatch} never moved`);
   } catch (e) {
-    console.error(`Failed to create batch worktree for ${batchBranch} from ${factoryBaseSha.slice(0,7)}: ${getErrorMessage(e)}`);
-    for (const iss of completedIssues) {
-      await markBlocked(iss.id, iss.branch, `Batch worktree creation failed for ${batchBranch} from ${factoryBaseSha.slice(0,7)}: ${String(getErrorMessage(e)).slice(0, MERGER_REASON_TRUNCATE)} -- branch preserved`);
+    const reason = `Batch worktree creation failed for ${batchBranch} from ${factoryBaseSha.slice(0,7)}: ${String(getErrorMessage(e)).slice(0, MERGER_REASON_TRUNCATE)} -- branch preserved`;
+    console.error(reason);
+    const mergerFailure = partitionMergerInfrastructureFailure(completedIssues, reason);
+    for (const failure of mergerFailure.factoryErrors) {
+      await markFactoryError(failure.id, failure.branch, failure.reason);
     }
     if (batchWorktreePath) { try { execSync(`git worktree remove --force ${batchWorktreePath}`, {stdio:'ignore'}); } catch {} }
     try { execSync(`git branch -D ${batchBranch}`, {stdio:'ignore'}); } catch {}
-    continue;
+    break;
   }
 
   try {
     await sandcastle.run({
       hooks,
-      sandbox: docker({ env: WORKER_SANDBOX_ENV }),
+      sandbox: docker(mergerDockerOptions(WORKER_SANDBOX_ENV)),
       name: "merger",
       maxIterations: 1,
       cwd: batchWorktreePath,
@@ -1449,13 +1453,15 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
     });
     console.log(`\nBranches merged locally into ${batchBranch} via merger agent in worktree ${batchWorktreePath}.`);
   } catch (error: unknown) {
+    const reason = `Merger failed on ${batchBranch}: ${String(getErrorMessage(error)).slice(0, MERGER_REASON_TRUNCATE)} -- branch preserved`;
     console.error(`Merger failed on ${batchBranch} in ${batchWorktreePath}: ${getErrorMessage(error)}`);
-    for (const iss of completedIssues) {
-      await markBlocked(iss.id, iss.branch, `Merger failed on ${batchBranch}: ${String(getErrorMessage(error)).slice(0, MERGER_REASON_TRUNCATE)} -- branch preserved`);
+    const mergerFailure = partitionMergerInfrastructureFailure(completedIssues, reason);
+    for (const failure of mergerFailure.factoryErrors) {
+      await markFactoryError(failure.id, failure.branch, failure.reason);
     }
     try { execSync(`git worktree remove --force ${batchWorktreePath}`, {stdio:'ignore'}); } catch {}
     try { execSync(`git branch -D ${batchBranch}`, {stdio:'ignore'}); } catch {}
-    continue;
+    break;
   }
 
   // Host-side: push batch branch + PR + auto-merge. Never push caller's branch.
