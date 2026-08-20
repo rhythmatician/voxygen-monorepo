@@ -24,7 +24,8 @@
     ]
   },
   "mixins": [
-    "lodiffusion.mixins.json"
+    "lodiffusion.mixins.json",
+    "lodiffusion.client.mixins.json"
   ],
   "depends": {
     "fabricloader": ">=0.18.4",

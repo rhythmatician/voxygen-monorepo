@@ -127,7 +127,7 @@ jobs:
           lfs: true
           ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
       - uses: actions/setup-java@v4
-        with: { distribution: temurin, java-version: "21", cache: gradle }
+        with: { distribution: temurin, java-version: "25", cache: gradle }
       - name: Install pinned real Voxy artifact
         run: bash .ci/install-voxy.sh install
       - run: chmod +x java/gradlew
@@ -167,7 +167,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
       - uses: actions/setup-java@v4
-        with: { distribution: temurin, java-version: "21", cache: gradle }
+        with: { distribution: temurin, java-version: "25", cache: gradle }
       - run: bash .ci/install-voxy.sh install
       - run: chmod +x java/gradlew && ./java/gradlew -p java test --tests '*ChunkDataExtractorPerformanceTest'
 

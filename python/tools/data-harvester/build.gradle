@@ -1,5 +1,5 @@
 plugins {
-    id 'fabric-loom' version '1.13.6'
+    id 'fabric-loom' version '1.14.10'
 }
 
 version = project.version
@@ -41,11 +41,11 @@ processResources {
 
 tasks.withType(JavaCompile).configureEach {
     it.options.encoding = "UTF-8"
-    it.options.release = 21
+    it.options.release = 25
 }
 
 java {
     withSourcesJar()
-    sourceCompatibility = 21
-    targetCompatibility = 21
+    sourceCompatibility = 25
+    targetCompatibility = 25
 }
