@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-export const EXPECTED_SANDCASTLE_SOURCE_SHA = "a521f19f7c1b64d2548c8f3bc1cffcd69b29662e";
+export const EXPECTED_SANDCASTLE_SOURCE_SHA = "29eb8d50854df49dfd3652b4c6b83f3714376334";
 export const EXPECTED_SANDCASTLE_SOURCE_PREFIX = EXPECTED_SANDCASTLE_SOURCE_SHA.slice(0, 7);
 
 const RUNTIME_PACKAGE_ROOT = path.join(process.cwd(), "node_modules", "@ai-hero", "sandcastle");
