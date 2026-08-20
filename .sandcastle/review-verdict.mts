@@ -62,6 +62,43 @@ export function parseVerdictFromText(text: string): ReviewVerdict | null {
   }
 }
 
+function parseVerdictFromMuseJsonl(stdout: string): ReviewVerdict | null {
+  let accumulatedText = "";
+  let verdict: ReviewVerdict | null = null;
+
+  for (const line of stdout.split(/\r?\n/)) {
+    if (!line.startsWith("{")) continue;
+    let event: Record<string, unknown>;
+    try {
+      event = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+
+    const payload = event.payload;
+    if (!payload || typeof payload !== "object") continue;
+    const payloadRecord = payload as Record<string, unknown>;
+
+    if (event.payload_type === "run.output.delta") {
+      const fragment =
+        typeof payloadRecord.text === "string"
+          ? payloadRecord.text
+          : typeof payloadRecord.delta === "string"
+            ? payloadRecord.delta
+            : null;
+      if (fragment !== null) accumulatedText += fragment;
+      continue;
+    }
+
+    if (event.payload_type === "task.lifecycle.completed") {
+      verdict = parseVerdictFromText(accumulatedText) ?? verdict;
+      accumulatedText = "";
+    }
+  }
+
+  return verdict;
+}
+
 /**
  * Unified extraction from a reviewer run — mirrors the factory fallback chain:
  * 1) structured `output` (already parsed object)
@@ -89,6 +126,11 @@ export function extractVerdict(review: { output?: unknown; stdout?: string; text
     if (typeof candidate !== "string") continue;
     const parsed = parseVerdictFromText(candidate);
     if (parsed) return parsed;
+  }
+
+  if (typeof stdout === "string") {
+    const fromMuseJsonl = parseVerdictFromMuseJsonl(stdout);
+    if (fromMuseJsonl) return fromMuseJsonl;
   }
 
   if (typeof output === "string") {
@@ -121,7 +163,7 @@ export function isVerdictApproved(verdict: ReviewVerdict | null | undefined): bo
  * and gateBranchesByVerdict consistent.
  */
 export function blockedReasonForVerdict(verdict: ReviewVerdict | null): string {
-  if (!verdict) return "reviewer produced no verdict (treated as rejected - branch preserved, not merged)";
+  if (!verdict) return "reviewer produced no machine-readable verdict (FACTORY_ERROR)";
   if (!verdict.approved) {
     const detail = verdict.findings.map((f) => f.message).join("; ") || verdict.summary || "unmet criteria";
     return `reviewer rejected (approved=false): ${detail}`;

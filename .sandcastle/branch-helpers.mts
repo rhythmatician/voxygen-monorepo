@@ -1,4 +1,4 @@
-import { execSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
@@ -30,7 +30,7 @@ export function verifyProvenance(repoRoot: string, branch: string): { ok: boolea
     let hasCommits = false;
     for (const base of ['origin/main', 'main', 'master']) {
       try {
-        const log = execSync(`git log ${base}..${branch} --oneline`, {encoding:'utf8', cwd: repoRoot}).trim();
+        const log = execFileSync("git", ["log", `${base}..${branch}`, "--oneline"], { encoding: 'utf8', cwd: repoRoot }).toString().trim();
         if (log) hasCommits = true;
         break; // found a base, stop
       } catch {
@@ -41,7 +41,7 @@ export function verifyProvenance(repoRoot: string, branch: string): { ok: boolea
     // Fallback: if no base found, check if branch has any commits at all vs empty
     if (!hasCommits) {
       try {
-        const count = execSync(`git rev-list --count ${branch}`, {encoding:'utf8', cwd: repoRoot}).trim();
+        const count = execFileSync("git", ["rev-list", "--count", branch], { encoding: 'utf8', cwd: repoRoot }).toString().trim();
         if (parseInt(count, 10) > 0) {
           // Check if branch is not the same as base (has at least one commit)
           // For tmp test, this will be true for legacy branch with commits
@@ -50,7 +50,7 @@ export function verifyProvenance(repoRoot: string, branch: string): { ok: boolea
           // For our test, legacy branch does have commits, so we should return true
           // We'll treat any existing branch with commits as hasCommits for legacy case
           // Check via git log without base: if branch has commits, it will have log
-          const allLog = execSync(`git log --oneline ${branch} -1`, {encoding:'utf8', cwd: repoRoot}).trim();
+           const allLog = execFileSync("git", ["log", "--oneline", branch, "-1"], { encoding: 'utf8', cwd: repoRoot }).toString().trim();
           if (allLog) hasCommits = true;
         }
       } catch {}
@@ -65,7 +65,7 @@ export function verifyProvenance(repoRoot: string, branch: string): { ok: boolea
     const prov = JSON.parse(fs.readFileSync(provPath, 'utf8'));
     const recordedBase = prov.factoryBaseSha as string;
     const isAncestor = (() => {
-      try { execSync(`git merge-base --is-ancestor ${recordedBase} ${branch}`, {stdio:'ignore', cwd: repoRoot}); return true; } catch { return false; }
+      try { execFileSync("git", ["merge-base", "--is-ancestor", recordedBase, branch], { stdio: "ignore", cwd: repoRoot }); return true; } catch { return false; }
     })();
     if (isAncestor) {
       return { ok: true, recordedBase, reason: `provenance OK: branch descendant of recorded base ${recordedBase.slice(0,7)}` };
@@ -77,25 +77,64 @@ export function verifyProvenance(repoRoot: string, branch: string): { ok: boolea
   }
 }
 
+export function hasCommitsAhead(repoRoot: string, base: string, branch: string): boolean {
+  try {
+    const log = execFileSync("git", ["log", `${base}..${branch}`, "--oneline"], { encoding: 'utf8', cwd: repoRoot }).toString().trim();
+    return !!log;
+  } catch {
+    return false;
+  }
+}
+
 export function createBatchWorktree(repoRoot: string, batchBranch: string, factoryBaseSha: string): string {
   const worktreePath = path.join(repoRoot, ".sandcastle", "worktrees", batchBranch.replace(/\//g, "-"));
-  execSync(`git worktree add -b ${batchBranch} ${worktreePath} ${factoryBaseSha}`, {stdio:'ignore', cwd: repoRoot});
+  execFileSync("git", ["worktree", "add", "-b", batchBranch, worktreePath, factoryBaseSha], { stdio: "ignore", cwd: repoRoot });
   return worktreePath;
 }
 
 export function verifyCallerUnchanged(repoRoot: string, callerBranch: string, callerSha: string): { ok: boolean; refSha: string; checkoutBranch: string } {
-  const refSha = execSync(`git rev-parse refs/heads/${callerBranch}`, {encoding:'utf8', cwd: repoRoot}).trim();
+  const refSha = execFileSync("git", ["rev-parse", `refs/heads/${callerBranch}`], { encoding: 'utf8', cwd: repoRoot }).toString().trim();
   const checkoutBranch = execSync('git branch --show-current', {encoding:'utf8', cwd: repoRoot}).trim();
   const ok = refSha === callerSha && checkoutBranch === callerBranch;
   return { ok, refSha, checkoutBranch };
 }
 
+export function hasLocalBranch(repoRoot: string, branch: string): boolean {
+  try {
+    const out = execFileSync("git", ["branch", "--list", branch], { encoding: 'utf8', cwd: repoRoot }).toString().trim();
+    return !!out;
+  } catch {
+    return false;
+  }
+}
+
+export function deleteBranch(repoRoot: string, branch: string): void {
+  execFileSync("git", ["branch", "-D", branch], { stdio: "ignore", cwd: repoRoot });
+}
+
 export function isBranchAncestor(repoRoot: string, ancestorSha: string, branch: string): boolean {
-  try { execSync(`git merge-base --is-ancestor ${ancestorSha} ${branch}`, {stdio:'ignore', cwd: repoRoot}); return true; } catch { return false; }
+  try { execFileSync("git", ["merge-base", "--is-ancestor", ancestorSha, branch], { stdio:'ignore', cwd: repoRoot }); return true; } catch { return false; }
 }
 
 export function cleanupBatchWorktree(repoRoot: string, worktreePath: string): void {
-  execSync(`git worktree remove --force ${worktreePath}`, {stdio:'ignore', cwd: repoRoot});
+  execFileSync("git", ["worktree", "remove", "--force", worktreePath], { stdio: "ignore", cwd: repoRoot });
+}
+
+export function cleanupPreserveLocalBranches(repoRoot: string): string[] {
+  const output = execFileSync("git", ["branch", "--list", "preserve-local-*"], { encoding: "utf8", cwd: repoRoot }).toString().trim();
+  const branches = output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const deleted: string[] = [];
+  for (const raw of branches) {
+    const name = raw.replace(/^\* /, "");
+    if (!name) continue;
+    try {
+      execFileSync("git", ["branch", "-D", name], { stdio: "ignore", cwd: repoRoot });
+      deleted.push(name);
+    } catch {
+      // Best-effort cleanup: preserve idempotence even if branch disappears during retry.
+    }
+  }
+  return deleted;
 }
 
 export function buildPrCreateArgs(batchBranch: string, completedIssues: Array<{id: string}>): string[] {
@@ -133,17 +172,18 @@ export function prepareIssueBranch(
   callerBranch: string,
   callerSha: string,
   issueId: string,
+  allowRemoteDelete = true,
 ): PrepareIssueBranchResult {
   const provPath = path.join(repoRoot, ".sandcastle", "provenance", `${branch.replace(/[^a-zA-Z0-9-]/g, "-")}.json`);
   let branchExists = false;
   try {
-    const out = execSync(`git branch --list "${branch}"`, { encoding: 'utf8', cwd: repoRoot }).trim();
+      const out = execFileSync("git", ["branch", "--list", branch], { encoding: 'utf8', cwd: repoRoot }).toString().trim();
     if (out) branchExists = true;
   } catch {}
   // Also consider refs/heads existence (covers branches with no list output edge)
   if (!branchExists) {
     try {
-      execSync(`git rev-parse --verify refs/heads/${branch}`, { stdio: 'ignore', cwd: repoRoot });
+      execFileSync("git", ["rev-parse", "--verify", `refs/heads/${branch}`], { stdio: "ignore", cwd: repoRoot });
       branchExists = true;
     } catch {}
   }
@@ -156,7 +196,7 @@ export function prepareIssueBranch(
   let remoteLookupError: unknown = null;
   const getRemoteSha = (): { sha: string | null; exists: boolean; error: unknown | null } => {
     try {
-      const out = execSync(`git ls-remote --heads origin ${branch}`, { encoding: 'utf8', cwd: repoRoot }).trim();
+      const out = execFileSync("git", ["ls-remote", "--heads", "origin", branch], { encoding: 'utf8', cwd: repoRoot }).toString().trim();
       if (out) {
         const sha = out.split(/\s+/)[0]?.trim();
         if (sha) return { sha, exists: true, error: null };
@@ -180,7 +220,7 @@ export function prepareIssueBranch(
       if (fs.existsSync(provPath)) {
         // Remote-only + valid provenance → fetch/reconstitute local at remote SHA, then verify
         try {
-          execSync(`git fetch origin ${branch}:${branch}`, { stdio: 'ignore', cwd: repoRoot });
+          execFileSync("git", ["fetch", "origin", `${branch}:${branch}`], { stdio: "ignore", cwd: repoRoot });
           branchExists = true;
         } catch (e) {
           return { ok: false, action: 'error', reason: `failed to fetch remote-only branch ${branch} with provenance: ${(e as Error).message}`, provPath, branchExists: false };
@@ -190,7 +230,7 @@ export function prepareIssueBranch(
         // Remote-only + no provenance: fetch to inspect, then decide blocked vs empty
         // Fetch to local so hasCommits check can run against remote content
         try {
-          execSync(`git fetch origin ${branch}:${branch}`, { stdio: 'ignore', cwd: repoRoot });
+          execFileSync("git", ["fetch", "origin", `${branch}:${branch}`], { stdio: "ignore", cwd: repoRoot });
           branchExists = true;
         } catch (e) {
           return { ok: false, action: 'error', reason: `failed to fetch remote-only branch ${branch} without provenance: ${(e as Error).message}`, provPath, branchExists: false };
@@ -208,20 +248,20 @@ export function prepareIssueBranch(
     }
     if (remoteExists && remoteSha) {
       let localSha: string | null = null;
-      try { localSha = execSync(`git rev-parse ${branch}`, { encoding: 'utf8', cwd: repoRoot }).trim(); } catch {}
+      try { localSha = execFileSync("git", ["rev-parse", branch], { encoding: 'utf8', cwd: repoRoot }).toString().trim(); } catch {}
       if (localSha && remoteSha) {
         if (localSha === remoteSha) {
           // normal — nothing to do
         } else {
-          const isRemoteDescendant = (() => { try { execSync(`git merge-base --is-ancestor ${localSha} ${remoteSha}`, { stdio: 'ignore', cwd: repoRoot }); return true; } catch { return false; } })();
-          const isLocalDescendant = (() => { try { execSync(`git merge-base --is-ancestor ${remoteSha} ${localSha}`, { stdio: 'ignore', cwd: repoRoot }); return true; } catch { return false; } })();
+      const isRemoteDescendant = (() => { try { execFileSync("git", ["merge-base", "--is-ancestor", localSha, remoteSha], { stdio: 'ignore', cwd: repoRoot }); return true; } catch { return false; } })();
+      const isLocalDescendant = (() => { try { execFileSync("git", ["merge-base", "--is-ancestor", remoteSha, localSha], { stdio: 'ignore', cwd: repoRoot }); return true; } catch { return false; } })();
           if (isRemoteDescendant) {
             // Remote is ahead → fetch/fast-forward local to exact remote SHA before provenance/work checks
             // Must handle currently-checked-out branch (fetch to branch:branch fails when checked out)
             try {
-              execSync(`git fetch origin ${branch}`, { stdio: 'ignore', cwd: repoRoot });
+              execFileSync("git", ["fetch", "origin", branch], { stdio: "ignore", cwd: repoRoot });
               // Update local ref to remote SHA
-              try { execSync(`git update-ref refs/heads/${branch} ${remoteSha}`, { stdio: 'ignore', cwd: repoRoot }); } catch {}
+               try { execFileSync("git", ["update-ref", `refs/heads/${branch}`, remoteSha], { stdio: 'ignore', cwd: repoRoot }); } catch {}
               // If currently checked out on this branch, reset working tree to remote
               try {
                 const cur = execSync('git branch --show-current', { encoding: 'utf8', cwd: repoRoot }).trim();
@@ -261,7 +301,7 @@ export function prepareIssueBranch(
       return { ok: false, action: 'error', reason: `failed to record provenance for ${branch}: ${(e as Error).message}`, provPath, branchExists: false };
     }
     try {
-      execSync(`git branch ${branch} ${factoryBaseSha}`, { stdio: 'ignore', cwd: repoRoot });
+      execFileSync("git", ["branch", branch, factoryBaseSha], { stdio: "ignore", cwd: repoRoot });
     } catch (e) {
       try { fs.unlinkSync(provPath); } catch {}
       return { ok: false, action: 'error', reason: `failed to create branch ${branch} from ${factoryBaseSha.slice(0, 7)}: ${(e as Error).message}`, provPath, branchExists: false };
@@ -284,7 +324,7 @@ export function prepareIssueBranch(
   // Prefer factoryBaseSha ancestry, fall back to origin/main/main for empty-check
   for (const base of [factoryBaseSha, 'origin/main', 'main', 'master']) {
     try {
-      const log = execSync(`git log ${base}..${branch} --oneline`, { encoding: 'utf8', cwd: repoRoot }).trim();
+      const log = execFileSync("git", ["log", `${base}..${branch}`, "--oneline"], { encoding: 'utf8', cwd: repoRoot }).toString().trim();
       if (log) { hasCommits = true; break; }
       // If base exists but log empty, we know branch is not ahead of this base — but could still have commits vs other base
       // Only break if base itself is valid (rev-parse succeeds)
@@ -296,9 +336,9 @@ export function prepareIssueBranch(
   // Fallback: if no base resolved, check if branch has any commits at all
   if (!hasCommits) {
     try {
-      const count = execSync(`git rev-list --count ${branch}`, { encoding: 'utf8', cwd: repoRoot }).trim();
+      const count = execFileSync("git", ["rev-list", "--count", branch], { encoding: 'utf8', cwd: repoRoot }).toString().trim();
       if (parseInt(count, 10) > 0) {
-        const allLog = execSync(`git log --oneline ${branch} -1`, { encoding: 'utf8', cwd: repoRoot }).trim();
+        const allLog = execFileSync("git", ["log", "--oneline", branch, "-1"], { encoding: 'utf8', cwd: repoRoot }).toString().trim();
         if (allLog) {
           // Need to determine if branch is truly empty vs has commits — if count >0 and not ahead of base, it may be exactly at base
           // Check if branch tip equals base
@@ -306,7 +346,7 @@ export function prepareIssueBranch(
           for (const base of [factoryBaseSha, 'origin/main', 'main']) {
             try {
               const baseSha = execSync(`git rev-parse ${base}`, { encoding: 'utf8', cwd: repoRoot }).trim();
-              const branchSha = execSync(`git rev-parse ${branch}`, { encoding: 'utf8', cwd: repoRoot }).trim();
+               const branchSha = execFileSync("git", ["rev-parse", branch], { encoding: 'utf8', cwd: repoRoot }).toString().trim();
               if (baseSha === branchSha) { atBase = true; break; }
             } catch {}
           }
@@ -330,9 +370,11 @@ export function prepareIssueBranch(
       }
     }
   } catch {}
-  try { execSync(`git branch -D ${branch}`, { stdio: 'ignore', cwd: repoRoot }); } catch {}
-  try { execSync(`git push origin --delete ${branch}`, { stdio: 'ignore', cwd: repoRoot }); } catch {}
-  try { awaitGetRemoteDelete(repoRoot, branch); } catch {}
+  try { execFileSync("git", ["branch", "-D", branch], { stdio: 'ignore', cwd: repoRoot }); } catch {}
+  if (allowRemoteDelete) {
+    try { execFileSync("git", ["push", "origin", "--delete", branch], { stdio: 'ignore', cwd: repoRoot }); } catch {}
+    try { awaitGetRemoteDelete(repoRoot, branch); } catch {}
+  }
   // Write fresh provenance (should be wx — file did not exist)
   try {
     const provDir = path.join(repoRoot, ".sandcastle", "provenance");
@@ -346,7 +388,7 @@ export function prepareIssueBranch(
     return { ok: false, action: 'error', reason: `failed to record provenance after cleaning empty branch ${branch}: ${(e as Error).message}`, provPath, branchExists: false };
   }
   try {
-    execSync(`git branch ${branch} ${factoryBaseSha}`, { stdio: 'ignore', cwd: repoRoot });
+    execFileSync("git", ["branch", branch, factoryBaseSha], { stdio: "ignore", cwd: repoRoot });
   } catch (e) {
     try { fs.unlinkSync(provPath); } catch {}
     return { ok: false, action: 'error', reason: `failed to recreate branch ${branch} from ${factoryBaseSha.slice(0, 7)}: ${(e as Error).message}`, provPath, branchExists: false };

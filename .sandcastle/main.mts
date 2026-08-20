@@ -5,24 +5,48 @@
 import * as sandcastle from "@ai-hero/sandcastle";
 import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
 import { z } from "zod";
-import { execFile, execSync } from "node:child_process";
+import { execFile, execSync, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
 const REPO_ROOT = process.cwd();
 import { isEligible, branchForIssue, type IssueInput } from "./dispatch.mts";
+import {
+  canClaimNextOuterIteration,
+  partitionWorkerOutcomes,
+  partitionToMutationPlan,
+  type WorkerMutationKind,
+  type WorkerOutcome,
+} from "./factory-verdict-gate.mts";
 import * as branchHelpers from "./branch-helpers.mts";
 import { mayAutonomouslyMerge } from "./ci-policy.mts";
+import { runReviewerPass } from "./review-pass.mts";
 import {
   reviewVerdictSchema,
   isVerdictApproved,
-  extractVerdict,
-  blockedReasonForVerdict,
   type ReviewVerdict,
 } from "./review-verdict.mts";
 import { formatGhFailure, getErrorMessage, getGhErrorDetails } from "./gh-errors.mts";
 import { parsePlannerOutput, fallbackToSingle } from "./planner-helpers.mts";
+import {
+  makeIterationControl,
+  issueBodyForPlannedIssue,
+  planIssuesForIteration,
+  type IterationControl,
+  qualificationLifecyclePolicy,
+} from "./factory-iteration-control.mts";
+import {
+  EXPECTED_SANDCASTLE_SOURCE_PREFIX,
+  isExpectedSandcastleSourceHead,
+  resolveSandcastleRuntimeDistPath,
+  verifySandcastleRuntimeExports,
+} from "./sandcastle-runtime-provenance.mts";
+import {
+  makeGitHubCapability,
+  GitHubWriteForbiddenError,
+} from "./github-capability.mts";
+import { resolveWorkerSandboxEnv } from "./sandbox-token-env.mts";
 
 const execFileAsync = promisify(execFile);
 
@@ -43,6 +67,33 @@ const TARGET_BRANCH = "main";
 const REVIEW_RETRY_BUDGET = 1;
 const MECHANICAL_RETRY_BUDGET = 2;
 const MECHANICAL_RETRY_BASE_MS = 1000;
+const ITERATION_CONTROL: IterationControl = makeIterationControl(MAX_ITERATIONS, process.argv);
+const QUALIFICATION_LIFECYCLE = qualificationLifecyclePolicy(ITERATION_CONTROL.qualification);
+if (ITERATION_CONTROL.qualification.kind === "invalid") {
+  const reason = ITERATION_CONTROL.qualification.reason;
+  console.error(`Invalid --issue argument (${reason})`);
+  process.exit(1);
+}
+
+const GH_CAPABILITY_MODE: "read-only" | "read-write" = QUALIFICATION_LIFECYCLE.claimExternalState || QUALIFICATION_LIFECYCLE.mutateOutcomeState || QUALIFICATION_LIFECYCLE.integrate
+  ? "read-write"
+  : "read-only";
+const WORKER_SANDBOX_ENV = resolveWorkerSandboxEnv(GH_CAPABILITY_MODE, ghToken());
+
+const gitHubCapability = makeGitHubCapability({
+  mode: GH_CAPABILITY_MODE,
+  exec: async (args: string[]) => {
+    const token = ghToken();
+    const env = { ...process.env, GH_TOKEN: token };
+    const bin = ghBinary();
+    const { stdout } = await execFileAsync(bin, args, {
+      env,
+      cwd: REPO_ROOT,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+    return stdout.trim();
+  },
+});
 
 // Worker result after implement + review -- commits plus machine-readable verdict.
 type WorkerResult = { commits: string[]; verdict: ReviewVerdict | null; reviewText?: string };
@@ -115,6 +166,12 @@ async function safeRunGh(args: string[], failureContext?: string): Promise<boole
     await runGh(args);
     return true;
   } catch (error: unknown) {
+    if (error instanceof GitHubWriteForbiddenError) {
+      if (failureContext) {
+        console.warn(formatGhFailure(failureContext, error));
+      }
+      throw error;
+    }
     if (failureContext) console.warn(formatGhFailure(failureContext, error));
     return false;
   }
@@ -133,13 +190,12 @@ function ghToken(): string {
 }
 
 async function runGh(args: string[]): Promise<string> {
-  const token = ghToken();
-  const env = { ...process.env, GH_TOKEN: token };
-  const bin = ghBinary();
   try {
-    const { stdout } = await execFileAsync(bin, args, { env, cwd: REPO_ROOT, maxBuffer: 10 * 1024 * 1024 });
-    return stdout.trim();
+    return await gitHubCapability.run(args);
   } catch (error: unknown) {
+    if (error instanceof GitHubWriteForbiddenError) {
+      throw error;
+    }
     const details = getGhErrorDetails(error);
     const msg = error instanceof Error ? error.message : String(error);
     const code = (error as unknown as { code?: unknown })?.code;
@@ -148,7 +204,7 @@ async function runGh(args: string[]): Promise<string> {
     const stdout = (error as unknown as { stdout?: unknown })?.stdout;
     const stderrStr = stderr ? String(stderr).slice(0,1000) : "<no stderr>";
     const stdoutStr = stdout ? String(stdout).slice(0,500) : "<no stdout>";
-    console.error(`[runGh] bin=${bin} args=${args.join(" ")} code=${String(code)} signal=${String(signal)} msg=${msg} details=${details.slice(0,500)} stderr=${stderrStr} stdout=${stdoutStr} tokenLen=${token.length} tokenPrefix=${token.slice(0,8)}`);
+    console.error(`[runGh] args=${args.join(" ")} code=${String(code)} signal=${String(signal)} msg=${msg} details=${details.slice(0,500)} stderr=${stderrStr} stdout=${stdoutStr}`);
     throw new Error(`gh ${args.join(" ")} failed: ${details}`);
   }
 }
@@ -289,6 +345,22 @@ async function markBlocked(issueId: string, branch: string, reason: string): Pro
     }
   }
   return ok;
+}
+
+async function markFactoryError(issueId: string, branch: string, reason: string): Promise<boolean> {
+  const shortReason = reason.slice(0, REASON_TRUNCATE);
+  const removed = await safeRunGh(
+    ["issue", "edit", issueId, "--remove-label", "agent:in-progress"],
+    `Failed to remove agent:in-progress from #${issueId}`,
+  );
+  const commentOk = await safeRunGh([
+    "issue",
+    "comment",
+    issueId,
+    "--body",
+    `Sandcastle factory infrastructure produced an unrecoverable verdict contract failure on \`${branch}\` — preserved branch for inspection.\n\n**Reason:** ${shortReason}\n\nBranch: \`${branch}\`\n\nTo retry this issue, fix infra/agent contract wiring and re-run factory once valid review text can be emitted.`,
+  ]);
+  return removed && commentOk;
 }
 
 async function markIntegrated(issueId: string, branch: string): Promise<void> {
@@ -541,8 +613,7 @@ async function reconcileInProgressIssues(): Promise<void> {
       console.log(`  #${id} (${branch}) → ${prep.reason}`);
       const hasCommits = (() => {
         try {
-          const log = require('child_process').execSync(`git log origin/main..${branch} --oneline`, {encoding:'utf8', cwd: REPO_ROOT}).trim();
-          return !!log;
+          return branchHelpers.hasCommitsAhead(REPO_ROOT, "origin/main", branch);
         } catch { return false; }
       })();
       if (!hasCommits) {
@@ -635,42 +706,38 @@ async function runDoctor(): Promise<boolean> {
     if(imageDigest) console.log(`  docker sandcastle digest: ${imageDigest}`);
     if(!imageId && !imageDigest) console.warn('  WARN: docker sandcastle image not found locally — will build on demand');
   } catch {}
+  let sandcastleHead = "";
+  try { sandcastleHead = execSync('git -C ../../sandcastle rev-parse HEAD', {encoding:'utf8'}).trim(); } catch {}
+  if (!isExpectedSandcastleSourceHead(sandcastleHead)) {
+    console.error(`  FAIL: Sandcastle HEAD is ${sandcastleHead.slice(0,7) || "unavailable"}, expected ${EXPECTED_SANDCASTLE_SOURCE_PREFIX} — refusing to run factory.`);
+    return false;
+  }
   const cachePath = '.sandcastle/.doctor-cache.json';
   try {
     const cached = JSON.parse(fs.readFileSync(cachePath,'utf8'));
     if(cached.sha === sha && (cached.imageId === imageId || cached.imageDigest === imageDigest) && cached.passed) {
       // Even on cache HIT, verify runtime artifact provenance — source SHA + image is not enough,
-      // dist must be built from eeae29e and contain liveness strings. Stale dist would otherwise
-      // appear trustworthy while silently executing old orchestration code.
+      // dist must expose required API symbols.
       try {
-        let distPath = "";
-        try {
-          const { createRequire } = await import('node:module');
-          const require = createRequire(import.meta.url);
-          distPath = require.resolve('@ai-hero/sandcastle');
-        } catch {
-          const resolved = (import.meta as unknown as { resolve?: (spec:string)=>string }).resolve?.('@ai-hero/sandcastle');
-          if (resolved) distPath = new URL(resolved).pathname;
+        const distPath = resolveSandcastleRuntimeDistPath();
+        if (!distPath) {
+          console.warn(`  Doctor cache HIT but runtime dist unavailable for package @ai-hero/sandcastle, re-proving.`);
+          return false;
         }
-        if (distPath && fs.existsSync(distPath)) {
-          const distContent = fs.readFileSync(distPath, 'utf8');
-          const ok = distContent.includes('Agent alive') && distContent.includes('No observable output') && (distContent.includes('verbose log') || distContent.includes('detailed activity'));
-          if (!ok) {
-            console.warn(`  Doctor cache HIT but runtime dist at ${distPath} missing liveness strings — stale build, ignoring cache and re-proving.`);
-          } else {
-            // Also check cached dist mtime/hash if present — if dist changed, re-prove
-            let distMtime = "";
-            try { distMtime = fs.statSync(distPath).mtime.toISOString(); } catch {}
-            if (cached.distMtime && cached.distMtime !== distMtime) {
-              console.warn(`  Doctor cache HIT but dist mtime changed (${cached.distMtime} → ${distMtime}), re-proving.`);
-            } else {
-              console.log(`  Doctor cache HIT — SHA ${sha.slice(0,7)} + image ${(imageId||imageDigest).slice(0,12)} + dist ${distPath.slice(-30)} already certified`);
-              console.log('=== Doctor PASS (cached) ===\n');
-              return true;
-            }
-          }
+        const runtimeVerification = verifySandcastleRuntimeExports(sandcastle);
+        if (!runtimeVerification.ok) {
+          console.warn(`  Doctor cache HIT but runtime dist at ${distPath} missing symbols (${runtimeVerification.missing.join(", ")}) — re-proving.`);
+          return false;
+        }
+        // Also check cached dist mtime/hash if present — if dist changed, re-prove
+        let distMtime = "";
+        try { distMtime = fs.statSync(distPath).mtime.toISOString(); } catch {}
+        if (cached.distMtime && cached.distMtime !== distMtime) {
+          console.warn(`  Doctor cache HIT but dist mtime changed (${cached.distMtime} → ${distMtime}), re-proving.`);
         } else {
-          console.warn(`  Doctor cache HIT but dist not found at ${distPath}, re-proving.`);
+          console.log(`  Doctor cache HIT — SHA ${sha.slice(0,7)} + image ${(imageId||imageDigest).slice(0,12)} + dist ${distPath.slice(-30)} already certified`);
+          console.log('=== Doctor PASS (cached) ===\n');
+          return true;
         }
       } catch (e) {
         console.warn(`  Doctor cache HIT but dist verification failed: ${getErrorMessage(e)}, re-proving.`);
@@ -687,41 +754,23 @@ async function runDoctor(): Promise<boolean> {
     if(dockerfile.includes('graphifyy')) { console.error('  FAIL: Dockerfile still contains graphifyy typo'); return false; }
     console.log('  Dockerfile graphify check: OK');
   } catch {}
-  // 2b. Runtime artifact provenance — source SHA is not enough, dist must be built from that SHA (eeae29e)
+  // 2b. Runtime artifact provenance — source SHA is not enough, dist must expose required symbols.
   // Doctor must fail if imported dist does not correspond to intended Sandcastle revision.
   try {
-    // Resolve the actual runtime dist that Voxygen imports (file:../../sandcastle/dist/index.js)
-    // Use createRequire for CJS resolution compatible with ESM, fallback to import.meta.resolve
-    let distPath = "";
-    try {
-      const { createRequire } = await import('node:module');
-      const require = createRequire(import.meta.url);
-      distPath = require.resolve('@ai-hero/sandcastle');
-    } catch {
-      // ESM fallback: import.meta.resolve is available in Node 20+
-      const resolved = (import.meta as unknown as { resolve?: (spec:string)=>string }).resolve?.('@ai-hero/sandcastle');
-      if (resolved) distPath = new URL(resolved).pathname;
-    }
+    const distPath = resolveSandcastleRuntimeDistPath();
     if (!distPath || !fs.existsSync(distPath)) {
-      console.error(`  FAIL: Sandcastle runtime dist not found at ${distPath || '<unresolved>'} — expected built artifact from eeae29e`);
+      console.error(`  FAIL: Sandcastle runtime dist not found (package main unresolved) — expected built artifact from ${EXPECTED_SANDCASTLE_SOURCE_PREFIX}`);
       return false;
     }
-    const distContent = fs.readFileSync(distPath, 'utf8');
-    const hasAlive = distContent.includes('Agent alive');
-    const hasNoObs = distContent.includes('No observable output');
-    const hasVerbose = distContent.includes('verbose log') || distContent.includes('detailed activity');
-    if (!hasAlive || !hasNoObs || !hasVerbose) {
-      console.error(`  FAIL: Sandcastle dist at ${distPath} missing liveness strings (hasAlive=${hasAlive} hasNoObs=${hasNoObs} hasVerbose=${hasVerbose}) — stale build from before eeae29e. Run: cd ../../sandcastle && npm ci && npm run build (then verify: grep -n "Agent alive|No observable output|verbose log" dist/index.js)`);
-      console.error(`  Expected runtime from Sandcastle eeae29e (merged), but dist appears stale. Doctor fail-closed.`);
+    const runtimeVerification = verifySandcastleRuntimeExports(sandcastle);
+    if (!runtimeVerification.ok) {
+      console.error(`  FAIL: imported Sandcastle runtime missing required exports (${runtimeVerification.missing.join(", ")}) — expected runtime from ${EXPECTED_SANDCASTLE_SOURCE_PREFIX}.`);
+      if (runtimeVerification.missing.length > 0) {
+        console.error(`  Missing exports: ${runtimeVerification.missing.join(", ")}`);
+      }
       return false;
     }
-    // Also verify source HEAD is the intended revision (not just branch checkout)
-    let sandcastleHead = "";
-    try { sandcastleHead = execSync('git -C ../../sandcastle rev-parse HEAD', {encoding:'utf8'}).trim(); } catch {}
-    if (sandcastleHead && !sandcastleHead.startsWith('eeae29e') && sandcastleHead !== 'eeae29e42e2b03430acee9cd564ee7bbe24bf782') {
-      console.warn(`  WARN: Sandcastle HEAD is ${sandcastleHead.slice(0,7)} not eeae29e — dist may be from different source. Proceeding since dist check passed, but recommend: cd ../../sandcastle && git checkout main && git reset --hard origin/main (eeae29e)`);
-    }
-    console.log(`  sandcastle runtime dist: ${distPath} — contains liveness strings ✓ (source HEAD ${sandcastleHead.slice(0,7) || 'unknown'}, dist mtime ${fs.statSync(distPath).mtime.toISOString()})`);
+    console.log(`  sandcastle runtime dist: ${distPath} — required API exports ✓ (source HEAD ${sandcastleHead.slice(0,7)}, dist mtime ${fs.statSync(distPath).mtime.toISOString()})`);
   } catch (e) {
     console.error(`  FAIL: cannot verify Sandcastle runtime dist: ${getErrorMessage(e)}`);
     return false;
@@ -734,7 +783,7 @@ async function runDoctor(): Promise<boolean> {
   try {
     sandbox = await sandcastle.createSandbox({
       branch: doctorBranch,
-      sandbox: docker({ env: { GH_TOKEN: ghToken() } }),
+      sandbox: docker({ env: WORKER_SANDBOX_ENV }),
       hooks,
       timeouts: { worktreeMs: 120_000 },
     });
@@ -828,7 +877,7 @@ async function runDoctor(): Promise<boolean> {
 // ---------------------------------------------------------------------------
 // Main loop
 // ---------------------------------------------------------------------------
-for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
+for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration++) {
   // Reconcile + doctor before looking for new work — guarantees liveness, no indefinite claim
   if (iteration === 1) {
     const doctorOk = await runDoctor();
@@ -836,7 +885,11 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
       console.error("Doctor FAIL — factory unhealthy, not claiming new work. Fix Dockerfile/voxy-artifact/java before retry.");
       // Still reconcile stale claims so they don't stay indefinite
     }
-    await reconcileInProgressIssues();
+    if (QUALIFICATION_LIFECYCLE.mutateOutcomeState) {
+      await reconcileInProgressIssues();
+    } else {
+      console.log("Qualification mode: production reconciliation suppressed (read-only external state).");
+    }
     if (!doctorOk) {
       console.log("Doctor failed — exiting before claiming new work (reconciliation already done).");
       break;
@@ -889,25 +942,34 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     break;
   }
 
-  // ----- Phase 1: Overlap-aware planning (LLM may serialize) -----
-  // Planner receives only eligible issues; it must return a subset.
-  const issuesJson = JSON.stringify(
-    eligible.map((i) => ({
-      number: i.number,
-      title: i.title,
-      labels: i.labels,
-      branch: branchForIssue(i.number),
-    })),
-    null,
-    2,
-  );
+  const iterationPlan = planIssuesForIteration(eligible, {
+    requestedIssueNumber: ITERATION_CONTROL.requestedIssueNumber,
+  });
 
   let plannedIssues: PlannedIssue[] = [];
-  if (eligible.length === 1) {
-    // Single issue -- no need to invoke LLM
-    plannedIssues = [{ id: String(eligible[0].number), title: eligible[0].title, branch: branchForIssue(eligible[0].number) }];
-    console.log(`Single eligible issue -- skipping LLM planner, direct dispatch #${plannedIssues[0].id}`);
-  } else {
+  if (iterationPlan.mode === "qualified") {
+    plannedIssues = iterationPlan.plannedIssues;
+    console.log(`Qualification mode: explicitly selected issue #${plannedIssues[0]!.id} only.`);
+  } else if (iterationPlan.mode === "qualify-unsupported") {
+    const requestedIssueNumber = ITERATION_CONTROL.requestedIssueNumber;
+    console.log(`Qualification mode requested issue #${requestedIssueNumber}, but it is not eligible in this iteration.`);
+    continue;
+  } else if (iterationPlan.mode === "single-eligible") {
+    plannedIssues = iterationPlan.plannedIssues;
+    console.log(`Single eligible issue -- skipping LLM planner, direct dispatch #${plannedIssues[0]!.id}`);
+  } else if (iterationPlan.mode === "planner-required") {
+    // ----- Phase 1: Overlap-aware planning (LLM may serialize) -----
+    // Planner receives only eligible issues; it must return a subset.
+    const issuesJson = JSON.stringify(
+      eligible.map((i) => ({
+        number: i.number,
+        title: i.title,
+        labels: i.labels,
+        branch: branchForIssue(i.number),
+      })),
+      null,
+      2,
+    );
     // Use Output.string (not Output.object) so we get the raw planner stream even if it contains
     // fences or surrounding reasoning — then parse via testable helper. This fixes the false
     // rejection where StructuredOutputError.rawMatched already failed JSON.parse and re-parsing it
@@ -915,7 +977,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     try {
       const planRun = await sandcastle.run({
         hooks,
-        sandbox: docker({ env: { GH_TOKEN: ghToken() } }),
+        sandbox: docker({ env: WORKER_SANDBOX_ENV }),
         name: "planner",
         maxIterations: 1,
         agent: sandcastle.muse("muse-spark-1.2-contributor"),
@@ -1025,16 +1087,21 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
 
   // ----- Phase 0.5: Claim before work (host-side, before expensive workers) -----
   let claimedIssues: typeof plannedIssues = [];
-  for (const p of plannedIssues) {
-    const src = eligible.find((e) => String(e.number) === p.id);
-    if (!src) continue;
-    const ok = await claimIssue(src);
-    if (ok) claimedIssues.push(p);
-    else console.warn(`  Skipping #${p.id} -- claim failed, likely raced`);
+  if (QUALIFICATION_LIFECYCLE.claimExternalState) {
+    for (const p of plannedIssues) {
+      const src = eligible.find((e) => String(e.number) === p.id);
+      if (!src) continue;
+      const ok = await claimIssue(src);
+      if (ok) claimedIssues.push(p);
+      else console.warn(`  Skipping #${p.id} -- claim failed, likely raced`);
+    }
+  } else {
+    console.log("Qualification mode: external claim suppressed (read-only and explicit target selection).");
+    claimedIssues = [...plannedIssues];
   }
 
   if (claimedIssues.length === 0) {
-    console.log("No issues claimed -- nothing to execute this iteration.");
+    console.log("No issues prepared for execution -- nothing to execute this iteration.");
     continue;
   }
 
@@ -1042,7 +1109,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   // Never overwrite provenance — fail closed on legacy contaminated branches, recreate only truly empty stale.
   const preparedIssues: typeof claimedIssues = [];
   for (const p of claimedIssues) {
-    const prep = branchHelpers.prepareIssueBranch(REPO_ROOT, p.branch, factoryBaseSha, callerBranch, callerSha, p.id);
+    const prep = branchHelpers.prepareIssueBranch(REPO_ROOT, p.branch, factoryBaseSha, callerBranch, callerSha, p.id, QUALIFICATION_LIFECYCLE.integrate);
     if (prep.ok) {
       console.log(`  Prepared ${p.branch}: ${prep.action} — ${prep.reason} → ${prep.provPath}`);
       // Assert caller still unchanged after prepare (provenance is gitignored, branch creation is isolated)
@@ -1054,14 +1121,18 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
       } catch {}
       preparedIssues.push(p);
     } else {
-      if (prep.action === 'blocked') {
-        console.warn(`  #${p.id} (${p.branch}) → ${prep.reason} — fail closed, preserving/blocking`);
-        await markBlocked(p.id, p.branch, prep.reason);
+      if (QUALIFICATION_LIFECYCLE.mutateOutcomeState) {
+        if (prep.action === "blocked") {
+          console.warn(`  #${p.id} (${p.branch}) → ${prep.reason} — fail closed, preserving/blocking`);
+          await markBlocked(p.id, p.branch, prep.reason);
+        } else {
+          console.error(`  #${p.id} (${p.branch}) → prepare failed (${prep.action}): ${prep.reason}`);
+          await markBlocked(p.id, p.branch, prep.reason);
+        }
       } else {
-        console.error(`  #${p.id} (${p.branch}) → prepare failed (${prep.action}): ${prep.reason}`);
-        await markBlocked(p.id, p.branch, prep.reason);
+        console.log(`  #${p.id} (${p.branch}) → prepare failed (${prep.action}) — preserving for qualification evidence`);
       }
-      // Do not launch worker for blocked branches — already marked, will not be retried until branch removed
+      // Do not launch worker for blocked branches — already preserved, will not be retried until branch removed
     }
   }
   claimedIssues = preparedIssues;
@@ -1075,13 +1146,14 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   // ----- Phase 2: Execute + Review (parallel, isolated) -----
   const settled = await Promise.allSettled<WorkerResult>(
     claimedIssues.map(async (issue): Promise<WorkerResult> => {
+      const implementationIssueBody = issueBodyForPlannedIssue(issue.id, eligible);
       let sandbox: Awaited<ReturnType<typeof sandcastle.createSandbox>> | null = null;
       for (let attempt = 0; attempt <= MECHANICAL_RETRY_BUDGET; attempt++) {
         try {
           sandbox = await sandcastle.createSandbox({
             branch: issue.branch,
             baseBranch: factoryBaseSha,
-            sandbox: docker({ env: { GH_TOKEN: ghToken() } }),
+            sandbox: docker({ env: WORKER_SANDBOX_ENV }),
             hooks,
             copyToWorktree,
             timeouts: { worktreeMs: 600_000 },
@@ -1108,6 +1180,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
           promptArgs: {
             TASK_ID: issue.id,
             ISSUE_TITLE: issue.title,
+            ISSUE_BODY: implementationIssueBody,
             BRANCH: issue.branch,
             REVIEW_FEEDBACK: "",
           },
@@ -1119,9 +1192,9 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
         // If no new commits but branch already has implementation (e.g., canary already at target SHA), use existing commits for review
         if (allCommits.length === 0) {
           try {
-            const existing = execSync(`git log main..${issue.branch} --oneline`, { encoding: "utf8", cwd: REPO_ROOT }).trim();
+            const existing = execFileSync("git", ["log", `main..${issue.branch}`, "--oneline"], { encoding: "utf8", cwd: REPO_ROOT }).toString().trim();
             if (existing) {
-              const shas = existing.split("\n").map((l) => l.split(" ")[0]).filter(Boolean);
+              const shas = existing.split("\n").map((l: string) => l.split(" ")[0]).filter(Boolean);
               if (shas.length > 0) {
                 console.log(`  ${issue.id} has existing commits on ${issue.branch} (${shas.join(",")}) - using for review`);
                 allCommits = [...shas];
@@ -1147,6 +1220,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
               promptArgs: {
                 TASK_ID: issue.id,
                 ISSUE_TITLE: issue.title,
+                ISSUE_BODY: implementationIssueBody,
                 BRANCH: issue.branch,
                 REVIEW_FEEDBACK: feedback,
               },
@@ -1157,36 +1231,48 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
           }
           // Fresh fetch of original issue body - no stale caching.
           const issueBody = await fetchIssueBody(issue.id);
-          let verdict: ReviewVerdict | null = null;
-          let reviewText = "";
-          try {
-            const review = await sandbox!.run({
-              name: reviewAttempt === 0 ? "reviewer" : "reviewer-retry",
-              maxIterations: 1,
-              agent: sandcastle.muse("muse-spark-1.2-contributor"),
-              promptFile: "./.sandcastle/review-prompt.md",
-              promptArgs: {
-                BRANCH: issue.branch,
-                ISSUE_NUMBER: issue.id,
-                ISSUE_TITLE: issue.title,
-                ISSUE_BODY: issueBody,
-              },
-              output: sandcastle.Output.object({ tag: "verdict", schema: reviewVerdictSchema }),
-            });
-            verdict = extractVerdict(review);
-            reviewText = review.stdout;
-          } catch (reviewError: unknown) {
-            console.warn(`  Reviewer failed for #${issue.id} (attempt ${reviewAttempt+1}): ${String(reviewError).slice(0, REVIEW_ERROR_TRUNCATE)} - treating as rejected`);
-            verdict = null;
-            reviewText = String(reviewError);
-          }
+          const reviewerResult = await runReviewerPass({
+            issueId: issue.id,
+            issueTitle: issue.title,
+            branch: issue.branch,
+            attempt: reviewAttempt,
+            issueBody,
+            allCommits,
+            runReviewer: async (_issueBody, _attempt, isRetry) => {
+              const review = await sandbox!.run({
+                name: isRetry ? "reviewer-retry" : "reviewer",
+                maxIterations: 1,
+                agent: sandcastle.muse("muse-spark-1.2-contributor"),
+                promptFile: "./.sandcastle/review-prompt.md",
+                promptArgs: {
+                  BRANCH: issue.branch,
+                  ISSUE_NUMBER: issue.id,
+                  ISSUE_TITLE: issue.title,
+                  ISSUE_BODY: _issueBody,
+                },
+                output: sandcastle.Output.object({ tag: "verdict", schema: reviewVerdictSchema }),
+              });
+              return review;
+            },
+            onReviewerFailure: (id, attemptIndex, reviewError) => {
+              console.warn(`  Reviewer failed for #${id} (attempt ${attemptIndex + 1}): ${String(reviewError).slice(0, REVIEW_ERROR_TRUNCATE)} - treating as FACTORY_ERROR (missing/invalid machine-verifiable verdict)`);
+            },
+            onInvalidVerdict: (id, attemptIndex, reason, reviewText) => {
+              console.warn(`  Reviewer produced invalid verdict for #${id} (attempt ${attemptIndex + 1}): ${reason} — ${reviewText.slice(0, REVIEW_ERROR_TRUNCATE)} — treating as FACTORY_ERROR`);
+            },
+          });
+          const verdict = reviewerResult.verdict;
           reviewVerdict = verdict;
-          reviewTextForRetry = reviewText;
+          reviewTextForRetry = reviewerResult.reviewText;
+          if (verdict === null) {
+            return reviewerResult;
+          }
+          allCommits = reviewerResult.commits;
           if (isVerdictApproved(verdict)) {
             return {
-              commits: [...allCommits, ...((verdict ? [] : []))],
+              commits: allCommits,
               verdict,
-              reviewText,
+              reviewText: reviewerResult.reviewText,
             };
           }
           // Not approved — loop will retry if budget remains
@@ -1198,21 +1284,21 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
           return {
             commits: allCommits,
             verdict,
-            reviewText,
+            reviewText: reviewerResult.reviewText,
           };
-        }
-        // No commits or loop exhausted without early return
-        if (implement.commits.length > 0 && shouldRetryReview) {
-          return {
-            commits: allCommits,
-            verdict: reviewVerdict,
-            reviewText: reviewTextForRetry,
-          };
-        }
-        if (implement.commits.length > 0) {
-          // (review handled in loop above)
-        }
-        return { commits: allCommits.length > 0 ? allCommits : implement.commits, verdict: reviewVerdict, reviewText: reviewTextForRetry };
+          }
+          // No commits or loop exhausted without early return
+          if (implement.commits.length > 0 && shouldRetryReview) {
+            return {
+              commits: allCommits,
+              verdict: reviewVerdict,
+              reviewText: reviewTextForRetry,
+            };
+          }
+          if (implement.commits.length > 0) {
+            // (review handled in loop above)
+          }
+          return { commits: allCommits.length > 0 ? allCommits : implement.commits, verdict: reviewVerdict, reviewText: reviewTextForRetry };
       } finally {
         await sandbox!.close();
         try { process.chdir(REPO_ROOT); } catch {}
@@ -1221,47 +1307,65 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   );
 
   // ----- Failure visibility per worker + review verdict gating -----
-  const failedIndices: number[] = [];
-  const reviewRejectedIndices: number[] = [];
-
+  const partition = partitionWorkerOutcomes(
+    claimedIssues,
+    settled as unknown as WorkerOutcome[],
+  );
+  const {
+    completed,
+    failed,
+    reviewRejected,
+    factoryErrors,
+    shouldStopOuterLoop,
+  } = partition;
+  const completedIssues = completed;
   const failedMarkResults: boolean[] = [];
-  for (const [i, outcome] of settled.entries()) {
-    if (outcome.status === "rejected") {
-      const reason = String(outcome.reason ?? "unknown error").slice(0, WORKER_REASON_TRUNCATE);
-      console.error(`  ✗ ${claimedIssues[i]!.id} (${claimedIssues[i]!.branch}) failed: ${reason}`);
-      failedIndices.push(i);
-      const marked = await markBlocked(claimedIssues[i]!.id, claimedIssues[i]!.branch, reason);
-      failedMarkResults.push(marked);
-    } else if (outcome.value.commits.length === 0) {
-      console.warn(`  ⚠ ${claimedIssues[i]!.id} produced no commits -- marking blocked for inspection`);
-      const marked2 = await markBlocked(claimedIssues[i]!.id, claimedIssues[i]!.branch, "Implementer produced no commits (no work or error without throw). Branch preserved.");
-      failedIndices.push(i);
-      failedMarkResults.push(marked2);
-    } else {
-      const verdict = outcome.value.verdict;
-      if (!isVerdictApproved(verdict)) {
-        const reason = blockedReasonForVerdict(verdict);
-        console.warn(`  ⚠ ${claimedIssues[i]!.id} review rejected - not eligible for merger: ${reason.slice(0, REVIEW_ERROR_TRUNCATE)}`);
-        reviewRejectedIndices.push(i);
-        await markReviewRejected(claimedIssues[i]!.id, claimedIssues[i]!.branch, verdict, reason);
+
+  const failedIssueIds = failed.map((issue) => issue.id);
+  const mutationPlan = partitionToMutationPlan(partition);
+  for (const mutation of mutationPlan) {
+    if (!QUALIFICATION_LIFECYCLE.mutateOutcomeState) {
+      if (mutation.kind === "failed") {
+        const reason = mutation.reason.slice(0, WORKER_REASON_TRUNCATE);
+        console.error(`  ✗ ${mutation.issue.id} (${mutation.issue.branch}) failed: ${reason} [external mutation suppressed by qualification policy]`);
+      } else if (mutation.kind === "reviewRejected") {
+        const reason = mutation.reason;
+        console.warn(`  ⚠ ${mutation.issue.id} review rejected (${reason.slice(0, REVIEW_ERROR_TRUNCATE)}) [external mutation suppressed by qualification policy]`);
+      } else {
+        const reason = mutation.reason;
+        console.warn(`  ⚠ ${mutation.issue.id} review verdict contract failed (FACTORY_ERROR): ${reason.slice(0, REVIEW_ERROR_TRUNCATE)} [external mutation suppressed by qualification policy]`);
       }
+      continue;
     }
+
+    if (mutation.kind === "failed") {
+      const reason = mutation.reason.slice(0, WORKER_REASON_TRUNCATE);
+      console.error(`  ✗ ${mutation.issue.id} (${mutation.issue.branch}) failed: ${reason}`);
+      const marked = await markBlocked(mutation.issue.id, mutation.issue.branch, mutation.reason);
+      failedMarkResults.push(marked);
+      continue;
+    }
+
+    if (mutation.kind === "reviewRejected") {
+      const reason = mutation.reason;
+      console.warn(`  ⚠ ${mutation.issue.id} review rejected - not eligible for merger: ${reason.slice(0, REVIEW_ERROR_TRUNCATE)}`);
+      await markReviewRejected(
+        mutation.issue.id,
+        mutation.issue.branch,
+        mutation.verdict!,
+        reason,
+      );
+      continue;
+    }
+
+    const reason = mutation.reason;
+    console.warn(`  ⚠ ${mutation.issue.id} review verdict contract failed (FACTORY_ERROR): ${reason.slice(0, REVIEW_ERROR_TRUNCATE)} — preserving branch and stopping outer run.`);
+    await markFactoryError(mutation.issue.id, mutation.issue.branch, reason);
   }
 
-  // Completed = fulfilled + commits + review approved
-  const completedEntries = settled
-    .map((outcome, i) => ({ outcome, issue: claimedIssues[i]!, index: i }))
-    .filter(
-      (entry) =>
-        entry.outcome.status === "fulfilled" &&
-        entry.outcome.value.commits.length > 0 &&
-        !failedIndices.includes(entry.index) &&
-        !reviewRejectedIndices.includes(entry.index) &&
-        isVerdictApproved(entry.outcome.value.verdict),
-    );
-
-  const completedIssues = completedEntries.map((entry) => entry.issue);
   const completedBranches = completedIssues.map((i) => i.branch);
+
+  const failedIndices = failedIssueIds;
 
   console.log(`\nExecution complete. ${completedBranches.length} branch(es) approved for merger:`);
   for (const b of completedBranches) console.log(`  ${b}`);
@@ -1274,12 +1378,33 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
       console.log(`  ${failedIndices.length} branch(es) failed: ${markedCount} marked agent:blocked, ${unmarkedCount} NOT marked (GitHub unavailable — local recovery at .sandcastle/recovery/*.json, will reconcile truthfully after connectivity returns)`);
     }
   }
-  if (reviewRejectedIndices.length > 0) {
-    console.log(`  ${reviewRejectedIndices.length} branch(es) review-rejected (approved=false) - preserved, marked agent:blocked, not merged`);
+  if (reviewRejected.length > 0) {
+    if (QUALIFICATION_LIFECYCLE.mutateOutcomeState) {
+      console.log(`  ${reviewRejected.length} branch(es) review-rejected (approved=false) - preserved, marked agent:blocked, not merged`);
+    } else {
+      console.log(`  ${reviewRejected.length} branch(es) review-rejected (approved=false) - external mutation suppressed by qualification policy`);
+    }
+  }
+  if (factoryErrors.length > 0) {
+    if (QUALIFICATION_LIFECYCLE.mutateOutcomeState) {
+      console.log(`  ${factoryErrors.length} branch(es) produced FACTORY_ERROR - preserved for inspection, stopping outer run`);
+    } else {
+      console.log(`  ${factoryErrors.length} branch(es) produced FACTORY_ERROR - external mutation suppressed by qualification policy, preserved for inspection`);
+    }
+  }
+
+  if (!canClaimNextOuterIteration(partition)) {
+    console.log("Factory error detected during review verdict handling. Stopping outer loop to prevent unsafe progression.");
+    break;
   }
 
   if (completedBranches.length === 0) {
     console.log("No commits produced. Nothing to merge this iteration.");
+    continue;
+  }
+
+  if (!QUALIFICATION_LIFECYCLE.integrate) {
+    console.log("Qualification mode: integration suppressed by lifecycle policy; preserving local branches/logs for inspection.");
     continue;
   }
 
@@ -1310,7 +1435,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   try {
     await sandcastle.run({
       hooks,
-      sandbox: docker({ env: { GH_TOKEN: ghToken() } }),
+      sandbox: docker({ env: WORKER_SANDBOX_ENV }),
       name: "merger",
       maxIterations: 1,
       cwd: batchWorktreePath,
@@ -1401,11 +1526,11 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     // Enforce invariant via helper: caller checkout never moved, git status --porcelain unchanged
     try {
       const afterBranch = execSync('git branch --show-current', {encoding:'utf8'}).trim();
-      const refSha = execSync(`git rev-parse refs/heads/${callerBranchForBatch}`, {encoding:'utf8'}).trim();
       const callerStatusAfter = (() => { try { return execSync('git status --porcelain', {encoding:'utf8', cwd: REPO_ROOT}).trim(); } catch { return null; } })();
       const callerHeadAfter = (() => { try { return execSync('git rev-parse HEAD', {encoding:'utf8', cwd: REPO_ROOT}).trim(); } catch { return null; } })();
       // Use helper for caller-unchanged check (same seam as tests) — compare against frozen snapshot from iteration start
       const callerCheck = branchHelpers.verifyCallerUnchanged(REPO_ROOT, callerBranchForBatch, callerShaForBatch);
+      const refSha = callerCheck.refSha;
       if (!callerCheck.ok) {
         console.error(`INVARIANT VIOLATION: caller unchanged FAILED — ref ${callerCheck.refSha.slice(0,7)} vs ${callerShaForBatch.slice(0,7)} checkout ${callerCheck.checkoutBranch} vs ${callerBranchForBatch}`);
       } else {
@@ -1425,7 +1550,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
       // Also verify checkout still on caller (should never have left)
       if (afterBranch !== callerBranchForBatch) {
         console.warn(`Caller checkout moved from ${callerBranchForBatch} to ${afterBranch} — restoring (should not have happened with dedicated worktree)`);
-        try { execSync(`git checkout ${callerBranchForBatch}`, {stdio:'ignore'}); } catch {}
+        try { execFileSync("git", ["checkout", callerBranchForBatch], { stdio: "ignore", cwd: REPO_ROOT }); } catch {}
       }
       // Clean up batch worktree (if used) — keep branch for PR, remove worktree via helper
       if (batchWorktreePath) {
@@ -1446,9 +1571,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   }
 
   // Immediate GC for ephemeral batch artefacts -- same-process lifecycle (not weekly cron)
-  try {
-    execSync("git branch --list 'preserve-local-*' | xargs -r git branch -D", { stdio: "ignore" });
-  } catch {}
+    try { branchHelpers.cleanupPreserveLocalBranches(REPO_ROOT); } catch {}
   try {
     execSync("git worktree prune", { stdio: "ignore" });
   } catch {}

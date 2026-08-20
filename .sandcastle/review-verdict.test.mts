@@ -86,6 +86,23 @@ describe("extractVerdict", () => {
       }),
     ).toEqual(structured);
   });
+
+  it("extracts a verdict from the Muse JSONL returned by stock Sandcastle", () => {
+    const verdict = verdictFixture({
+      approved: false,
+      findings: [{ message: "implementation does not match the synthetic contract", severity: "blocking" }],
+      acceptanceCriteriaMet: [{ criterion: "focused test passes", met: false, evidence: "test file missing" }],
+      summary: "captured reviewer rejection",
+    });
+    const taggedVerdict = `<verdict>${JSON.stringify(verdict)}</verdict>`;
+    const stdout = [
+      JSON.stringify({ payload_type: "run.output.delta", payload: { kind: "run_output_delta", text: taggedVerdict.slice(0, 17) } }),
+      JSON.stringify({ payload_type: "run.output.delta", payload: { kind: "run_output_delta", delta: taggedVerdict.slice(17) } }),
+      JSON.stringify({ payload_type: "task.lifecycle.completed", payload: { kind: "task_lifecycle_completed" } }),
+    ].join("\n");
+
+    expect(extractVerdict({ stdout })).toEqual(verdict);
+  });
 });
 
 describe("isVerdictApproved", () => {
@@ -168,7 +185,7 @@ describe("gateBranchesByVerdict — tracer bullet fixtures", () => {
     expect(approved[0].branch).toBe("sandcastle/issue-57");
     // Blocked branches are preserved, marked agent:blocked, not merged
     expect(blocked.find((b) => b.id === "58")!.reason).toContain("reviewer rejected");
-    expect(blocked.find((b) => b.id === "59")!.reason).toContain("no verdict");
+    expect(blocked.find((b) => b.id === "59")!.reason).toContain("no machine-readable verdict");
   });
 
   it("partitionWorkers + verdict gating: rejected branch excluded from completedBranches → merger", () => {

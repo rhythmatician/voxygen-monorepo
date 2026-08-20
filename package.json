@@ -19,7 +19,7 @@
     "vitest": "^4.1.10"
   },
   "scripts": {
-    "sandcastle": "npx tsx .sandcastle/main.mts",
+    "sandcastle": "node -e \"console.error('LIVE FACTORY GROUNDED'); process.exit(1)\"",
     "sandcastle:heavy": "npx tsx .sandcastle/main.heavy.mts",
     "sandcastle:docker:build": "npx sandcastle docker build-image",
     "typecheck": "tsc --noEmit",
