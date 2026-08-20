@@ -9,11 +9,11 @@ import {
 
 describe("Sandcastle runtime provenance guard", () => {
   it("locks runtime verification to the exact Muse prompt-transport fix", () => {
-    expect(EXPECTED_SANDCASTLE_SOURCE_SHA).toBe("a521f19f7c1b64d2548c8f3bc1cffcd69b29662e");
-    expect(EXPECTED_SANDCASTLE_SOURCE_PREFIX).toBe("a521f19");
-    expect(isExpectedSandcastleSourceHead("a521f19f7c1b64d2548c8f3bc1cffcd69b29662e")).toBe(true);
-    expect(isExpectedSandcastleSourceHead("a521f1999")).toBe(false);
-    expect(isExpectedSandcastleSourceHead("ba521f19")).toBe(false);
+    expect(EXPECTED_SANDCASTLE_SOURCE_SHA).toBe("29eb8d50854df49dfd3652b4c6b83f3714376334");
+    expect(EXPECTED_SANDCASTLE_SOURCE_PREFIX).toBe("29eb8d5");
+    expect(isExpectedSandcastleSourceHead("29eb8d50854df49dfd3652b4c6b83f3714376334")).toBe(true);
+    expect(isExpectedSandcastleSourceHead("29eb8d599")).toBe(false);
+    expect(isExpectedSandcastleSourceHead("b29eb8d5")).toBe(false);
     expect(isExpectedSandcastleSourceHead("")).toBe(false);
   });
 
