@@ -47,7 +47,10 @@ import {
   makeGitHubCapability,
   GitHubWriteForbiddenError,
 } from "./github-capability.mts";
-import { resolveWorkerSandboxEnv } from "./sandbox-token-env.mts";
+import {
+  resolveFactoryMetaApiKey,
+  resolveWorkerSandboxEnv,
+} from "./sandbox-token-env.mts";
 import { mergerDockerOptions } from "./merger-control.mts";
 
 const execFileAsync = promisify(execFile);
@@ -80,7 +83,11 @@ if (ITERATION_CONTROL.qualification.kind === "invalid") {
 const GH_CAPABILITY_MODE: "read-only" | "read-write" = QUALIFICATION_LIFECYCLE.claimExternalState || QUALIFICATION_LIFECYCLE.mutateOutcomeState || QUALIFICATION_LIFECYCLE.integrate
   ? "read-write"
   : "read-only";
-const WORKER_SANDBOX_ENV = resolveWorkerSandboxEnv(GH_CAPABILITY_MODE, ghToken());
+const WORKER_SANDBOX_ENV = resolveWorkerSandboxEnv(
+  GH_CAPABILITY_MODE,
+  ghToken(),
+  resolveFactoryMetaApiKey(REPO_ROOT),
+);
 
 const gitHubCapability = makeGitHubCapability({
   mode: GH_CAPABILITY_MODE,
