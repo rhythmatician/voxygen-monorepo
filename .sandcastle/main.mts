@@ -978,6 +978,7 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
       const planRun = await sandcastle.run({
         hooks,
         sandbox: docker({ env: WORKER_SANDBOX_ENV }),
+        branchStrategy: { type: "branch", branch: "sandcastle/planner", baseBranch: "origin/main" },
         name: "planner",
         maxIterations: 1,
         agent: sandcastle.muse("muse-spark-1.2-contributor"),
