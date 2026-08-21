@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -51,6 +51,7 @@ describe("batch publication", () => {
     const fixture = createPublicationFixture();
     const hookPath = join(fixture.repoRoot, ".git", "hooks", "pre-push");
     writeFileSync(hookPath, "#!/bin/sh\necho 'captured batch push rejection' >&2\nexit 1\n");
+    chmodSync(hookPath, 0o755);
     execFileSync("git", ["update-index", "--refresh"], { cwd: fixture.repoRoot });
     const createPullRequest = vi.fn(async () => "unexpected");
 
