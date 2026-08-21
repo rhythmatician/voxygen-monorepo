@@ -21,6 +21,7 @@ import {
   type WorkerOutcome,
 } from "./factory-verdict-gate.mts";
 import * as branchHelpers from "./branch-helpers.mts";
+import { publishBatchBranch } from "./batch-publication.mts";
 import { mayAutonomouslyMerge } from "./ci-policy.mts";
 import { runReviewerPass } from "./review-pass.mts";
 import {
@@ -1473,6 +1474,7 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
 
   // Host-side: push batch branch + PR + auto-merge. Never push caller's branch.
   let currentBranch = batchBranch;
+  let publicationFailed = false;
   try {
     console.log(`Batch branch after merge: ${currentBranch} (caller ${callerBranchForBatch} untouched, caller SHA ${callerShaForBatch.slice(0,7)})`);
 
@@ -1487,13 +1489,15 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
         } catch {}
         if (!existingPr) {
           try {
-            // Push batch branch explicitly (never caller's branch, never HEAD when HEAD could be caller-controlled)
-            execSync(`git push origin ${batchBranch}`, { stdio: "ignore" });
-          } catch {}
-          try {
             const prBody = `Sandcastle batch integration -- branches:\n${completedBranches.map((b) => `- \`${b}\``).join("\n")}\n\n${completedIssues.map((i) => `Closes #${i.id} - ${i.title}`).join("\n")}\n\n<!-- batch-pr-map: ${completedIssues.map(i=>i.id).join(',')} -->`;
             const prCreateBase = branchHelpers.buildPrCreateArgs(batchBranch, completedIssues);
-            const prUrl = await runGh([...prCreateBase, "--body", prBody]);
+            const publication = await publishBatchBranch({
+              repoRoot: REPO_ROOT,
+              batchWorktreePath,
+              batchBranch,
+              createPullRequest: () => runGh([...prCreateBase, "--body", prBody]),
+            });
+            const prUrl = publication.pullRequest!;
             console.log(`Created PR: ${prUrl}`);
             // Durable batch-PR correlation: record exact PR number against every issue (for reconciliation)
             try {
@@ -1522,13 +1526,27 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
               console.warn(`Auto-merge not enabled: ${getErrorMessage(error)}`);
             }
           } catch (error: unknown) {
-            console.warn(`PR creation skipped: ${getErrorMessage(error)}`);
+            const reason = `Batch publication failed for ${batchBranch}: ${getErrorMessage(error)} -- branches preserved`;
+            console.error(reason);
+            const publicationFailure = partitionMergerInfrastructureFailure(completedIssues, reason);
+            for (const failure of publicationFailure.factoryErrors) {
+              await markFactoryError(failure.id, failure.branch, failure.reason);
+            }
+            publicationFailed = true;
           }
         } else {
-          console.log(`PR #${existingPr} already exists for ${batchBranch} (dedicated batch, not caller ${callerBranchForBatch})`);
           try {
-            execSync(`git push origin ${batchBranch}`, { stdio: "ignore" });
-          } catch {}
+            await publishBatchBranch({ repoRoot: REPO_ROOT, batchWorktreePath, batchBranch });
+            console.log(`PR #${existingPr} already exists for ${batchBranch} (dedicated batch, not caller ${callerBranchForBatch})`);
+          } catch (error: unknown) {
+            const reason = `Batch publication failed for ${batchBranch}: ${getErrorMessage(error)} -- branches preserved`;
+            console.error(reason);
+            const publicationFailure = partitionMergerInfrastructureFailure(completedIssues, reason);
+            for (const failure of publicationFailure.factoryErrors) {
+              await markFactoryError(failure.id, failure.branch, failure.reason);
+            }
+            publicationFailed = true;
+          }
         }
       } catch (error: unknown) {
         console.warn(`PR handling failed: ${getErrorMessage(error)}`);
@@ -1576,6 +1594,8 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
       if (batchWorktreePath) { try { branchHelpers.cleanupBatchWorktree(REPO_ROOT, batchWorktreePath); } catch { try { execSync(`git worktree remove --force ${batchWorktreePath}`, {stdio:'ignore'}); } catch {} } }
     }
   }
+
+  if (publicationFailed) break;
 
   // A local merge is not integration into main. Leave tickets open until the
   // PR is actually merged under Factory / Merge Oracle authority.
