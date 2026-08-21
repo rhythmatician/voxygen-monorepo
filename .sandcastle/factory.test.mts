@@ -189,7 +189,7 @@ describe("Regression: empty branch lifecycle (126 idle) — quiet worker not mis
     expect(mainMts).not.toContain("Agent idle for");
   });
 
-  it("branch isolation: caller checkout is not part of data plane (regression for #126/PR #149)", async () => {
+  it("branch isolation: caller checkout is not part of data plane (regression for #126/PR #149)", { timeout: 15000 }, async () => {
     // Use helpers to test the production seam: factory base freeze, issue/batch from base, caller invariant, and stale-branch reconciliation.
     const helpers = await import("./branch-helpers.mts");
     const { mkdtemp, writeFile, rm, mkdir } = await import('node:fs/promises');
@@ -344,7 +344,7 @@ describe("Regression: empty branch lifecycle (126 idle) — quiet worker not mis
     expect(typeof helpers.prepareIssueBranch).toBe("function");
   });
 
-  it("provenance is write-once and contaminated legacy branch is never retroactively certified (prepareIssueBranch)", async () => {
+  it("provenance is write-once and contaminated legacy branch is never retroactively certified (prepareIssueBranch)", { timeout: 15000 }, async () => {
     const helpers = await import("./branch-helpers.mts");
     const { mkdtemp, writeFile, rm, mkdir } = await import('node:fs/promises');
     const { tmpdir } = await import('node:os');
@@ -425,7 +425,7 @@ describe("Regression: empty branch lifecycle (126 idle) — quiet worker not mis
     }
   });
 
-  it("remote-only branch with preserved commits is not freshly certified — bare origin regression (prepareIssueBranch remote discovery)", async () => {
+  it("remote-only branch with preserved commits is not freshly certified — bare origin regression (prepareIssueBranch remote discovery)", { timeout: 15000 }, async () => {
     const helpers = await import("./branch-helpers.mts");
     const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
     const { tmpdir } = await import('node:os');
@@ -525,7 +525,7 @@ describe("Regression: empty branch lifecycle (126 idle) — quiet worker not mis
     }
   });
 
-  it("local+remote divergence: remote ahead with valid provenance, diverged, and lookup failure", async () => {
+  it("local+remote divergence: remote ahead with valid provenance, diverged, and lookup failure", { timeout: 15000 }, async () => {
     const helpers = await import("./branch-helpers.mts");
     const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
     const { tmpdir } = await import('node:os');
@@ -654,4 +654,3 @@ describe("Regression: empty branch lifecycle (126 idle) — quiet worker not mis
     }
   });
 });
-

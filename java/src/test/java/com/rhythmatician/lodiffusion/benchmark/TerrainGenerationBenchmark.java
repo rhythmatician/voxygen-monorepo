@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadLocalRandom;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -237,7 +238,7 @@ public class TerrainGenerationBenchmark {
      * Simulate work with realistic timing variation.
      */
     private void simulateWork(int minMs, int maxMs) {
-        int workMs = minMs + (int) (Math.random() * (maxMs - minMs));
+        int workMs = minMs + (int) (ThreadLocalRandom.current().nextDouble() * (maxMs - minMs));
         try {
             Thread.sleep(workMs);
         } catch (InterruptedException e) {
@@ -247,7 +248,7 @@ public class TerrainGenerationBenchmark {
         // Simulate some CPU work
         double result = 0;
         for (int i = 0; i < 1000; i++) {
-            result += Math.sqrt(i * Math.random());
+            result += Math.sqrt(i * ThreadLocalRandom.current().nextDouble());
         }
         
         // Prevent optimization

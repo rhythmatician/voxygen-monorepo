@@ -161,6 +161,7 @@ if (import.meta.url.endsWith("docs-policy.mts") && process.argv.some((a) => a.en
   let entries: FileEntry[] = [];
   const baseIdx = args.indexOf("--base");
   const candIdx = args.indexOf("--candidate");
+  const cachedIdx = args.indexOf("--cached");
   const nameStatusIdx = args.indexOf("--name-status");
   const filesIdx = args.indexOf("--files");
 
@@ -196,6 +197,7 @@ if (import.meta.url.endsWith("docs-policy.mts") && process.argv.some((a) => a.en
     return out;
   };
 
+  let buf: Buffer;
   if (baseIdx >= 0 && candIdx >= 0) {
     const base = args[baseIdx + 1];
     const candidate = args[candIdx + 1];
@@ -203,7 +205,6 @@ if (import.meta.url.endsWith("docs-policy.mts") && process.argv.some((a) => a.en
       console.error("R-02 --base and --candidate require values");
       process.exit(1);
     }
-    let buf: Buffer;
     try {
       buf = execFileSync("git", ["diff", "--name-status", "-z", "--diff-filter=ADMR", base, candidate], { encoding: "buffer" }) as Buffer;
     } catch (e) {
@@ -211,6 +212,19 @@ if (import.meta.url.endsWith("docs-policy.mts") && process.argv.some((a) => a.en
       process.exit(1);
     }
     // Empty diff is simply empty — do not inspect HEAD/index in authoritative mode
+    entries = parseNameStatusZ(buf);
+  } else if (baseIdx >= 0 && cachedIdx >= 0) {
+    const base = args[baseIdx + 1];
+    if (!base) {
+      console.error("R-02 --base and --cached require a base SHA");
+      process.exit(1);
+    }
+    try {
+      buf = execFileSync("git", ["diff", "--name-status", "-z", "--diff-filter=ADMR", "--cached", base], { encoding: "buffer" }) as Buffer;
+    } catch (e) {
+      console.error(`R-02 failed to compute staged diff against ${base}: ${(e as Error).message}`);
+      process.exit(1);
+    }
     entries = parseNameStatusZ(buf);
   } else if (nameStatusIdx >= 0) {
     const fileArg = args[nameStatusIdx + 1];
@@ -263,12 +277,15 @@ if (import.meta.url.endsWith("docs-policy.mts") && process.argv.some((a) => a.en
   if (baseIdx >= 0 && candIdx >= 0) {
     baseSha = args[baseIdx + 1];
     candidateSha = args[candIdx + 1];
+  } else if (baseIdx >= 0 && cachedIdx >= 0) {
+    baseSha = args[baseIdx + 1];
   }
   const isAuthoritative = baseSha !== null && candidateSha !== null;
+  const isCachedCandidate = baseSha !== null && candidateSha === null && cachedIdx >= 0;
   const getBaseContent = (p: string): string | null => {
     try {
-      if (isAuthoritative) {
-        return execFileSync("git", ["show", `${baseSha}:${p}`], { encoding: "utf-8" });
+    if (isAuthoritative || isCachedCandidate) {
+      return execFileSync("git", ["show", `${baseSha}:${p}`], { encoding: "utf-8" });
       }
       return execFileSync("git", ["show", `HEAD:${p}`], { encoding: "utf-8" });
     } catch {
@@ -279,6 +296,9 @@ if (import.meta.url.endsWith("docs-policy.mts") && process.argv.some((a) => a.en
     try {
       if (isAuthoritative) {
         return execFileSync("git", ["show", `${candidateSha}:${p}`], { encoding: "utf-8" });
+      }
+      if (isCachedCandidate) {
+        return execFileSync("git", ["show", `:${p}`], { encoding: "utf-8" });
       }
       return fs.readFileSync(p, "utf-8");
     } catch {

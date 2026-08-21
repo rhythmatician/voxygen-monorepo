@@ -6,21 +6,39 @@ export function doctorWorktreePath(repoRoot: string, branch: string): string {
   return path.join(repoRoot, ".sandcastle", "worktrees", branch);
 }
 
+function withRepoRootCwd<T>(repoRoot: string, action: () => T): T {
+  const originalCwd = process.cwd();
+  let didRestore = false;
+  try {
+    if (originalCwd !== repoRoot) {
+      process.chdir(repoRoot);
+      didRestore = true;
+    }
+    return action();
+  } finally {
+    if (didRestore) {
+      try { process.chdir(originalCwd); } catch {}
+    }
+  }
+}
+
 export function cleanupDoctorBranchAndWorktree(repoRoot: string, branch: string): void {
   if (!branch.startsWith("doctor-")) return;
   const worktreePath = doctorWorktreePath(repoRoot, branch);
   // Prefer argument-based invocation (execFileSync) — no shell interpolation for paths/refnames
-  try {
-    const list = execFileSync("git", ["worktree", "list", "--porcelain"], { encoding: "utf8", stdio: "pipe", cwd: repoRoot });
-    if (list.includes(worktreePath) || list.includes(branch)) {
-      try { execFileSync("git", ["worktree", "remove", "--force", worktreePath], { encoding: "utf8", stdio: "pipe", cwd: repoRoot }); } catch {}
-    }
-  } catch {}
-  try { execFileSync("git", ["worktree", "remove", "--force", worktreePath], { encoding: "utf8", stdio: "pipe", cwd: repoRoot }); } catch {}
-  try { if (fs.existsSync(worktreePath)) fs.rmSync(worktreePath, { recursive: true, force: true }); } catch {}
-  try { execFileSync("git", ["worktree", "prune"], { encoding: "utf8", stdio: "pipe", cwd: repoRoot }); } catch {}
-  try { execFileSync("git", ["branch", "-D", branch], { encoding: "utf8", stdio: "pipe", cwd: repoRoot }); } catch {}
-  try { execFileSync("git", ["worktree", "prune"], { encoding: "utf8", stdio: "pipe", cwd: repoRoot }); } catch {}
+  withRepoRootCwd(repoRoot, () => {
+    try {
+      const list = execFileSync("git", ["worktree", "list", "--porcelain"], { encoding: "utf8", stdio: "pipe", cwd: repoRoot });
+      if (list.includes(worktreePath) || list.includes(branch)) {
+        try { execFileSync("git", ["worktree", "remove", "--force", worktreePath], { encoding: "utf8", stdio: "pipe", cwd: repoRoot }); } catch {}
+      }
+    } catch {}
+    try { execFileSync("git", ["worktree", "remove", "--force", worktreePath], { encoding: "utf8", stdio: "pipe", cwd: repoRoot }); } catch {}
+    try { if (fs.existsSync(worktreePath)) fs.rmSync(worktreePath, { recursive: true, force: true }); } catch {}
+    try { execFileSync("git", ["worktree", "prune"], { encoding: "utf8", stdio: "pipe", cwd: repoRoot }); } catch {}
+    try { execFileSync("git", ["branch", "-D", branch], { encoding: "utf8", stdio: "pipe", cwd: repoRoot }); } catch {}
+    try { execFileSync("git", ["worktree", "prune"], { encoding: "utf8", stdio: "pipe", cwd: repoRoot }); } catch {}
+  });
 }
 
 export function assertNoStaleDoctorResources(repoRoot: string): { ok: boolean; leftover: string[] } {

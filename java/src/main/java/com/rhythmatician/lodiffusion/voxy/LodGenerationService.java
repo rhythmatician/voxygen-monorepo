@@ -2,7 +2,9 @@ package com.rhythmatician.lodiffusion.voxy;
 
 import com.rhythmatician.lodiffusion.Config;
 import com.rhythmatician.lodiffusion.HelloTerrainMod;
+import net.lodiffusion.shadow.ShadowRouterJobQueue;
 
+import net.minecraft.registry.RegistryKey;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.world.World;
@@ -82,6 +84,7 @@ public final class LodGenerationService {
 
     // Per-world session delegation — owns all candidate resources.
     private volatile GenerationSession session;
+    private volatile RegistryKey<World> boundDimension;
     private final Object lock = new Object();
 
     /**
@@ -127,7 +130,31 @@ public final class LodGenerationService {
             GenerationSession s = new GenerationSession();
             session = s;
             s.start(world, server);
+            try {
+                boundDimension = world != null ? world.getRegistryKey() : null;
+            } catch (Exception ignored) {
+                boundDimension = null;
+            }
             HelloTerrainMod.LOGGER.info("[LodGen] Service started via GenerationSession");
+        }
+    }
+
+    // Test-visible start that avoids mocking World (ByteBuddy retransform limit in full suite).
+    // Package-private; uses GenerationSession test helpers instead of reflection.
+    void startForTest(RegistryKey<World> key, MinecraftServer server) {
+        synchronized (lock) {
+            if (session != null && session.isRunning()) {
+                HelloTerrainMod.LOGGER.warn("[LodGen] Service already running");
+                return;
+            }
+            GenerationSession s = new GenerationSession();
+            session = s;
+            s.start(null, server);
+            boolean isEnd = key != null && key.getValue().equals(net.minecraft.util.Identifier.of("minecraft", "the_end"));
+            s.setEndL4TracerModeForTest(isEnd);
+            s.forceRunningForTest();
+            boundDimension = key;
+            HelloTerrainMod.LOGGER.info("[LodGen] Service startedForTest via GenerationSession key={} tracer={}", key, s.isEndL4TracerMode());
         }
     }
 
@@ -137,9 +164,85 @@ public final class LodGenerationService {
             GenerationSession s = session;
             if (s == null) return;
             s.stop();
+            // Clear static queue so old-dimension demand cannot survive into next session
+            ShadowRouterJobQueue.clear();
             session = null;
+            boundDimension = null;
             HelloTerrainMod.LOGGER.info("[LodGen] Service stopped via GenerationSession");
         }
+    }
+
+    /**
+     * Dimension-change-aware rebind — teleport to the_end activates tracer without rejoin.
+     *
+     * <p>Detects {@code client.world.getRegistryKey()} != last bound dimension and rebinds
+     * a fresh {@link GenerationSession} via {@code stop() + ShadowRouterJobQueue.clear() + start()}
+     * on the render thread. Re-executes the early gate
+     * {@code endL4TracerMode = decideEndL4TracerMode(world)} before
+     * {@code preloadModel()}/{@code resolveVoxyModel()}/worker entry.
+     * Debounced: ignore repeated ticks while stopping (synchronized on lock).
+     *
+     * @return true if a rebind was performed
+     */
+    public boolean checkAndRebindIfNeeded(World world, MinecraftServer server) {
+        if (world == null) return false;
+        RegistryKey<World> newKey;
+        try {
+            newKey = world.getRegistryKey();
+        } catch (Exception e) {
+            return false;
+        }
+        return checkAndRebindIfNeeded(newKey, world, server);
+    }
+
+    // Test-visible overload that avoids mocking World (avoids ByteBuddy retransform limits in full suite)
+    boolean checkAndRebindIfNeeded(RegistryKey<World> newKey, World worldForStart, MinecraftServer server) {
+        if (newKey == null) return false;
+        synchronized (lock) {
+            if (boundDimension != null && boundDimension.equals(newKey)) {
+                return false;
+            }
+            GenerationSession s = session;
+            if (s == null || !s.isRunning()) {
+                return false;
+            }
+            HelloTerrainMod.LOGGER.info(
+                    "[LodGen] Dimension change detected {} -> {}, rebinding (ShadowRouterJobQueue.clear())",
+                    boundDimension, newKey);
+            s.stop();
+            // ShadowRouterJobQueue.clear() wipes queued + in-flight so old-dimension demand cannot survive
+            ShadowRouterJobQueue.clear();
+            session = null;
+            boundDimension = null;
+            GenerationSession next = new GenerationSession();
+            session = next;
+            // worldForStart may be null in test when using RegistryKey overload; pass null or fake world
+            // GenerationSession.start handles null world as non-tracer safely (decide returns false)
+            // but we still set boundDimension to newKey afterwards so tracer flag is correct via next.start's decide.
+            // If worldForStart == null we manually set tracer mode via reflection is not needed because
+            // decideEndL4TracerMode(null) is false; so for test we set boundDimension directly after start.
+            if (worldForStart != null) {
+                next.start(worldForStart, server);
+                try {
+                    boundDimension = worldForStart.getRegistryKey();
+                } catch (Exception ignored) {
+                    boundDimension = newKey;
+                }
+            } else {
+                next.start(null, server);
+                boolean isEnd = newKey.getValue().equals(net.minecraft.util.Identifier.of("minecraft", "the_end"));
+                next.setEndL4TracerModeForTest(isEnd);
+                boundDimension = newKey;
+            }
+            HelloTerrainMod.LOGGER.info(
+                    "[LodGen] Rebound complete to {} tracer={}", newKey, next.isEndL4TracerMode());
+            return true;
+        }
+    }
+
+    /** Test-visible bound dimension. */
+    RegistryKey<World> getBoundDimensionForTest() {
+        return boundDimension;
     }
 
     /** Update the player position (called each client tick). */

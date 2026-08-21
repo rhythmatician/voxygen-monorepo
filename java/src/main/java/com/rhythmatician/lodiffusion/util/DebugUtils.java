@@ -1,6 +1,7 @@
 package com.rhythmatician.lodiffusion.util;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
@@ -60,7 +61,7 @@ public final class DebugUtils {
                     csv.append("\n");
                 }
                 
-                Files.write(outputPath, csv.toString().getBytes(), 
+                Files.write(outputPath, csv.toString().getBytes(StandardCharsets.UTF_8), 
                     StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
                 
                 HelloTerrainMod.LOGGER.debug("[DebugUtils] Dumped tensor '{}' to: {}", label, outputPath);
