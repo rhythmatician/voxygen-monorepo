@@ -36,3 +36,31 @@ export function resolveWorkerSandboxEnv(
     META_API_KEY: metaApiKey,
   };
 }
+
+export function resolveResearchSandboxEnv(metaApiKey: string): Record<string, string> {
+  // Research workers: model/network + repo access, but NO GitHub write credential.
+  // All tracker writes occur on host through GitHub capability boundary.
+  // Keep behind profile seam for future image/resources override.
+  return {
+    GH_TOKEN: "",
+    GITHUB_TOKEN: "",
+    META_API_KEY: metaApiKey,
+  };
+}
+
+export interface ResearchEnvironmentProfile {
+  image?: string;
+  env: Record<string, string>;
+}
+
+// Profile seam — future research tickets could request different image/resources
+// without coupling purpose (wayfinder:research) to executor (Sandcastle).
+export function getResearchEnvironment(
+  metaApiKey: string,
+  _issue?: { number: number; body?: string },
+): ResearchEnvironmentProfile {
+  return {
+    image: "sandcastle:voxygen-monorepo",
+    env: resolveResearchSandboxEnv(metaApiKey),
+  };
+}

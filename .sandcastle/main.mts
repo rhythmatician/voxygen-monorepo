@@ -11,7 +11,15 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 const REPO_ROOT = process.cwd();
-import { isEligible, branchForIssue, type IssueInput } from "./dispatch.mts";
+import {
+  isEligible,
+  isResearchEligible,
+  classifyTicket,
+  branchForIssue,
+  RESEARCH_LABEL,
+  WAYFINDER_RESEARCH_LABEL,
+  type IssueInput,
+} from "./dispatch.mts";
 import {
   canClaimNextOuterIteration,
   partitionMergerInfrastructureFailure,
@@ -51,7 +59,15 @@ import {
 import {
   resolveFactoryMetaApiKey,
   resolveWorkerSandboxEnv,
+  getResearchEnvironment,
+  resolveResearchSandboxEnv,
 } from "./sandbox-token-env.mts";
+import {
+  researchResultSchema,
+  extractResearchResult,
+  formatResearchResultForComment,
+  type ResearchResult,
+} from "./research-result.mts";
 import { mergerDockerOptions } from "./merger-control.mts";
 
 const execFileAsync = promisify(execFile);
@@ -238,28 +254,29 @@ interface RawIssue {
   state: string;
 }
 
-async function fetchOpenImplementIssues(): Promise<IssueInput[]> {
+async function fetchIssuesByLabel(label: string): Promise<RawIssue[]> {
   const rawJson = await runGh([
     "issue",
     "list",
     "--state",
     "open",
     "--label",
-    "agent:implement",
+    label,
     "--limit",
     "100",
     "--json",
     "number,title,body,labels,assignees,state",
   ]);
-  let raw: RawIssue[] = [];
   try {
-    raw = JSON.parse(rawJson);
+    return JSON.parse(rawJson);
   } catch {
-    raw = [];
+    return [];
   }
+}
+
+async function enrichWithBlockedBy(raw: RawIssue[]): Promise<IssueInput[]> {
   const ownerRepo = parseOwnerRepo();
-  // Fetch native blocker counts in parallel
-  const issues: IssueInput[] = await Promise.all(
+  return Promise.all(
     raw.map(async (r) => {
       let blockedByCount: number | undefined = undefined;
       if (ownerRepo) {
@@ -272,7 +289,6 @@ async function fetchOpenImplementIssues(): Promise<IssueInput[]> {
         const n = parseInt(summary.trim(), 10);
         if (!isNaN(n)) blockedByCount = n;
         else throw new Error(`blocked_by parse failed for #${r.number}: ${JSON.stringify(summary)}`);
-        // No catch: API failure propagates — caller retries or marks unknown as ineligible
       } else {
         throw new Error(`cannot determine ownerRepo for blocked_by lookup #${r.number}`);
       }
@@ -287,7 +303,16 @@ async function fetchOpenImplementIssues(): Promise<IssueInput[]> {
       };
     }),
   );
-  return issues;
+}
+
+async function fetchOpenImplementIssues(): Promise<IssueInput[]> {
+  const raw = await fetchIssuesByLabel("agent:implement");
+  return enrichWithBlockedBy(raw);
+}
+
+async function fetchOpenResearchIssues(): Promise<IssueInput[]> {
+  const raw = await fetchIssuesByLabel("agent:research");
+  return enrichWithBlockedBy(raw);
 }
 
 // Phase 0.5 claim - host-side, sequential, before createSandbox (single-host v0).
@@ -314,6 +339,28 @@ async function claimIssue(issue: IssueInput): Promise<boolean> {
     return true;
   } catch (error: unknown) {
     console.warn(`  Claim failed for #${id}: ${getErrorMessage(error)}`);
+    return false;
+  }
+}
+
+async function claimResearchIssue(issue: IssueInput): Promise<boolean> {
+  const id = String(issue.number);
+  const branch = branchForIssue(issue.number);
+  try {
+    await runGh(["issue", "edit", id, "--add-assignee", "@me", "--add-label", "agent:in-progress"]);
+    try {
+      await runGh([
+        "issue",
+        "comment",
+        id,
+        "--body",
+        `Sandcastle claiming #${id} for AFK research on \`${branch}\` -- \`${issue.title}\``,
+      ]);
+    } catch {}
+    console.log(`  Claimed research #${id} → ${branch}`);
+    return true;
+  } catch (error: unknown) {
+    console.warn(`  Research claim failed for #${id}: ${getErrorMessage(error)}`);
     return false;
   }
 }
@@ -426,6 +473,61 @@ async function fetchIssueBody(issueId: string): Promise<string> {
     }
   }
   throw lastError;
+}
+
+// ---- Research lifecycle helpers ----
+function extractParentMapId(body?: string): string | null {
+  if (!body) return null;
+  const m = body.match(/Part of #(\d+)/);
+  return m ? m[1] : null;
+}
+
+async function publishResearchResult(
+  issueId: string,
+  branch: string,
+  result: ResearchResult,
+  rawText: string,
+): Promise<boolean> {
+  const formatted = formatResearchResultForComment(result);
+  const body = `Research completed on \`${branch}\`.\n\n${formatted}\n\n---\n*Raw output truncated:* \`\`\`\n${rawText.slice(0, 2000)}\n\`\`\``;
+  return safeRunGh(["issue", "comment", issueId, "--body", body], `Failed to publish research result to #${issueId}`);
+}
+
+async function addParentMapPointer(
+  parentId: string,
+  researchId: string,
+  researchTitle: string,
+  result: ResearchResult,
+): Promise<boolean> {
+  const summaryOneLine = result.summary.replace(/\s+/g, " ").slice(0, 300);
+  const body = `Research #${researchId} — ${researchTitle}: ${summaryOneLine}\n\nRecommendation: ${result.recommendation.slice(0, 500)}\nSee #${researchId} for evidence-backed findings.`;
+  return safeRunGh(["issue", "comment", parentId, "--body", body], `Failed to add parent map pointer to #${parentId}`);
+}
+
+async function closeResearchTicket(issueId: string, branch: string): Promise<boolean> {
+  // Clean claim (assignee + in-progress) and close. Remove agent:research label as well for closed state.
+  const removed = await safeRunGh(
+    ["issue", "edit", issueId, "--remove-label", "agent:in-progress", "--remove-assignee", "@me", "--remove-label", "agent:research"],
+    `Failed to clean claim for research #${issueId}`,
+  );
+  // Also remove wayfinder:research? Keep for history; closing is enough. Remove in-progress already done.
+  try {
+    await runGh(["issue", "close", issueId, "--comment", `Research completed on \`${branch}\` — findings published.`]);
+    return removed;
+  } catch {
+    try {
+      await runGh(["issue", "comment", issueId, "--body", `Research completed on \`${branch}\` — findings published.`]);
+      await runGh(["issue", "close", issueId]);
+      return removed;
+    } catch {
+      return false;
+    }
+  }
+}
+
+async function markResearchFactoryError(issueId: string, branch: string, reason: string): Promise<boolean> {
+  // FACTORY_ERROR for research: no research conclusion, preserve logs, release claim, leave open retryable.
+  return markFactoryError(issueId, branch, reason);
 }
 
 async function markReviewRejected(
@@ -947,117 +1049,153 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
 
   const eligible = allCandidates.filter((i) => isEligible(i).eligible);
 
-  if (eligible.length === 0) {
-    console.log("No eligible issues to work on. Exiting.");
-    break;
+  // ----- Research discovery (parallel profile, Sandcastle as common substrate) -----
+  let researchCandidates: IssueInput[] = [];
+  let researchFetchFailed = false;
+  try {
+    researchCandidates = await fetchOpenResearchIssues();
+  } catch (error: unknown) {
+    console.warn(`Failed to fetch research issues: ${getErrorMessage(error)} — research skipped this iteration`);
+    researchFetchFailed = true;
+    researchCandidates = [];
   }
-
-  const iterationPlan = planIssuesForIteration(eligible, {
-    requestedIssueNumber: ITERATION_CONTROL.requestedIssueNumber,
-  });
-
-  let plannedIssues: PlannedIssue[] = [];
-  if (iterationPlan.mode === "qualified") {
-    plannedIssues = iterationPlan.plannedIssues;
-    console.log(`Qualification mode: explicitly selected issue #${plannedIssues[0]!.id} only.`);
-  } else if (iterationPlan.mode === "qualify-unsupported") {
-    const requestedIssueNumber = ITERATION_CONTROL.requestedIssueNumber;
-    console.log(`Qualification mode requested issue #${requestedIssueNumber}, but it is not eligible in this iteration.`);
-    continue;
-  } else if (iterationPlan.mode === "single-eligible") {
-    plannedIssues = iterationPlan.plannedIssues;
-    console.log(`Single eligible issue -- skipping LLM planner, direct dispatch #${plannedIssues[0]!.id}`);
-  } else if (iterationPlan.mode === "planner-required") {
-    // ----- Phase 1: Overlap-aware planning (LLM may serialize) -----
-    // Planner receives only eligible issues; it must return a subset.
-    const issuesJson = JSON.stringify(
-      eligible.map((i) => ({
-        number: i.number,
-        title: i.title,
-        labels: i.labels,
-        branch: branchForIssue(i.number),
-      })),
-      null,
-      2,
-    );
-    // Use Output.string (not Output.object) so we get the raw planner stream even if it contains
-    // fences or surrounding reasoning — then parse via testable helper. This fixes the false
-    // rejection where StructuredOutputError.rawMatched already failed JSON.parse and re-parsing it
-    // cannot bypass; we need the independently captured valid planner text stream.
-    try {
-      const planRun = await sandcastle.run({
-        hooks,
-        sandbox: docker({ env: WORKER_SANDBOX_ENV }),
-        branchStrategy: { type: "branch", branch: "sandcastle/planner", baseBranch: "origin/main" },
-        name: "planner",
-        maxIterations: 1,
-        agent: sandcastle.muse("muse-spark-1.2-contributor"),
-        promptFile: "./.sandcastle/plan-prompt.md",
-        promptArgs: { ISSUES_JSON: issuesJson },
-        output: sandcastle.Output.string({ tag: "plan" }),
-      });
-      const rawPlanString: string = (planRun.output as unknown as string) ?? "";
-      // Wrap with tag so helper can extract last <plan> — if run already returned inner string, re-wrap
-      const planStdout = rawPlanString.includes("<plan>") ? rawPlanString : `<plan>${rawPlanString}</plan>`;
-      plannedIssues = parsePlannerOutput(planStdout, eligible);
-      if (plannedIssues.length === 0) {
-        console.log("Planner advised to defer all eligible issues due to overlap risk. Will retry next iteration.");
-        break;
-      }
-      console.log(`Planner selected ${plannedIssues.length}/${eligible.length} issue(s) to run now:`);
-      for (const p of plannedIssues) console.log(`  ${p.id}: ${p.title} → ${p.branch}`);
-    } catch (error: unknown) {
-      const errorMsg = getErrorMessage(error);
-      // If Output.string threw (missing tag), try to recover from rawMatched + full stdout if available
-      const rawMatched = (error as unknown as { rawMatched?: string })?.rawMatched;
-      const candidateStdouts: string[] = [];
-      if (typeof rawMatched === "string" && rawMatched) candidateStdouts.push(`<plan>${rawMatched}</plan>`);
-      // StructuredOutputError may have sessionId/sessionFilePath pointing to full output — try to read if present
-      const sessionFile = (error as unknown as { sessionFilePath?: string; sessionId?: string })?.sessionFilePath;
-      if (typeof sessionFile === "string" && sessionFile) {
-        try {
-          const sessContent = fs.readFileSync(sessionFile, "utf8");
-          if (sessContent.includes("<plan>")) candidateStdouts.push(sessContent);
-        } catch {}
-      }
-      let bypassSucceeded = false;
-      for (const cand of candidateStdouts) {
-        try {
-          const filtered = parsePlannerOutput(cand, eligible);
-          if (filtered.length > 0) {
-            plannedIssues = filtered;
-            console.log(`Planner bypass succeeded via full stream recovery: selected ${plannedIssues.length}/${eligible.length} issue(s)`);
-            for (const p of plannedIssues) console.log(`  ${p.id}: ${p.title} → ${p.branch}`);
-            bypassSucceeded = true;
-            break;
-          }
-        } catch {}
-      }
-      if (bypassSucceeded) {
-        // recovered
+  if (!researchFetchFailed) {
+    console.log(`Fetched ${researchCandidates.length} open issue(s) with agent:research`);
+    for (const c of researchCandidates) {
+      const r = isResearchEligible(c);
+      const cls = classifyTicket(c);
+      if (!r.eligible) {
+        console.log(`  - #${c.number} "${c.title}" [${cls.profile}] → SKIP (${r.reason})`);
       } else {
-        const rawDump = (rawMatched ?? errorMsg).slice(0, 12000);
-        try {
-          fs.mkdirSync(path.join(REPO_ROOT, ".sandcastle", "logs"), { recursive: true });
-          const logPath = path.join(REPO_ROOT, ".sandcastle", "logs", `planner-fail-${Date.now()}.json`);
-          fs.writeFileSync(logPath, JSON.stringify({ at: new Date().toISOString(), error: errorMsg, raw: rawDump, rawMatched, eligible: eligible.map((e) => e.number) }, null, 2));
-          console.error(`  Preserved failing raw planner output to ${logPath} (ignored, not fixtures)`);
-        } catch (preserveErr) {
-          console.warn(`  Failed to preserve planner failure log: ${getErrorMessage(preserveErr)}`);
-        }
-        // Deterministic safety does not depend on LLM perfect syntax.
-        // Never fallback-to-all; fallback to single serial progress.
-        // LLM may improve parallelism but must not block basic serial dispatch.
-        const fallback = fallbackToSingle(eligible);
-        if (fallback.length === 0) {
-          console.error(`Planner failed: ${errorMsg} -- no fallback eligible, aborting iteration.`);
-          break;
-        }
-        plannedIssues = fallback;
-        console.warn(`Planner failed: ${errorMsg} -- fallback to deterministic single #${fallback[0].id} (fail-closed single, not all, not abort)`);
+        console.log(`  - #${c.number} "${c.title}" [research] → ELIGIBLE`);
       }
     }
   }
+  const researchEligible = researchCandidates.filter((i) => isResearchEligible(i).eligible);
+
+  if (eligible.length === 0 && researchEligible.length === 0) {
+    console.log("No eligible implementation or research issues to work on. Exiting.");
+    break;
+  }
+  // Deterministic classification log for spec
+  if (researchEligible.length > 0) {
+    console.log(`Research eligible: ${researchEligible.map((i) => `#${i.number}`).join(", ")}`);
+  }
+
+  // Implementation planner only when implement work exists; research is direct dispatch (no LLM planner)
+  let plannedIssues: PlannedIssue[] = [];
+  if (eligible.length > 0) {
+    const iterationPlan = planIssuesForIteration(eligible, {
+      requestedIssueNumber: ITERATION_CONTROL.requestedIssueNumber,
+    });
+    if (iterationPlan.mode === "qualified") {
+      plannedIssues = iterationPlan.plannedIssues;
+      console.log(`Qualification mode: explicitly selected issue #${plannedIssues[0]!.id} only.`);
+    } else if (iterationPlan.mode === "qualify-unsupported") {
+      const requestedIssueNumber = ITERATION_CONTROL.requestedIssueNumber;
+      console.log(`Qualification mode requested issue #${requestedIssueNumber}, but it is not eligible in this iteration.`);
+      // Don't continue whole iteration if research work remains; skip implement only
+      if (researchEligible.length === 0) continue;
+      else console.log(`Continuing to research profile despite unsupported qualification target`);
+      plannedIssues = [];
+    } else if (iterationPlan.mode === "single-eligible") {
+      plannedIssues = iterationPlan.plannedIssues;
+      console.log(`Single eligible issue -- skipping LLM planner, direct dispatch #${plannedIssues[0]!.id}`);
+    } else if (iterationPlan.mode === "planner-required") {
+      // fallthrough handled below — keep scope for planner block
+      // we set a marker and handle planner outside this if; to keep original structure, inline planner logic here
+      // Instead, delegate to below planner block via variable
+      // Use a temporary to trigger planner
+      let _needsPlanner = true;
+      // Reuse original planner code path
+      if (_needsPlanner) {
+        const issuesJson = JSON.stringify(
+          eligible.map((i) => ({
+            number: i.number,
+            title: i.title,
+            labels: i.labels,
+            branch: branchForIssue(i.number),
+          })),
+          null,
+          2,
+        );
+        try {
+          const planRun = await sandcastle.run({
+            hooks,
+            sandbox: docker({ env: WORKER_SANDBOX_ENV }),
+            branchStrategy: { type: "branch", branch: "sandcastle/planner", baseBranch: "origin/main" },
+            name: "planner",
+            maxIterations: 1,
+            agent: sandcastle.muse("muse-spark-1.2-contributor"),
+            promptFile: "./.sandcastle/plan-prompt.md",
+            promptArgs: { ISSUES_JSON: issuesJson },
+            output: sandcastle.Output.string({ tag: "plan" }),
+          });
+          const rawPlanString: string = (planRun.output as unknown as string) ?? "";
+          const planStdout = rawPlanString.includes("<plan>") ? rawPlanString : `<plan>${rawPlanString}</plan>`;
+          plannedIssues = parsePlannerOutput(planStdout, eligible);
+          if (plannedIssues.length === 0) {
+            console.log("Planner advised to defer all eligible issues due to overlap risk. Will retry next iteration.");
+            if (researchEligible.length === 0) break;
+            else console.log("Deferring implement, continuing to research");
+            plannedIssues = [];
+          } else {
+            console.log(`Planner selected ${plannedIssues.length}/${eligible.length} issue(s) to run now:`);
+            for (const p of plannedIssues) console.log(`  ${p.id}: ${p.title} → ${p.branch}`);
+          }
+        } catch (error: unknown) {
+          const errorMsg = getErrorMessage(error);
+          const rawMatched = (error as unknown as { rawMatched?: string })?.rawMatched;
+          const candidateStdouts: string[] = [];
+          if (typeof rawMatched === "string" && rawMatched) candidateStdouts.push(`<plan>${rawMatched}</plan>`);
+          const sessionFile = (error as unknown as { sessionFilePath?: string; sessionId?: string })?.sessionFilePath;
+          if (typeof sessionFile === "string" && sessionFile) {
+            try {
+              const sessContent = fs.readFileSync(sessionFile, "utf8");
+              if (sessContent.includes("<plan>")) candidateStdouts.push(sessContent);
+            } catch {}
+          }
+          let bypassSucceeded = false;
+          for (const cand of candidateStdouts) {
+            try {
+              const filtered = parsePlannerOutput(cand, eligible);
+              if (filtered.length > 0) {
+                plannedIssues = filtered;
+                console.log(`Planner bypass succeeded via full stream recovery: selected ${plannedIssues.length}/${eligible.length} issue(s)`);
+                for (const p of plannedIssues) console.log(`  ${p.id}: ${p.title} → ${p.branch}`);
+                bypassSucceeded = true;
+                break;
+              }
+            } catch {}
+          }
+          if (!bypassSucceeded) {
+            const rawDump = (rawMatched ?? errorMsg).slice(0, 12000);
+            try {
+              fs.mkdirSync(path.join(REPO_ROOT, ".sandcastle", "logs"), { recursive: true });
+              const logPath = path.join(REPO_ROOT, ".sandcastle", "logs", `planner-fail-${Date.now()}.json`);
+              fs.writeFileSync(logPath, JSON.stringify({ at: new Date().toISOString(), error: errorMsg, raw: rawDump, rawMatched, eligible: eligible.map((e) => e.number) }, null, 2));
+              console.error(`  Preserved failing raw planner output to ${logPath} (ignored, not fixtures)`);
+            } catch (preserveErr) {
+              console.warn(`  Failed to preserve planner failure log: ${getErrorMessage(preserveErr)}`);
+            }
+            const fallback = fallbackToSingle(eligible);
+            if (fallback.length === 0) {
+              console.error(`Planner failed: ${errorMsg} -- no fallback eligible, aborting implement this iteration.`);
+              if (researchEligible.length === 0) break;
+              plannedIssues = [];
+            } else {
+              plannedIssues = fallback;
+              console.warn(`Planner failed: ${errorMsg} -- fallback to deterministic single #${fallback[0].id} (fail-closed single, not all, not abort)`);
+            }
+          }
+        }
+      }
+    }
+  } else {
+    console.log("No implement eligible — skipping planner, research only this iteration");
+  }
+
+  // planner handled inline above — original block removed
 
   // ----- Freeze explicit factory base before claiming work (isolation invariant) -----
   // Caller checkout is not part of Sandcastle's data plane — irrelevant whether launching from main, feature/foo, or PR branch.
@@ -1147,12 +1285,212 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
     }
   }
   claimedIssues = preparedIssues;
-  if (claimedIssues.length === 0) {
+
+  // ----- Research claim + prepare (parallel profile, same isolation invariants) -----
+  let claimedResearch: PlannedIssue[] = [];
+  if (researchEligible.length > 0) {
+    const researchPlanned: PlannedIssue[] = researchEligible.map((r) => ({
+      id: String(r.number),
+      title: r.title,
+      branch: branchForIssue(r.number),
+    }));
+    if (QUALIFICATION_LIFECYCLE.claimExternalState) {
+      for (const p of researchPlanned) {
+        const src = researchEligible.find((e) => String(e.number) === p.id);
+        if (!src) continue;
+        const ok = await claimResearchIssue(src);
+        if (ok) claimedResearch.push(p);
+        else console.warn(`  Skipping research #${p.id} -- claim failed, likely raced`);
+      }
+    } else {
+      console.log("Qualification mode: research external claim suppressed (read-only).");
+      claimedResearch = [...researchPlanned];
+    }
+    // Prepare research branches (same provenance state machine)
+    const preparedResearch: PlannedIssue[] = [];
+    for (const p of claimedResearch) {
+      const prep = branchHelpers.prepareIssueBranch(REPO_ROOT, p.branch, factoryBaseSha, callerBranch, callerSha, p.id, QUALIFICATION_LIFECYCLE.integrate);
+      if (prep.ok) {
+        console.log(`  Prepared research ${p.branch}: ${prep.action} — ${prep.reason} → ${prep.provPath}`);
+        try {
+          const afterPrepareStatus = execSync('git status --porcelain', {encoding:'utf8', cwd: REPO_ROOT}).trim();
+          if (callerStatusBefore !== null && afterPrepareStatus !== callerStatusBefore) {
+            console.warn(`  Prepare left caller status dirty after research: before "${callerStatusBefore.slice(0,100)}" after "${afterPrepareStatus.slice(0,100)}"`);
+          }
+        } catch {}
+        preparedResearch.push(p);
+      } else {
+        if (QUALIFICATION_LIFECYCLE.mutateOutcomeState) {
+          if (prep.action === "blocked") {
+            console.warn(`  Research #${p.id} (${p.branch}) → ${prep.reason} — fail closed`);
+            await markBlocked(p.id, p.branch, prep.reason);
+          } else {
+            console.error(`  Research #${p.id} (${p.branch}) → prepare failed (${prep.action}): ${prep.reason}`);
+            await markBlocked(p.id, p.branch, prep.reason);
+          }
+        } else {
+          console.log(`  Research #${p.id} (${p.branch}) → prepare failed (${prep.action}) — preserving for qualification evidence`);
+        }
+      }
+    }
+    claimedResearch = preparedResearch;
+    if (claimedResearch.length > 0) {
+      console.log(`Research prepared: ${claimedResearch.map((p) => p.id).join(", ")}`);
+    } else {
+      console.log("No research issues survived prepare");
+    }
+  }
+
+  if (claimedIssues.length === 0 && claimedResearch.length === 0) {
     console.log("No issues prepared for execution (all blocked/failed) — nothing to execute this iteration.");
     continue;
   }
 
-  console.log(`\nClaimed and prepared ${claimedIssues.length} issue(s), launching parallel workers...\n`);
+  if (claimedResearch.length > 0) {
+    console.log(`\nClaimed and prepared ${claimedResearch.length} research issue(s) for parallel execution\n`);
+  }
+  if (claimedIssues.length > 0) {
+    console.log(`\nClaimed and prepared ${claimedIssues.length} implementation issue(s), launching parallel workers...\n`);
+  }
+
+  // ----- Research Phase: Parallel isolated Muse researchers -----
+  let researchHadFactoryError = false;
+  if (claimedResearch.length > 0) {
+    console.log(`\n=== Research profile: launching ${claimedResearch.length} isolated researcher(s) ===\n`);
+    const metaKey = resolveFactoryMetaApiKey(REPO_ROOT);
+    const researchEnvProfile = getResearchEnvironment(metaKey);
+    // Map for exact body/title transport verification
+    const researchSourceMap = new Map<string, IssueInput>();
+    for (const r of researchEligible) researchSourceMap.set(String(r.number), r);
+
+    const researchSettled = await Promise.allSettled(
+      claimedResearch.map(async (issue): Promise<{ result: ResearchResult; rawText: string }> => {
+        const src = researchSourceMap.get(issue.id);
+        if (!src) throw new Error(`research source not found for #${issue.id}`);
+        const exactBody = src.body ?? "";
+        const exactTitle = src.title;
+        let sandbox: Awaited<ReturnType<typeof sandcastle.createSandbox>> | null = null;
+        for (let attempt = 0; attempt <= MECHANICAL_RETRY_BUDGET; attempt++) {
+          try {
+            sandbox = await sandcastle.createSandbox({
+              branch: issue.branch,
+              baseBranch: factoryBaseSha,
+              sandbox: docker({ env: researchEnvProfile.env }),
+              hooks,
+              copyToWorktree,
+              timeouts: { worktreeMs: 600_000 },
+            });
+            break;
+          } catch (e) {
+            if (attempt === MECHANICAL_RETRY_BUDGET) throw e;
+            const backoff = MECHANICAL_RETRY_BASE_MS * Math.pow(2, attempt);
+            console.warn(`  research sandbox create failed for #${issue.id} (attempt ${attempt + 1}): ${getErrorMessage(e)} — retrying in ${backoff}ms`);
+            await new Promise((r) => setTimeout(r, backoff));
+          }
+        }
+        try {
+          const runResult: unknown = await sandbox!.run({
+            name: "researcher",
+            maxIterations: 30,
+            idleTimeoutSeconds: 1800,
+            agent: sandcastle.muse("muse-spark-1.2-contributor"),
+            promptFile: "./.sandcastle/research-prompt.md",
+            promptArgs: {
+              TASK_ID: issue.id,
+              ISSUE_TITLE: exactTitle,
+              ISSUE_BODY: exactBody,
+            },
+            output: sandcastle.Output.string({ tag: "research" }),
+          });
+          // sandcastle run returns { output, stdout?, commits? } — handle both shapes
+          const outputStr = (runResult as { output?: unknown })?.output as string | undefined;
+          const stdoutStr = (runResult as { stdout?: string })?.stdout as string | undefined;
+          const rawText = typeof outputStr === "string" && outputStr.length > 0 ? outputStr : stdoutStr ?? String(runResult ?? "");
+          const extracted = extractResearchResult({ output: (runResult as { output?: unknown })?.output, stdout: rawText, text: rawText });
+          if (!extracted) {
+            throw new Error(`research structured output invalid for #${issue.id}: missing or invalid <research> JSON — raw: ${rawText.slice(0, 500)}`);
+          }
+          // Validate no commits produced (research must not commit)
+          const maybeCommits = (runResult as { commits?: string[] })?.commits;
+          if (Array.isArray(maybeCommits) && maybeCommits.length > 0) {
+            console.warn(`  research #${issue.id} produced ${maybeCommits.length} commit(s) — research should not commit, ignoring commits`);
+          }
+          return { result: extracted, rawText };
+        } finally {
+          try { await sandbox!.close(); } catch {}
+          try { process.chdir(REPO_ROOT); } catch {}
+        }
+      }),
+    );
+
+    // Publish results host-side; siblings' successes must survive individual failures
+    for (let i = 0; i < claimedResearch.length; i++) {
+      const issue = claimedResearch[i]!;
+      const src = researchSourceMap.get(issue.id);
+      const outcome = researchSettled[i]!;
+      if (outcome.status === "rejected") {
+        const reason = String((outcome as PromiseRejectedResult).reason ?? "unknown");
+        console.warn(`  Research #${issue.id} FACTORY_ERROR: ${reason.slice(0, 800)}`);
+        researchHadFactoryError = true;
+        if (QUALIFICATION_LIFECYCLE.mutateOutcomeState) {
+          await markResearchFactoryError(issue.id, issue.branch, reason);
+        } else {
+          console.warn(`  Research #${issue.id} FACTORY_ERROR suppressed by qualification policy`);
+        }
+        continue;
+      }
+      const { result, rawText } = (outcome as PromiseFulfilledResult<{ result: ResearchResult; rawText: string }>).value;
+      // Validate again for safety (strict)
+      const parseCheck = researchResultSchema.safeParse(result);
+      if (!parseCheck.success) {
+        const reason = `research validation failed for #${issue.id}: ${parseCheck.error.message}`;
+        console.warn(`  Research #${issue.id} invalid structured output FACTORY_ERROR: ${reason.slice(0, 800)}`);
+        researchHadFactoryError = true;
+        if (QUALIFICATION_LIFECYCLE.mutateOutcomeState) {
+          await markResearchFactoryError(issue.id, issue.branch, reason);
+        }
+        continue;
+      }
+      if (!QUALIFICATION_LIFECYCLE.mutateOutcomeState) {
+        console.log(`  Research #${issue.id} succeeded (qualification: publication suppressed)`);
+        continue;
+      }
+      const published = await publishResearchResult(issue.id, issue.branch, result, rawText);
+      if (!published) {
+        console.warn(`  Research #${issue.id} publication failed — FACTORY_ERROR`);
+        researchHadFactoryError = true;
+        await markResearchFactoryError(issue.id, issue.branch, `publication failed for research #${issue.id}`);
+        continue;
+      }
+      // Parent map pointer when body contains Part of #N
+      const parentId = extractParentMapId(src?.body);
+      if (parentId) {
+        const pointerOk = await addParentMapPointer(parentId, issue.id, src?.title ?? issue.title, result);
+        if (!pointerOk) {
+          console.warn(`  Research #${issue.id} parent pointer to #${parentId} failed (non-blocking)`);
+        } else {
+          console.log(`  Research #${issue.id} added pointer to parent #${parentId}`);
+        }
+      }
+      const closed = await closeResearchTicket(issue.id, issue.branch);
+      if (!closed) {
+        console.warn(`  Research #${issue.id} close failed — FACTORY_ERROR`);
+        researchHadFactoryError = true;
+        await markResearchFactoryError(issue.id, issue.branch, `failed to close research ticket #${issue.id}`);
+        continue;
+      }
+      console.log(`  Research #${issue.id} completed and closed`);
+    }
+
+    if (researchHadFactoryError) {
+      console.log("Research profile encountered FACTORY_ERROR — stopping outer loop (preserving sibling successes)");
+      // If no implement workers to run, break now; otherwise let implement workers' own factory-error handling decide.
+      // Spec: stop unsafe outer progression using existing factory-error semantics.
+      // We break outer iteration here to prevent next outer claim.
+      // If implement workers also exist, they already ran? We ran research before implement, so we can decide to break after research.
+      // To keep research and implement independent within same iteration, we still run implement workers but will break after.
+    }
+  }
 
   // ----- Phase 2: Execute + Review (parallel, isolated) -----
   const settled = await Promise.allSettled<WorkerResult>(
@@ -1404,13 +1742,25 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
     }
   }
 
-  if (!canClaimNextOuterIteration(partition)) {
-    console.log("Factory error detected during review verdict handling. Stopping outer loop to prevent unsafe progression.");
+  if (!canClaimNextOuterIteration(partition) || researchHadFactoryError) {
+    if (researchHadFactoryError) {
+      console.log("Research FACTORY_ERROR stops outer loop (sibling research successes preserved)");
+    } else {
+      console.log("Factory error detected during review verdict handling. Stopping outer loop to prevent unsafe progression.");
+    }
+    // If research had error but implement also had no completed, we still stop
     break;
   }
 
   if (completedBranches.length === 0) {
     console.log("No commits produced. Nothing to merge this iteration.");
+    // Still need to handle research-only iteration: if research succeeded, we already published/closed and should continue or exit?
+    // If no implement work but research succeeded, iteration is done — continue to next (which will exit if no more eligible).
+    if (researchHadFactoryError) break;
+    if (claimedResearch.length > 0) {
+      console.log("Research iteration complete — checking for more work");
+      continue;
+    }
     continue;
   }
 
