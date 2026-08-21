@@ -172,12 +172,28 @@ public final class GenerationSession {
         this.endL4TracerMode = enabled;
     }
 
+    void setRunningForTest(boolean value) {
+        this.running.set(value);
+    }
+
+    void setStopRequestedForTest(boolean value) {
+        this.stopRequested.set(value);
+    }
+
+    void forceRunningForTest() {
+        this.running.set(true);
+        this.stopRequested.set(false);
+    }
+
     private boolean decideEndL4TracerMode(World world) {
         if (world == null) {
             return false;
         }
         try {
-            return World.END.equals(world.getRegistryKey());
+            net.minecraft.registry.RegistryKey<World> key = world.getRegistryKey();
+            if (key == null || key.getValue() == null) return false;
+            // Avoid direct World.END reference to keep test bootstrap-free; compare identifier
+            return key.getValue().equals(net.minecraft.util.Identifier.of("minecraft", "the_end"));
         } catch (Exception e) {
             return false;
         }
