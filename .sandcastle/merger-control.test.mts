@@ -56,13 +56,28 @@ describe("merger control", () => {
     expect(productionSource).toContain(
       '"--remove-label", "agent:in-progress", "--remove-assignee", "@me"',
     );
-    expect(productionSource.match(/partitionMergerInfrastructureFailure\(/g)).toHaveLength(2);
     const phaseThree = productionSource.slice(
       productionSource.indexOf("// ----- Phase 3: Merge"),
       productionSource.indexOf("// Host-side: push batch branch"),
     );
+    expect(phaseThree.match(/partitionMergerInfrastructureFailure\(/g)).toHaveLength(2);
     expect(phaseThree.match(/await markFactoryError\(/g)).toHaveLength(2);
     expect(phaseThree).not.toContain("await markBlocked(");
     expect(phaseThree.match(/\bbreak;/g)).toHaveLength(2);
+  });
+
+  it("routes publication failure through FACTORY_ERROR and stops progression", () => {
+    const productionSource = readFileSync(".sandcastle/main.mts", "utf8");
+    const publication = productionSource.slice(
+      productionSource.indexOf("// Host-side: push batch branch"),
+      productionSource.indexOf("// A local merge is not integration into main"),
+    );
+
+    expect(publication).toContain("await publishBatchBranch(");
+    expect(publication).toContain("partitionMergerInfrastructureFailure(completedIssues, reason)");
+    expect(publication).toContain("await markFactoryError(failure.id, failure.branch, failure.reason)");
+    expect(publication).toContain("if (publicationFailed) break;");
+    expect(publication).not.toContain("git push origin");
+    expect(publication).not.toContain("PR creation skipped");
   });
 });
