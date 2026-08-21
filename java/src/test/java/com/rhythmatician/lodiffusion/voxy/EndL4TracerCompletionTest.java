@@ -14,7 +14,7 @@ import org.mockito.Mockito;
  * Finite completion telemetry for End L4 tracer — 121/121 terminal outcomes.
  * Barrier-free observation via TracerCompletion record and PerformanceMonitor.
  */
-class TracerCompletionTest {
+class EndL4TracerCompletionTest {
 
     @BeforeEach
     void setUp() {
