@@ -43,6 +43,11 @@ public final class PerformanceMonitor {
     public static final String FALLBACK_USES = "fallback_uses";
     public static final String ADAPTER_ERRORS = "adapter_errors";
     public static final String MODEL_ERRORS = "model_errors";
+    public static final String TRACER_HORIZON_WRITTEN = "tracer_horizon_written";
+    public static final String TRACER_HORIZON_SKIPPED = "tracer_horizon_skipped";
+    public static final String TRACER_HORIZON_FAILED = "tracer_horizon_failed";
+    public static final String TRACER_HORIZON_ELAPSED_MS = "tracer_horizon_elapsed_ms";
+    public static final String TRACER_HORIZON_STATUS_SUCCESS = "tracer_horizon_status_success";
     
     // Timing operation names
     public static final String EXTRACT_INPUT_TIME = "extract_input_time";
@@ -55,6 +60,13 @@ public final class PerformanceMonitor {
      */
     public static void incrementCounter(String counterName) {
         COUNTERS.computeIfAbsent(counterName, k -> new AtomicLong(0)).incrementAndGet();
+    }
+
+    /**
+     * Set a performance counter to an explicit value.
+     */
+    public static void setCounter(String counterName, long value) {
+        COUNTERS.computeIfAbsent(counterName, k -> new AtomicLong(0)).set(value);
     }
     
     /**

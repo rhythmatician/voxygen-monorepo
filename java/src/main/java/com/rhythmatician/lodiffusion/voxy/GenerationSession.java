@@ -164,12 +164,41 @@ public final class GenerationSession {
     static final int END_L4_TRACER_WS_Y = 0;
     static final int END_L4_TRACER_TOTAL = 121; // 11*11
 
+    /** Finite completion telemetry for the End L4 tracer (121/121). */
+    record TracerCompletion(
+            String status,
+            int written,
+            int skipped,
+            int failed,
+            long elapsedMs,
+            String atIsoInstant) {}
+
+    private volatile long tracerStartMs = 0;
+    private final AtomicInteger tracerWritten = new AtomicInteger(0);
+    private final AtomicInteger tracerSkipped = new AtomicInteger(0);
+    private final AtomicInteger tracerFailed = new AtomicInteger(0);
+    private final AtomicBoolean tracerTerminalEmitted = new AtomicBoolean(false);
+    private volatile TracerCompletion tracerCompletion = null;
+
     boolean isEndL4TracerMode() {
         return endL4TracerMode;
     }
 
     void setEndL4TracerModeForTest(boolean enabled) {
         this.endL4TracerMode = enabled;
+    }
+
+    TracerCompletion tracerCompletion() {
+        return tracerCompletion;
+    }
+
+    void resetTracerCompletionForTest() {
+        tracerStartMs = 0;
+        tracerWritten.set(0);
+        tracerSkipped.set(0);
+        tracerFailed.set(0);
+        tracerTerminalEmitted.set(false);
+        tracerCompletion = null;
     }
 
     private boolean decideEndL4TracerMode(World world) {
@@ -193,6 +222,12 @@ public final class GenerationSession {
      * ShadowRouterJobQueue; no synchronous blocking barrier.
      */
     int enqueueEndL4TracerRequests() {
+        tracerStartMs = System.currentTimeMillis();
+        tracerWritten.set(0);
+        tracerSkipped.set(0);
+        tracerFailed.set(0);
+        tracerTerminalEmitted.set(false);
+        tracerCompletion = null;
         int centerX = WorldSectionCoord.sectionToWorldSection(playerSectionX, 4);
         int centerZ = WorldSectionCoord.sectionToWorldSection(playerSectionZ, 4);
         int enqueued = 0;
@@ -211,6 +246,38 @@ public final class GenerationSession {
             }
         }
         return enqueued;
+    }
+
+    private void maybeEmitTracerTerminal() {
+        int written = tracerWritten.get();
+        int skipped = tracerSkipped.get();
+        int failed = tracerFailed.get();
+        int processed = written + skipped + failed;
+        if (processed != END_L4_TRACER_TOTAL) {
+            return;
+        }
+        if (!tracerTerminalEmitted.compareAndSet(false, true)) {
+            return;
+        }
+        long elapsedMs = Math.max(0L, System.currentTimeMillis() - tracerStartMs);
+        String at = java.time.Instant.now().toString();
+        String status = (written + skipped == END_L4_TRACER_TOTAL && failed == 0) ? "SUCCESS" : "FAILED";
+        tracerCompletion = new TracerCompletion(status, written, skipped, failed, elapsedMs, at);
+        HelloTerrainMod.LOGGER.info(
+                "[LodGen][Tracer] terminal 121/121 status={} written={} skipped={} failed={} elapsedMs={} at={}",
+                status, written, skipped, failed, elapsedMs, at);
+        // Also publish to PerformanceMonitor for harness observation without log parsing
+        com.rhythmatician.lodiffusion.util.PerformanceMonitor.setCounter(
+                com.rhythmatician.lodiffusion.util.PerformanceMonitor.TRACER_HORIZON_WRITTEN, written);
+        com.rhythmatician.lodiffusion.util.PerformanceMonitor.setCounter(
+                com.rhythmatician.lodiffusion.util.PerformanceMonitor.TRACER_HORIZON_SKIPPED, skipped);
+        com.rhythmatician.lodiffusion.util.PerformanceMonitor.setCounter(
+                com.rhythmatician.lodiffusion.util.PerformanceMonitor.TRACER_HORIZON_FAILED, failed);
+        com.rhythmatician.lodiffusion.util.PerformanceMonitor.setCounter(
+                com.rhythmatician.lodiffusion.util.PerformanceMonitor.TRACER_HORIZON_ELAPSED_MS, elapsedMs);
+        com.rhythmatician.lodiffusion.util.PerformanceMonitor.setCounter(
+                com.rhythmatician.lodiffusion.util.PerformanceMonitor.TRACER_HORIZON_STATUS_SUCCESS,
+                "SUCCESS".equals(status) ? 1 : 0);
     }
 
     /**
@@ -1881,10 +1948,10 @@ public final class GenerationSession {
             return false;
         }
         EndL4DeterministicCandidate tracerCandidate = new EndL4DeterministicCandidate(noiseAccess);
-        int written = 0;
-        int skipped = 0;
-        int failed = 0;
-        long startMs = System.currentTimeMillis();
+        if (tracerStartMs == 0) {
+            tracerStartMs = System.currentTimeMillis();
+        }
+        long startMs = tracerStartMs;
         long lastProgressLogMs = startMs;
 
         while (!stopRequested.get()) {
@@ -1904,7 +1971,8 @@ public final class GenerationSession {
             // Tracer enqueues only L4 Y=0; skip any stray levels (L3..L0 not seeded)
             if (req.lodLevel != 4 || req.worldY != END_L4_TRACER_WS_Y) {
                 ShadowRouterJobQueue.markCompleted(req);
-                skipped++;
+                tracerSkipped.incrementAndGet();
+                maybeEmitTracerTerminal();
                 continue;
             }
 
@@ -1914,7 +1982,8 @@ public final class GenerationSession {
 
             if (isOutOfWorldY(4, wsY)) {
                 ShadowRouterJobQueue.markCompleted(req);
-                skipped++;
+                tracerSkipped.incrementAndGet();
+                maybeEmitTracerTerminal();
                 continue;
             }
 
@@ -1922,7 +1991,8 @@ public final class GenerationSession {
             byte preserveMask = loadedChunkOctantMask(world, 4, wsX, wsY, wsZ);
             if (preserveMask == (byte) 0xFF) {
                 ShadowRouterJobQueue.markCompleted(req);
-                skipped++;
+                tracerSkipped.incrementAndGet();
+                maybeEmitTracerTerminal();
                 continue;
             }
 
@@ -1933,7 +2003,8 @@ public final class GenerationSession {
 
             if (writer.isRegionFullyPopulated(origin, Level.L4)) {
                 ShadowRouterJobQueue.markCompleted(req);
-                skipped++;
+                tracerSkipped.incrementAndGet();
+                maybeEmitTracerTerminal();
                 continue;
             }
 
@@ -1941,31 +2012,36 @@ public final class GenerationSession {
                 VoxelVolume vol = tracerCandidate.produceRegion(Level.L4, origin);
                 WriteOutcome outcome = writer.writeRegion(origin, Level.L4, vol);
                 if (outcome.status() == WriteOutcome.Status.WRITTEN) {
-                    written++;
+                    tracerWritten.incrementAndGet();
                 } else {
-                    skipped++;
+                    tracerSkipped.incrementAndGet();
                 }
             } catch (Exception e) {
                 HelloTerrainMod.LOGGER.warn(
                         "[LodGen][Tracer] write failed ws=({},{},{}): {}",
                         wsX, wsY, wsZ, e.getMessage());
-                failed++;
+                tracerFailed.incrementAndGet();
             } finally {
                 ShadowRouterJobQueue.markCompleted(req);
             }
+            maybeEmitTracerTerminal();
 
             long now = System.currentTimeMillis();
-            if (written == 1 || now - lastProgressLogMs >= DEMAND_PROGRESS_LOG_MS) {
+            int w = tracerWritten.get();
+            int s = tracerSkipped.get();
+            int f = tracerFailed.get();
+            if (w == 1 || now - lastProgressLogMs >= DEMAND_PROGRESS_LOG_MS) {
                 HelloTerrainMod.LOGGER.info(
                         "[LodGen][Tracer] dequeued written={} skipped={} failed={} inFlight={}",
-                        written, skipped, failed, ShadowRouterJobQueue.inFlightSize());
+                        w, s, f, ShadowRouterJobQueue.inFlightSize());
                 lastProgressLogMs = now;
             }
         }
 
         HelloTerrainMod.LOGGER.info(
-                "[LodGen][Tracer] stopped: written={} skipped={} failed={}", written, skipped, failed);
-        return written > 0;
+                "[LodGen][Tracer] stopped: written={} skipped={} failed={}",
+                tracerWritten.get(), tracerSkipped.get(), tracerFailed.get());
+        return tracerWritten.get() > 0;
     }
 
     // Package-private single-request entry for unit tests (no loop/sleep)
@@ -1974,7 +2050,12 @@ public final class GenerationSession {
         if (req == null || writer == null || noiseAccess == null) {
             return null;
         }
+        if (tracerStartMs == 0) {
+            tracerStartMs = System.currentTimeMillis();
+        }
         if (req.lodLevel != 4 || req.worldY != END_L4_TRACER_WS_Y) {
+            tracerSkipped.incrementAndGet();
+            maybeEmitTracerTerminal();
             return WriteOutcome.skippedExists();
         }
         int wsX = req.worldX;
@@ -1985,11 +2066,54 @@ public final class GenerationSession {
         int sz0 = WorldSectionCoord.worldSectionToBlockMin(wsZ, 4) >> 4;
         SectionPos origin = new SectionPos(sx0, sy0, sz0);
         if (writer.isRegionFullyPopulated(origin, Level.L4)) {
+            tracerSkipped.incrementAndGet();
+            maybeEmitTracerTerminal();
             return WriteOutcome.skippedExists();
         }
-        EndL4DeterministicCandidate tracerCandidate = new EndL4DeterministicCandidate(noiseAccess);
-        VoxelVolume vol = tracerCandidate.produceRegion(Level.L4, origin);
-        return writer.writeRegion(origin, Level.L4, vol);
+        try {
+            EndL4DeterministicCandidate tracerCandidate = new EndL4DeterministicCandidate(noiseAccess);
+            VoxelVolume vol = tracerCandidate.produceRegion(Level.L4, origin);
+            WriteOutcome outcome = writer.writeRegion(origin, Level.L4, vol);
+            if (outcome.status() == WriteOutcome.Status.WRITTEN) {
+                tracerWritten.incrementAndGet();
+            } else {
+                tracerSkipped.incrementAndGet();
+            }
+            maybeEmitTracerTerminal();
+            return outcome;
+        } catch (Exception e) {
+            tracerFailed.incrementAndGet();
+            maybeEmitTracerTerminal();
+            return null;
+        }
+    }
+
+    /**
+     * Test-only helper to record a terminal failure without a writer.
+     * Increments failed and checks for terminal emission.
+     */
+    void recordTracerFailureForTest() {
+        if (tracerStartMs == 0) {
+            tracerStartMs = System.currentTimeMillis();
+        }
+        tracerFailed.incrementAndGet();
+        maybeEmitTracerTerminal();
+    }
+
+    void recordTracerWrittenForTest() {
+        if (tracerStartMs == 0) {
+            tracerStartMs = System.currentTimeMillis();
+        }
+        tracerWritten.incrementAndGet();
+        maybeEmitTracerTerminal();
+    }
+
+    void recordTracerSkippedForTest() {
+        if (tracerStartMs == 0) {
+            tracerStartMs = System.currentTimeMillis();
+        }
+        tracerSkipped.incrementAndGet();
+        maybeEmitTracerTerminal();
     }
 
     void setNoiseAccessForTest(WorldNoiseAccess access) {
