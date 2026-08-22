@@ -66,7 +66,7 @@ import {
   extractResearchResult,
   type ResearchResult,
 } from "./research-result.mts";
-import { orchestrateResearchBatch } from "./research-lifecycle.mts";
+import { orchestrateResearchBatch, markResearchFactoryError as markResearchFactoryErrorLifecycle } from "./research-lifecycle.mts";
 import { mergerDockerOptions } from "./merger-control.mts";
 
 const execFileAsync = promisify(execFile);
@@ -1231,6 +1231,8 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
   claimedIssues = preparedIssues;
 
   // ----- Research claim + prepare (parallel profile, same isolation invariants) -----
+  // Research preparation failures are infrastructure FACTORY_ERROR, not semantic blocked.
+  let researchHadFactoryError = false;
   let claimedResearch: PlannedIssue[] = [];
   if (researchEligible.length > 0) {
     const researchPlanned: PlannedIssue[] = researchEligible.map((r) => ({
@@ -1250,7 +1252,7 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
       console.log("Qualification mode: research external claim suppressed (read-only).");
       claimedResearch = [...researchPlanned];
     }
-    // Prepare research branches (same provenance state machine)
+    // Prepare research branches (same provenance state machine) — infrastructure, so FACTORY_ERROR
     const preparedResearch: PlannedIssue[] = [];
     for (const p of claimedResearch) {
       const prep = branchHelpers.prepareIssueBranch(REPO_ROOT, p.branch, factoryBaseSha, callerBranch, callerSha, p.id, QUALIFICATION_LIFECYCLE.integrate);
@@ -1265,13 +1267,9 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
         preparedResearch.push(p);
       } else {
         if (QUALIFICATION_LIFECYCLE.mutateOutcomeState) {
-          if (prep.action === "blocked") {
-            console.warn(`  Research #${p.id} (${p.branch}) → ${prep.reason} — fail closed`);
-            await markBlocked(p.id, p.branch, prep.reason);
-          } else {
-            console.error(`  Research #${p.id} (${p.branch}) → prepare failed (${prep.action}): ${prep.reason}`);
-            await markBlocked(p.id, p.branch, prep.reason);
-          }
+          console.warn(`  Research #${p.id} (${p.branch}) → prepare failed (${prep.action}): ${prep.reason} — infrastructure FACTORY_ERROR`);
+          await markResearchFactoryErrorLifecycle(p.id, p.branch, prep.reason, { safeRunGh, runGh });
+          researchHadFactoryError = true;
         } else {
           console.log(`  Research #${p.id} (${p.branch}) → prepare failed (${prep.action}) — preserving for qualification evidence`);
         }
@@ -1282,10 +1280,18 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
       console.log(`Research prepared: ${claimedResearch.map((p) => p.id).join(", ")}`);
     } else {
       console.log("No research issues survived prepare");
+      if (researchHadFactoryError) {
+        console.log("Research preparation encountered FACTORY_ERROR — stopping outer loop (no research worker to launch, but factory error stops next claim)");
+      }
     }
   }
 
   if (claimedIssues.length === 0 && claimedResearch.length === 0) {
+    // If only research preparation failed (FACTORY_ERROR) with no surviving research, still stop outer progression
+    if (researchHadFactoryError) {
+      console.log("Research preparation FACTORY_ERROR — stopping outer loop");
+      break;
+    }
     console.log("No issues prepared for execution (all blocked/failed) — nothing to execute this iteration.");
     continue;
   }
@@ -1298,11 +1304,9 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
   }
 
   // ----- Research Phase: Parallel isolated Muse researchers (via focused lifecycle module) -----
-  let researchHadFactoryError = false;
   if (claimedResearch.length > 0) {
     console.log(`\n=== Research profile: launching ${claimedResearch.length} isolated researcher(s) ===\n`);
     const metaKey = resolveFactoryMetaApiKey(REPO_ROOT);
-    const researchEnvProfile = getResearchEnvironment(metaKey);
     const researchSourceMap = new Map<string, IssueInput>();
     for (const r of researchEligible) researchSourceMap.set(String(r.number), r);
 
@@ -1314,10 +1318,11 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
       let sandbox: Awaited<ReturnType<typeof sandcastle.createSandbox>> | null = null;
       for (let attempt = 0; attempt <= MECHANICAL_RETRY_BUDGET; attempt++) {
         try {
+          const profile = getResearchEnvironment(metaKey, { number: parseInt(issue.id, 10), body: exactBody });
           sandbox = await sandcastle.createSandbox({
             branch: issue.branch,
             baseBranch: factoryBaseSha,
-            sandbox: docker({ env: researchEnvProfile.env }),
+            sandbox: docker({ env: profile.env, image: profile.image } as unknown as Record<string, unknown>),
             hooks,
             copyToWorktree,
             timeouts: { worktreeMs: 600_000 },
@@ -1374,7 +1379,7 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
       shouldMutateOutcomeState: QUALIFICATION_LIFECYCLE.mutateOutcomeState,
     });
 
-    researchHadFactoryError = batch.hadFactoryError;
+    researchHadFactoryError = researchHadFactoryError || batch.hadFactoryError;
     for (const [id, outcome] of batch.outcomes) {
       if (outcome === "SUCCESS") {
         console.log(`  Research #${id} completed and closed`);
@@ -1644,13 +1649,8 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
     }
   }
 
-  if (!canClaimNextOuterIteration(partition) || researchHadFactoryError) {
-    if (researchHadFactoryError) {
-      console.log("Research FACTORY_ERROR stops outer loop (sibling research successes preserved)");
-    } else {
-      console.log("Factory error detected during review verdict handling. Stopping outer loop to prevent unsafe progression.");
-    }
-    // If research had error but implement also had no completed, we still stop
+  if (!canClaimNextOuterIteration(partition)) {
+    console.log("Factory error detected during review verdict handling. Stopping outer loop to prevent unsafe progression.");
     break;
   }
 
@@ -1860,6 +1860,14 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
   for (const iss of completedIssues) {
     await safeRunGh(["issue", "comment", iss.id, "--body", `Sandcastle produced and reviewed \`${iss.branch}\`. Awaiting exact-SHA Factory / Merge Oracle evidence and PR merge; this issue remains open.`]);
     console.log(`  #${iss.id} remains open pending authoritative PR merge`);
+  }
+
+  // Research FACTORY_ERROR should not strand already-completed implementation work.
+  // If research failed this iteration, implementation batch has already been
+  // submitted above; stop before claiming additional work next iteration.
+  if (researchHadFactoryError) {
+    console.log("Research FACTORY_ERROR — implementation batch already submitted, stopping before next outer iteration (sibling research successes preserved)");
+    break;
   }
 
   // Immediate GC for ephemeral batch artefacts -- same-process lifecycle (not weekly cron)

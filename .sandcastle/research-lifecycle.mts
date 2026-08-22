@@ -86,18 +86,22 @@ export async function releaseResearchTransientClaim(
  * transient remains released and research label retained, leaving ticket
  * open and retryable (caller maps to FACTORY_ERROR).
  *
- * Returns true only if the issue is closed. Transient release success is
- * not required for close success, but close failure always returns false
- * even if release succeeded — caller will treat as FACTORY_ERROR and
- * attempt release again (idempotent).
+ * Returns true only if the issue is closed and transient was released.
+ * If transient release fails, close is not attempted and FACTORY_ERROR
+ * is signaled. Close failure always returns false even if release
+ * succeeded — caller will treat as FACTORY_ERROR and attempt release
+ * again (idempotent).
  */
 export async function closeResearchTicket(
   issueId: string,
   branch: string,
   ops: ResearchGhOps,
 ): Promise<boolean> {
-  // Release transient first so that even if close fails, authorization remains discoverable.
-  await releaseResearchTransientClaim(issueId, ops);
+  // Release transient first; if it fails, do not attempt close — report FACTORY_ERROR.
+  const released = await releaseResearchTransientClaim(issueId, ops);
+  if (!released) {
+    return false;
+  }
   try {
     await ops.runGh(["issue", "close", issueId, "--comment", `Research completed on \`${branch}\` — findings published.`]);
     return true;
