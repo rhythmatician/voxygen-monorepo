@@ -82,9 +82,9 @@ Voxygen generates distant Minecraft terrain via learned octree diffusion and wri
 
 **Wayfinder Map**: Single issue labelled `wayfinder:map` that indexes a destination, decisions-so-far, and fog. _Avoid_: roadmap, backlog.
 
-**Wayfinder Ticket**: Child issue of the Wayfinder Map labelled `wayfinder:<type>` where `<type>` is one of `research`, `prototype`, `grilling`, `task`. Purpose and executor are orthogonal.
+**Wayfinder Ticket**: Child issue of the Wayfinder Map labelled `wayfinder:<type>` where `<type>` is one of `research`, `prototype`, `grilling`, `task`. Purpose describes frontier; `agent:*` authorizes execution via Sandcastle. _Avoid_: purpose as executor.
 
-**Research Ticket**: Wayfinder ticket of type `research` — AFK reading of docs/APIs/local KB to surface a fact a decision waits on. Resolved by a research subagent. _Avoid_: research task, HITL research.
+**Research Ticket**: Wayfinder ticket of type `research` — AFK evidence-backed research to surface a fact a decision waits on. Authorized for Sandcastle execution when labelled `wayfinder:research` + `agent:research` and eligible (open, unassigned, unblocked, unclaimed). Executed via Sandcastle parallel research profile (isolated worktree/sandbox, strict structured result, host publication, required parent-map pointer when `Part of #N` present, close retaining `agent:research`). Research success does not require commits; research may produce commits on its dedicated branch for durable knowledge artifacts but those commits must not enter implementation review, merger, batch integration, push, PR creation, or auto-merge. `ready-for-agent` is triage only; `agent:research` without `wayfinder:research` or combined `agent:implement + agent:research` fails closed. _Avoid_: HITL research, ready-for-agent as authorization, research without agent:research, research should not commit.
 
 **Prototype Ticket / Grilling Ticket**: Wayfinder tickets of type `prototype` and `grilling` — HITL only. Prototype raises fidelity with a cheap artifact; grilling is conversation. Require a live human. _Avoid_: AFK prototype, AFK grilling.
 
@@ -93,3 +93,5 @@ Voxygen generates distant Minecraft terrain via learned octree diffusion and wri
 **HITL Task**: A Wayfinder Task executed with a human in the loop (checklist handed to human). Labelled `wayfinder:task` without `agent:implement`; lives in Wayfinder, never dispatched by Sandcastle. _Avoid_: hitl-task as separate type.
 
 **AFK Task**: A Wayfinder Task authorized for AFK execution. Labelled `wayfinder:task` + `agent:implement` + durable map Notes signal `Execution is carried into this map` (v0 proxied via ticket body) + tracer-bullet contract. Dispatched by Sandcastle. _Avoid_: afk-task as separate label, wayfinder:task without agent:implement.
+
+**Sandcastle**: Common AFK execution substrate for implementation (`agent:implement`) and research (`agent:research`). Wayfinder owns purpose and frontier semantics; `agent:*` owns execution authorization; `ready-for-agent` remains triage. _Avoid_: Sandcastle as implementation-only, wayfinder:* as authorization.

@@ -28,7 +28,8 @@
 * `docs/adr/0003-correct-distant-terrain.md`
 * `docs/adr/0004-coarse-first-proximal-refinement.md`
 * `docs/adr/0005-factory-authority-and-worker-skills.md`
-* `docs/adr/0006-wayfinder-sandcastle-lifecycle-boundary.md`
+* `docs/adr/0006-wayfinder-sandcastle-lifecycle-boundary.md` (superseded by 0007)
+* `docs/adr/0007-sandcastle-common-afk-substrate.md`
 
 ### Implementation
 

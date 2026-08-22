@@ -18,8 +18,15 @@ export interface IssueInput {
 }
 
 export const REQUIRED_LABEL = "agent:implement";
+export const RESEARCH_LABEL = "agent:research" as const;
+export const WAYFINDER_RESEARCH_LABEL = "wayfinder:research" as const;
 export const IN_PROGRESS_LABEL = "agent:in-progress";
 export const BLOCKED_LABEL = "agent:blocked";
+
+export const CONFLICT_BOTH_LABELS_REASON =
+  "conflicting authorization labels agent:implement and agent:research — fail closed" as const;
+export const RESEARCH_REQUIRES_WAYFINDER_REASON =
+  "agent:research requires wayfinder:research — fail closed" as const;
 
 // Wayfinder workflow types that the generic implementation pipeline must never
 // execute. `wayfinder:task` is intentionally NOT in this list — it is the
@@ -58,6 +65,17 @@ export function isEligible(issue: IssueInput): EligibilityResult {
   // 1. Issue must be open (GH returns "OPEN" uppercase; normalize)
   if (issue.state.toLowerCase() !== "open") {
     return { eligible: false, reason: `state is ${issue.state}, expected open` };
+  }
+
+  // 1b. Authorization conflicts fail closed before any other gate
+  const hasResearchAuth = issue.labels.includes(RESEARCH_LABEL);
+  const hasImplementAuth = issue.labels.includes(REQUIRED_LABEL);
+  const hasWayfinderResearch = issue.labels.includes(WAYFINDER_RESEARCH_LABEL);
+  if (hasImplementAuth && hasResearchAuth) {
+    return { eligible: false, reason: CONFLICT_BOTH_LABELS_REASON };
+  }
+  if (hasResearchAuth && !hasWayfinderResearch) {
+    return { eligible: false, reason: RESEARCH_REQUIRES_WAYFINDER_REASON };
   }
 
   // 2. Must have explicit execution authorization
@@ -126,8 +144,90 @@ export function isEligible(issue: IssueInput): EligibilityResult {
   return { eligible: true };
 }
 
+export function isResearchEligible(issue: IssueInput): EligibilityResult {
+  if (issue.state.toLowerCase() !== "open") {
+    return { eligible: false, reason: `state is ${issue.state}, expected open` };
+  }
+  const hasResearch = issue.labels.includes(RESEARCH_LABEL);
+  const hasImplement = issue.labels.includes(REQUIRED_LABEL);
+  const hasWayfinderResearch = issue.labels.includes(WAYFINDER_RESEARCH_LABEL);
+  if (hasImplement && hasResearch) {
+    return { eligible: false, reason: CONFLICT_BOTH_LABELS_REASON };
+  }
+  if (hasResearch && !hasWayfinderResearch) {
+    return { eligible: false, reason: RESEARCH_REQUIRES_WAYFINDER_REASON };
+  }
+  if (!hasResearch) {
+    return { eligible: false, reason: `missing required label ${RESEARCH_LABEL}` };
+  }
+  if (!hasWayfinderResearch) {
+    return { eligible: false, reason: `missing required label ${WAYFINDER_RESEARCH_LABEL}` };
+  }
+  if (issue.labels.includes(IN_PROGRESS_LABEL)) {
+    return { eligible: false, reason: `already has ${IN_PROGRESS_LABEL}` };
+  }
+  if (issue.labels.includes(BLOCKED_LABEL)) {
+    return { eligible: false, reason: `already has ${BLOCKED_LABEL}` };
+  }
+  if (issue.assignees.length > 0) {
+    return { eligible: false, reason: `already assigned to ${issue.assignees.join(",")}` };
+  }
+  if (issue.blockedByCount === undefined) {
+    return { eligible: false, reason: "blocked state unknown — GitHub dependency API unavailable (fail-closed)" };
+  }
+  if (issue.blockedByCount > 0) {
+    return { eligible: false, reason: `blocked by ${issue.blockedByCount} open blocker(s)` };
+  }
+  // research does not require tracer contract, forbids ready-for-agent alone, etc.
+  // Note: ready-for-agent is intentionally ignored — RESEARCH_LABEL is authorization.
+  return { eligible: true };
+}
+
 export function filterEligible(issues: IssueInput[]): IssueInput[] {
   return issues.filter((i) => isEligible(i).eligible);
+}
+
+export function filterResearchEligible(issues: IssueInput[]): IssueInput[] {
+  return issues.filter((i) => isResearchEligible(i).eligible);
+}
+
+export type TicketProfile = "implementation" | "research" | "conflicting" | "ineligible";
+
+export interface TicketClassification {
+  profile: TicketProfile;
+  eligible: boolean;
+  reason?: string;
+}
+
+export function classifyTicket(issue: IssueInput): TicketClassification {
+  const hasImplement = issue.labels.includes(REQUIRED_LABEL);
+  const hasResearch = issue.labels.includes(RESEARCH_LABEL);
+  const hasWayfinderResearch = issue.labels.includes(WAYFINDER_RESEARCH_LABEL);
+  if (hasImplement && hasResearch) {
+    return { profile: "conflicting", eligible: false, reason: CONFLICT_BOTH_LABELS_REASON };
+  }
+  if (hasResearch && !hasWayfinderResearch) {
+    return { profile: "conflicting", eligible: false, reason: RESEARCH_REQUIRES_WAYFINDER_REASON };
+  }
+  if (hasResearch && hasWayfinderResearch) {
+    const r = isResearchEligible(issue);
+    if (r.eligible) return { profile: "research", eligible: true };
+    // research-eligible false but carries research labels — still classified as research (ineligible)
+    return { profile: "research", eligible: false, reason: r.reason };
+  }
+  if (hasImplement) {
+    const r = isEligible(issue);
+    if (r.eligible) return { profile: "implementation", eligible: true };
+    return { profile: "implementation", eligible: false, reason: r.reason };
+  }
+  // neither authorization
+  const implReason = isEligible(issue);
+  const researchReason = isResearchEligible(issue);
+  // Prefer research missing reason if wayfinder:research present, else implement missing
+  if (hasWayfinderResearch) {
+    return { profile: "ineligible", eligible: false, reason: researchReason.eligible ? undefined : (researchReason as { reason: string }).reason };
+  }
+  return { profile: "ineligible", eligible: false, reason: (implReason as { reason: string }).reason };
 }
 
 /** Pure helper for tests: count ineligible reasons distribution (not used in prod). */

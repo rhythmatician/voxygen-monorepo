@@ -1,7 +1,7 @@
 # 0006 — Wayfinder plans work; Sandcastle executes implementation work
 
 Date: 2026-08-18
-Status: Accepted
+Status: Superseded by ADR 0007 — Sandcastle is the common AFK execution substrate
 Supersedes: ADR 0001 — Wayfinder task executor is orthogonal to purpose (A1)
 
 ## Context
