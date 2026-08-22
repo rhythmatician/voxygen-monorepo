@@ -1609,6 +1609,40 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
   }
   // Await implementation batch immediately so it can proceed to review/merger without waiting for slowest research.
   // Research continues concurrently in the background; per-ticket publishing already happens inside orchestrateResearchBatch.
+  // Single iteration epilogue: before leaving this outer iteration for ANY reason, settle research.
+  let _researchSettled = false;
+  const settleResearchEpilogue = async () => {
+    if (_researchSettled) return;
+    _researchSettled = true;
+    if (researchBatchPromise) {
+      try {
+        const concurrentResearchBatch = await researchBatchPromise;
+        researchBatch = concurrentResearchBatch;
+        if (researchBatch) {
+          researchHadFactoryError = researchHadFactoryError || researchBatch.hadFactoryError;
+          for (const [id, outcome] of researchBatch.outcomes) {
+            if (outcome === "SUCCESS") {
+              console.log(`  Research #${id} completed and closed`);
+            } else {
+              const settledIdx = claimedResearch.findIndex((c) => c.id === id);
+              const settledEntry = researchBatch.settled[settledIdx];
+              const reason = settledEntry?.status === "rejected" ? String((settledEntry as PromiseRejectedResult).reason ?? "unknown").slice(0, 800) : "publication/parent/close failure";
+              console.warn(`  Research #${id} FACTORY_ERROR: ${reason}`);
+              if (!QUALIFICATION_LIFECYCLE.mutateOutcomeState) {
+                console.warn(`  Research #${id} FACTORY_ERROR suppressed by qualification policy`);
+              }
+            }
+          }
+          if (researchHadFactoryError) {
+            console.log("Research profile encountered FACTORY_ERROR — stopping outer loop (preserving sibling successes)");
+          }
+        }
+      } catch (e) {
+        console.warn(`Research batch settlement failed: ${getErrorMessage(e)}`);
+      }
+    }
+  };
+
   const settled = (await (implSettledPromise ?? Promise.resolve([] as PromiseSettledResult<WorkerResult>[]))) as PromiseSettledResult<WorkerResult>[];
 
   // ----- Failure visibility per worker + review verdict gating -----
@@ -1700,11 +1734,13 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
 
   if (shouldStopBeforeMergerForFactoryError(partition)) {
     console.log("Factory error detected during review verdict handling. Stopping outer loop to prevent unsafe progression.");
+    await settleResearchEpilogue();
     break;
   }
 
   if (completedBranches.length === 0) {
     console.log("No commits produced. Nothing to merge this iteration.");
+    await settleResearchEpilogue();
     // Still need to handle research-only iteration: if research succeeded, we already published/closed and should continue or exit?
     // If no implement work but research succeeded, iteration is done — continue to next (which will exit if no more eligible).
     if (shouldStopBeforeNextClaimForResearchError(researchHadFactoryError)) break;
@@ -1717,6 +1753,7 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
 
   if (!QUALIFICATION_LIFECYCLE.integrate) {
     console.log("Qualification mode: integration suppressed by lifecycle policy; preserving local branches/logs for inspection.");
+    await settleResearchEpilogue();
     continue;
   }
 
@@ -1743,6 +1780,7 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
     }
     if (batchWorktreePath) { try { execSync(`git worktree remove --force ${batchWorktreePath}`, {stdio:'ignore', cwd: REPO_ROOT}); } catch {} }
     try { execSync(`git branch -D ${batchBranch}`, {stdio:'ignore', cwd: REPO_ROOT}); } catch {}
+    await settleResearchEpilogue();
     break;
   }
 
@@ -1771,6 +1809,7 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
     process.chdir(REPO_ROOT);
     try { execSync(`git worktree remove --force ${batchWorktreePath}`, {stdio:'ignore', cwd: REPO_ROOT}); } catch {}
     try { execSync(`git branch -D ${batchBranch}`, {stdio:'ignore', cwd: REPO_ROOT}); } catch {}
+    await settleResearchEpilogue();
     break;
   }
   process.chdir(REPO_ROOT);
@@ -1902,7 +1941,10 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
     }
   }
 
-  if (publicationFailed) break;
+  if (publicationFailed) {
+    await settleResearchEpilogue();
+    break;
+  }
 
   // A local merge is not integration into main. Leave tickets open until the
   // PR is actually merged under Factory / Merge Oracle authority.
@@ -1911,32 +1953,8 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
     console.log(`  #${iss.id} remains open pending authoritative PR merge`);
   }
 
-  // Await remaining research (if any) — research publishing is per-ticket inside orchestrateResearchBatch,
-  // but we need to aggregate final outcomes before deciding outer loop progression.
-  // Use explicit cwd-safe handling: research ops already use injected GitHub ops, not process.chdir().
-  if (researchBatchPromise) {
-    const concurrentResearchBatch = await researchBatchPromise;
-    researchBatch = concurrentResearchBatch;
-    if (researchBatch) {
-      researchHadFactoryError = researchHadFactoryError || researchBatch.hadFactoryError;
-      for (const [id, outcome] of researchBatch.outcomes) {
-        if (outcome === "SUCCESS") {
-          console.log(`  Research #${id} completed and closed`);
-        } else {
-          const settledIdx = claimedResearch.findIndex((c) => c.id === id);
-          const settledEntry = researchBatch.settled[settledIdx];
-          const reason = settledEntry?.status === "rejected" ? String((settledEntry as PromiseRejectedResult).reason ?? "unknown").slice(0, 800) : "publication/parent/close failure";
-          console.warn(`  Research #${id} FACTORY_ERROR: ${reason}`);
-          if (!QUALIFICATION_LIFECYCLE.mutateOutcomeState) {
-            console.warn(`  Research #${id} FACTORY_ERROR suppressed by qualification policy`);
-          }
-        }
-      }
-      if (researchHadFactoryError) {
-        console.log("Research profile encountered FACTORY_ERROR — stopping outer loop (preserving sibling successes)");
-      }
-    }
-  }
+  // Ensure research is settled before deciding outer loop progression (epilogue guarantees this, but call again for safety if no early exit taken)
+  await settleResearchEpilogue();
 
   // Research FACTORY_ERROR should not strand already-completed implementation work.
   // If research failed this iteration, implementation batch has already been

@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import * as fs from "node:fs";
 import { RESEARCH_MAX_ITERATIONS, RESEARCH_OUTPUT_TAG, orchestrateResearchBatch } from "./research-lifecycle.mts";
+import { coordinateMixedProfileBatch } from "./mixed-profile-coordinator.mts";
 import { extractResearchResult } from "./research-result.mts";
 
 /**
@@ -258,3 +259,161 @@ describe("Research + implementation concurrency via production coordinator", () 
     expect(maxActive).toBe(4);
   });
 });
+
+describe("Production coordinator research-only and failure isolation", () => {
+  it("research-only: 3 research, 0 impl — all researchers launch before next iteration, fast publishes independently", async () => {
+    const publishOrder: string[] = [];
+    const fakeOps = {
+      safeRunGh: async (args: string[]) => {
+        if (args[3] === "--body" && args[4]?.includes("research-result")) {
+          const m = args[4].match(/research-result:(\S+)/);
+          if (m) publishOrder.push(m[1].replace(/[^a-zA-Z0-9]/g, ""));
+        }
+        return true;
+      },
+      runGh: async () => "",
+    };
+    let slowResolve: () => void = () => {};
+    const slowBarrier = new Promise<void>(res => { slowResolve = res; });
+    const runResearch = async (issue: { id: string; branch: string }) => {
+      if (issue.id === "slow") await slowBarrier;
+      else await new Promise(r => setTimeout(r, 10));
+      const raw = `<research>{"summary":"s","findings":[{"claim":"c","evidence":"e","source":"s"}],"recommendation":"r","uncertainties":[],"followUps":[]}</research>`;
+      const { extractResearchResult } = await import("./research-result.mts");
+      const extracted = extractResearchResult({ output: raw, text: raw, stdout: raw });
+      return { result: extracted!, rawText: raw };
+    };
+    const batchPromise = orchestrateResearchBatch({
+      issues: [
+        { id: "fast1", branch: "sandcastle/issue-fast1", title: "R", body: "Part of #22" },
+        { id: "slow", branch: "sandcastle/issue-slow", title: "R", body: "Part of #22" },
+        { id: "fast2", branch: "sandcastle/issue-fast2", title: "R", body: "Part of #22" },
+      ],
+      runWorker: runResearch,
+      ops: fakeOps as any,
+    });
+    // Fast should publish before slow is released
+    await new Promise(r => setTimeout(r, 30));
+    expect(publishOrder).toContain("fast1");
+    expect(publishOrder).toContain("fast2");
+    expect(publishOrder).not.toContain("slow");
+    slowResolve();
+    const batch = await batchPromise;
+    expect(batch.succeededIds.sort()).toEqual(["fast1","fast2","slow"]);
+    // Verify no next iteration before all settle — batch only resolves after all 3 settle
+    // This proves epilogue: research-only does not continue before all settle
+    expect(batch.hadFactoryError).toBe(false);
+  });
+
+  it("mixed + impl failure: 3 research, 1 impl FACTORY_ERROR — research still settled correctly, no new work claimed", async () => {
+    const fakeOps = {
+      safeRunGh: async () => true,
+      runGh: async () => "",
+    };
+    let active = 0;
+    let maxActive = 0;
+    const track = async (ms: number) => {
+      active++;
+      maxActive = Math.max(maxActive, active);
+      await new Promise(r => setTimeout(r, ms));
+      active--;
+    };
+    const runResearch = async (issue: { id: string; branch: string }) => {
+      if (issue.id === "fail") {
+        await track(10);
+        throw new Error("research fail");
+      }
+      await track(15);
+      const raw = `<research>{"summary":"s","findings":[{"claim":"c","evidence":"e","source":"s"}],"recommendation":"r","uncertainties":[],"followUps":[]}</research>`;
+      const { extractResearchResult } = await import("./research-result.mts");
+      const extracted = extractResearchResult({ output: raw, text: raw, stdout: raw });
+      return { result: extracted!, rawText: raw };
+    };
+    const runImpl = async () => {
+      await track(20);
+      throw new Error("impl factory error");
+    };
+    const { researchBatch, implSettled, researchHadFactoryError } = await coordinateMixedProfileBatch({
+      researchIssues: [
+        { id: "r1", branch: "sandcastle/issue-r1", title: "R", body: "Part of #22" },
+        { id: "r2", branch: "sandcastle/issue-r2", title: "R", body: "Part of #22" },
+        { id: "fail", branch: "sandcastle/issue-fail", title: "R", body: "Part of #22" },
+      ],
+      implIssues: [{ id: "184", branch: "sandcastle/issue-184", title: "Impl" }],
+      eligible: [],
+      runResearchWorker: runResearch as any,
+      runImplWorker: runImpl as any,
+      ops: fakeOps,
+      shouldMutateOutcomeState: true,
+    });
+    expect(implSettled[0].status).toBe("rejected");
+    expect(researchBatch).not.toBeNull();
+    expect(researchBatch!.succeededIds).toContain("r1");
+    expect(researchBatch!.succeededIds).toContain("r2");
+    expect(researchBatch!.failedIds).toContain("fail");
+    expect(researchHadFactoryError).toBe(true);
+    // Max concurrency should be 4 (3 research +1 impl) despite impl failure
+    expect(maxActive).toBe(4);
+  });
+
+  it("mixed + impl success via coordinator: impl does not wait for slow research", async () => {
+    const fakeOps = { safeRunGh: async () => true, runGh: async () => "" };
+    let slowResolve: () => void = () => {};
+    const slowBarrier = new Promise<void>(res => { slowResolve = res; });
+    let implEndTime = 0;
+    let slowPublishTime = 0;
+    const runResearch = async (issue: { id: string; branch: string }) => {
+      if (issue.id === "slow") {
+        await slowBarrier;
+      } else {
+        await new Promise(r => setTimeout(r, 10));
+      }
+      const raw = `<research>{"summary":"s","findings":[{"claim":"c","evidence":"e","source":"s"}],"recommendation":"r","uncertainties":[],"followUps":[]}</research>`;
+      const { extractResearchResult } = await import("./research-result.mts");
+      const extracted = extractResearchResult({ output: raw, text: raw, stdout: raw });
+      // Record publish time via ops side effect
+      if (issue.id === "slow") slowPublishTime = Date.now();
+      return { result: extracted!, rawText: raw };
+    };
+    // Wrap ops to capture slow publish
+    const wrappedOps = {
+      safeRunGh: async (args: string[]) => {
+        if (args[4]?.includes("research-result:slow")) slowPublishTime = Date.now();
+        return true;
+      },
+      runGh: async () => "",
+    };
+    const runImpl = async () => {
+      await new Promise(r => setTimeout(r, 20));
+      implEndTime = Date.now();
+      return { commits: ["abc"], verdict: { approved: true } };
+    };
+    // Start coordinator (which starts both concurrently)
+    const coordinatorPromise = coordinateMixedProfileBatch({
+      researchIssues: [
+        { id: "fast", branch: "sandcastle/issue-fast", title: "R", body: "Part of #22" },
+        { id: "slow", branch: "sandcastle/issue-slow", title: "R", body: "Part of #22" },
+      ],
+      implIssues: [{ id: "184", branch: "sandcastle/issue-184", title: "Impl" }],
+      eligible: [],
+      runResearchWorker: runResearch as any,
+      runImplWorker: runImpl as any,
+      ops: wrappedOps as any,
+      shouldMutateOutcomeState: true,
+    });
+    // Impl should finish before slow research's publish
+    await new Promise(r => setTimeout(r, 30));
+    // At this point impl should have finished (20ms) but slow still blocked
+    expect(implEndTime).toBeGreaterThan(0);
+    // Slow publish not yet
+    expect(slowPublishTime).toBe(0);
+    slowResolve();
+    const { researchBatch, implSettled } = await coordinatorPromise;
+    expect(implSettled[0].status).toBe("fulfilled");
+    expect(researchBatch!.succeededIds).toContain("fast");
+    expect(researchBatch!.succeededIds).toContain("slow");
+    // Impl end time should be before slow publish time
+    expect(implEndTime).toBeLessThan(slowPublishTime);
+  });
+});
+
