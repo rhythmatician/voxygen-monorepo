@@ -6,7 +6,16 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/block-dangerous-git.sh"
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-dangerous-git.sh\""
+          }
+        ]
+      },
+      {
+        "matcher": "PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$env:CLAUDE_PROJECT_DIR/.claude/hooks/block-dangerous-git.sh\""
           }
         ]
       }
