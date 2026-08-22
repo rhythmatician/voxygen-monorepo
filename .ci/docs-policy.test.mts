@@ -1,5 +1,25 @@
 import { describe, it, expect } from "vitest";
 import { isAdmitted, isSuspiciousName, checkFiles, checkFilesWithStatus, type FileEntry } from "./docs-policy.mts";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
+
+const docsPolicyCli = path.join(process.cwd(), ".ci/docs-policy.mts");
+const tsxLoader: string = (() => {
+  try {
+    // @ts-ignore — import.meta.resolve is available in Node 20+ ESM
+    return (import.meta as any).resolve("tsx");
+  } catch {
+    return path.join(process.cwd(), "node_modules/tsx/dist/loader.mjs");
+  }
+})();
+
+function runDocsPolicy(dir: string, args: string[]) {
+  return spawnSync(process.execPath, ["--import", tsxLoader, docsPolicyCli, ...args], {
+    cwd: dir,
+    encoding: "utf-8",
+    env: { ...process.env, TSX_DISABLE_CACHE: "1" } as NodeJS.ProcessEnv,
+  });
+}
 
 describe("R-02 Documentation policy", () => {
   it("--base X --cached reads the supplied base and index, never HEAD or the working tree", { timeout: 15000 }, async () => {
@@ -9,7 +29,7 @@ describe("R-02 Documentation policy", () => {
     const { execFileSync, spawnSync } = await import("node:child_process");
     const dir = await mkdtemp(path.join(tmpdir(), "r02-cached-base-"));
     const runGit = (args: string[]) =>
-      execFileSync("git", args, { cwd: dir, encoding: "utf-8" }).toString();
+      execFileSync("git", args, { cwd: dir, encoding: "utf-8" } as const).toString();
     const docsPolicyCli = path.join(process.cwd(), ".ci/docs-policy.mts");
 
     try {
@@ -29,11 +49,7 @@ describe("R-02 Documentation policy", () => {
       runGit(["add", "legacy.md"]);
       await writeFile(path.join(dir, "legacy.md"), "x".repeat(2000));
 
-      const result = spawnSync(
-        process.execPath,
-        [docsPolicyCli, "--base", baseSha, "--cached"],
-        { cwd: dir, encoding: "utf-8" },
-      );
+      const result = runDocsPolicy(dir, ["--base", baseSha, "--cached"]);
       expect(result.status).toBe(0);
       expect(result.stdout).toMatch(/Documentation policy: ok/);
     } finally {
@@ -243,7 +259,7 @@ describe("R-02 Documentation policy", () => {
     const path = await import("node:path");
     const { spawnSync, execFileSync } = await import("node:child_process");
     const dir = await mkdtemp(path.join(tmpdir(), "r02-shell-"));
-    const runGit = (args: string[]) => execFileSync("git", args, { cwd: dir, encoding: "utf-8" }).toString();
+    const runGit = (args: string[]) => execFileSync("git", args, { cwd: dir, encoding: "utf-8" } as const).toString();
     const docsPolicyCli = path.join(process.cwd(), ".ci/docs-policy.mts");
     try {
       runGit(["init", "-q"]);
@@ -262,10 +278,7 @@ describe("R-02 Documentation policy", () => {
       runGit(["commit", "-qm", "add evil"]);
       const candSha = runGit(["rev-parse", "HEAD"]).trim();
       // Invoke CLI - should treat evilName as path, not execute shell, and should fail as inadmissible (since docs/evil... is not admitted and contains suspicious? but at least not shell)
-      const r = spawnSync(process.execPath, [docsPolicyCli, "--base", baseSha, "--candidate", candSha], {
-        cwd: dir,
-        encoding: "utf-8",
-      });
+      const r = runDocsPolicy(dir, ["--base", baseSha, "--candidate", candSha]);
       // The file is not admitted (docs/evil...), so should be violation (exit 1), but crucially should NOT have executed shell
       // If shell interpolation were present, the file name would be split and git show would fail or shell would execute echo
       // We check that the CLI exits 1 for policy violation, not 0, and that no shell side-effect occurred
@@ -308,7 +321,7 @@ describe("R-02 Documentation policy", () => {
     const path = await import("node:path");
     const { execSync, spawnSync } = await import("node:child_process");
     const dir = await mkdtemp(path.join(tmpdir(), "r02-missing-"));
-    const run = (cmd: string) => execSync(cmd, { cwd: dir, encoding: "utf-8" });
+    const run = (cmd: string) => execSync(cmd, { cwd: dir, encoding: "utf-8" } as const).toString();
     try {
       run("git init -q");
       run("git config user.email 'test@test.com'");
@@ -366,13 +379,10 @@ describe("R-02 Documentation policy", () => {
     const path = await import("node:path");
     const { execFileSync, spawnSync } = await import("node:child_process");
     const dir = await mkdtemp(path.join(tmpdir(), "r02-cli-test-"));
-    const runGit = (args: string[]) => execFileSync("git", args, { cwd: dir, encoding: "utf-8" }).toString();
+    const runGit = (args: string[]) => execFileSync("git", args, { cwd: dir, encoding: "utf-8" } as const).toString();
     const docsPolicyCli = path.join(process.cwd(), ".ci/docs-policy.mts");
     const runCheck = (base: string, cand: string) => {
-      const r = spawnSync(process.execPath, [docsPolicyCli, "--base", base, "--candidate", cand], {
-        cwd: dir,
-        encoding: "utf-8",
-      });
+      const r = runDocsPolicy(dir, [ "--base", base, "--candidate", cand]);
       return r.status ?? 1;
     };
     try {
@@ -467,13 +477,10 @@ describe("R-02 Documentation policy", () => {
     const { execFileSync: execFileSync2, spawnSync } = await import("node:child_process");
     const { existsSync } = await import("node:fs");
     const dir = await mkdtemp(path.join(tmpdir(), "r02-authoritative-"));
-    const runGit = (args: string[]) => execFileSync2("git", args, { cwd: dir, encoding: "utf-8" }).toString();
+    const runGit = (args: string[]) => execFileSync2("git", args, { cwd: dir, encoding: "utf-8" } as const).toString();
     const docsPolicyCli = path.join(process.cwd(), ".ci/docs-policy.mts");
     const runCheck = (base: string, cand: string) => {
-      const r = spawnSync(process.execPath, [docsPolicyCli, "--base", base, "--candidate", cand], {
-        cwd: dir,
-        encoding: "utf-8",
-      });
+      const r = runDocsPolicy(dir, [ "--base", base, "--candidate", cand]);
       return r;
     };
     try {
@@ -536,14 +543,11 @@ describe("R-02 Documentation policy", () => {
     const { execFileSync, spawnSync } = await import("node:child_process");
     const { mkdir } = await import("node:fs/promises");
     const dir = await mkdtemp(path.join(tmpdir(), "r02-precommit-bad-"));
-    const runGit = (args: string[]) => execFileSync("git", args, { cwd: dir, encoding: "utf-8" }).toString();
+    const runGit = (args: string[]) => execFileSync("git", args, { cwd: dir, encoding: "utf-8" } as const).toString();
     const docsPolicyCli = path.join(process.cwd(), ".ci/docs-policy.mts");
     const runCheck = (base: string, mode: "candidate-head" | "cached-index") => {
       const args = mode === "cached-index" ? ["--base", base, "--cached"] : ["--base", base, "--candidate", "HEAD"];
-      return spawnSync(process.execPath, [docsPolicyCli, ...args], {
-        cwd: dir,
-        encoding: "utf-8",
-      });
+      return runDocsPolicy(dir, args);
     };
     try {
       runGit(["init", "-q"]);
@@ -579,7 +583,7 @@ describe("R-02 Documentation policy", () => {
     const { execFileSync, spawnSync } = await import("node:child_process");
     const { mkdir } = await import("node:fs/promises");
     const dir = await mkdtemp(path.join(tmpdir(), "r02-precommit-fix-"));
-    const runGit = (args: string[]) => execFileSync("git", args, { cwd: dir, encoding: "utf-8" }).toString();
+    const runGit = (args: string[]) => execFileSync("git", args, { cwd: dir, encoding: "utf-8" } as const).toString();
     const docsPolicyCli = path.join(process.cwd(), ".ci/docs-policy.mts");
     const runCheck = (base: string, mode: "candidate-head" | "cached-index" | "candidate-sha", candidate?: string) => {
       const args =
@@ -588,10 +592,7 @@ describe("R-02 Documentation policy", () => {
           : mode === "candidate-sha"
             ? ["--base", base, "--candidate", candidate || "HEAD"]
             : ["--base", base, "--candidate", "HEAD"];
-      return spawnSync(process.execPath, [docsPolicyCli, ...args], {
-        cwd: dir,
-        encoding: "utf-8",
-      });
+      return runDocsPolicy(dir, args);
     };
     try {
       runGit(["init", "-q"]);
@@ -616,7 +617,7 @@ describe("R-02 Documentation policy", () => {
       const newName = "docs/adr/0006-wayfinder-sandcastle-lifecycle-boundary.md";
       const newPath = path.join(dir, newName);
       await mkdir(path.dirname(newPath), { recursive: true });
-      await execFileSync("git", ["mv", oldName, newName], { cwd: dir, encoding: "utf-8" });
+      execFileSync("git", ["mv", oldName, newName], { cwd: dir });
       await writeFile(newPath, "# Wayfinder lifecycle boundary\nstatus: accepted\ncontext: plan execution\ndecision: separate execution\nalternatives: keep wayfinder scope");
       runGit(["add", newName]);
       // unrelated later markdown change should be evaluated only through staging, not blamed.
@@ -649,7 +650,7 @@ describe("R-02 Documentation policy", () => {
     const path = await import("node:path");
     const { execFileSync, spawnSync } = await import("node:child_process");
     const dir = await mkdtemp(path.join(tmpdir(), "r02-invalid-"));
-    const runGit = (args: string[]) => execFileSync("git", args, { cwd: dir, encoding: "utf-8" }).toString();
+    const runGit = (args: string[]) => execFileSync("git", args, { cwd: dir, encoding: "utf-8" } as const).toString();
     const docsPolicyCli = path.join(process.cwd(), ".ci/docs-policy.mts");
     try {
       runGit(["init", "-q"]);
@@ -658,17 +659,11 @@ describe("R-02 Documentation policy", () => {
       runGit(["commit", "--allow-empty", "-qm", "base"]);
       const baseSha = runGit(["rev-parse", "HEAD"]).trim();
       const bogus = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
-      const r = spawnSync(process.execPath, [docsPolicyCli, "--base", baseSha, "--candidate", bogus], {
-        cwd: dir,
-        encoding: "utf-8",
-      });
+      const r = runDocsPolicy(dir, [ "--base", baseSha, "--candidate", bogus]);
       expect(r.status).toBe(1);
       expect((r.stderr || "") + (r.stdout || "")).toMatch(/failed to compute diff|not found|unknown revision|fatal/i);
       // Also test missing candidate arg (empty) — should fail
-      const r2 = spawnSync(process.execPath, [docsPolicyCli, "--base", baseSha, "--candidate", ""], {
-        cwd: dir,
-        encoding: "utf-8",
-      });
+      const r2 = runDocsPolicy(dir, [ "--base", baseSha, "--candidate", ""]);
       expect(r2.status).toBe(1);
     } finally {
       await rm(dir, { recursive: true, force: true });

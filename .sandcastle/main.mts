@@ -1440,8 +1440,8 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
     for (const failure of mergerFailure.factoryErrors) {
       await markFactoryError(failure.id, failure.branch, failure.reason);
     }
-    if (batchWorktreePath) { try { execSync(`git worktree remove --force ${batchWorktreePath}`, {stdio:'ignore'}); } catch {} }
-    try { execSync(`git branch -D ${batchBranch}`, {stdio:'ignore'}); } catch {}
+    if (batchWorktreePath) { try { execSync(`git worktree remove --force ${batchWorktreePath}`, {stdio:'ignore', cwd: REPO_ROOT}); } catch {} }
+    try { execSync(`git branch -D ${batchBranch}`, {stdio:'ignore', cwd: REPO_ROOT}); } catch {}
     break;
   }
 
@@ -1467,10 +1467,12 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
     for (const failure of mergerFailure.factoryErrors) {
       await markFactoryError(failure.id, failure.branch, failure.reason);
     }
-    try { execSync(`git worktree remove --force ${batchWorktreePath}`, {stdio:'ignore'}); } catch {}
-    try { execSync(`git branch -D ${batchBranch}`, {stdio:'ignore'}); } catch {}
+    process.chdir(REPO_ROOT);
+    try { execSync(`git worktree remove --force ${batchWorktreePath}`, {stdio:'ignore', cwd: REPO_ROOT}); } catch {}
+    try { execSync(`git branch -D ${batchBranch}`, {stdio:'ignore', cwd: REPO_ROOT}); } catch {}
     break;
   }
+  process.chdir(REPO_ROOT);
 
   // Host-side: push batch branch + PR + auto-merge. Never push caller's branch.
   let currentBranch = batchBranch;
@@ -1513,8 +1515,9 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
             try {
               const prNumber = prUrl.match(/\/pull\/(\d+)/)?.[1];
               if (prNumber) {
+                process.chdir(REPO_ROOT);
                 const diffSpec = branchHelpers.buildProtectedRootDiffSpec(factoryBaseSha, batchBranch);
-                const changed = execSync(`git diff --name-only ${diffSpec}`, { encoding: "utf8" }).split(/\r?\n/).filter(Boolean);
+                const changed = execSync(`git diff --name-only ${diffSpec}`, { encoding: "utf8", cwd: REPO_ROOT }).split(/\r?\n/).filter(Boolean);
                 if (!mayAutonomouslyMerge(changed)) {
                   console.log(`PR #${prNumber} changes a protected root; independent human approval is required`);
                 } else {
@@ -1555,9 +1558,12 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
   } catch (error: unknown) {
     console.warn(`Post-merge PR handling failed (non-fatal): ${getErrorMessage(error)}`);
   } finally {
+    // Stabilization A1: never rely on ambient cwd after merger worktree may have been deleted.
+    // Restore to stable REPO_ROOT before any getcwd()-dependent git invocation.
+    process.chdir(REPO_ROOT);
     // Enforce invariant via helper: caller checkout never moved, git status --porcelain unchanged
     try {
-      const afterBranch = execSync('git branch --show-current', {encoding:'utf8'}).trim();
+      const afterBranch = execSync('git branch --show-current', {encoding:'utf8', cwd: REPO_ROOT}).trim();
       const callerStatusAfter = (() => { try { return execSync('git status --porcelain', {encoding:'utf8', cwd: REPO_ROOT}).trim(); } catch { return null; } })();
       const callerHeadAfter = (() => { try { return execSync('git rev-parse HEAD', {encoding:'utf8', cwd: REPO_ROOT}).trim(); } catch { return null; } })();
       // Use helper for caller-unchanged check (same seam as tests) — compare against frozen snapshot from iteration start
@@ -1586,12 +1592,12 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
       }
       // Clean up batch worktree (if used) — keep branch for PR, remove worktree via helper
       if (batchWorktreePath) {
-        try { branchHelpers.cleanupBatchWorktree(REPO_ROOT, batchWorktreePath); } catch { try { execSync(`git worktree remove --force ${batchWorktreePath}`, {stdio:'ignore'}); } catch {} }
+        try { branchHelpers.cleanupBatchWorktree(REPO_ROOT, batchWorktreePath); } catch { try { execSync(`git worktree remove --force ${batchWorktreePath}`, {stdio:'ignore', cwd: REPO_ROOT}); } catch {} }
         console.log(`Batch worktree ${batchWorktreePath} removed (branch ${batchBranch} remains for PR)`);
       }
     } catch (e) {
       console.warn(`Failed to verify caller invariant: ${getErrorMessage(e)}`);
-      if (batchWorktreePath) { try { branchHelpers.cleanupBatchWorktree(REPO_ROOT, batchWorktreePath); } catch { try { execSync(`git worktree remove --force ${batchWorktreePath}`, {stdio:'ignore'}); } catch {} } }
+      if (batchWorktreePath) { try { branchHelpers.cleanupBatchWorktree(REPO_ROOT, batchWorktreePath); } catch { try { execSync(`git worktree remove --force ${batchWorktreePath}`, {stdio:'ignore', cwd: REPO_ROOT}); } catch {} } }
     }
   }
 
@@ -1607,7 +1613,7 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
   // Immediate GC for ephemeral batch artefacts -- same-process lifecycle (not weekly cron)
     try { branchHelpers.cleanupPreserveLocalBranches(REPO_ROOT); } catch {}
   try {
-    execSync("git worktree prune", { stdio: "ignore" });
+    execSync("git worktree prune", { stdio: "ignore", cwd: REPO_ROOT });
   } catch {}
 
   console.log("\nBatch submitted -- authoritative CI and merge remain pending.");
