@@ -87,6 +87,9 @@ const WORKER_REASON_TRUNCATE = 2000;
 const VERDICT_JSON_TRUNCATE = 2000;
 const REVIEW_ERROR_TRUNCATE = 500;
 const TARGET_BRANCH = "main";
+// Worker JDK major required by repository Java CI (java/build.gradle release 25 + factory-ci.yml Temurin 25 + Dockerfile Temurin 25)
+// Centralized here so Doctor and Dockerfile stay in sync; do not generalize into a framework.
+const EXPECTED_JAVA_MAJOR = "25";
 
 // Retry budgets — small, bounded, behind a deep interface. Reviewer→implementer
 // feedback (semantic/mechanical) gets one retry; transient sandbox/mechanical
@@ -873,7 +876,7 @@ async function runDoctor(): Promise<boolean> {
     console.log(`  sandbox created on ${doctorBranch}, running bootstrap verification...`);
     // Run the same commands that the worker will rely on, inside the sandbox
     const checks: Array<{cmd: string, label: string, mustContain?: string}> = [
-      {cmd: 'bash -lc "java -version 2>&1" | head -5', label: 'java 21', mustContain: '21'},
+      {cmd: 'bash -lc "java -version 2>&1" | head -5', label: `java ${EXPECTED_JAVA_MAJOR}`, mustContain: EXPECTED_JAVA_MAJOR},
       {cmd: 'bash -lc "./java/gradlew --version 2>&1" | tail -10', label: 'gradle'},
       {cmd: 'bash -lc "bash .ci/install-voxy.sh install 2>&1" | tail -20', label: 'voxy install'},
       {cmd: 'bash -lc "npm install 2>&1" | tail -10', label: 'npm install'},
