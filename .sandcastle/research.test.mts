@@ -181,7 +181,7 @@ describe("Host-only GitHub writes and env isolation", () => {
 
   it("getResearchEnvironment profile seam uses sandcastle:voxygen-monorepo image and scrubbed env", () => {
     const prof = getResearchEnvironment("metaXYZ");
-    expect(prof.image).toBe("sandcastle:voxygen-monorepo");
+    expect(prof.imageName).toBe("sandcastle:voxygen-monorepo");
     expect(prof.env.GH_TOKEN).toBe("");
     expect(prof.env.META_API_KEY).toBe("metaXYZ");
   });

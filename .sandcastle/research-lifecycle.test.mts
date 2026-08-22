@@ -497,7 +497,7 @@ describe("Research lifecycle — behavioral regressions", () => {
     expect(env.GITHUB_TOKEN).toBe("");
     expect(env.META_API_KEY).toBe("meta123");
     const prof = getResearchEnvironment("metaXYZ");
-    expect(prof.image).toBe("sandcastle:voxygen-monorepo");
+    expect(prof.imageName).toBe("sandcastle:voxygen-monorepo");
     expect(prof.env.GH_TOKEN).toBe("");
   });
 
@@ -579,48 +579,73 @@ describe("Research lifecycle — behavioral regressions", () => {
     expect(researchBatch.outcomes.get("601")).toBe("FACTORY_ERROR");
 
     // Simulate implementation success in same iteration — should still reach merger
-    const implStore = new Map<string, FakeIssue>();
-    implStore.set("701", makeFakeIssue({ id: "701", labels: ["agent:implement"], assignees: ["bot"], state: "open", body: "impl body" }));
-    // Fake implementation partition: completed, no factory error
     const mockPartition = {
       completed: [{ id: "701", branch: "sandcastle/issue-701" }],
       factoryErrors: [],
       shouldStopOuterLoop: false,
     };
+    const {
+      shouldStopBeforeMergerForFactoryError,
+      shouldStopBeforeNextClaimForResearchError,
+    } = await import("./research-lifecycle.mts");
+    // Production helpers: early merger block should be false for research failure alone
+    expect(shouldStopBeforeMergerForFactoryError(mockPartition)).toBe(false);
+    // Old buggy logic would have been `|| researchHadFactoryError` → true
     const { canClaimNextOuterIteration } = await import("./factory-verdict-gate.mts");
-    // Old logic would have blocked merger because researchHadFactoryError true:
     const oldWouldBlockMerger = !canClaimNextOuterIteration(mockPartition as unknown as Parameters<typeof canClaimNextOuterIteration>[0]) || researchBatch.hadFactoryError;
     expect(oldWouldBlockMerger).toBe(true); // old code stranded implementation
 
-    // New logic: early break only checks implementation partition, not research
-    const newWouldBlockMergerEarly = !canClaimNextOuterIteration(mockPartition as unknown as Parameters<typeof canClaimNextOuterIteration>[0]);
-    expect(newWouldBlockMergerEarly).toBe(false); // new code allows merger to proceed
-
     // After merger, research error should still stop next outer iteration
-    const shouldStopBeforeNextClaim = researchBatch.hadFactoryError;
-    expect(shouldStopBeforeNextClaim).toBe(true);
+    expect(shouldStopBeforeNextClaimForResearchError(researchBatch.hadFactoryError)).toBe(true);
 
-    // Verify research issue remains FACTORY_ERROR state, implementation would be merged (simulated)
+    // Verify research issue remains FACTORY_ERROR state
     expect(researchStore.get("601")!.state).toBe("open");
     expect(researchStore.get("601")!.labels).toContain("agent:research");
-    // Implementation merger would have proceeded — we just prove it wasn't blocked
-    expect(newWouldBlockMergerEarly).toBe(false);
   });
 
   it("12. Research environment profile is resolved per issue and image is wired", async () => {
     const metaKey = "test-meta-key";
     const prof1 = getResearchEnvironment(metaKey, { number: 1, body: "Part of #22\nbody 1" });
     const prof2 = getResearchEnvironment(metaKey, { number: 2, body: "different body" });
-    expect(prof1.image).toBe("sandcastle:voxygen-monorepo");
-    expect(prof2.image).toBe("sandcastle:voxygen-monorepo");
+    expect(prof1.imageName).toBe("sandcastle:voxygen-monorepo");
+    expect(prof2.imageName).toBe("sandcastle:voxygen-monorepo");
     expect(prof1.env.GH_TOKEN).toBe("");
-    // Verify main.mts now resolves per issue and passes image to docker
+    // Verify main.mts now resolves per issue and passes imageName to docker without cast
     const { default: fs } = await import("node:fs");
     const main = fs.readFileSync(".sandcastle/main.mts", "utf8");
-    // Should resolve per issue inside runResearchWorker
     expect(main).toContain("getResearchEnvironment(metaKey, { number: parseInt(issue.id");
-    expect(main).toContain("docker({ env: profile.env, image: profile.image }");
-    // Should not have single batch-level profile only
+    expect(main).toContain("docker({ env: profile.env, imageName: profile.imageName })");
+    expect(main).not.toContain("as unknown as Record");
     expect(main).not.toMatch(/const researchEnvProfile = getResearchEnvironment\(metaKey\)\s*;\s*\n\s*const researchSourceMap/);
+  });
+
+  it("13. Qualification --issue N applies across both profiles: only requested eligible ticket dispatches", async () => {
+    const { planResearchForIteration } = await import("./factory-iteration-control.mts");
+    const { planIssuesForIteration } = await import("./factory-iteration-control.mts");
+    const researchEligible: IssueInput[] = [
+      { number: 601, title: "R601", state: "open", labels: ["wayfinder:research", "agent:research"], assignees: [], body: "Part of #22", blockedByCount: 0 },
+      { number: 602, title: "R602", state: "open", labels: ["wayfinder:research", "agent:research"], assignees: [], body: "Part of #22", blockedByCount: 0 },
+    ];
+    const implementEligible: IssueInput[] = [
+      { number: 152, title: "Impl152", state: "open", labels: ["agent:implement"], assignees: [], body: TRACER_BODY, blockedByCount: 0 },
+      { number: 153, title: "Impl153", state: "open", labels: ["agent:implement"], assignees: [], body: TRACER_BODY, blockedByCount: 0 },
+    ];
+
+    // --issue 601 (research) → only research 601
+    expect(planResearchForIteration(researchEligible, implementEligible, { requestedIssueNumber: "601" }).map((p) => p.id)).toEqual(["601"]);
+    expect(planIssuesForIteration(implementEligible, { requestedIssueNumber: "601" }).plannedIssues).toEqual([]);
+
+    // --issue 152 (implement) → only implement 152, no research
+    expect(planResearchForIteration(researchEligible, implementEligible, { requestedIssueNumber: "152" })).toEqual([]);
+    expect(planIssuesForIteration(implementEligible, { requestedIssueNumber: "152" }).plannedIssues.map((p) => p.id)).toEqual(["152"]);
+
+    // --issue 999 (neither) → nothing for both
+    expect(planResearchForIteration(researchEligible, implementEligible, { requestedIssueNumber: "999" })).toEqual([]);
+    expect(planIssuesForIteration(implementEligible, { requestedIssueNumber: "999" }).plannedIssues).toEqual([]);
+    expect(planIssuesForIteration(implementEligible, { requestedIssueNumber: "999" }).mode).toBe("qualify-unsupported");
+
+    // No qualification → all
+    expect(planResearchForIteration(researchEligible, implementEligible, {}).map((p) => p.id).sort()).toEqual(["601", "602"]);
+    expect(planIssuesForIteration(implementEligible, {}).mode).toBe("planner-required");
   });
 });

@@ -146,6 +146,27 @@ export function makeIterationControl(defaultMaxIterations: number, argv: string[
   };
 }
 
+export function planResearchForIteration(
+  researchEligible: IssueInput[],
+  implementEligible: IssueInput[],
+  control: IterationControlConfig,
+): PlannedIssue[] {
+  const requested = control.requestedIssueNumber;
+  if (!requested) {
+    return researchEligible.map(toPlannedIssue);
+  }
+  const isResearchTarget = researchEligible.some((r) => String(r.number) === requested);
+  const isImplementTarget = implementEligible.some((r) => String(r.number) === requested);
+  if (isResearchTarget) {
+    return researchEligible.filter((r) => String(r.number) === requested).map(toPlannedIssue);
+  }
+  if (isImplementTarget) {
+    return [];
+  }
+  // Requested but not eligible in either profile — dispatch nothing
+  return [];
+}
+
 export function qualificationLifecyclePolicy(control: QualificationRequest): QualificationLifecyclePolicy {
   switch (control.kind) {
     case "normal":

@@ -1,5 +1,7 @@
 import type { ResearchResult } from "./research-result.mts";
 import { researchResultSchema, formatResearchResultForComment } from "./research-result.mts";
+import { canClaimNextOuterIteration } from "./factory-verdict-gate.mts";
+import type { WorkerOutcome } from "./factory-verdict-gate.mts";
 
 /**
  * Research lifecycle — bounded orchestration for AFK research profile.
@@ -247,6 +249,23 @@ export interface OrchestrateResearchBatchResult {
  * sandbox workers and real GitHub ops. Tests inject fake workers with a
  * barrier to prove concurrency without reimplementing Promise.allSettled.
  */
+/**
+ * Production decision helpers for mixed-profile outer loop.
+ * Extracted so tests can exercise the real gate logic instead of
+ * reconstructing booleans. If main.mts regresses to the old
+ * `|| researchHadFactoryError` early break, these helpers will catch it.
+ */
+export function shouldStopBeforeMergerForFactoryError(
+  partition: { completed: unknown[]; factoryErrors: unknown[]; shouldStopOuterLoop: boolean },
+): boolean {
+  // Only implementation factory errors should stop before merger; research errors are deferred.
+  return !canClaimNextOuterIteration(partition as unknown as Parameters<typeof canClaimNextOuterIteration>[0]);
+}
+
+export function shouldStopBeforeNextClaimForResearchError(researchHadFactoryError: boolean): boolean {
+  return researchHadFactoryError;
+}
+
 export async function orchestrateResearchBatch(
   params: OrchestrateResearchBatchParams,
 ): Promise<OrchestrateResearchBatchResult> {

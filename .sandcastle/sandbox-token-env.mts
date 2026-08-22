@@ -49,7 +49,7 @@ export function resolveResearchSandboxEnv(metaApiKey: string): Record<string, st
 }
 
 export interface ResearchEnvironmentProfile {
-  image?: string;
+  imageName?: string;
   env: Record<string, string>;
 }
 
@@ -60,7 +60,7 @@ export function getResearchEnvironment(
   _issue?: { number: number; body?: string },
 ): ResearchEnvironmentProfile {
   return {
-    image: "sandcastle:voxygen-monorepo",
+    imageName: "sandcastle:voxygen-monorepo",
     env: resolveResearchSandboxEnv(metaApiKey),
   };
 }

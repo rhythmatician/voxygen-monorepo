@@ -43,6 +43,7 @@ import {
   makeIterationControl,
   issueBodyForPlannedIssue,
   planIssuesForIteration,
+  planResearchForIteration,
   type IterationControl,
   qualificationLifecyclePolicy,
 } from "./factory-iteration-control.mts";
@@ -66,7 +67,12 @@ import {
   extractResearchResult,
   type ResearchResult,
 } from "./research-result.mts";
-import { orchestrateResearchBatch, markResearchFactoryError as markResearchFactoryErrorLifecycle } from "./research-lifecycle.mts";
+import {
+  orchestrateResearchBatch,
+  markResearchFactoryError as markResearchFactoryErrorLifecycle,
+  shouldStopBeforeMergerForFactoryError,
+  shouldStopBeforeNextClaimForResearchError,
+} from "./research-lifecycle.mts";
 import { mergerDockerOptions } from "./merger-control.mts";
 
 const execFileAsync = promisify(execFile);
@@ -1036,11 +1042,13 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
       plannedIssues = iterationPlan.plannedIssues;
       console.log(`Qualification mode: explicitly selected issue #${plannedIssues[0]!.id} only.`);
     } else if (iterationPlan.mode === "qualify-unsupported") {
-      const requestedIssueNumber = ITERATION_CONTROL.requestedIssueNumber;
-      console.log(`Qualification mode requested issue #${requestedIssueNumber}, but it is not eligible in this iteration.`);
-      // Don't continue whole iteration if research work remains; skip implement only
-      if (researchEligible.length === 0) continue;
-      else console.log(`Continuing to research profile despite unsupported qualification target`);
+      const requestedIssueNumber = ITERATION_CONTROL.requestedIssueNumber!;
+      const isResearchTarget = researchEligible.some((r) => String(r.number) === requestedIssueNumber);
+      if (isResearchTarget) {
+        console.log(`Qualification mode requested issue #${requestedIssueNumber} is a research ticket — skipping implementation, dispatching research only`);
+      } else {
+        console.log(`Qualification mode requested issue #${requestedIssueNumber}, but it is not eligible in either profile. Dispatching nothing.`);
+      }
       plannedIssues = [];
     } else if (iterationPlan.mode === "single-eligible") {
       plannedIssues = iterationPlan.plannedIssues;
@@ -1136,7 +1144,17 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
       }
     }
   } else {
-    console.log("No implement eligible — skipping planner, research only this iteration");
+    const requestedForResearchOnly = ITERATION_CONTROL.requestedIssueNumber;
+    if (requestedForResearchOnly) {
+      const isResearchTarget = researchEligible.some((r) => String(r.number) === requestedForResearchOnly);
+      if (isResearchTarget) {
+        console.log(`Qualification mode: explicitly selected research issue #${requestedForResearchOnly} only.`);
+      } else {
+        console.log(`Qualification mode requested issue #${requestedForResearchOnly}, but it is not eligible in either profile. Dispatching nothing.`);
+      }
+    } else {
+      console.log("No implement eligible — skipping planner, research only this iteration");
+    }
   }
 
   // planner handled inline above — original block removed
@@ -1235,11 +1253,11 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
   let researchHadFactoryError = false;
   let claimedResearch: PlannedIssue[] = [];
   if (researchEligible.length > 0) {
-    const researchPlanned: PlannedIssue[] = researchEligible.map((r) => ({
-      id: String(r.number),
-      title: r.title,
-      branch: branchForIssue(r.number),
-    }));
+    const researchPlanned: PlannedIssue[] = planResearchForIteration(
+      researchEligible,
+      eligible,
+      { requestedIssueNumber: ITERATION_CONTROL.requestedIssueNumber },
+    );
     if (QUALIFICATION_LIFECYCLE.claimExternalState) {
       for (const p of researchPlanned) {
         const src = researchEligible.find((e) => String(e.number) === p.id);
@@ -1288,7 +1306,7 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
 
   if (claimedIssues.length === 0 && claimedResearch.length === 0) {
     // If only research preparation failed (FACTORY_ERROR) with no surviving research, still stop outer progression
-    if (researchHadFactoryError) {
+    if (shouldStopBeforeNextClaimForResearchError(researchHadFactoryError)) {
       console.log("Research preparation FACTORY_ERROR — stopping outer loop");
       break;
     }
@@ -1322,7 +1340,7 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
           sandbox = await sandcastle.createSandbox({
             branch: issue.branch,
             baseBranch: factoryBaseSha,
-            sandbox: docker({ env: profile.env, image: profile.image } as unknown as Record<string, unknown>),
+            sandbox: docker({ env: profile.env, imageName: profile.imageName }),
             hooks,
             copyToWorktree,
             timeouts: { worktreeMs: 600_000 },
@@ -1649,7 +1667,7 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
     }
   }
 
-  if (!canClaimNextOuterIteration(partition)) {
+  if (shouldStopBeforeMergerForFactoryError(partition)) {
     console.log("Factory error detected during review verdict handling. Stopping outer loop to prevent unsafe progression.");
     break;
   }
@@ -1658,7 +1676,7 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
     console.log("No commits produced. Nothing to merge this iteration.");
     // Still need to handle research-only iteration: if research succeeded, we already published/closed and should continue or exit?
     // If no implement work but research succeeded, iteration is done — continue to next (which will exit if no more eligible).
-    if (researchHadFactoryError) break;
+    if (shouldStopBeforeNextClaimForResearchError(researchHadFactoryError)) break;
     if (claimedResearch.length > 0) {
       console.log("Research iteration complete — checking for more work");
       continue;
@@ -1865,7 +1883,7 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
   // Research FACTORY_ERROR should not strand already-completed implementation work.
   // If research failed this iteration, implementation batch has already been
   // submitted above; stop before claiming additional work next iteration.
-  if (researchHadFactoryError) {
+  if (shouldStopBeforeNextClaimForResearchError(researchHadFactoryError)) {
     console.log("Research FACTORY_ERROR — implementation batch already submitted, stopping before next outer iteration (sibling research successes preserved)");
     break;
   }
