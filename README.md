@@ -7,7 +7,7 @@ projects under `java/` and `python/` respectively.
 
 | Path | What | Build |
 |------|------|-------|
-| `java/` | Fabric mod (MC 1.21.11, Fabric Loom 1.13.6, Gradle 8.14, Java 21) | `java/gradlew` (projectDir `java/`) |
+| `java/` | Fabric mod (MC 1.21.11, Fabric Loom 1.13.6, Gradle 8.14, Java 25) | `java/gradlew` (projectDir `java/`) |
 | `python/` | VoxelTree ML pipelines (pyproject.toml, PySide6 GUI, ONNX export) | `pip install -e python` / `uv pip` |
 | `external/` | Symlinks to local reference clones (Voxy, minecraft-src, fabric-api, ogn) | `dev/setup-external.ps1` |
 | `dev/` | Workspace harnesses | — |
