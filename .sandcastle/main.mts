@@ -1345,7 +1345,10 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
     console.log(`\nClaimed and prepared ${claimedIssues.length} implementation issue(s), launching parallel workers...\n`);
   }
 
-  // ----- Research Phase: Parallel isolated Muse researchers (via focused lifecycle module) -----
+  // ----- Research + Implementation: concurrent overlap (4-way) -----
+  // Start both batches together; await at correct lifecycle boundary so #184 does not idle while research runs.
+  let researchBatch: Awaited<ReturnType<typeof orchestrateResearchBatch>> | null = null;
+  let researchBatchPromise: Promise<Awaited<ReturnType<typeof orchestrateResearchBatch>>> | null = null;
   if (claimedResearch.length > 0) {
     console.log(`\n=== Research profile: launching ${claimedResearch.length} isolated researcher(s) ===\n`);
     const metaKey = resolveFactoryMetaApiKey(REPO_ROOT);
@@ -1380,7 +1383,7 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
       try {
         const runResult: unknown = await sandbox!.run({
           name: "researcher",
-          maxIterations: 30,
+          maxIterations: 1,
           idleTimeoutSeconds: 1800,
           agent: sandcastle.muse("muse-spark-1.2-contributor"),
           promptFile: "./.sandcastle/research-prompt.md",
@@ -1409,7 +1412,7 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
       }
     };
 
-    const batch = await orchestrateResearchBatch({
+    researchBatchPromise = orchestrateResearchBatch({
       issues: claimedResearch.map((p) => ({
         id: p.id,
         branch: p.branch,
@@ -1420,29 +1423,12 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
       ops: { safeRunGh, runGh },
       shouldMutateOutcomeState: QUALIFICATION_LIFECYCLE.mutateOutcomeState,
     });
-
-    researchHadFactoryError = researchHadFactoryError || batch.hadFactoryError;
-    for (const [id, outcome] of batch.outcomes) {
-      if (outcome === "SUCCESS") {
-        console.log(`  Research #${id} completed and closed`);
-      } else {
-        const settledIdx = claimedResearch.findIndex((c) => c.id === id);
-        const settled = batch.settled[settledIdx];
-        const reason = settled?.status === "rejected" ? String((settled as PromiseRejectedResult).reason ?? "unknown").slice(0, 800) : "publication/parent/close failure";
-        console.warn(`  Research #${id} FACTORY_ERROR: ${reason}`);
-        if (!QUALIFICATION_LIFECYCLE.mutateOutcomeState) {
-          console.warn(`  Research #${id} FACTORY_ERROR suppressed by qualification policy`);
-        }
-      }
-    }
-
-    if (researchHadFactoryError) {
-      console.log("Research profile encountered FACTORY_ERROR — stopping outer loop (preserving sibling successes)");
-    }
   }
 
   // ----- Phase 2: Execute + Review (parallel, isolated) -----
-  const settled = await Promise.allSettled<WorkerResult>(
+  let implSettledPromise: Promise<PromiseSettledResult<WorkerResult>[]> | null = null;
+  if (claimedIssues.length > 0) {
+    implSettledPromise = Promise.allSettled<WorkerResult>(
     claimedIssues.map(async (issue): Promise<WorkerResult> => {
       const implementationIssueBody = issueBodyForPlannedIssue(issue.id, eligible);
       let sandbox: Awaited<ReturnType<typeof sandcastle.createSandbox>> | null = null;
@@ -1603,6 +1589,33 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
       }
     }),
   );
+  }
+  // Await both batches at correct lifecycle boundary — research and implementation overlap
+  const [concurrentResearchBatch, concurrentSettled] = await Promise.all([
+    researchBatchPromise ?? Promise.resolve(null as Awaited<ReturnType<typeof orchestrateResearchBatch>> | null),
+    implSettledPromise ?? Promise.resolve([] as PromiseSettledResult<WorkerResult>[]),
+  ]);
+  if (concurrentResearchBatch) {
+    researchBatch = concurrentResearchBatch;
+    researchHadFactoryError = researchHadFactoryError || researchBatch.hadFactoryError;
+    for (const [id, outcome] of researchBatch.outcomes) {
+      if (outcome === "SUCCESS") {
+        console.log(`  Research #${id} completed and closed`);
+      } else {
+        const settledIdx = claimedResearch.findIndex((c) => c.id === id);
+        const settledEntry = researchBatch.settled[settledIdx];
+        const reason = settledEntry?.status === "rejected" ? String((settledEntry as PromiseRejectedResult).reason ?? "unknown").slice(0, 800) : "publication/parent/close failure";
+        console.warn(`  Research #${id} FACTORY_ERROR: ${reason}`);
+        if (!QUALIFICATION_LIFECYCLE.mutateOutcomeState) {
+          console.warn(`  Research #${id} FACTORY_ERROR suppressed by qualification policy`);
+        }
+      }
+    }
+    if (researchHadFactoryError) {
+      console.log("Research profile encountered FACTORY_ERROR — stopping outer loop (preserving sibling successes)");
+    }
+  }
+  const settled = concurrentSettled as PromiseSettledResult<WorkerResult>[];
 
   // ----- Failure visibility per worker + review verdict gating -----
   const partition = partitionWorkerOutcomes(
