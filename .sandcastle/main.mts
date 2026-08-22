@@ -63,11 +63,10 @@ import {
   resolveResearchSandboxEnv,
 } from "./sandbox-token-env.mts";
 import {
-  researchResultSchema,
   extractResearchResult,
-  formatResearchResultForComment,
   type ResearchResult,
 } from "./research-result.mts";
+import { orchestrateResearchBatch } from "./research-lifecycle.mts";
 import { mergerDockerOptions } from "./merger-control.mts";
 
 const execFileAsync = promisify(execFile);
@@ -473,61 +472,6 @@ async function fetchIssueBody(issueId: string): Promise<string> {
     }
   }
   throw lastError;
-}
-
-// ---- Research lifecycle helpers ----
-function extractParentMapId(body?: string): string | null {
-  if (!body) return null;
-  const m = body.match(/Part of #(\d+)/);
-  return m ? m[1] : null;
-}
-
-async function publishResearchResult(
-  issueId: string,
-  branch: string,
-  result: ResearchResult,
-  rawText: string,
-): Promise<boolean> {
-  const formatted = formatResearchResultForComment(result);
-  const body = `Research completed on \`${branch}\`.\n\n${formatted}\n\n---\n*Raw output truncated:* \`\`\`\n${rawText.slice(0, 2000)}\n\`\`\``;
-  return safeRunGh(["issue", "comment", issueId, "--body", body], `Failed to publish research result to #${issueId}`);
-}
-
-async function addParentMapPointer(
-  parentId: string,
-  researchId: string,
-  researchTitle: string,
-  result: ResearchResult,
-): Promise<boolean> {
-  const summaryOneLine = result.summary.replace(/\s+/g, " ").slice(0, 300);
-  const body = `Research #${researchId} — ${researchTitle}: ${summaryOneLine}\n\nRecommendation: ${result.recommendation.slice(0, 500)}\nSee #${researchId} for evidence-backed findings.`;
-  return safeRunGh(["issue", "comment", parentId, "--body", body], `Failed to add parent map pointer to #${parentId}`);
-}
-
-async function closeResearchTicket(issueId: string, branch: string): Promise<boolean> {
-  // Clean claim (assignee + in-progress) and close. Remove agent:research label as well for closed state.
-  const removed = await safeRunGh(
-    ["issue", "edit", issueId, "--remove-label", "agent:in-progress", "--remove-assignee", "@me", "--remove-label", "agent:research"],
-    `Failed to clean claim for research #${issueId}`,
-  );
-  // Also remove wayfinder:research? Keep for history; closing is enough. Remove in-progress already done.
-  try {
-    await runGh(["issue", "close", issueId, "--comment", `Research completed on \`${branch}\` — findings published.`]);
-    return removed;
-  } catch {
-    try {
-      await runGh(["issue", "comment", issueId, "--body", `Research completed on \`${branch}\` — findings published.`]);
-      await runGh(["issue", "close", issueId]);
-      return removed;
-    } catch {
-      return false;
-    }
-  }
-}
-
-async function markResearchFactoryError(issueId: string, branch: string, reason: string): Promise<boolean> {
-  // FACTORY_ERROR for research: no research conclusion, preserve logs, release claim, leave open retryable.
-  return markFactoryError(issueId, branch, reason);
 }
 
 async function markReviewRejected(
@@ -1353,142 +1297,100 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
     console.log(`\nClaimed and prepared ${claimedIssues.length} implementation issue(s), launching parallel workers...\n`);
   }
 
-  // ----- Research Phase: Parallel isolated Muse researchers -----
+  // ----- Research Phase: Parallel isolated Muse researchers (via focused lifecycle module) -----
   let researchHadFactoryError = false;
   if (claimedResearch.length > 0) {
     console.log(`\n=== Research profile: launching ${claimedResearch.length} isolated researcher(s) ===\n`);
     const metaKey = resolveFactoryMetaApiKey(REPO_ROOT);
     const researchEnvProfile = getResearchEnvironment(metaKey);
-    // Map for exact body/title transport verification
     const researchSourceMap = new Map<string, IssueInput>();
     for (const r of researchEligible) researchSourceMap.set(String(r.number), r);
 
-    const researchSettled = await Promise.allSettled(
-      claimedResearch.map(async (issue): Promise<{ result: ResearchResult; rawText: string }> => {
-        const src = researchSourceMap.get(issue.id);
-        if (!src) throw new Error(`research source not found for #${issue.id}`);
-        const exactBody = src.body ?? "";
-        const exactTitle = src.title;
-        let sandbox: Awaited<ReturnType<typeof sandcastle.createSandbox>> | null = null;
-        for (let attempt = 0; attempt <= MECHANICAL_RETRY_BUDGET; attempt++) {
-          try {
-            sandbox = await sandcastle.createSandbox({
-              branch: issue.branch,
-              baseBranch: factoryBaseSha,
-              sandbox: docker({ env: researchEnvProfile.env }),
-              hooks,
-              copyToWorktree,
-              timeouts: { worktreeMs: 600_000 },
-            });
-            break;
-          } catch (e) {
-            if (attempt === MECHANICAL_RETRY_BUDGET) throw e;
-            const backoff = MECHANICAL_RETRY_BASE_MS * Math.pow(2, attempt);
-            console.warn(`  research sandbox create failed for #${issue.id} (attempt ${attempt + 1}): ${getErrorMessage(e)} — retrying in ${backoff}ms`);
-            await new Promise((r) => setTimeout(r, backoff));
-          }
-        }
-        try {
-          const runResult: unknown = await sandbox!.run({
-            name: "researcher",
-            maxIterations: 30,
-            idleTimeoutSeconds: 1800,
-            agent: sandcastle.muse("muse-spark-1.2-contributor"),
-            promptFile: "./.sandcastle/research-prompt.md",
-            promptArgs: {
-              TASK_ID: issue.id,
-              ISSUE_TITLE: exactTitle,
-              ISSUE_BODY: exactBody,
-            },
-            output: sandcastle.Output.string({ tag: "research" }),
-          });
-          // sandcastle run returns { output, stdout?, commits? } — handle both shapes
-          const outputStr = (runResult as { output?: unknown })?.output as string | undefined;
-          const stdoutStr = (runResult as { stdout?: string })?.stdout as string | undefined;
-          const rawText = typeof outputStr === "string" && outputStr.length > 0 ? outputStr : stdoutStr ?? String(runResult ?? "");
-          const extracted = extractResearchResult({ output: (runResult as { output?: unknown })?.output, stdout: rawText, text: rawText });
-          if (!extracted) {
-            throw new Error(`research structured output invalid for #${issue.id}: missing or invalid <research> JSON — raw: ${rawText.slice(0, 500)}`);
-          }
-          // Validate no commits produced (research must not commit)
-          const maybeCommits = (runResult as { commits?: string[] })?.commits;
-          if (Array.isArray(maybeCommits) && maybeCommits.length > 0) {
-            console.warn(`  research #${issue.id} produced ${maybeCommits.length} commit(s) — research should not commit, ignoring commits`);
-          }
-          return { result: extracted, rawText };
-        } finally {
-          try { await sandbox!.close(); } catch {}
-          try { process.chdir(REPO_ROOT); } catch {}
-        }
-      }),
-    );
-
-    // Publish results host-side; siblings' successes must survive individual failures
-    for (let i = 0; i < claimedResearch.length; i++) {
-      const issue = claimedResearch[i]!;
+    const runResearchWorker = async (issue: { id: string; branch: string; title: string; body?: string }): Promise<{ result: ResearchResult; rawText: string; commits?: string[] }> => {
       const src = researchSourceMap.get(issue.id);
-      const outcome = researchSettled[i]!;
-      if (outcome.status === "rejected") {
-        const reason = String((outcome as PromiseRejectedResult).reason ?? "unknown");
-        console.warn(`  Research #${issue.id} FACTORY_ERROR: ${reason.slice(0, 800)}`);
-        researchHadFactoryError = true;
-        if (QUALIFICATION_LIFECYCLE.mutateOutcomeState) {
-          await markResearchFactoryError(issue.id, issue.branch, reason);
-        } else {
-          console.warn(`  Research #${issue.id} FACTORY_ERROR suppressed by qualification policy`);
-        }
-        continue;
-      }
-      const { result, rawText } = (outcome as PromiseFulfilledResult<{ result: ResearchResult; rawText: string }>).value;
-      // Validate again for safety (strict)
-      const parseCheck = researchResultSchema.safeParse(result);
-      if (!parseCheck.success) {
-        const reason = `research validation failed for #${issue.id}: ${parseCheck.error.message}`;
-        console.warn(`  Research #${issue.id} invalid structured output FACTORY_ERROR: ${reason.slice(0, 800)}`);
-        researchHadFactoryError = true;
-        if (QUALIFICATION_LIFECYCLE.mutateOutcomeState) {
-          await markResearchFactoryError(issue.id, issue.branch, reason);
-        }
-        continue;
-      }
-      if (!QUALIFICATION_LIFECYCLE.mutateOutcomeState) {
-        console.log(`  Research #${issue.id} succeeded (qualification: publication suppressed)`);
-        continue;
-      }
-      const published = await publishResearchResult(issue.id, issue.branch, result, rawText);
-      if (!published) {
-        console.warn(`  Research #${issue.id} publication failed — FACTORY_ERROR`);
-        researchHadFactoryError = true;
-        await markResearchFactoryError(issue.id, issue.branch, `publication failed for research #${issue.id}`);
-        continue;
-      }
-      // Parent map pointer when body contains Part of #N
-      const parentId = extractParentMapId(src?.body);
-      if (parentId) {
-        const pointerOk = await addParentMapPointer(parentId, issue.id, src?.title ?? issue.title, result);
-        if (!pointerOk) {
-          console.warn(`  Research #${issue.id} parent pointer to #${parentId} failed (non-blocking)`);
-        } else {
-          console.log(`  Research #${issue.id} added pointer to parent #${parentId}`);
+      if (!src) throw new Error(`research source not found for #${issue.id}`);
+      const exactBody = src.body ?? "";
+      const exactTitle = src.title;
+      let sandbox: Awaited<ReturnType<typeof sandcastle.createSandbox>> | null = null;
+      for (let attempt = 0; attempt <= MECHANICAL_RETRY_BUDGET; attempt++) {
+        try {
+          sandbox = await sandcastle.createSandbox({
+            branch: issue.branch,
+            baseBranch: factoryBaseSha,
+            sandbox: docker({ env: researchEnvProfile.env }),
+            hooks,
+            copyToWorktree,
+            timeouts: { worktreeMs: 600_000 },
+          });
+          break;
+        } catch (e) {
+          if (attempt === MECHANICAL_RETRY_BUDGET) throw e;
+          const backoff = MECHANICAL_RETRY_BASE_MS * Math.pow(2, attempt);
+          console.warn(`  research sandbox create failed for #${issue.id} (attempt ${attempt + 1}): ${getErrorMessage(e)} — retrying in ${backoff}ms`);
+          await new Promise((r) => setTimeout(r, backoff));
         }
       }
-      const closed = await closeResearchTicket(issue.id, issue.branch);
-      if (!closed) {
-        console.warn(`  Research #${issue.id} close failed — FACTORY_ERROR`);
-        researchHadFactoryError = true;
-        await markResearchFactoryError(issue.id, issue.branch, `failed to close research ticket #${issue.id}`);
-        continue;
+      try {
+        const runResult: unknown = await sandbox!.run({
+          name: "researcher",
+          maxIterations: 30,
+          idleTimeoutSeconds: 1800,
+          agent: sandcastle.muse("muse-spark-1.2-contributor"),
+          promptFile: "./.sandcastle/research-prompt.md",
+          promptArgs: {
+            TASK_ID: issue.id,
+            ISSUE_TITLE: exactTitle,
+            ISSUE_BODY: exactBody,
+          },
+          output: sandcastle.Output.string({ tag: "research" }),
+        });
+        const outputStr = (runResult as { output?: unknown })?.output as string | undefined;
+        const stdoutStr = (runResult as { stdout?: string })?.stdout as string | undefined;
+        const rawText = typeof outputStr === "string" && outputStr.length > 0 ? outputStr : stdoutStr ?? String(runResult ?? "");
+        const extracted = extractResearchResult({ output: (runResult as { output?: unknown })?.output, stdout: rawText, text: rawText });
+        if (!extracted) {
+          throw new Error(`research structured output invalid for #${issue.id}: missing or invalid <research> JSON — raw: ${rawText.slice(0, 500)}`);
+        }
+        const maybeCommits = (runResult as { commits?: string[] })?.commits;
+        if (Array.isArray(maybeCommits) && maybeCommits.length > 0) {
+          console.log(`  research #${issue.id} produced ${maybeCommits.length} optional commit(s) on \`${issue.branch}\` — preserved on research branch (not integrated)`);
+        }
+        return { result: extracted, rawText, commits: maybeCommits };
+      } finally {
+        try { await sandbox!.close(); } catch {}
+        try { process.chdir(REPO_ROOT); } catch {}
       }
-      console.log(`  Research #${issue.id} completed and closed`);
+    };
+
+    const batch = await orchestrateResearchBatch({
+      issues: claimedResearch.map((p) => ({
+        id: p.id,
+        branch: p.branch,
+        title: p.title,
+        body: researchSourceMap.get(p.id)?.body,
+      })),
+      runWorker: runResearchWorker,
+      ops: { safeRunGh, runGh },
+      shouldMutateOutcomeState: QUALIFICATION_LIFECYCLE.mutateOutcomeState,
+    });
+
+    researchHadFactoryError = batch.hadFactoryError;
+    for (const [id, outcome] of batch.outcomes) {
+      if (outcome === "SUCCESS") {
+        console.log(`  Research #${id} completed and closed`);
+      } else {
+        const settledIdx = claimedResearch.findIndex((c) => c.id === id);
+        const settled = batch.settled[settledIdx];
+        const reason = settled?.status === "rejected" ? String((settled as PromiseRejectedResult).reason ?? "unknown").slice(0, 800) : "publication/parent/close failure";
+        console.warn(`  Research #${id} FACTORY_ERROR: ${reason}`);
+        if (!QUALIFICATION_LIFECYCLE.mutateOutcomeState) {
+          console.warn(`  Research #${id} FACTORY_ERROR suppressed by qualification policy`);
+        }
+      }
     }
 
     if (researchHadFactoryError) {
       console.log("Research profile encountered FACTORY_ERROR — stopping outer loop (preserving sibling successes)");
-      // If no implement workers to run, break now; otherwise let implement workers' own factory-error handling decide.
-      // Spec: stop unsafe outer progression using existing factory-error semantics.
-      // We break outer iteration here to prevent next outer claim.
-      // If implement workers also exist, they already ran? We ran research before implement, so we can decide to break after research.
-      // To keep research and implement independent within same iteration, we still run implement workers but will break after.
     }
   }
 
