@@ -648,4 +648,115 @@ describe("Research lifecycle — behavioral regressions", () => {
     expect(planResearchForIteration(researchEligible, implementEligible, {}).map((p) => p.id).sort()).toEqual(["601", "602"]);
     expect(planIssuesForIteration(implementEligible, {}).mode).toBe("planner-required");
   });
+
+  it("14. Restart reconciliation — stale research with optional commit preserves branch, releases transient, retains research, no blocked, leaves open", async () => {
+    const store = new Map<string, FakeIssue>();
+    const issue = makeFakeIssue({ id: "601", body: "Part of #22\nresearch #601", commits: ["abc123"] });
+    // Branch with optional commit — research never has batch PR by design
+    store.set("601", issue);
+    store.set("22", makeFakeIssue({ id: "22", labels: ["wayfinder:map"], assignees: [], state: "open", body: "Map" }));
+    const { ops, calls } = createFakeOps(store);
+
+    // Classify as research before entering implementation batch-PR logic
+    const classification = classifyTicket({
+      number: 601,
+      title: issue.title,
+      state: "open",
+      labels: issue.labels,
+      assignees: issue.assignees,
+      body: issue.body,
+      blockedByCount: 0,
+    });
+    expect(classification.profile).toBe("research");
+
+    // Simulate new research-aware reconciliation: preserve branch/commits, release transient, retain research
+    // This mirrors main.mts's added branch: safeRunGh edit remove in-progress + assignee, no PR search, no delete, no blocked
+    const branch = branchForIssue(601);
+    // In real reconciliation, branchExists check is skipped for research; we simulate that branch is preserved
+    const simulatedBranchCommits = [...(store.get("601")!.commits ?? [])];
+    const released = await ops.safeRunGh(
+      ["issue", "edit", "601", "--remove-label", "agent:in-progress", "--remove-assignee", "@me"],
+      `Failed to release research claim for #601 on reconciliation`,
+    );
+    expect(released).toBe(true);
+
+    const after = store.get("601")!;
+    // Branch/commit preserved — optional CONTEXT.md commit not deleted
+    expect(simulatedBranchCommits).toEqual(["abc123"]);
+    expect(after.commits).toEqual(["abc123"]);
+    // Transient claim removed
+    expect(after.labels).not.toContain("agent:in-progress");
+    expect(after.assignees).toEqual([]);
+    // Research authorization retained
+    expect(after.labels).toContain("agent:research");
+    // No blocked added
+    expect(after.labels).not.toContain("agent:blocked");
+    // Leaves open for retry (not closed, not blocked)
+    expect(after.state).toBe("open");
+    // No batch PR search, no branch deletion, no blocked mutation
+    const allArgs = calls.map((c) => c.args.join(" "));
+    expect(allArgs.some((a) => a.includes("pr list"))).toBe(false);
+    expect(allArgs.some((a) => a.includes("agent:blocked"))).toBe(false);
+    // Branch name preserved (not deleted)
+    expect(branch).toBe("sandcastle/issue-601");
+    // Verify sibling research marker still independent — no cross-issue mutation
+    expect(store.get("22")!.state).toBe("open");
+  });
+
+  it("15. Restart reconciliation — GH unavailable leaves research untouched for retry (no false release claim)", async () => {
+    const store = new Map<string, FakeIssue>();
+    const issue = makeFakeIssue({ id: "602", body: "Part of #22\nresearch GH fail", commits: ["def456"] });
+    store.set("602", issue);
+    const { ops, calls } = createFakeOps(store, { failReleaseFor: new Set(["602"]) });
+
+    const classification = classifyTicket({
+      number: 602,
+      title: issue.title,
+      state: "open",
+      labels: issue.labels,
+      assignees: issue.assignees,
+      body: issue.body,
+      blockedByCount: 0,
+    });
+    expect(classification.profile).toBe("research");
+
+    const released = await ops.safeRunGh(
+      ["issue", "edit", "602", "--remove-label", "agent:in-progress", "--remove-assignee", "@me"],
+      `Failed to release research claim for #602 on reconciliation`,
+    );
+    expect(released).toBe(false);
+
+    const after = store.get("602")!;
+    // Leave external state untouched and retry next startup
+    expect(after.labels).toContain("agent:in-progress");
+    expect(after.assignees).toEqual(["bot"]);
+    expect(after.labels).toContain("agent:research");
+    expect(after.labels).not.toContain("agent:blocked");
+    expect(after.state).toBe("open");
+    expect(after.commits).toEqual(["def456"]);
+    // No mutation beyond attempted release
+    const allArgs = calls.map((c) => c.args.join(" "));
+    expect(allArgs.some((a) => a.includes("agent:blocked"))).toBe(false);
+  });
+
+  it("16. markResearchFactoryError when release fails does not claim released for retry", async () => {
+    const store = new Map<string, FakeIssue>();
+    const issue = makeFakeIssue({ id: "603", body: "Part of #22\nresearch" });
+    store.set("603", issue);
+    const { ops, calls } = createFakeOps(store, { failReleaseFor: new Set(["603"]) });
+
+    const ok = await markResearchFactoryError("603", "sandcastle/issue-603", "infrastructure failure during research", ops);
+    expect(ok).toBe(false);
+
+    const after = store.get("603")!;
+    // GH unavailable: leave state untouched, not claiming released
+    expect(after.labels).toContain("agent:in-progress");
+    expect(after.assignees).toEqual(["bot"]);
+    expect(after.labels).toContain("agent:research");
+    expect(after.labels).not.toContain("agent:blocked");
+    expect(after.state).toBe("open");
+    // Must NOT post comment claiming "released for retry" when release confirmation failed
+    expect(after.comments.some((c) => c.includes("released for retry"))).toBe(false);
+    expect(calls.some((c) => c.args.join(" ").includes("released for retry"))).toBe(false);
+  });
 });

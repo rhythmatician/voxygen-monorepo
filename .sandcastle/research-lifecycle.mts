@@ -126,6 +126,11 @@ export async function markResearchFactoryError(
 ): Promise<boolean> {
   const shortReason = reason.slice(0, 800);
   const released = await releaseResearchTransientClaim(issueId, ops);
+  if (!released) {
+    // Do not claim release if we couldn't confirm it; leave external state untouched for retry
+    console.warn(`  [research] Failed to release transient claim for #${issueId} — will retry next startup, not claiming released`);
+    return false;
+  }
   const commentOk = await ops.safeRunGh(
     ["issue", "comment", issueId, "--body", `Sandcastle factory infrastructure failed on \`${branch}\` — preserved branch for inspection.\n\n**Reason:** ${shortReason}\n\nBranch: \`${branch}\`\n\nThe issue was released for retry without being marked semantically blocked.`],
   );

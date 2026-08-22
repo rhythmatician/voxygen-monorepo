@@ -552,6 +552,27 @@ async function reconcileInProgressIssues(): Promise<void> {
   for (const issue of inProgress) {
     const id = String(issue.number);
     const branch = branchForIssue(issue.number);
+    // Research-aware classification BEFORE implementation batch-PR logic.
+    // Research never has a batch PR by design; optional commits are permitted.
+    // Preserve branch/commits, release transient, retain agent:research, no blocked.
+    const classification = classifyTicket(issue);
+    if (classification.profile === "research") {
+      console.log(`  #${id} (${branch}) → research in-progress stale on restart — preserving branch, releasing transient claim`);
+      const released = await safeRunGh(
+        ["issue", "edit", id, "--remove-label", "agent:in-progress", "--remove-assignee", "@me"],
+        `Failed to release research claim for #${id} on reconciliation`,
+      );
+      if (!released) {
+        console.warn(`  #${id} → failed to release research transient claim — unknown, leaving in-progress for next reconciliation`);
+        continue;
+      }
+      console.log(`  #${id} (${branch}) → research claim released, branch preserved (optional commits retained), ready for retry`);
+      continue;
+    }
+    if (classification.profile === "conflicting") {
+      console.warn(`  #${id} (${branch}) → conflicting profile (both research and implement) — skipping reconciliation mutate, requires manual triage`);
+      continue;
+    }
     // Try durable correlation: batch PR number from issue comments
     let batchPrNumber: string | null = null;
     let commentsUnknown = false;
