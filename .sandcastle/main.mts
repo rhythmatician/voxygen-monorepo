@@ -11,6 +11,22 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 const REPO_ROOT = process.cwd();
+
+// Graceful cancellation: SIGINT/SIGTERM release is eventual via startup reconciler.
+// If factory is interrupted (Ctrl+C), research and impl transient claims remain agent:in-progress;
+// next run's reconcileInProgressIssues() will release them without blocking or deleting branches.
+// This handler makes the contract explicit and ensures immediate log before exit.
+let _isShuttingDown = false;
+for (const sig of ["SIGINT", "SIGTERM"] as const) {
+  process.on(sig, () => {
+    if (_isShuttingDown) return;
+    _isShuttingDown = true;
+    console.log(`\nReceived ${sig} — factory interrupted. Transient claims (research and impl) will be reconciled on next startup (research branches preserved, not blocked). Exiting.`);
+    // Do not attempt synchronous GitHub releases here (would require async); rely on reconciler for safe eventual release.
+    // Ensure we exit promptly; use 130 for SIGINT, 143 for SIGTERM convention.
+    process.exit(sig === "SIGINT" ? 130 : 143);
+  });
+}
 import {
   isEligible,
   isResearchEligible,
@@ -68,6 +84,7 @@ import {
   type ResearchResult,
 } from "./research-result.mts";
 import {
+  RESEARCH_MAX_ITERATIONS,
   orchestrateResearchBatch,
   markResearchFactoryError as markResearchFactoryErrorLifecycle,
   shouldStopBeforeMergerForFactoryError,
@@ -1383,7 +1400,7 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
       try {
         const runResult: unknown = await sandbox!.run({
           name: "researcher",
-          maxIterations: 1,
+          maxIterations: RESEARCH_MAX_ITERATIONS,
           idleTimeoutSeconds: 1800,
           agent: sandcastle.muse("muse-spark-1.2-contributor"),
           promptFile: "./.sandcastle/research-prompt.md",
@@ -1590,32 +1607,9 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
     }),
   );
   }
-  // Await both batches at correct lifecycle boundary — research and implementation overlap
-  const [concurrentResearchBatch, concurrentSettled] = await Promise.all([
-    researchBatchPromise ?? Promise.resolve(null as Awaited<ReturnType<typeof orchestrateResearchBatch>> | null),
-    implSettledPromise ?? Promise.resolve([] as PromiseSettledResult<WorkerResult>[]),
-  ]);
-  if (concurrentResearchBatch) {
-    researchBatch = concurrentResearchBatch;
-    researchHadFactoryError = researchHadFactoryError || researchBatch.hadFactoryError;
-    for (const [id, outcome] of researchBatch.outcomes) {
-      if (outcome === "SUCCESS") {
-        console.log(`  Research #${id} completed and closed`);
-      } else {
-        const settledIdx = claimedResearch.findIndex((c) => c.id === id);
-        const settledEntry = researchBatch.settled[settledIdx];
-        const reason = settledEntry?.status === "rejected" ? String((settledEntry as PromiseRejectedResult).reason ?? "unknown").slice(0, 800) : "publication/parent/close failure";
-        console.warn(`  Research #${id} FACTORY_ERROR: ${reason}`);
-        if (!QUALIFICATION_LIFECYCLE.mutateOutcomeState) {
-          console.warn(`  Research #${id} FACTORY_ERROR suppressed by qualification policy`);
-        }
-      }
-    }
-    if (researchHadFactoryError) {
-      console.log("Research profile encountered FACTORY_ERROR — stopping outer loop (preserving sibling successes)");
-    }
-  }
-  const settled = concurrentSettled as PromiseSettledResult<WorkerResult>[];
+  // Await implementation batch immediately so it can proceed to review/merger without waiting for slowest research.
+  // Research continues concurrently in the background; per-ticket publishing already happens inside orchestrateResearchBatch.
+  const settled = (await (implSettledPromise ?? Promise.resolve([] as PromiseSettledResult<WorkerResult>[]))) as PromiseSettledResult<WorkerResult>[];
 
   // ----- Failure visibility per worker + review verdict gating -----
   const partition = partitionWorkerOutcomes(
@@ -1915,6 +1909,33 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
   for (const iss of completedIssues) {
     await safeRunGh(["issue", "comment", iss.id, "--body", `Sandcastle produced and reviewed \`${iss.branch}\`. Awaiting exact-SHA Factory / Merge Oracle evidence and PR merge; this issue remains open.`]);
     console.log(`  #${iss.id} remains open pending authoritative PR merge`);
+  }
+
+  // Await remaining research (if any) — research publishing is per-ticket inside orchestrateResearchBatch,
+  // but we need to aggregate final outcomes before deciding outer loop progression.
+  // Use explicit cwd-safe handling: research ops already use injected GitHub ops, not process.chdir().
+  if (researchBatchPromise) {
+    const concurrentResearchBatch = await researchBatchPromise;
+    researchBatch = concurrentResearchBatch;
+    if (researchBatch) {
+      researchHadFactoryError = researchHadFactoryError || researchBatch.hadFactoryError;
+      for (const [id, outcome] of researchBatch.outcomes) {
+        if (outcome === "SUCCESS") {
+          console.log(`  Research #${id} completed and closed`);
+        } else {
+          const settledIdx = claimedResearch.findIndex((c) => c.id === id);
+          const settledEntry = researchBatch.settled[settledIdx];
+          const reason = settledEntry?.status === "rejected" ? String((settledEntry as PromiseRejectedResult).reason ?? "unknown").slice(0, 800) : "publication/parent/close failure";
+          console.warn(`  Research #${id} FACTORY_ERROR: ${reason}`);
+          if (!QUALIFICATION_LIFECYCLE.mutateOutcomeState) {
+            console.warn(`  Research #${id} FACTORY_ERROR suppressed by qualification policy`);
+          }
+        }
+      }
+      if (researchHadFactoryError) {
+        console.log("Research profile encountered FACTORY_ERROR — stopping outer loop (preserving sibling successes)");
+      }
+    }
   }
 
   // Research FACTORY_ERROR should not strand already-completed implementation work.
