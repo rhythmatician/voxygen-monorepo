@@ -1941,10 +1941,8 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
     }
   }
 
-  if (publicationFailed) {
-    await settleResearchEpilogue();
-    break;
-  }
+  if (publicationFailed) await settleResearchEpilogue();
+  if (publicationFailed) break;
 
   // A local merge is not integration into main. Leave tickets open until the
   // PR is actually merged under Factory / Merge Oracle authority.
