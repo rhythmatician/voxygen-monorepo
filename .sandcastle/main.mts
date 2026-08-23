@@ -9,6 +9,7 @@ import { execFile, execSync, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { runStructuredOnce, runUnstructuredOnce, runUntilCompletion } from "./agent-run-contracts.mts";
 
 const REPO_ROOT = process.cwd();
 
@@ -1109,16 +1110,15 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
           2,
         );
         try {
-          const planRun = await sandcastle.run({
+          const planRun = await runStructuredOnce(sandcastle.run, {
             hooks,
             sandbox: docker({ env: WORKER_SANDBOX_ENV }),
             branchStrategy: { type: "branch", branch: "sandcastle/planner", baseBranch: "origin/main" },
             name: "planner",
-            maxIterations: 1,
             agent: sandcastle.muse("muse-spark-1.2-contributor"),
             promptFile: "./.sandcastle/plan-prompt.md",
             promptArgs: { ISSUES_JSON: issuesJson },
-            output: sandcastle.Output.string({ tag: "plan" }),
+            tag: "plan",
           });
           const rawPlanString: string = (planRun.output as unknown as string) ?? "";
           const planStdout = rawPlanString.includes("<plan>") ? rawPlanString : `<plan>${rawPlanString}</plan>`;
@@ -1394,11 +1394,8 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
         }
       }
       try {
-        const runResult: unknown = await sandbox!.run({
+        const runResult: unknown = await runStructuredOnce((opts) => sandbox!.run(opts as any), {
           name: "researcher",
-          maxIterations: RESEARCH_MAX_ITERATIONS,
-          // Emergency deadman only — not liveness detection. 30m matches sandcastle principled fix.
-          idleTimeoutSeconds: 1800,
           agent: sandcastle.muse("muse-spark-1.2-contributor"),
           promptFile: "./.sandcastle/research-prompt.md",
           promptArgs: {
@@ -1406,7 +1403,9 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
             ISSUE_TITLE: exactTitle,
             ISSUE_BODY: exactBody,
           },
-          output: sandcastle.Output.string({ tag: "research" }),
+          // Emergency deadman only — not liveness detection. 30m matches sandcastle principled fix.
+          idleTimeoutSeconds: 1800,
+          tag: "research",
         });
         const outputStr = (runResult as { output?: unknown })?.output as string | undefined;
         const stdoutStr = (runResult as { stdout?: string })?.stdout as string | undefined;
@@ -1450,11 +1449,8 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
         }
       }
       try {
-        let implement = await sandbox!.run({
+        let implement = await runUntilCompletion((opts) => sandbox!.run(opts as any), {
           name: "implementer",
-          maxIterations: 100,
-          // Emergency deadman only — not liveness detection. 30m matches sandcastle principled fix.
-          idleTimeoutSeconds: 1800,
           agent: sandcastle.muse("muse-spark-1.2-contributor"),
           promptFile: "./.sandcastle/implement-prompt.md",
           promptArgs: {
@@ -1464,6 +1460,9 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
             BRANCH: issue.branch,
             REVIEW_FEEDBACK: "",
           },
+          // Emergency deadman only — not liveness detection. 30m matches sandcastle principled fix.
+          idleTimeoutSeconds: 1800,
+          budget: 100,
         });
         let reviewVerdict: ReviewVerdict | null = null;
         let reviewTextForRetry = "";
@@ -1487,11 +1486,8 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
           if (reviewAttempt > 0) {
             const feedback = formatVerdictForRetry(reviewVerdict, reviewTextForRetry);
             console.log(`  Reviewer requested changes for #${issue.id} (attempt ${reviewAttempt}/${REVIEW_RETRY_BUDGET}) — re-running implementer with feedback`);
-            const retryImplement = await sandbox!.run({
+            const retryImplement = await runUntilCompletion((opts) => sandbox!.run(opts as any), {
               name: "implementer-retry",
-              maxIterations: 50,
-              // Emergency deadman only — not liveness detection. 30m matches sandcastle principled fix.
-              idleTimeoutSeconds: 1800,
               agent: sandcastle.muse("muse-spark-1.2-contributor"),
               promptFile: "./.sandcastle/implement-prompt.md",
               promptArgs: {
@@ -1501,6 +1497,9 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
                 BRANCH: issue.branch,
                 REVIEW_FEEDBACK: feedback,
               },
+              // Emergency deadman only — not liveness detection. 30m matches sandcastle principled fix.
+              idleTimeoutSeconds: 1800,
+              budget: 50,
             });
             allCommits = [...allCommits, ...(retryImplement.commits ?? [])];
             implement = retryImplement;
@@ -1515,9 +1514,8 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
             issueBody,
             allCommits,
             runReviewer: async (_issueBody, _attempt, isRetry) => {
-              const review = await sandbox!.run({
+              const review = await runStructuredOnce((opts) => sandbox!.run(opts as any), {
                 name: isRetry ? "reviewer-retry" : "reviewer",
-                maxIterations: 1,
                 agent: sandcastle.muse("muse-spark-1.2-contributor"),
                 promptFile: "./.sandcastle/review-prompt.md",
                 promptArgs: {
@@ -1526,7 +1524,8 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
                   ISSUE_TITLE: issue.title,
                   ISSUE_BODY: _issueBody,
                 },
-                output: sandcastle.Output.object({ tag: "verdict", schema: reviewVerdictSchema }),
+                tag: "verdict",
+                schema: reviewVerdictSchema,
               });
               return review;
             },
@@ -1603,11 +1602,10 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
     }
 
     try {
-      await sandcastle.run({
+      await runUnstructuredOnce(sandcastle.run, {
         hooks,
         sandbox: docker(mergerDockerOptions(WORKER_SANDBOX_ENV)),
         name: "merger",
-        maxIterations: 1,
         cwd: batchWorktreePath,
         agent: sandcastle.muse("muse-spark-1.2-contributor"),
         promptFile: path.join(REPO_ROOT, ".sandcastle", "merge-prompt.md"),

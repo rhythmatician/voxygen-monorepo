@@ -14,9 +14,15 @@ describe("Research single-iteration production-shaped", () => {
     expect(RESEARCH_MAX_ITERATIONS).toBe(1);
     expect(RESEARCH_OUTPUT_TAG).toBe("research");
     const main = fs.readFileSync(".sandcastle/main.mts", "utf8");
-    expect(main).toContain("RESEARCH_MAX_ITERATIONS");
-    expect(main).toContain('maxIterations: RESEARCH_MAX_ITERATIONS');
-    expect(main).toContain('Output.string({ tag: "research" })');
+    // After #192, research uses the typed adapter (runStructuredOnce) which injects maxIterations:1 and Output.string
+    expect(main).toContain("runStructuredOnce");
+    expect(main).toContain('tag: "research"');
+    // The adapter owns the run-mode fields; main must not directly contain the old invalid combination
+    expect(main).not.toContain('maxIterations: RESEARCH_MAX_ITERATIONS');
+    // The adapter file itself still constructs the real Output
+    const adapter = fs.readFileSync(".sandcastle/agent-run-contracts.mts", "utf8");
+    expect(adapter).toContain("Output.string");
+    expect(adapter).toContain("maxIterations: 1");
   });
 
   it("production research worker spec uses maxIterations 1: one valid <research> invokes sandbox.run exactly once", async () => {
