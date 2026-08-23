@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import * as fs from "node:fs";
-import { RESEARCH_MAX_ITERATIONS, RESEARCH_OUTPUT_TAG, orchestrateResearchBatch } from "./research-lifecycle.mts";
+import { RESEARCH_OUTPUT_TAG, orchestrateResearchBatch } from "./research-lifecycle.mts";
+import { runStructuredOnce } from "./agent-run-contracts.mts";
+import * as sandcastle from "@ai-hero/sandcastle";
 import { coordinateMixedProfileBatch, startMixedProfileBatch } from "./mixed-profile-coordinator.mts";
 import { extractResearchResult } from "./research-result.mts";
 
@@ -10,19 +12,37 @@ import { extractResearchResult } from "./research-result.mts";
  * - One valid <research> must succeed in one sandbox.run call, not 30
  */
 describe("Research single-iteration production-shaped", () => {
-  it("RESEARCH_MAX_ITERATIONS is 1 and RESEARCH_OUTPUT_TAG is research", async () => {
-    expect(RESEARCH_MAX_ITERATIONS).toBe(1);
+  it("RESEARCH_OUTPUT_TAG is research and research uses single-iteration adapter", async () => {
     expect(RESEARCH_OUTPUT_TAG).toBe("research");
     const main = fs.readFileSync(".sandcastle/main.mts", "utf8");
     // After #192, research uses the typed adapter (runStructuredOnce) which injects maxIterations:1 and Output.string
     expect(main).toContain("runStructuredOnce");
-    expect(main).toContain('tag: "research"');
+    expect(main).toContain('tag: RESEARCH_OUTPUT_TAG');
     // The adapter owns the run-mode fields; main must not directly contain the old invalid combination
     expect(main).not.toContain('maxIterations: RESEARCH_MAX_ITERATIONS');
     // The adapter file itself still constructs the real Output
     const adapter = fs.readFileSync(".sandcastle/agent-run-contracts.mts", "utf8");
     expect(adapter).toContain("Output.string");
     expect(adapter).toContain("maxIterations: 1");
+    // Verify single-iteration via adapter recording executor instead of handwritten spec
+    const { executor, calls } = (() => {
+      const calls: any[] = [];
+      const exec = async (opts: any) => {
+        calls.push(opts);
+        return { commits: [], output: "ok", stdout: "<research>ok</research>" };
+      };
+      return { executor: exec, calls };
+    })();
+    await runStructuredOnce(executor as any, {
+      name: "researcher",
+      agent: sandcastle.muse("muse-spark-1.2-contributor"),
+      promptFile: "./.sandcastle/research-prompt.md",
+      promptArgs: { TASK_ID: "1", ISSUE_TITLE: "t", ISSUE_BODY: "b" },
+      tag: RESEARCH_OUTPUT_TAG,
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].maxIterations).toBe(1);
+    expect(calls[0].output).toBeDefined();
   });
 
   it("production research worker spec uses maxIterations 1: one valid <research> invokes sandbox.run exactly once", async () => {
@@ -45,9 +65,25 @@ describe("Research single-iteration production-shaped", () => {
       };
     };
 
-    // Use production constant
-    const spec = { maxIterations: RESEARCH_MAX_ITERATIONS, output: { tag: RESEARCH_OUTPUT_TAG } };
-    const result = await fakeSandboxRun(spec as any);
+    // Use adapter via recording executor instead of handwritten spec
+    const { executor: exec2, calls: calls2 } = (() => {
+      const calls: any[] = [];
+      const exec = async (opts: any) => {
+        calls.push(opts);
+        return fakeSandboxRun(opts);
+      };
+      return { executor: exec, calls };
+    })();
+    await runStructuredOnce(exec2 as any, {
+      name: "researcher",
+      agent: sandcastle.muse("muse-spark-1.2-contributor"),
+      promptFile: "./.sandcastle/research-prompt.md",
+      promptArgs: { TASK_ID: "1", ISSUE_TITLE: "t", ISSUE_BODY: "b" },
+      tag: RESEARCH_OUTPUT_TAG,
+    });
+    expect(calls2).toHaveLength(1);
+    expect(calls2[0].maxIterations).toBe(1);
+    const result = await fakeSandboxRun({ maxIterations: 1, output: { tag: RESEARCH_OUTPUT_TAG } } as any);
     expect(sandboxRunCalls).toBe(1);
     expect(result.output).toContain("<research>");
     const extracted = extractResearchResult({ output: result.output, text: result.output, stdout: result.output });

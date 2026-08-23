@@ -279,12 +279,12 @@ describe("agent-run-contracts: compile-time negative examples", () => {
 
 // Compile-time tests — not executed at runtime (wrapped in if(false))
 if (false) {
-  // Direct object literal - existing tests
+  // Direct literals - should be errors
   runStructuredOnce(async () => ({} as any), {
     name: "planner",
     agent: null as any,
     tag: "plan",
-    // @ts-expect-error
+    // @ts-expect-error structured once should not accept maxIterations
     maxIterations: 1,
   });
 
@@ -292,7 +292,7 @@ if (false) {
     name: "planner",
     agent: null as any,
     tag: "plan",
-    // @ts-expect-error
+    // @ts-expect-error structured once should not accept completionSignal
     completionSignal: "<promise>COMPLETE</promise>",
   });
 
@@ -300,7 +300,7 @@ if (false) {
     name: "planner",
     agent: null as any,
     tag: "plan",
-    // @ts-expect-error
+    // @ts-expect-error structured once should not accept session options (resumeSession)
     resumeSession: "abc",
   });
 
@@ -308,7 +308,7 @@ if (false) {
     name: "merger",
     agent: null as any,
     promptFile: "./.sandcastle/merge-prompt.md",
-    // @ts-expect-error
+    // @ts-expect-error unstructured once should not accept output
     output: sandcastle.Output.string({ tag: "x" }),
   });
 
@@ -316,7 +316,7 @@ if (false) {
     name: "merger",
     agent: null as any,
     promptFile: "./.sandcastle/merge-prompt.md",
-    // @ts-expect-error
+    // @ts-expect-error unstructured once should not accept iterative budget
     budget: 100,
   });
 
@@ -325,7 +325,7 @@ if (false) {
     agent: null as any,
     promptFile: "./test.md",
     budget: 100,
-    // @ts-expect-error
+    // @ts-expect-error iterative should not accept output
     output: sandcastle.Output.string({ tag: "x" }),
   });
 
@@ -334,7 +334,7 @@ if (false) {
     agent: null as any,
     promptFile: "./test.md",
     budget: 100,
-    // @ts-expect-error
+    // @ts-expect-error iterative should not accept custom completionSignal
     completionSignal: "<promise>COMPLETE</promise>",
   });
 
@@ -342,56 +342,91 @@ if (false) {
     name: "planner",
     agent: null as any,
     tag: "plan",
-    // @ts-expect-error
+    // @ts-expect-error arbitrary options spread should not leak maxIterations
     maxIterations: 30,
   });
 
-  // Variable smuggling is prevented at runtime via pickAllowed (type system prevents direct literals)
-  const leaked = {
+  // Genuine variable/spread tests without as any
+  const leakedStructuredOptions = {
     name: "planner",
-    agent: null as any,
+    agent: null as unknown,
     tag: "plan",
     maxIterations: 30,
-  } as any;
-  expect(leaked.maxIterations).toBe(30);
+  };
 
-  // Spread smuggling is prevented at runtime via pickAllowed
-  const dangerous = { maxIterations: 30 };
-  const spreadResult = await runStructuredOnce(async (opts) => opts as any, {
+  // @ts-expect-error variable-carried maxIterations must be rejected
+  runStructuredOnce(async () => ({}), leakedStructuredOptions);
+
+  const dangerousModeFields = {
+    completionSignal: "<promise>WRONG</promise>",
+  };
+
+  // @ts-expect-error spread-carried completionSignal must be rejected
+  runStructuredOnce(async () => ({}), {
     name: "planner",
-    agent: null as any,
+    agent: null as unknown,
     tag: "plan",
-    ...dangerous,
-  } as any);
-  expect((spreadResult as any).maxIterations).toBeUndefined();
+    ...dangerousModeFields,
+  });
 
-  // Budget smuggled into one-shot is prevented
-  const spreadBudget = await runUnstructuredOnce(async (opts) => opts as any, {
+  const budgetSpread = {
+    budget: 100,
+  };
+
+  // @ts-expect-error spread-carried budget must be rejected for unstructured
+  runUnstructuredOnce(async () => ({}), {
     name: "merger",
-    agent: null as any,
+    agent: null as unknown,
     promptFile: "./test.md",
-    ...{ budget: 100 },
-  } as any);
-  expect((spreadBudget as any).budget).toBeUndefined();
-  expect((spreadBudget as any).maxIterations).toBe(1);
+    ...budgetSpread,
+  });
 
-  // Typed output compile-time checks - these are verified by typecheck, not runtime
-  // The following would be errors if output types were any:
-  // stringResult.output is string, objectResult.output is ReviewVerdict
+  const outputSpread = {
+    output: sandcastle.Output.string({ tag: "x" }),
+  };
+
+  // @ts-expect-error spread-carried output must be rejected for iterative
+  runUntilCompletion(async () => ({}), {
+    name: "implementer",
+    agent: null as unknown,
+    promptFile: "./test.md",
+    budget: 100,
+    ...outputSpread,
+  });
+
+  // Typed output compile-time checks
   {
     const execString: (opts: any) => Promise<{ commits: string[]; output: string; branch: string }> = async (opts) => ({ commits: [], output: "test", branch: "b" });
-    runStructuredOnce(execString, { name: "planner", agent: null as any, tag: "plan" }).then(r => {
+    runStructuredOnce(execString, { name: "planner", agent: null as unknown, tag: "plan" }).then(r => {
       const out: string = r.output;
-      expect(typeof out).toBe("string");
+      // @ts-expect-error output should be string, not number
+      const bad: number = r.output;
     });
     const schema = z.object({ approved: z.boolean(), findings: z.array(z.any()), acceptanceCriteriaMet: z.array(z.any()), summary: z.string() });
     const execObject: (opts: any) => Promise<{ commits: string[]; output: ReviewVerdict; branch: string }> = async (opts) => ({ commits: [], output: { approved: true, findings: [], acceptanceCriteriaMet: [], summary: "s" } as ReviewVerdict, branch: "b" });
-    runStructuredOnce(execObject, { name: "reviewer", agent: null as any, tag: "verdict", schema }).then(r => {
+    runStructuredOnce(execObject, { name: "reviewer", agent: null as unknown, tag: "verdict", schema }).then(r => {
       const out: ReviewVerdict = r.output;
-      expect(out.approved).toBeDefined();
+      // @ts-expect-error should be ReviewVerdict, not string
+      const bad: string = r.output;
     });
   }
 }
+
+describe("agent-run-contracts: runtime stripping", () => {
+  it("strips forbidden fields from an untyped caller before execution", async () => {
+    const { executor, calls } = createRecordingExecutor();
+    await runStructuredOnce(executor, {
+      name: "planner",
+      agent: createFakeAgent(),
+      tag: "plan",
+      maxIterations: 30,
+      completionSignal: "wrong",
+    } as any);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.maxIterations).toBe(1);
+    expect(calls[0]!.completionSignal).toEqual([]);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // 6. Installed-runtime contract
@@ -486,7 +521,7 @@ describe("agent-run-contracts: production wiring and no-bypass", () => {
     expect(main).toContain("runUntilCompletion");
 
     expect(main).toMatch(/runStructuredOnce[\s\S]*?tag:\s*["']plan["']/);
-    expect(main).toMatch(/runStructuredOnce[\s\S]*?tag:\s*["']research["']/);
+    expect(main).toMatch(/runStructuredOnce[\s\S]*?tag:\s*("research"|RESEARCH_OUTPUT_TAG)/);
     expect(main).toMatch(/runStructuredOnce[\s\S]*?tag:\s*["']verdict["']/);
     expect(main).toContain("reviewVerdictSchema");
 

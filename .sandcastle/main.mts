@@ -82,6 +82,7 @@ import {
 import {
   type RunResearchWorker,
   type ResearchBatchIssue,
+  RESEARCH_OUTPUT_TAG,
   markResearchFactoryError as markResearchFactoryErrorLifecycle,
   shouldStopBeforeNextClaimForResearchError,
 } from "./research-lifecycle.mts";
@@ -1404,7 +1405,7 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
           },
           // Emergency deadman only — not liveness detection. 30m matches sandcastle principled fix.
           idleTimeoutSeconds: 1800,
-          tag: "research",
+          tag: RESEARCH_OUTPUT_TAG,
         });
         const outputStr = (runResult as { output?: unknown })?.output as string | undefined;
         const stdoutStr = (runResult as { stdout?: string })?.stdout as string | undefined;
