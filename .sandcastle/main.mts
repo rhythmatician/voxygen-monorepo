@@ -11,6 +11,22 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 const REPO_ROOT = process.cwd();
+
+// Graceful cancellation: SIGINT/SIGTERM release is eventual via startup reconciler.
+// If factory is interrupted (Ctrl+C), research and impl transient claims remain agent:in-progress;
+// next run's reconcileInProgressIssues() will release them without blocking or deleting branches.
+// This handler makes the contract explicit and ensures immediate log before exit.
+let _isShuttingDown = false;
+for (const sig of ["SIGINT", "SIGTERM"] as const) {
+  process.on(sig, () => {
+    if (_isShuttingDown) return;
+    _isShuttingDown = true;
+    console.log(`\nReceived ${sig} — factory interrupted. Transient claims (research and impl) will be reconciled on next startup (research branches preserved, not blocked). Exiting.`);
+    // Do not attempt synchronous GitHub releases here (would require async); rely on reconciler for safe eventual release.
+    // Ensure we exit promptly; use 130 for SIGINT, 143 for SIGTERM convention.
+    process.exit(sig === "SIGINT" ? 130 : 143);
+  });
+}
 import {
   isEligible,
   isResearchEligible,
@@ -68,12 +84,14 @@ import {
   type ResearchResult,
 } from "./research-result.mts";
 import {
+  RESEARCH_MAX_ITERATIONS,
   orchestrateResearchBatch,
   markResearchFactoryError as markResearchFactoryErrorLifecycle,
   shouldStopBeforeMergerForFactoryError,
   shouldStopBeforeNextClaimForResearchError,
 } from "./research-lifecycle.mts";
 import { mergerDockerOptions } from "./merger-control.mts";
+import { startMixedProfileBatch } from "./mixed-profile-coordinator.mts";
 
 const execFileAsync = promisify(execFile);
 
@@ -1345,15 +1363,20 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
     console.log(`\nClaimed and prepared ${claimedIssues.length} implementation issue(s), launching parallel workers...\n`);
   }
 
-  // ----- Research Phase: Parallel isolated Muse researchers (via focused lifecycle module) -----
+  // ----- Research + Implementation: concurrent overlap (4-way) -----
+  // Genuinely start both batches together via production seam so tests exercise identical code.
+  let researchBatch: Awaited<ReturnType<typeof orchestrateResearchBatch>> | null = null;
+  // researchHadFactoryError already declared above
+  let runResearchWorker: ((issue: { id: string; branch: string; title: string; body?: string }) => Promise<{ result: ResearchResult; rawText: string; commits?: string[] }>) | undefined;
+  let researchSourceMap: Map<string, IssueInput> | undefined;
   if (claimedResearch.length > 0) {
     console.log(`\n=== Research profile: launching ${claimedResearch.length} isolated researcher(s) ===\n`);
     const metaKey = resolveFactoryMetaApiKey(REPO_ROOT);
-    const researchSourceMap = new Map<string, IssueInput>();
+    researchSourceMap = new Map<string, IssueInput>();
     for (const r of researchEligible) researchSourceMap.set(String(r.number), r);
 
-    const runResearchWorker = async (issue: { id: string; branch: string; title: string; body?: string }): Promise<{ result: ResearchResult; rawText: string; commits?: string[] }> => {
-      const src = researchSourceMap.get(issue.id);
+    runResearchWorker = async (issue: { id: string; branch: string; title: string; body?: string }): Promise<{ result: ResearchResult; rawText: string; commits?: string[] }> => {
+      const src = researchSourceMap!.get(issue.id);
       if (!src) throw new Error(`research source not found for #${issue.id}`);
       const exactBody = src.body ?? "";
       const exactTitle = src.title;
@@ -1380,7 +1403,8 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
       try {
         const runResult: unknown = await sandbox!.run({
           name: "researcher",
-          maxIterations: 30,
+          maxIterations: RESEARCH_MAX_ITERATIONS,
+          // Emergency deadman only — not liveness detection. 30m matches sandcastle principled fix.
           idleTimeoutSeconds: 1800,
           agent: sandcastle.muse("muse-spark-1.2-contributor"),
           promptFile: "./.sandcastle/research-prompt.md",
@@ -1408,42 +1432,10 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
         try { process.chdir(REPO_ROOT); } catch {}
       }
     };
-
-    const batch = await orchestrateResearchBatch({
-      issues: claimedResearch.map((p) => ({
-        id: p.id,
-        branch: p.branch,
-        title: p.title,
-        body: researchSourceMap.get(p.id)?.body,
-      })),
-      runWorker: runResearchWorker,
-      ops: { safeRunGh, runGh },
-      shouldMutateOutcomeState: QUALIFICATION_LIFECYCLE.mutateOutcomeState,
-    });
-
-    researchHadFactoryError = researchHadFactoryError || batch.hadFactoryError;
-    for (const [id, outcome] of batch.outcomes) {
-      if (outcome === "SUCCESS") {
-        console.log(`  Research #${id} completed and closed`);
-      } else {
-        const settledIdx = claimedResearch.findIndex((c) => c.id === id);
-        const settled = batch.settled[settledIdx];
-        const reason = settled?.status === "rejected" ? String((settled as PromiseRejectedResult).reason ?? "unknown").slice(0, 800) : "publication/parent/close failure";
-        console.warn(`  Research #${id} FACTORY_ERROR: ${reason}`);
-        if (!QUALIFICATION_LIFECYCLE.mutateOutcomeState) {
-          console.warn(`  Research #${id} FACTORY_ERROR suppressed by qualification policy`);
-        }
-      }
-    }
-
-    if (researchHadFactoryError) {
-      console.log("Research profile encountered FACTORY_ERROR — stopping outer loop (preserving sibling successes)");
-    }
   }
 
   // ----- Phase 2: Execute + Review (parallel, isolated) -----
-  const settled = await Promise.allSettled<WorkerResult>(
-    claimedIssues.map(async (issue): Promise<WorkerResult> => {
+  const runImplWorker = async (issue: { id: string; branch: string; title: string }): Promise<WorkerResult> => {
       const implementationIssueBody = issueBodyForPlannedIssue(issue.id, eligible);
       let sandbox: Awaited<ReturnType<typeof sandcastle.createSandbox>> | null = null;
       for (let attempt = 0; attempt <= MECHANICAL_RETRY_BUDGET; attempt++) {
@@ -1464,14 +1456,11 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
           await new Promise(r => setTimeout(r, backoff));
         }
       }
-      // sandbox is guaranteed non-null here (otherwise thrown)
       try {
         let implement = await sandbox!.run({
           name: "implementer",
           maxIterations: 100,
-          // Emergency deadman only — not liveness detection. 30m matches
-          // sandcastle's principled fix: live agent thinking quietly for
-          // #126-class work must not be killed; only hard cap as safety.
+          // Emergency deadman only — not liveness detection. 30m matches sandcastle principled fix.
           idleTimeoutSeconds: 1800,
           agent: sandcastle.muse("muse-spark-1.2-contributor"),
           promptFile: "./.sandcastle/implement-prompt.md",
@@ -1483,11 +1472,9 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
             REVIEW_FEEDBACK: "",
           },
         });
-        // Reviewer→implementer feedback loop — one bounded retry for mechanical/semantic misses
         let reviewVerdict: ReviewVerdict | null = null;
         let reviewTextForRetry = "";
         let allCommits = [...implement.commits];
-        // If no new commits but branch already has implementation (e.g., canary already at target SHA), use existing commits for review
         if (allCommits.length === 0) {
           try {
             const existing = execFileSync("git", ["log", `main..${issue.branch}`, "--oneline"], { encoding: "utf8", cwd: REPO_ROOT }).toString().trim();
@@ -1504,14 +1491,12 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
         let shouldRetryReview = false;
         for (let reviewAttempt = 0; reviewAttempt <= REVIEW_RETRY_BUDGET; reviewAttempt++) {
           if (implement.commits.length === 0) break;
-          // On retry, re-run implementer with reviewer feedback
           if (reviewAttempt > 0) {
             const feedback = formatVerdictForRetry(reviewVerdict, reviewTextForRetry);
             console.log(`  Reviewer requested changes for #${issue.id} (attempt ${reviewAttempt}/${REVIEW_RETRY_BUDGET}) — re-running implementer with feedback`);
             const retryImplement = await sandbox!.run({
               name: "implementer-retry",
               maxIterations: 50,
-              // Emergency deadman — see implementer above.
               idleTimeoutSeconds: 1800,
               agent: sandcastle.muse("muse-spark-1.2-contributor"),
               promptFile: "./.sandcastle/implement-prompt.md",
@@ -1527,7 +1512,6 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
             implement = retryImplement;
             if (retryImplement.commits.length === 0) break;
           }
-          // Fresh fetch of original issue body - no stale caching.
           const issueBody = await fetchIssueBody(issue.id);
           const reviewerResult = await runReviewerPass({
             issueId: issue.id,
@@ -1573,19 +1557,16 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
               reviewText: reviewerResult.reviewText,
             };
           }
-          // Not approved — loop will retry if budget remains
           if (reviewAttempt < REVIEW_RETRY_BUDGET) {
             shouldRetryReview = true;
             continue;
           }
-          // Budget exhausted — return last result for blocked handling
           return {
             commits: allCommits,
             verdict,
             reviewText: reviewerResult.reviewText,
           };
           }
-          // No commits or loop exhausted without early return
           if (implement.commits.length > 0 && shouldRetryReview) {
             return {
               commits: allCommits,
@@ -1593,16 +1574,57 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
               reviewText: reviewTextForRetry,
             };
           }
-          if (implement.commits.length > 0) {
-            // (review handled in loop above)
-          }
           return { commits: allCommits.length > 0 ? allCommits : implement.commits, verdict: reviewVerdict, reviewText: reviewTextForRetry };
       } finally {
         await sandbox!.close();
         try { process.chdir(REPO_ROOT); } catch {}
       }
-    }),
-  );
+    };
+
+  const mixed = startMixedProfileBatch({
+    researchIssues: claimedResearch.map((p) => ({
+      id: p.id,
+      branch: p.branch,
+      title: p.title,
+      body: researchSourceMap?.get(p.id)?.body,
+    })),
+    implIssues: claimedIssues,
+    eligible,
+    runResearchWorker: runResearchWorker as any,
+    runImplWorker: runImplWorker as any,
+    ops: { safeRunGh, runGh },
+    shouldMutateOutcomeState: QUALIFICATION_LIFECYCLE.mutateOutcomeState,
+  });
+
+  let _researchSettled = false;
+  const settleResearchEpilogue = async () => {
+    if (_researchSettled) return;
+    _researchSettled = true;
+    const { researchBatch: b, researchHadFactoryError: had } = await mixed.settleResearch();
+    researchBatch = b as any;
+    researchHadFactoryError = researchHadFactoryError || had;
+    if (researchBatch) {
+      for (const [id, outcome] of (researchBatch as any).outcomes) {
+        if (outcome === "SUCCESS") {
+          console.log(`  Research #${id} completed and closed`);
+        } else {
+          const settledIdx = claimedResearch.findIndex((c) => c.id === id);
+          const settledEntry = (researchBatch as any).settled[settledIdx];
+          const reason = settledEntry?.status === "rejected" ? String((settledEntry as PromiseRejectedResult).reason ?? "unknown").slice(0, 800) : "publication/parent/close failure";
+          console.warn(`  Research #${id} FACTORY_ERROR: ${reason}`);
+          if (!QUALIFICATION_LIFECYCLE.mutateOutcomeState) {
+            console.warn(`  Research #${id} FACTORY_ERROR suppressed by qualification policy`);
+          }
+        }
+      }
+      if (researchHadFactoryError) {
+        console.log("Research profile encountered FACTORY_ERROR — stopping outer loop (preserving sibling successes)");
+      }
+    }
+  };
+
+  const settled = await mixed.implSettled as unknown as PromiseSettledResult<WorkerResult>[];
+
 
   // ----- Failure visibility per worker + review verdict gating -----
   const partition = partitionWorkerOutcomes(
@@ -1693,11 +1715,13 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
 
   if (shouldStopBeforeMergerForFactoryError(partition)) {
     console.log("Factory error detected during review verdict handling. Stopping outer loop to prevent unsafe progression.");
+    await settleResearchEpilogue();
     break;
   }
 
   if (completedBranches.length === 0) {
     console.log("No commits produced. Nothing to merge this iteration.");
+    await settleResearchEpilogue();
     // Still need to handle research-only iteration: if research succeeded, we already published/closed and should continue or exit?
     // If no implement work but research succeeded, iteration is done — continue to next (which will exit if no more eligible).
     if (shouldStopBeforeNextClaimForResearchError(researchHadFactoryError)) break;
@@ -1710,6 +1734,7 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
 
   if (!QUALIFICATION_LIFECYCLE.integrate) {
     console.log("Qualification mode: integration suppressed by lifecycle policy; preserving local branches/logs for inspection.");
+    await settleResearchEpilogue();
     continue;
   }
 
@@ -1736,6 +1761,7 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
     }
     if (batchWorktreePath) { try { execSync(`git worktree remove --force ${batchWorktreePath}`, {stdio:'ignore', cwd: REPO_ROOT}); } catch {} }
     try { execSync(`git branch -D ${batchBranch}`, {stdio:'ignore', cwd: REPO_ROOT}); } catch {}
+    await settleResearchEpilogue();
     break;
   }
 
@@ -1764,6 +1790,7 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
     process.chdir(REPO_ROOT);
     try { execSync(`git worktree remove --force ${batchWorktreePath}`, {stdio:'ignore', cwd: REPO_ROOT}); } catch {}
     try { execSync(`git branch -D ${batchBranch}`, {stdio:'ignore', cwd: REPO_ROOT}); } catch {}
+    await settleResearchEpilogue();
     break;
   }
   process.chdir(REPO_ROOT);
@@ -1895,6 +1922,7 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
     }
   }
 
+  if (publicationFailed) await settleResearchEpilogue();
   if (publicationFailed) break;
 
   // A local merge is not integration into main. Leave tickets open until the
@@ -1903,6 +1931,9 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
     await safeRunGh(["issue", "comment", iss.id, "--body", `Sandcastle produced and reviewed \`${iss.branch}\`. Awaiting exact-SHA Factory / Merge Oracle evidence and PR merge; this issue remains open.`]);
     console.log(`  #${iss.id} remains open pending authoritative PR merge`);
   }
+
+  // Ensure research is settled before deciding outer loop progression (epilogue guarantees this, but call again for safety if no early exit taken)
+  await settleResearchEpilogue();
 
   // Research FACTORY_ERROR should not strand already-completed implementation work.
   // If research failed this iteration, implementation batch has already been

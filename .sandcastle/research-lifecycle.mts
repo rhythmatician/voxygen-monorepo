@@ -22,6 +22,9 @@ import type { WorkerOutcome } from "./factory-verdict-gate.mts";
  *   FACTORY_ERROR, not non-blocking. Close is not attempted on parent failure.
  */
 
+export const RESEARCH_MAX_ITERATIONS = 1 as const;
+export const RESEARCH_OUTPUT_TAG = "research" as const;
+
 export function extractParentMapId(body?: string): string | null {
   if (!body) return null;
   const m = body.match(/Part of #(\d+)/);
@@ -276,8 +279,49 @@ export async function orchestrateResearchBatch(
 ): Promise<OrchestrateResearchBatchResult> {
   const { issues, runWorker, ops, shouldMutateOutcomeState = true } = params;
 
-  // 1. Concurrent fan-out — all workers started before any is released.
-  const settled = await Promise.allSettled(issues.map((issue) => runWorker(issue)));
+  // Independent per-issue pipelines: worker → validation → publish → parent → close.
+  // Start all pipelines before awaiting any, so all researchers become active before any is released,
+  // but each fast successful ticket publishes immediately without waiting for stragglers.
+  const pipelines = issues.map(async (issue): Promise<ResearchWorkerResult> => {
+    let workerResult: ResearchWorkerResult;
+    try {
+      workerResult = await runWorker(issue);
+    } catch (e) {
+      if (shouldMutateOutcomeState) {
+        const reason = String((e as any)?.message ?? String(e ?? "unknown"));
+        await markResearchFactoryError(issue.id, issue.branch, reason, ops);
+      }
+      throw e;
+    }
+
+    const parsed = researchResultSchema.safeParse(workerResult.result);
+    if (!parsed.success) {
+      if (shouldMutateOutcomeState) {
+        await markResearchFactoryError(issue.id, issue.branch, `research validation failed for #${issue.id}: ${parsed.error.message}`, ops);
+      }
+      throw new Error(`research validation failed for #${issue.id}: ${parsed.error.message}`);
+    }
+
+    if (!shouldMutateOutcomeState) {
+      return workerResult;
+    }
+
+    const lifecycle = await completeResearchLifecycle({
+      issue,
+      result: workerResult.result,
+      rawText: workerResult.rawText,
+      ops,
+      commits: workerResult.commits,
+    });
+
+    if (lifecycle.outcome === "FACTORY_ERROR") {
+      throw new Error(`lifecycle FACTORY_ERROR for #${issue.id}`);
+    }
+
+    return workerResult;
+  });
+
+  const settled = await Promise.allSettled(pipelines);
 
   const outcomes = new Map<string, ResearchOutcome>();
   let hadFactoryError = false;
@@ -288,54 +332,16 @@ export async function orchestrateResearchBatch(
   for (let i = 0; i < issues.length; i++) {
     const issue = issues[i]!;
     const outcome = settled[i]!;
-
-    if (outcome.status === "rejected") {
-      hadFactoryError = true;
-      outcomes.set(issue.id, "FACTORY_ERROR");
-      failedIds.push(issue.id);
-      if (shouldMutateOutcomeState) {
-        const reason = String((outcome as PromiseRejectedResult).reason ?? "unknown");
-        await markResearchFactoryError(issue.id, issue.branch, reason, ops);
-      }
-      continue;
-    }
-
-    const { result, rawText, commits } = (outcome as PromiseFulfilledResult<ResearchWorkerResult>).value;
-
-    // Validate result shape strictly; invalid is FACTORY_ERROR, not success.
-    const parsed = researchResultSchema.safeParse(result);
-    if (!parsed.success) {
-      hadFactoryError = true;
-      outcomes.set(issue.id, "FACTORY_ERROR");
-      failedIds.push(issue.id);
-      if (shouldMutateOutcomeState) {
-        await markResearchFactoryError(issue.id, issue.branch, `research validation failed for #${issue.id}: ${parsed.error.message}`, ops);
-      }
-      continue;
-    }
-
-    if (!shouldMutateOutcomeState) {
+    if (outcome.status === "fulfilled") {
       outcomes.set(issue.id, "SUCCESS");
+      if (shouldMutateOutcomeState) {
+        publishedIds.push(issue.id);
+      }
       succeededIds.push(issue.id);
-      continue;
-    }
-
-    const lifecycle = await completeResearchLifecycle({
-      issue,
-      result,
-      rawText,
-      ops,
-      commits,
-    });
-
-    if (lifecycle.outcome === "FACTORY_ERROR") {
-      hadFactoryError = true;
-      outcomes.set(issue.id, "FACTORY_ERROR");
-      failedIds.push(issue.id);
     } else {
-      outcomes.set(issue.id, "SUCCESS");
-      publishedIds.push(issue.id);
-      succeededIds.push(issue.id);
+      hadFactoryError = true;
+      outcomes.set(issue.id, "FACTORY_ERROR");
+      failedIds.push(issue.id);
     }
   }
 
