@@ -881,23 +881,29 @@ async function reconcileInProgressIssues(): Promise<void> {
           try { return branchHelpers.hasCommitsAhead(REPO_ROOT, "origin/main", branchName); } catch { return false; }
         },
         deleteBranch: async (branchName: string) => {
-          try { execSync(`git branch -D ${branchName}`, { encoding: "utf8", cwd: REPO_ROOT }); } catch {}
+          let ok = true;
+          try { execSync(`git branch -D ${branchName}`, { encoding: "utf8", cwd: REPO_ROOT }); } catch { ok = false; }
           try {
             const ownerRepo = (() => { try { const o=execSync("git remote get-url origin",{encoding:"utf8"}).trim(); const m=o.match(/github\.com[:\/]([^\/]+)\/([^\/\.]+)/); if(m) return {owner:m[1],repo:m[2]}; } catch {} return null; })();
-            if (ownerRepo) await runGh(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/git/refs/heads/${branchName}`, "--method", "DELETE"]);
-          } catch {}
+            if (ownerRepo) {
+              try { await runGh(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/git/refs/heads/${branchName}`, "--method", "DELETE"]); } catch { ok = false; }
+            }
+          } catch { ok = false; }
           try {
             const provPath = path.join(REPO_ROOT, ".sandcastle", "provenance", `${branchName.replace(/[^a-zA-Z0-9-]/g, "-")}.json`);
-            fs.unlinkSync(provPath);
-          } catch {}
-          return true;
+            // Only delete if exists, otherwise not failure
+            if (fs.existsSync(provPath)) fs.unlinkSync(provPath);
+          } catch { ok = false; }
+          return ok;
         },
         addBlocked: async (issueId: string) => {
           return await safeRunGh(["issue", "edit", issueId, "--add-label", "agent:blocked"], `Failed to add agent:blocked to #${issueId}`);
         },
         markIntegrated: async (issueId: string, branchName: string) => {
-          await markIntegrated(issueId, branchName);
-          return true;
+          try {
+            await markIntegrated(issueId, branchName);
+            return true;
+          } catch { return false; }
         },
       };
       const result = await reconcileStaleImplementation(issue, branch, fullOps);

@@ -24,6 +24,7 @@ export interface CanaryResult {
   cleanupFailures: string[];
   fixtureIds: number[];
   receiptPath?: string;
+  primaryError?: string;
 }
 
 export interface CanaryOps {
@@ -264,15 +265,8 @@ export async function runCanary(ops: CanaryOps, opts: { live: boolean }): Promis
     }
     result.fixturesCleaned = result.cleanupFailures.length === 0 && fixtures.length > 0;
   }
-  // Do not discard result on primary failure; return with fixture IDs and cleanup results
   if (primaryError) {
-    // Preserve primary error info but still return result for receipt
-    // Caller (CLI) will decide to fail but receipt must contain IDs
-    // We do not throw; we return result and let caller check flags
-    // To make test detectable, we could attach error to result but not throw
-    // For now, just return result; primary failure will be visible via flags not set
-    // If caller wants to know primary error, they can check flags
-    // We also ensure fixturesCleaned reflects cleanup, not primary
+    result.primaryError = primaryError.message;
   }
   return result;
 }

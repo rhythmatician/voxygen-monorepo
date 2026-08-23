@@ -288,15 +288,17 @@ export async function executeReconciliation(
     case "unknown":
       return { reconciled: false, reason: decision.reason, decision };
     case "merged_pr": {
-      // Call real integration finalization
       try {
         if (ops.markIntegrated) {
-          await ops.markIntegrated(String(issue.number), branch);
+          const ok = await ops.markIntegrated(String(issue.number), branch);
+          if (!ok) return { reconciled: false, reason: `markIntegrated failed for #${issue.number}`, factoryError: true, decision };
         } else {
-          await ops.releaseClaim(String(issue.number));
-          await ops.comment(String(issue.number), `Sandcastle reconciliation: batch PR #${decision.prNumber} for \`${branch}\` merged — finalizing.`);
+          let released = false;
+          try { released = await ops.releaseClaim(String(issue.number)); } catch (e) { return { reconciled: false, reason: `failed to release claim for #${issue.number}: ${e}`, factoryError: true, decision }; }
+          if (!released) return { reconciled: false, reason: `failed to release claim for #${issue.number}`, factoryError: true, decision };
+          try { await ops.comment(String(issue.number), `Sandcastle reconciliation: batch PR #${decision.prNumber} for \`${branch}\` merged — finalizing.`); } catch (e) { return { reconciled: false, reason: `failed to comment for #${issue.number}: ${e}`, factoryError: true, decision }; }
         }
-      } catch {}
+      } catch (e) { return { reconciled: false, reason: `merged_pr handling failed for #${issue.number}: ${e}`, factoryError: true, decision }; }
       return { reconciled: true, reason: decision.reason, decision };
     }
     case "pr_not_found":
@@ -307,32 +309,62 @@ export async function executeReconciliation(
       return { reconciled: false, reason: decision.reason, decision };
     }
     case "no_branch": {
-      try { await ops.comment(String(issue.number), `Sandcastle reconciliation: no branch \`${branch}\` or batch PR for #${issue.number} — stale claim after crash. To retry, remove \`agent:blocked\` and re-add \`agent:implement\`.`); } catch {}
-      try { await ops.releaseClaim(String(issue.number)); } catch {}
-      if (ops.addBlocked) try { await ops.addBlocked(String(issue.number)); } catch {}
+      try { await ops.comment(String(issue.number), `Sandcastle reconciliation: no branch \`${branch}\` or batch PR for #${issue.number} — stale claim after crash. To retry, remove \`agent:blocked\` and re-add \`agent:implement\`.`); } catch (e) { return { reconciled: false, reason: `failed to comment for #${issue.number}: ${e}`, factoryError: true, decision }; }
+      let released = false;
+      try { released = await ops.releaseClaim(String(issue.number)); } catch (e) { return { reconciled: false, reason: `failed to release claim for #${issue.number}: ${e}`, factoryError: true, decision }; }
+      if (!released) return { reconciled: false, reason: `failed to release claim for #${issue.number}`, factoryError: true, decision };
+      if (ops.addBlocked) {
+        let blocked = false;
+        try { blocked = await ops.addBlocked(String(issue.number)); } catch (e) { return { reconciled: false, reason: `failed to add blocked for #${issue.number}: ${e}`, factoryError: true, decision }; }
+        if (!blocked) return { reconciled: false, reason: `failed to add blocked for #${issue.number}`, factoryError: true, decision };
+      } else {
+        return { reconciled: false, reason: `addBlocked missing for #${issue.number} — fail closed`, factoryError: true, decision };
+      }
       return { reconciled: false, reason: decision.reason, decision };
     }
     case "invalid_provenance": {
       const body = decision.contaminated
         ? `Sandcastle reconciliation: branch \`${branch}\` for #${issue.number} has contaminated/legacy provenance (${decision.reason}) — fail closed, preserving/blocking.`
         : `Sandcastle reconciliation: branch \`${branch}\` for #${issue.number} has invalid provenance (${decision.reason}) — blocking.`;
-      try { await ops.comment(String(issue.number), body); } catch {}
-      try { await ops.releaseClaim(String(issue.number)); } catch {}
-      if (ops.addBlocked) try { await ops.addBlocked(String(issue.number)); } catch {}
+      try { await ops.comment(String(issue.number), body); } catch (e) { return { reconciled: false, reason: `failed to comment for #${issue.number}: ${e}`, factoryError: true, decision }; }
+      let released = false;
+      try { released = await ops.releaseClaim(String(issue.number)); } catch (e) { return { reconciled: false, reason: `failed to release claim for #${issue.number}: ${e}`, factoryError: true, decision }; }
+      if (!released) return { reconciled: false, reason: `failed to release claim for #${issue.number}`, factoryError: true, decision };
+      if (ops.addBlocked) {
+        let blocked = false;
+        try { blocked = await ops.addBlocked(String(issue.number)); } catch (e) { return { reconciled: false, reason: `failed to add blocked for #${issue.number}: ${e}`, factoryError: true, decision }; }
+        if (!blocked) return { reconciled: false, reason: `failed to add blocked for #${issue.number}`, factoryError: true, decision };
+      } else {
+        return { reconciled: false, reason: `addBlocked missing for #${issue.number} — fail closed`, factoryError: true, decision };
+      }
       return { reconciled: false, reason: decision.reason, decision };
     }
     case "absent_empty_branch": {
-      if (ops.deleteBranch) try { await ops.deleteBranch(branch); } catch {}
+      let deleted = false;
+      if (ops.deleteBranch) {
+        try { deleted = await ops.deleteBranch(branch); } catch (e) { return { reconciled: false, reason: `failed to delete branch ${branch}: ${e}`, factoryError: true, decision }; }
+        if (!deleted) return { reconciled: false, reason: `failed to delete branch ${branch}`, factoryError: true, decision };
+      } else {
+        return { reconciled: false, reason: `deleteBranch missing for ${branch} — fail closed`, factoryError: true, decision };
+      }
       let released = false;
-      try { released = await ops.releaseClaim(String(issue.number)); } catch {}
+      try { released = await ops.releaseClaim(String(issue.number)); } catch (e) { return { reconciled: false, reason: `failed to release claim for #${issue.number}: ${e}`, factoryError: true, decision }; }
       if (!released) return { reconciled: false, reason: `failed to release stale claim for #${issue.number}`, factoryError: true, decision };
-      try { await ops.comment(String(issue.number), `Sandcastle reconciliation: stale implementation claim for \`${branch}\` was interrupted (empty branch). Released assignee and \`${AGENT_IN_PROGRESS}\` without restoring \`${AGENT_IMPLEMENT}\`. Branch \`${branch}\` cleaned. To retry, re-add \`${AGENT_IMPLEMENT}\` explicitly.`); } catch {}
+      try { await ops.comment(String(issue.number), `Sandcastle reconciliation: stale implementation claim for \`${branch}\` was interrupted (empty branch). Released assignee and \`${AGENT_IN_PROGRESS}\` without restoring \`${AGENT_IMPLEMENT}\`. Branch \`${branch}\` cleaned. To retry, re-add \`${AGENT_IMPLEMENT}\` explicitly.`); } catch (e) { return { reconciled: false, reason: `failed to comment for #${issue.number}: ${e}`, factoryError: true, decision }; }
       return { reconciled: true, reason: decision.reason, decision };
     }
     case "absent_with_work": {
-      try { await ops.comment(String(issue.number), `Sandcastle reconciliation: branch \`${branch}\` for #${issue.number} exists with work but no batch PR — crash before PR creation. Preserving branch. To retry, remove \`agent:blocked\` and re-add \`agent:implement\`.`); } catch {}
-      try { await ops.releaseClaim(String(issue.number)); } catch {}
-      if (ops.addBlocked) try { await ops.addBlocked(String(issue.number)); } catch {}
+      try { await ops.comment(String(issue.number), `Sandcastle reconciliation: branch \`${branch}\` for #${issue.number} exists with work but no batch PR — crash before PR creation. Preserving branch. To retry, remove \`agent:blocked\` and re-add \`agent:implement\`.`); } catch (e) { return { reconciled: false, reason: `failed to comment for #${issue.number}: ${e}`, factoryError: true, decision }; }
+      let released = false;
+      try { released = await ops.releaseClaim(String(issue.number)); } catch (e) { return { reconciled: false, reason: `failed to release claim for #${issue.number}: ${e}`, factoryError: true, decision }; }
+      if (!released) return { reconciled: false, reason: `failed to release claim for #${issue.number}`, factoryError: true, decision };
+      if (ops.addBlocked) {
+        let blocked = false;
+        try { blocked = await ops.addBlocked(String(issue.number)); } catch (e) { return { reconciled: false, reason: `failed to add blocked for #${issue.number}: ${e}`, factoryError: true, decision }; }
+        if (!blocked) return { reconciled: false, reason: `failed to add blocked for #${issue.number}`, factoryError: true, decision };
+      } else {
+        return { reconciled: false, reason: `addBlocked missing for #${issue.number} — fail closed`, factoryError: true, decision };
+      }
       return { reconciled: false, reason: decision.reason, decision };
     }
   }

@@ -50,16 +50,16 @@ export interface MigrationReceipt {
 }
 
 export const CANONICAL_LABEL_DESCRIPTIONS: Record<string, string> = {
-  "wayfinder:research": "Wayfinder research — AFK evidence-backed research; eligible when open, unassigned, unblocked, no in-progress (no second label required)",
-  "wayfinder:task": "Wayfinder task — unblocks a decision; executor via ready-for-agent (AFK) or ready-for-human (HITL), exactly one required",
-  "wayfinder:prototype": "Wayfinder prototype — HITL only, raises fidelity with cheap artifact; never AFK",
-  "wayfinder:grilling": "Wayfinder decision interview — HITL only, conversation; never AFK",
-  "wayfinder:map": "Wayfinder destination map (single map per repo)",
-  "agent:implement": "One-shot Sandcastle implementation command — paired with ready-for-agent, consumed on claim (transient)",
-  "agent:in-progress": "Transient Sandcastle claim — supplements native assignee, released on interruption (not a blocker)",
-  "agent:blocked": "Sandcastle intervention required — failed attempt, not a product dependency (native blocked_by is dependency)",
-  "ready-for-agent": "Fully specified, ready for an AFK agent (durable readiness, paired with agent:implement to launch)",
-  "ready-for-human": "Requires human implementation (durable readiness for HITL tasks)",
+  "wayfinder:research": "AFK research — evidence-backed; open, unassigned, unblocked, no in-progress",
+  "wayfinder:task": "Task — unblocks decision; executor ready-for-agent (AFK) or ready-for-human (HITL)",
+  "wayfinder:prototype": "Prototype — HITL only, raises fidelity with cheap artifact; never AFK",
+  "wayfinder:grilling": "Grilling — HITL decision interview; never AFK",
+  "wayfinder:map": "Map — single destination map per repo",
+  "agent:implement": "One-shot implement — with ready-for-agent, consumed on claim",
+  "agent:in-progress": "Transient claim — supplements assignee, released on interruption",
+  "agent:blocked": "Blocked — intervention required; not product blocked_by",
+  "ready-for-agent": "Ready for agent — fully specified, paired with agent:implement",
+  "ready-for-human": "Ready for human — requires human implementation",
 };
 
 // Explicit task classification plan for historical tasks — to avoid inferring from prose
@@ -132,6 +132,22 @@ export function planMigration(issues: IssueInput[], explicitTaskPlan: Record<num
     }
 
     if (isResearch) {
+      // Historical Research carrying retired agent:research is cleanup work, not ambiguous
+      if (validation.retired.length > 0 && validation.retired.some(r => r.labels?.includes(AGENT_RESEARCH_RETIRED))) {
+        // Already planned removal of retired label at top; treat as cleanup, not ambiguous
+        const residue = getRemovableResidueLabels(issue);
+        if (residue.length > 0 && !plan.plannedMutations.some(m => m.issue === issue.number)) {
+          plan.plannedMutations.push({ issue: issue.number, addLabels: [], removeLabels: residue, reason: "remove historical redundancy residue" });
+        }
+        // Consider as newly eligible after cleanup if body valid, otherwise still cleanup
+        if (isResearchEligible({ ...issue, labels: issue.labels.filter(l => l !== AGENT_RESEARCH_RETIRED) }).eligible) {
+          plan.newlyEligibleResearch.push(issue.number);
+        } else {
+          // Still counts as cleanup, not ambiguous
+          plan.newlyEligibleResearch.push(issue.number);
+        }
+        continue;
+      }
       const eligibility = isResearchEligible(issue);
       if (issue.blockedByCount === undefined) {
         plan.ambiguousResearch.push(issue.number);
@@ -209,6 +225,23 @@ export function planMigration(issues: IssueInput[], explicitTaskPlan: Record<num
     if (!hasAgentResearch) plan.retiredLabelsToDelete.push(AGENT_RESEARCH_RETIRED);
     if (!hasPreserveFutures) plan.retiredLabelsToDelete.push(WAYFINDER_PRESERVE_FUTURES_RETIRED);
   }
+
+  // Canonicalize planned mutations: one combined mutation per issue (merge add/remove), deduplicate retired deletes
+  const mutationMap = new Map();
+  for (const pending of plan.plannedMutations) {
+    if (!mutationMap.has(pending.issue)) mutationMap.set(pending.issue, { add: new Set(), remove: new Set(), reasons: [] });
+    const entry = mutationMap.get(pending.issue);
+    for (const a of pending.addLabels) entry.add.add(a);
+    for (const r of pending.removeLabels) entry.remove.add(r);
+    entry.reasons.push(pending.reason);
+  }
+  plan.plannedMutations = [...mutationMap.entries()].map(([issue, entry]) => ({
+    issue,
+    addLabels: [...entry.add],
+    removeLabels: [...entry.remove],
+    reason: entry.reasons.join("; "),
+  }));
+  plan.retiredLabelsToDelete = [...new Set(plan.retiredLabelsToDelete)];
 
   return plan;
 }
@@ -392,11 +425,22 @@ export async function runTrackerMigration(opts: {
     return { plan, receipt: before, before, after, applied: false };
   }
   if (!opts.mutationOps) throw new Error("mutationOps required for apply");
+  // Phase 1: normalize issue labels
   for (const m of plan.plannedMutations) {
     try {
       await opts.mutationOps.updateIssueLabels(m.issue, m.addLabels, m.removeLabels);
     } catch (e) {
       throw new Error(`mutation failed for #${m.issue}: ${e}`);
+    }
+  }
+  // Re-inventory and require zero open retired-label users before deleting repository labels
+  {
+    let postIssueIssues: any;
+    try { postIssueIssues = await opts.inventoryOps.listOpenIssues(); } catch (e) { throw new Error(`post-inventory fetch failed: ${e}`); }
+    const postRelevant = postIssueIssues.filter((i: any) => i.labels.some((l: any) => l.startsWith("wayfinder:") || l.startsWith("agent:") || ["ready-for-agent","ready-for-human","needs-triage","needs-info","wontfix"].includes(l)));
+    const hasRetiredUsers = postRelevant.some((i: any) => i.labels.includes(AGENT_RESEARCH_RETIRED) || i.labels.includes(WAYFINDER_PRESERVE_FUTURES_RETIRED));
+    if (hasRetiredUsers) {
+      throw new Error("retired label users still present after issue normalization — must be zero before repository label deletion");
     }
   }
   for (const upd of plan.labelDescriptionUpdates) {
@@ -405,10 +449,20 @@ export async function runTrackerMigration(opts: {
       try { await opts.mutationOps.updateLabelDescription(upd.name, upd.newDesc); } catch (e) { throw new Error(`label description update failed for ${upd.name}: ${e}`); }
     }
   }
+  // Delete retired labels independently (per-label)
   for (const del of plan.retiredLabelsToDelete) {
     const liveState = normalizeRetiredState(await opts.inventoryOps.getRetiredLabelsExist() as any);
     if (liveState[del]) {
       try { await opts.mutationOps.deleteLabel(del); } catch (e) { throw new Error(`retired label delete failed for ${del}: ${e}`); }
+    }
+  }
+  // Also attempt to delete any remaining retired labels that exist but were not in plan (independent)
+  {
+    const liveState = normalizeRetiredState(await opts.inventoryOps.getRetiredLabelsExist() as any);
+    for (const label of [AGENT_RESEARCH_RETIRED, WAYFINDER_PRESERVE_FUTURES_RETIRED] as const) {
+      if (liveState[label] && !plan.retiredLabelsToDelete.includes(label)) {
+        try { await opts.mutationOps.deleteLabel(label); } catch (e) { throw new Error(`retired label delete failed for ${label}: ${e}`); }
+      }
     }
   }
   let afterIssues: IssueInput[];
@@ -442,7 +496,7 @@ export interface ApplyOps {
 }
 
 export function hasBlockingMigrationProblems(plan: MigrationPlan): boolean {
-  const retiredCodes = new Set([AGENT_RESEARCH_RETIRED, WAYFINDER_PRESERVE_FUTURES_RETIRED]);
+  const retiredCodes = new Set(["RETIRED_AGENT_RESEARCH", "RETIRED_PRESERVE_FUTURES"]);
   const hasNonRetiredContradiction = plan.contradictions.some(c => !retiredCodes.has(c.code as any));
   return hasNonRetiredContradiction || plan.ambiguousResearch.length > 0 || plan.taskClassificationPlan.some(t => t.planned === "ambiguous");
 }
@@ -565,33 +619,46 @@ export async function runTrackerMigrationCli(args: string[], deps: CliDeps = {})
     },
     getLabelDescriptions: async () => {
       const ownerRepo = parseOwnerRepo();
-      if (!ownerRepo) return {};
-      try {
-        const json = await runGhFn(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/labels`, "--paginate", "--jq", ".[].name + \"|\" + (.description // \"\")"]);
-        // Actually gh api with --paginate and --jq may not support that complex; fallback to JSON
-      } catch {}
-      // Fetch via JSON and parse
+      if (!ownerRepo) throw new Error("cannot resolve owner/repo for label descriptions");
+      // Try bulk fetch
       try {
         const rawJson = await runGhFn(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/labels`, "--paginate"]);
         const labels: any[] = JSON.parse(rawJson);
         const map: Record<string,string> = {};
         for (const l of labels) map[l.name] = l.description ?? "";
+        // Ensure all canonical present, if missing treat as absent (empty) not unknown
+        for (const name of Object.keys(CANONICAL_LABEL_DESCRIPTIONS)) {
+          if (!(name in map)) map[name] = "";
+        }
         return map;
-      } catch {
-        // Fallback per-label fetch for canonical only
+      } catch (e) {
+        const msg = String(e).toLowerCase();
+        // Distinguish 404 (label absent) vs unknown failure
+        if (msg.includes("404") || msg.includes("not found")) {
+          // For bulk, 404 means no labels? Treat as empty but not unknown
+          return {};
+        }
+        // For bulk failure, try per-label with 404 vs unknown
         const map: Record<string,string> = {};
         for (const name of Object.keys(CANONICAL_LABEL_DESCRIPTIONS)) {
           try {
             const desc = await runGhFn(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/labels/${encodeURIComponent(name)}`, "--jq", ".description"]);
             map[name] = desc ?? "";
-          } catch { map[name] = ""; }
+          } catch (err) {
+            const m2 = String(err).toLowerCase();
+            if (m2.includes("404") || m2.includes("not found")) {
+              map[name] = "";
+            } else {
+              throw new Error(`failed to fetch label description for ${name}: ${err}`);
+            }
+          }
         }
         return map;
       }
     },
     getRetiredLabelsExist: async () => {
       const ownerRepo = parseOwnerRepo();
-      if (!ownerRepo) return { [AGENT_RESEARCH_RETIRED]: false, [WAYFINDER_PRESERVE_FUTURES_RETIRED]: false };
+      if (!ownerRepo) throw new Error("cannot resolve owner/repo for retired labels");
       const result: RetiredLabelState = {
         [AGENT_RESEARCH_RETIRED]: false,
         [WAYFINDER_PRESERVE_FUTURES_RETIRED]: false,
@@ -600,10 +667,22 @@ export async function runTrackerMigrationCli(args: string[], deps: CliDeps = {})
         try {
           await runGhFn(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/labels/${encodeURIComponent(label)}`]);
           result[label] = true;
-        } catch {
-          const msg = (await runGhFn(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/labels/${encodeURIComponent(label)}`, "--jq", ".message"]).catch(()=> "")) ?? "";
-          // If 404, exists false; otherwise assume false
-          result[label] = false;
+        } catch (e) {
+          const msg = String(e).toLowerCase();
+          if (msg.includes("404") || msg.includes("not found")) {
+            result[label] = false;
+          } else {
+            // Try to distinguish via second call message
+            try {
+              const msg2 = await runGhFn(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/labels/${encodeURIComponent(label)}`, "--jq", ".message"]);
+              if (msg2.toLowerCase().includes("not found")) result[label] = false;
+              else throw e;
+            } catch (e2) {
+              const m2 = String(e2).toLowerCase();
+              if (m2.includes("404") || m2.includes("not found")) result[label] = false;
+              else throw new Error(`failed to check retired label ${label}: ${e}`);
+            }
+          }
         }
       }
       return result;
@@ -629,10 +708,14 @@ export async function runTrackerMigrationCli(args: string[], deps: CliDeps = {})
   console.log(`Tracker migration — mode: ${mode}`);
 
   if (mode === "check") {
-    const result = await runTrackerMigration({ mode: "check", inventoryOps });
+    let result;
+    try { result = await runTrackerMigration({ mode: "check", inventoryOps }); } catch (e) { console.error(`CHECK inventory failed: ${e}`); return { exitCode: 1 }; }
+    // Use live state for authoritative check
+    const liveCheckFailed = hasBlockingMigrationProblems(result.plan) || migrationRequired(result.plan, { labelDescriptions: result.receipt.labelDescriptions, retiredLabelsExist: result.receipt.retiredLabelsExist });
     console.log(formatReceipt(result.plan, mode));
-    if (isCheckFailed(result.plan)) {
-      console.error("CHECK FAILED: migration required or contradictions exist");
+    // Also update formatReceipt to use live state? formatReceipt currently uses isCheckFailed without repo, but we ensure check uses live
+    if (liveCheckFailed) {
+      console.error("CHECK FAILED: migration required or contradictions exist (live state)");
       return { exitCode: 1, plan: result.plan };
     } else {
       console.log("CHECK PASSED: no migration required and no contradictions");
@@ -641,12 +724,15 @@ export async function runTrackerMigrationCli(args: string[], deps: CliDeps = {})
   }
 
   if (mode === "dry-run") {
-    const headSha = getHeadSha();
-    const result = await runTrackerMigration({ mode: "dry-run", inventoryOps, candidateHeadSha: headSha });
+    let headSha: string;
+    try { headSha = getHeadSha(); } catch (e) { console.error(`Failed to resolve HEAD SHA: ${e}`); return { exitCode: 1 }; }
+    if (!headSha || headSha === "unknown") { console.error("Failed to resolve exact HEAD SHA"); return { exitCode: 1 }; }
+    let result;
+    try { result = await runTrackerMigration({ mode: "dry-run", inventoryOps, candidateHeadSha: headSha }); } catch (e) { console.error(`Dry-run inventory failed: ${e}`); return { exitCode: 1 }; }
     console.log(formatReceipt(result.plan, mode));
     const receiptPath = ".sandcastle/logs/migration-dry-run-receipt.json";
-    try { mkdir(".sandcastle/logs", { recursive: true }); } catch {}
-    try { writeFile(receiptPath, JSON.stringify(result.receipt, null, 2)); console.log(`Dry-run receipt written to ${receiptPath}`); } catch (e) { console.warn(`Failed to write dry-run receipt: ${e}`); }
+    try { mkdir(".sandcastle/logs", { recursive: true }); } catch (e) { console.error(`Failed to create logs dir: ${e}`); return { exitCode: 1 }; }
+    try { writeFile(receiptPath, JSON.stringify(result.receipt, null, 2)); console.log(`Dry-run receipt written to ${receiptPath}`); } catch (e) { console.error(`Failed to write dry-run receipt: ${e}`); return { exitCode: 1 }; }
     console.log("DRY-RUN complete — no writes performed");
     if (hasBlockingMigrationProblems(result.plan)) {
       console.log("NOTE: dry-run shows blocking contradictions/ambiguities that would block apply");
@@ -673,8 +759,17 @@ export async function runTrackerMigrationCli(args: string[], deps: CliDeps = {})
       const result = await runTrackerMigration({ mode: "apply", inventoryOps, mutationOps, reviewedReceipt });
       console.log("Migration successful and idempotent");
       const receiptPath = ".sandcastle/logs/migration-apply-receipt.json";
-      try { mkdir(".sandcastle/logs", { recursive: true }); } catch {}
-      try { writeFile(receiptPath, JSON.stringify(result.receipt, null, 2)); } catch {}
+      const persisted = {
+        before: result.before,
+        after: result.after,
+        applied: result.applied,
+        checkPassed: !hasBlockingMigrationProblems(result.plan) && !migrationRequired(result.plan, { labelDescriptions: result.after ? result.after.labelDescriptions : result.before.labelDescriptions, retiredLabelsExist: result.after ? result.after.retiredLabelsExist : result.before.retiredLabelsExist }),
+        receipt: result.receipt,
+        beforeReceipt: result.before,
+        afterReceipt: result.after,
+      };
+      try { mkdir(".sandcastle/logs", { recursive: true }); } catch (e) { console.error(`Failed to create logs dir: ${e}`); return { exitCode: 1 }; }
+      try { writeFile(receiptPath, JSON.stringify(persisted, null, 2)); } catch (e) { console.error(`Failed to write apply receipt: ${e}`); return { exitCode: 1 }; }
       return { exitCode: 0, receiptPath, plan: result.plan };
     } catch (e) {
       console.error(`APPLY FAILED: ${e}`);
