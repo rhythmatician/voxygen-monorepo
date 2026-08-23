@@ -63,15 +63,7 @@ export const CANONICAL_LABEL_DESCRIPTIONS: Record<string, string> = {
 };
 
 // Explicit task classification plan for historical tasks — to avoid inferring from prose
-// If empty, ambiguous tasks will be reported and migration will fail before mutation
 export const EXPLICIT_TASK_PLAN: Record<number, "ready-for-agent" | "ready-for-human"> = {
-  // Reviewed per #195 verdict provisional classifications — committed, not edited after merge
-  // 166: feedback-baseline-run includes IDE/startup/visual evidence => ready-for-human
-  // 127: real-client visual/screenshot already assigned => ready-for-human
-  // 114: HITL assembly/validation => ready-for-human
-  // 64: AFK evidence-task executor not yet available => ready-for-human for now
-  // 61: first human-attended capability audit => ready-for-human
-  // 25: bounded repo implementation, blocker #24 closed, but body not tracer-ready => ready-for-human for this migration
   166: "ready-for-human",
   127: "ready-for-human",
   114: "ready-for-human",
@@ -108,7 +100,6 @@ export function planMigration(issues: IssueInput[], explicitTaskPlan: Record<num
       for (const c of validation.contradictions) {
         plan.contradictions.push({ issue: issue.number, code: c.code, reason: c.reason });
       }
-      // For retired labels, plan removal
       if (validation.retired.length > 0) {
         const toRemove = validation.retired.map(r => r.labels?.[0] ?? "").filter(Boolean);
         if (toRemove.length > 0) {
@@ -116,8 +107,6 @@ export function planMigration(issues: IssueInput[], explicitTaskPlan: Record<num
           plan.plannedMutations.push({ issue: issue.number, addLabels: [], removeLabels: toRemove, reason: `remove retired labels ${toRemove.join(", ")}` });
         }
       }
-      // For multiple wayfinder, etc., don't auto-mutate other labels — just report contradiction
-      // But still check task classification if it's a task without readiness
     }
 
     const wayfinderLabels = getWayfinderLabels(issue);
@@ -125,8 +114,6 @@ export function planMigration(issues: IssueInput[], explicitTaskPlan: Record<num
     const isTask = issue.labels.includes(WAYFINDER_TASK);
     const isPreserveFutures = issue.labels.includes(WAYFINDER_PRESERVE_FUTURES_RETIRED);
 
-    // Handle preserve-futures replacement: only where checkpoint intent already explicit (body contains preserve-futures or checkpoint)
-    // Spec says only where checkpoint intent is already explicit; we require body to contain "preserve" or "checkpoint" or explicit plan
     if (isPreserveFutures) {
       const body = issue.body ?? "";
       const hasIntent = body.toLowerCase().includes("preserve") || body.toLowerCase().includes("checkpoint") || body.toLowerCase().includes("/preserve-futures");
@@ -139,26 +126,20 @@ export function planMigration(issues: IssueInput[], explicitTaskPlan: Record<num
         });
       } else {
         plan.ambiguousResearch.push(issue.number);
-        // Actually ambiguous for preserve-futures without intent
         plan.contradictions.push({ issue: issue.number, code: "PRESERVE_FUTURES_NO_INTENT", reason: "wayfinder:preserve-futures without explicit checkpoint intent — requires manual review" });
       }
       continue;
     }
 
     if (isResearch) {
-      // Check eligibility under new policy (wayfinder:research alone)
       const eligibility = isResearchEligible(issue);
-      // Also check if currently blocked
       if (issue.blockedByCount === undefined) {
         plan.ambiguousResearch.push(issue.number);
         plan.contradictions.push({ issue: issue.number, code: "BLOCKED_UNKNOWN", reason: "blocked_by unknown — fail closed" });
       } else if (issue.blockedByCount > 0) {
         plan.blockedResearch.push(issue.number);
       } else if (eligibility.eligible) {
-        // Would be newly eligible — report frontier
-        // But also check if it has any other contradictory labels that would have blocked before
         if (validation.warnings.length > 0) {
-          // Has residue that would be removed but still eligible
           const residue = getRemovableResidueLabels(issue);
           if (residue.length > 0) {
             plan.plannedMutations.push({ issue: issue.number, addLabels: [], removeLabels: residue, reason: "remove historical redundancy residue" });
@@ -170,7 +151,6 @@ export function planMigration(issues: IssueInput[], explicitTaskPlan: Record<num
           plan.ambiguousResearch.push(issue.number);
         }
       } else {
-        // Not eligible for other reasons (assigned, in-progress, etc.)
         const reason = (eligibility as any).reason ?? "ineligible";
         if (reason.includes("already assigned") || reason.includes("already has")) {
           plan.blockedResearch.push(issue.number);
@@ -178,7 +158,6 @@ export function planMigration(issues: IssueInput[], explicitTaskPlan: Record<num
           plan.ambiguousResearch.push(issue.number);
         }
       }
-      // Also handle retired residue removal for research
       const residue = getRemovableResidueLabels(issue);
       if (residue.length > 0 && !plan.plannedMutations.some(m => m.issue === issue.number)) {
         plan.plannedMutations.push({ issue: issue.number, addLabels: [], removeLabels: residue, reason: "remove historical redundancy residue" });
@@ -188,11 +167,7 @@ export function planMigration(issues: IssueInput[], explicitTaskPlan: Record<num
 
     if (isTask) {
       const readiness = getTaskReadiness(issue);
-      const hasReadyAgent = issue.labels.includes(READY_FOR_AGENT);
-      const hasReadyHuman = issue.labels.includes(READY_FOR_HUMAN);
-      
       if (readiness === "none") {
-        // Need explicit classification
         const explicit = explicitTaskPlan[issue.number];
         if (explicit && (explicit === READY_FOR_AGENT || explicit === READY_FOR_HUMAN)) {
           plan.taskClassificationPlan.push({ issue: issue.number, current: [], planned: explicit, reason: "explicit plan for missing readiness" });
@@ -203,29 +178,18 @@ export function planMigration(issues: IssueInput[], explicitTaskPlan: Record<num
         }
       } else if (readiness === "both") {
         plan.taskClassificationPlan.push({ issue: issue.number, current: [READY_FOR_AGENT, READY_FOR_HUMAN], planned: "ambiguous", reason: "both readiness labels present — contradictory" });
-        // contradictions already captured
       } else {
-        // Has exactly one readiness — check if it's valid and needs no mutation
         plan.taskClassificationPlan.push({ issue: issue.number, current: [readiness], planned: readiness, reason: "already classified" });
-        // No mutation needed unless it also has retired/residue
         const residue = getRemovableResidueLabels(issue);
         if (residue.length > 0) {
           plan.plannedMutations.push({ issue: issue.number, addLabels: [], removeLabels: residue, reason: "remove residue" });
-        } else {
-          // Check if unchanged
-          if (!plan.plannedMutations.some(m => m.issue === issue.number)) {
-            // Will be counted as unchanged if no other mutations
-          }
         }
       }
-      // Also check for retired
       continue;
     }
 
-    // Non-research, non-task issues: check for retired/residue
     const residue = getRemovableResidueLabels(issue);
     if (residue.length > 0) {
-      // If not already planned
       if (!plan.plannedMutations.some(m => m.issue === issue.number && m.removeLabels.some(l => residue.includes(l)))) {
         plan.plannedMutations.push({ issue: issue.number, addLabels: [], removeLabels: residue, reason: "remove historical residue" });
       }
@@ -234,24 +198,14 @@ export function planMigration(issues: IssueInput[], explicitTaskPlan: Record<num
     }
   }
 
-  // Deduplicate unchanged: issues that had no mutations and no contradictions
-  // Already handled above
-
-  // Label description updates: check canonical vs current (we can't fetch current without ops, so plan to update all canonical)
   for (const [name, newDesc] of Object.entries(CANONICAL_LABEL_DESCRIPTIONS)) {
     plan.labelDescriptionUpdates.push({ name, oldDesc: "(unknown — will fetch live)", newDesc });
   }
 
-  // Retired labels to delete: only after no open issue depends on them
   const hasRetiredUsers = plan.retiredLabelUsers.length > 0;
   const hasPreserveFutures = issues.some(i => i.labels.includes(WAYFINDER_PRESERVE_FUTURES_RETIRED));
   const hasAgentResearch = issues.some(i => i.labels.includes(AGENT_RESEARCH_RETIRED));
   if (!hasRetiredUsers && !hasPreserveFutures && !hasAgentResearch) {
-    // Check if no open issue depends — we already know none, so safe to retire
-    // But we must not delete if any contradiction remains that is retired-related? For now, if no users, we can delete
-    // We will only delete if dry-run shows zero retired users after planned mutations would clean them
-    // For initial run, there are zero users, so we could delete, but spec says delete only after no open issue depends
-    // So we can plan to delete if no current users
     if (!hasAgentResearch) plan.retiredLabelsToDelete.push(AGENT_RESEARCH_RETIRED);
     if (!hasPreserveFutures) plan.retiredLabelsToDelete.push(WAYFINDER_PRESERVE_FUTURES_RETIRED);
   }
@@ -264,32 +218,67 @@ export interface InventoryOps {
   getLabelDescriptions: () => Promise<Record<string, string>>;
 }
 
-/**
- * Production-callable migration runner with injected inventory and mutation ops.
- * For tests: invoke with nonempty plan and prove 6 task mutations applied, etc.
- */
+export type RetiredLabelState = Record<string, boolean>;
+
 export interface InventoryOps2 {
   listOpenIssues: () => Promise<IssueInput[]>;
   getLabelDescriptions: () => Promise<Record<string, string>>;
-  getRetiredLabelsExist: () => Promise<boolean>;
+  getRetiredLabelsExist: () => Promise<RetiredLabelState | boolean>;
+  getHeadSha?: () => Promise<string>;
 }
 export interface MutationOps2 {
   updateIssueLabels: (issueNumber: number, add: string[], remove: string[]) => Promise<void>;
   updateLabelDescription: (name: string, description: string) => Promise<void>;
   deleteLabel: (name: string) => Promise<void>;
 }
+
 export interface ReviewedReceipt {
+  candidateHeadSha: string;
+  relevantIssueNumbers: number[];
   issues: Array<{ number: number; state: string; labels: string[]; assignees: string[]; blocked_by: number | undefined; bodySha256: string }>;
   labelDescriptions: Record<string, string>;
-  retiredLabelsExist: boolean;
+  retiredLabelsExist: RetiredLabelState;
   plan: MigrationPlan;
+  planSha256: string;
+  generatedAt: string;
 }
+
 function bodySha256(body: string | undefined): string {
   return createHash("sha256").update(body ?? "").digest("hex");
 }
 function sorted(arr: string[]): string[] { return [...arr].sort(); }
-export function buildReviewedReceipt(issues: IssueInput[], labelDescriptions: Record<string,string>, retiredLabelsExist: boolean, plan: MigrationPlan): ReviewedReceipt {
+function planSha256(plan: MigrationPlan): string {
+  return createHash("sha256").update(JSON.stringify(plan)).digest("hex");
+}
+function normalizeRetiredState(input: RetiredLabelState | boolean | undefined): RetiredLabelState {
+  if (typeof input === "boolean") {
+    return {
+      [AGENT_RESEARCH_RETIRED]: input,
+      [WAYFINDER_PRESERVE_FUTURES_RETIRED]: input,
+    };
+  }
+  if (!input || typeof input !== "object") {
+    return {
+      [AGENT_RESEARCH_RETIRED]: false,
+      [WAYFINDER_PRESERVE_FUTURES_RETIRED]: false,
+    };
+  }
   return {
+    [AGENT_RESEARCH_RETIRED]: !!input[AGENT_RESEARCH_RETIRED],
+    [WAYFINDER_PRESERVE_FUTURES_RETIRED]: !!input[WAYFINDER_PRESERVE_FUTURES_RETIRED],
+  };
+}
+export function buildReviewedReceipt(
+  issues: IssueInput[],
+  labelDescriptions: Record<string,string>,
+  retiredLabelsExist: RetiredLabelState | boolean,
+  plan: MigrationPlan,
+  candidateHeadSha: string = "unknown"
+): ReviewedReceipt {
+  const normalizedRetired = normalizeRetiredState(retiredLabelsExist);
+  return {
+    candidateHeadSha,
+    relevantIssueNumbers: [...issues.map(i=>i.number)].sort((a,b)=>a-b),
     issues: issues.map(i => ({
       number: i.number,
       state: i.state,
@@ -297,69 +286,112 @@ export function buildReviewedReceipt(issues: IssueInput[], labelDescriptions: Re
       assignees: sorted(i.assignees),
       blocked_by: i.blockedByCount,
       bodySha256: bodySha256(i.body),
-    })),
-    labelDescriptions,
-    retiredLabelsExist,
+    })).sort((a,b)=>a.number-b.number),
+    labelDescriptions: Object.fromEntries(Object.entries(labelDescriptions).sort()),
+    retiredLabelsExist: normalizedRetired,
     plan,
+    planSha256: planSha256(plan),
+    generatedAt: new Date().toISOString(),
   };
 }
+
 export async function runTrackerMigration(opts: {
   mode: "check" | "dry-run" | "apply";
   inventoryOps: InventoryOps2;
   mutationOps?: MutationOps2;
   reviewedReceipt?: ReviewedReceipt;
   explicitTaskPlan?: Record<number, string>;
+  candidateHeadSha?: string;
 }): Promise<{ plan: MigrationPlan; receipt: ReviewedReceipt; before: ReviewedReceipt; after?: ReviewedReceipt; applied: boolean }> {
   const issues = await opts.inventoryOps.listOpenIssues();
   const labelDescriptions = await opts.inventoryOps.getLabelDescriptions();
-  const retiredExist = await opts.inventoryOps.getRetiredLabelsExist();
+  const retiredRaw = await opts.inventoryOps.getRetiredLabelsExist();
+  const retiredExist = normalizeRetiredState(retiredRaw as any);
+  let headSha = opts.candidateHeadSha ?? "unknown";
+  if (opts.inventoryOps.getHeadSha) {
+    try { headSha = await opts.inventoryOps.getHeadSha(); } catch {}
+  } else if (!opts.candidateHeadSha) {
+    try {
+      const { execSync } = await import("node:child_process");
+      headSha = execSync("git rev-parse HEAD", { encoding: "utf8" }).trim();
+    } catch {}
+  }
   const relevant = issues.filter(i => i.labels.some(l => l.startsWith("wayfinder:") || l.startsWith("agent:") || ["ready-for-agent","ready-for-human","needs-triage","needs-info","wontfix"].includes(l)));
   const plan = planMigration(relevant, opts.explicitTaskPlan);
-  const before = buildReviewedReceipt(relevant, labelDescriptions, retiredExist, plan);
-  // For dry-run, just emit plan and before
+  const before = buildReviewedReceipt(relevant, labelDescriptions, retiredExist, plan, headSha);
   if (opts.mode === "dry-run" || opts.mode === "check") {
     return { plan, receipt: before, before, applied: false };
   }
-  // apply mode
+  // apply mode — reviewedReceipt is required
+  if (!opts.reviewedReceipt) {
+    throw new Error("apply requires --receipt <path>: missing reviewed receipt");
+  }
+  // Validate receipt bindings before any write
+  const receipt = opts.reviewedReceipt;
+  // candidate SHA mismatch
+  if (receipt.candidateHeadSha !== headSha) {
+    throw new Error(`candidate SHA mismatch: receipt ${receipt.candidateHeadSha} vs current ${headSha}`);
+  }
+  // issue-set additions/removals
+  const currentNumbers = [...relevant.map(i=>i.number)].sort((a,b)=>a-b);
+  const receiptNumbers = [...(receipt.relevantIssueNumbers ?? receipt.issues.map(i=>i.number))].sort((a,b)=>a-b);
+  if (currentNumbers.join(",") !== receiptNumbers.join(",")) {
+    throw new Error(`issue-set drift: receipt [${receiptNumbers.join(",")}] vs current [${currentNumbers.join(",")}]`);
+  }
+  // check current plan vs reviewed plan SHA
+  const currentPlanSha = planSha256(plan);
+  if (receipt.planSha256 && receipt.planSha256 !== currentPlanSha) {
+    // Also deep compare plan JSON for detailed message
+    if (JSON.stringify(receipt.plan) !== JSON.stringify(plan)) {
+      throw new Error(`current plan differs from reviewed plan: receipt sha ${receipt.planSha256.slice(0,8)} vs current ${currentPlanSha.slice(0,8)}`);
+    }
+  } else if (JSON.stringify(receipt.plan) !== JSON.stringify(plan)) {
+    throw new Error(`current plan differs from reviewed plan`);
+  }
+  // Detailed per-issue drift
+  const driftErrors: string[] = [];
+  for (const expected of receipt.issues) {
+    const live = relevant.find(i => i.number === expected.number);
+    if (!live) { driftErrors.push(`#${expected.number} missing live`); continue; }
+    if (live.state !== expected.state) driftErrors.push(`#${expected.number} state drift: ${expected.state} vs ${live.state}`);
+    if (sorted(live.labels).join(",") !== expected.labels.join(",")) driftErrors.push(`#${expected.number} labels drift: ${expected.labels.join(",")} vs ${sorted(live.labels).join(",")}`);
+    if (sorted(live.assignees).join(",") !== expected.assignees.join(",")) driftErrors.push(`#${expected.number} assignees drift`);
+    if (live.blockedByCount !== expected.blocked_by) driftErrors.push(`#${expected.number} blocked_by drift: ${expected.blocked_by} vs ${live.blockedByCount}`);
+    if (bodySha256(live.body) !== expected.bodySha256) driftErrors.push(`#${expected.number} body drift: sha ${expected.bodySha256.slice(0,8)} vs ${bodySha256(live.body).slice(0,8)}`);
+  }
+  // label-description drift
+  for (const [k,v] of Object.entries(receipt.labelDescriptions)) {
+    if (labelDescriptions[k] !== v) driftErrors.push(`label ${k} description drift: receipt "${v.slice(0,30)}" vs live "${(labelDescriptions[k] ?? "").slice(0,30)}"`);
+  }
+  // Also check any live description that receipt expected to be canonical but receipt had unknown? Receipt has actual fetched, so compare live current vs receipt
+  // For labels not in receipt but canonical, we already check via plan diff; but ensure live still matches receipt for all keys in receipt
+  // retired-label-state drift per-label
+  for (const label of [AGENT_RESEARCH_RETIRED, WAYFINDER_PRESERVE_FUTURES_RETIRED]) {
+    const receiptVal = (receipt.retiredLabelsExist as any)[label] ?? false;
+    const liveVal = retiredExist[label] ?? false;
+    if (receiptVal !== liveVal) driftErrors.push(`retired label ${label} existence drift: receipt ${receiptVal} vs live ${liveVal}`);
+  }
+  if (driftErrors.length > 0) throw new Error(`drift detected before apply: ${driftErrors.join("; ")}`);
+
   if (hasBlockingMigrationProblems(plan)) {
     throw new Error(`blocking migration problems: ${JSON.stringify(plan.contradictions.slice(0,3))}`);
   }
   if (!migrationRequired(plan, { labelDescriptions, retiredLabelsExist: retiredExist })) {
-    // Nothing to do, but still verify postcondition
     const afterIssues = await opts.inventoryOps.listOpenIssues();
+    const afterLabelDescs = await opts.inventoryOps.getLabelDescriptions();
+    const afterRetiredRaw = await opts.inventoryOps.getRetiredLabelsExist();
+    const afterRetired = normalizeRetiredState(afterRetiredRaw as any);
+    let afterHead = headSha;
+    if (opts.inventoryOps.getHeadSha) { try { afterHead = await opts.inventoryOps.getHeadSha(); } catch {} }
     const afterRelevant = afterIssues.filter(i => i.labels.some(l => l.startsWith("wayfinder:") || l.startsWith("agent:") || ["ready-for-agent","ready-for-human","needs-triage","needs-info","wontfix"].includes(l)));
     const afterPlan = planMigration(afterRelevant, opts.explicitTaskPlan);
-    if (migrationRequired(afterPlan, { labelDescriptions: await opts.inventoryOps.getLabelDescriptions(), retiredLabelsExist: await opts.inventoryOps.getRetiredLabelsExist() })) {
+    if (migrationRequired(afterPlan, { labelDescriptions: afterLabelDescs, retiredLabelsExist: afterRetired })) {
       throw new Error("postcondition failed: migration still required after no-op");
     }
-    const after = buildReviewedReceipt(afterRelevant, await opts.inventoryOps.getLabelDescriptions(), await opts.inventoryOps.getRetiredLabelsExist(), afterPlan);
+    const after = buildReviewedReceipt(afterRelevant, afterLabelDescs, afterRetired, afterPlan, afterHead);
     return { plan, receipt: before, before, after, applied: false };
   }
-  // Bind to reviewed receipt if provided: re-fetch and abort on drift before any write
-  if (opts.reviewedReceipt) {
-    // Re-fetch all expected state before any write
-    const driftErrors: string[] = [];
-    for (const expected of opts.reviewedReceipt.issues) {
-      const liveAll = await opts.inventoryOps.listOpenIssues();
-      const live = liveAll.find(i => i.number === expected.number);
-      if (!live) { driftErrors.push(`#${expected.number} missing live`); continue; }
-      if (live.state !== expected.state) driftErrors.push(`#${expected.number} state drift: ${expected.state} vs ${live.state}`);
-      if (sorted(live.labels).join(",") !== expected.labels.join(",")) driftErrors.push(`#${expected.number} labels drift: ${expected.labels.join(",")} vs ${sorted(live.labels).join(",")}`);
-      if (sorted(live.assignees).join(",") !== expected.assignees.join(",")) driftErrors.push(`#${expected.number} assignees drift`);
-      if (live.blockedByCount !== expected.blocked_by) driftErrors.push(`#${expected.number} blocked_by drift: ${expected.blocked_by} vs ${live.blockedByCount}`);
-      if (bodySha256(live.body) !== expected.bodySha256) driftErrors.push(`#${expected.number} body drift: sha ${expected.bodySha256.slice(0,8)} vs ${bodySha256(live.body).slice(0,8)}`);
-    }
-    // Also check label descriptions and retired existence drift
-    const liveLabelDescs = await opts.inventoryOps.getLabelDescriptions();
-    for (const [k,v] of Object.entries(opts.reviewedReceipt.labelDescriptions)) {
-      if (liveLabelDescs[k] !== v) driftErrors.push(`label ${k} description drift`);
-    }
-    const liveRetiredExist = await opts.inventoryOps.getRetiredLabelsExist();
-    if (liveRetiredExist !== opts.reviewedReceipt.retiredLabelsExist) driftErrors.push(`retired labels existence drift`);
-    if (driftErrors.length > 0) throw new Error(`drift detected before apply: ${driftErrors.join("; ")}`);
-  }
   if (!opts.mutationOps) throw new Error("mutationOps required for apply");
-  // Apply all mutations, each failure is fatal, no warn-and-continue
   for (const m of plan.plannedMutations) {
     try {
       await opts.mutationOps.updateIssueLabels(m.issue, m.addLabels, m.removeLabels);
@@ -368,37 +400,37 @@ export async function runTrackerMigration(opts: {
     }
   }
   for (const upd of plan.labelDescriptionUpdates) {
-    // Only if live desc differs
     const liveDesc = (await opts.inventoryOps.getLabelDescriptions())[upd.name];
     if (liveDesc !== upd.newDesc) {
       try { await opts.mutationOps.updateLabelDescription(upd.name, upd.newDesc); } catch (e) { throw new Error(`label description update failed for ${upd.name}: ${e}`); }
     }
   }
   for (const del of plan.retiredLabelsToDelete) {
-    const liveExist = await opts.inventoryOps.getRetiredLabelsExist();
-    if (liveExist) {
+    const liveState = normalizeRetiredState(await opts.inventoryOps.getRetiredLabelsExist() as any);
+    if (liveState[del]) {
       try { await opts.mutationOps.deleteLabel(del); } catch (e) { throw new Error(`retired label delete failed for ${del}: ${e}`); }
     }
   }
-  // Re-fetch after and prove no mutations required
   let afterIssues: IssueInput[];
   let afterLabelDescs: Record<string,string>;
-  let afterRetiredExist: boolean;
+  let afterRetiredRaw: RetiredLabelState | boolean;
   try {
     afterIssues = await opts.inventoryOps.listOpenIssues();
     afterLabelDescs = await opts.inventoryOps.getLabelDescriptions();
-    afterRetiredExist = await opts.inventoryOps.getRetiredLabelsExist();
+    afterRetiredRaw = await opts.inventoryOps.getRetiredLabelsExist();
   } catch (e) {
     throw new Error(`post-inventory fetch failed: ${e}`);
   }
   const afterRelevant = afterIssues.filter(i => i.labels.some(l => l.startsWith("wayfinder:") || l.startsWith("agent:") || ["ready-for-agent","ready-for-human","needs-triage","needs-info","wontfix"].includes(l)));
   const afterPlan = planMigration(afterRelevant, opts.explicitTaskPlan);
-  // Use fresh label state for after check
-  if (migrationRequired(afterPlan, { labelDescriptions: afterLabelDescs, retiredLabelsExist: afterRetiredExist })) {
-    throw new Error(`postcondition failed: still requires migration: ${JSON.stringify(afterPlan.plannedMutations.slice(0,2))}`);
+  const afterRetired = normalizeRetiredState(afterRetiredRaw as any);
+  if (migrationRequired(afterPlan, { labelDescriptions: afterLabelDescs, retiredLabelsExist: afterRetired })) {
+    throw new Error(`postcondition failed: still requires migration: ${JSON.stringify(afterPlan.plannedMutations.slice(0,2))} descNeeded=${afterPlan.labelDescriptionUpdates.some(u=>afterLabelDescs[u.name]!==u.newDesc)} retired=${JSON.stringify(afterRetired)}`);
   }
   if (hasBlockingMigrationProblems(afterPlan)) throw new Error(`postcondition blocking problems remain`);
-  const after = buildReviewedReceipt(afterRelevant, afterLabelDescs, afterRetiredExist, afterPlan);
+  let afterHead = headSha;
+  if (opts.inventoryOps.getHeadSha) { try { afterHead = await opts.inventoryOps.getHeadSha(); } catch {} }
+  const after = buildReviewedReceipt(afterRelevant, afterLabelDescs, afterRetired, afterPlan, afterHead);
   return { plan, receipt: before, before, after, applied: true };
 }
 
@@ -410,22 +442,26 @@ export interface ApplyOps {
 }
 
 export function hasBlockingMigrationProblems(plan: MigrationPlan): boolean {
-  return plan.contradictions.length > 0 || plan.ambiguousResearch.length > 0 || plan.taskClassificationPlan.some(t => t.planned === "ambiguous");
+  const retiredCodes = new Set([AGENT_RESEARCH_RETIRED, WAYFINDER_PRESERVE_FUTURES_RETIRED]);
+  const hasNonRetiredContradiction = plan.contradictions.some(c => !retiredCodes.has(c.code as any));
+  return hasNonRetiredContradiction || plan.ambiguousResearch.length > 0 || plan.taskClassificationPlan.some(t => t.planned === "ambiguous");
 }
-export function migrationRequired(plan: MigrationPlan, repositoryLabelState?: { labelDescriptions: Record<string,string>, retiredLabelsExist: boolean }): boolean {
-  const hasRealLabelUpdates = plan.labelDescriptionUpdates.some(u => u.oldDesc !== "(unknown — will fetch live)");
+export function migrationRequired(plan: MigrationPlan, repositoryLabelState?: { labelDescriptions: Record<string,string>, retiredLabelsExist: RetiredLabelState | boolean }): boolean {
   const hasMutations = plan.plannedMutations.length > 0;
-  const hasLabelDesc = hasRealLabelUpdates;
-  // For unit tests without repository state, hasRetiredDelete should not block isCheckFailed unless there are actual users
-  const hasRetiredDelete = plan.retiredLabelUsers.length > 0 && plan.retiredLabelsToDelete.length > 0;
   if (repositoryLabelState) {
     const descNeeded = plan.labelDescriptionUpdates.some(u => repositoryLabelState.labelDescriptions[u.name] !== u.newDesc);
-    return hasMutations || descNeeded || (hasRetiredDelete && repositoryLabelState.retiredLabelsExist);
+    const normalized = normalizeRetiredState(repositoryLabelState.retiredLabelsExist as any);
+    const retiredNeeded = plan.retiredLabelsToDelete.some(label => normalized[label] === true);
+    const anyRetiredExists = Object.values(normalized).some(Boolean);
+    // Independent per-label existence makes migration required (second phase after user cleanup)
+    return hasMutations || descNeeded || retiredNeeded || anyRetiredExists;
   }
-  return hasMutations || hasLabelDesc || hasRetiredDelete;
+  // Without repo state, only mutations and real label updates matter; retired existence unknown
+  const hasRealLabelUpdates = plan.labelDescriptionUpdates.some(u => u.oldDesc !== "(unknown — will fetch live)");
+  const hasLabelDesc = hasRealLabelUpdates;
+  return hasMutations || hasLabelDesc;
 }
 export function isCheckFailed(plan: MigrationPlan): boolean {
-  // --check exits nonzero for either blocking or required
   return hasBlockingMigrationProblems(plan) || migrationRequired(plan);
 }
 
@@ -446,213 +482,214 @@ export function formatReceipt(plan: MigrationPlan, mode: string): string {
   }, null, 2);
 }
 
-// CLI handling
-async function main() {
-  const args = process.argv.slice(2);
+// CLI adapter — testable entry point that constructs real ops then delegates to runTrackerMigration only
+export interface CliDeps {
+  execSync?: (cmd: string, opts?: any) => string;
+  runGh?: (args: string[]) => Promise<string>;
+  readFileSync?: (path: string, encoding: string) => string;
+  writeFileSync?: (path: string, data: string) => void;
+  mkdirSync?: (path: string, opts?: any) => void;
+  getHeadSha?: () => string;
+}
+
+export async function runTrackerMigrationCli(args: string[], deps: CliDeps = {}): Promise<{ exitCode: number; receiptPath?: string; plan?: MigrationPlan }> {
   const isCheck = args.includes("--check");
   const isDryRun = args.includes("--dry-run");
   const isApply = args.includes("--apply");
-  
   let mode: "check" | "dry-run" | "apply" = "dry-run";
   if (isCheck) mode = "check";
   else if (isApply) mode = "apply";
   else if (isDryRun) mode = "dry-run";
 
-  if (mode === "apply" && !isApply) {
-    // default should not mutate
-  }
+  const receiptArgIndex = args.indexOf("--receipt");
+  let receiptPathArg: string | undefined;
+  if (receiptArgIndex !== -1) receiptPathArg = args[receiptArgIndex + 1];
 
-  console.log(`Tracker migration — mode: ${mode}`);
-
-  // Dynamic import of gh ops to avoid top-level dependency for tests
-  const { execSync } = await import("node:child_process");
-  const ghBinary = () => {
-    const home = process.env.HOME || "";
-    const candidates = ["/usr/bin/gh", home ? `${home}/.local/bin/gh` : "", "/home/jeff/.local/bin/gh"];
-    for (const p of candidates) if (p && fsSync.existsSync(p)) return p;
-    return "gh";
-  };
-  const runGh = async (args: string[]): Promise<string> => {
+  // Resolve helpers with defaults
+  const execSyncFn = deps.execSync ?? ((await import("node:child_process")).execSync as any);
+  const runGhFn = deps.runGh ?? (async (ghArgs: string[]) => {
     const { promisify } = await import("node:util");
     const { execFile } = await import("node:child_process");
     const execFileAsync = promisify(execFile);
+    const home = process.env.HOME || "";
+    const candidates = ["/usr/bin/gh", home ? `${home}/.local/bin/gh` : "", "/home/jeff/.local/bin/gh"];
+    let bin = "gh";
+    for (const p of candidates) if (p && fsSync.existsSync(p)) { bin = p; break; }
     const token = process.env.GH_TOKEN || "";
     const env = { ...process.env, GH_TOKEN: token };
-    const bin = ghBinary();
-    const { stdout } = await execFileAsync(bin, args, { env, cwd: process.cwd(), maxBuffer: 10 * 1024 * 1024 }) as any;
+    const { stdout } = await execFileAsync(bin, ghArgs, { env, cwd: process.cwd(), maxBuffer: 10*1024*1024 }) as any;
     return (stdout as string).trim();
+  });
+
+  const readFile = deps.readFileSync ?? fsSync.readFileSync;
+  const writeFile = deps.writeFileSync ?? fsSync.writeFileSync;
+  const mkdir = deps.mkdirSync ?? fsSync.mkdirSync;
+
+  const getHeadSha = deps.getHeadSha ?? (() => {
+    try { return execSyncFn("git rev-parse HEAD", { encoding: "utf8" }).trim(); } catch { return "unknown"; }
+  });
+
+  const parseOwnerRepo = () => {
+    try {
+      const out = execSyncFn("git remote get-url origin", { encoding: "utf8" }).trim();
+      const m = out.match(/github\.com[:\/]([^\/]+)\/([^\/\.]+)/);
+      if (m) return { owner: m[1], repo: m[2] };
+    } catch {}
+    return null;
   };
 
-  // Inventory
-  let issues: IssueInput[] = [];
-  try {
-    const rawJson = await runGh(["issue", "list", "--state", "open", "--limit", "100", "--json", "number,title,body,labels,assignees,state"]);
-    const raw: any[] = JSON.parse(rawJson);
-    const ownerRepo = (() => {
+  const inventoryOps: InventoryOps2 = {
+    listOpenIssues: async () => {
+      const rawJson = await runGhFn(["issue", "list", "--state", "open", "--limit", "100", "--json", "number,title,body,labels,assignees,state"]);
+      const raw: any[] = JSON.parse(rawJson);
+      const ownerRepo = parseOwnerRepo();
+      return await Promise.all(raw.map(async (r: any) => {
+        let blockedByCount: number | undefined = undefined;
+        if (ownerRepo) {
+          try {
+            const summary = await runGhFn(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/issues/${r.number}`, "--jq", ".issue_dependencies_summary.blocked_by"]);
+            const n = parseInt(summary.trim(), 10);
+            if (!isNaN(n)) blockedByCount = n;
+          } catch { blockedByCount = undefined; }
+        }
+        return {
+          number: r.number,
+          title: r.title,
+          state: r.state.toLowerCase() as "open" | "closed",
+          labels: r.labels.map((l: any) => l.name),
+          assignees: r.assignees.map((a: any) => a.login),
+          blockedByCount,
+          body: r.body,
+        };
+      }));
+    },
+    getLabelDescriptions: async () => {
+      const ownerRepo = parseOwnerRepo();
+      if (!ownerRepo) return {};
       try {
-        const out = execSync("git remote get-url origin", { encoding: "utf8" }).trim();
-        const m = out.match(/github\.com[:/]([^/]+)\/([^/.]+)/);
-        if (m) return { owner: m[1], repo: m[2] };
+        const json = await runGhFn(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/labels`, "--paginate", "--jq", ".[].name + \"|\" + (.description // \"\")"]);
+        // Actually gh api with --paginate and --jq may not support that complex; fallback to JSON
       } catch {}
-      return null;
-    })();
-    issues = await Promise.all(raw.map(async (r: any) => {
-      let blockedByCount: number | undefined = undefined;
-      if (ownerRepo) {
+      // Fetch via JSON and parse
+      try {
+        const rawJson = await runGhFn(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/labels`, "--paginate"]);
+        const labels: any[] = JSON.parse(rawJson);
+        const map: Record<string,string> = {};
+        for (const l of labels) map[l.name] = l.description ?? "";
+        return map;
+      } catch {
+        // Fallback per-label fetch for canonical only
+        const map: Record<string,string> = {};
+        for (const name of Object.keys(CANONICAL_LABEL_DESCRIPTIONS)) {
+          try {
+            const desc = await runGhFn(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/labels/${encodeURIComponent(name)}`, "--jq", ".description"]);
+            map[name] = desc ?? "";
+          } catch { map[name] = ""; }
+        }
+        return map;
+      }
+    },
+    getRetiredLabelsExist: async () => {
+      const ownerRepo = parseOwnerRepo();
+      if (!ownerRepo) return { [AGENT_RESEARCH_RETIRED]: false, [WAYFINDER_PRESERVE_FUTURES_RETIRED]: false };
+      const result: RetiredLabelState = {
+        [AGENT_RESEARCH_RETIRED]: false,
+        [WAYFINDER_PRESERVE_FUTURES_RETIRED]: false,
+      };
+      for (const label of [AGENT_RESEARCH_RETIRED, WAYFINDER_PRESERVE_FUTURES_RETIRED] as const) {
         try {
-          const summary = await runGh(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/issues/${r.number}`, "--jq", ".issue_dependencies_summary.blocked_by"]);
-          const n = parseInt(summary.trim(), 10);
-          if (!isNaN(n)) blockedByCount = n;
+          await runGhFn(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/labels/${encodeURIComponent(label)}`]);
+          result[label] = true;
         } catch {
-          blockedByCount = undefined;
+          const msg = (await runGhFn(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/labels/${encodeURIComponent(label)}`, "--jq", ".message"]).catch(()=> "")) ?? "";
+          // If 404, exists false; otherwise assume false
+          result[label] = false;
         }
       }
-      return {
-        number: r.number,
-        title: r.title,
-        state: r.state.toLowerCase() as "open" | "closed",
-        labels: r.labels.map((l: any) => l.name),
-        assignees: r.assignees.map((a: any) => a.login),
-        blockedByCount,
-        body: r.body,
-      };
-    }));
-  } catch (e) {
-    console.error(`Failed to inventory issues: ${e}`);
-    process.exit(1);
-  }
+      return result;
+    },
+    getHeadSha: async () => getHeadSha(),
+  };
 
-  console.log(`Inventoried ${issues.length} open issues`);
+  const mutationOps: MutationOps2 = {
+    updateIssueLabels: async (issueNumber, add, remove) => {
+      const ghArgs: string[] = ["issue", "edit", String(issueNumber)];
+      for (const a of add) ghArgs.push("--add-label", a);
+      for (const r of remove) ghArgs.push("--remove-label", r);
+      await runGhFn(ghArgs);
+    },
+    updateLabelDescription: async (name, description) => {
+      await runGhFn(["api", "--method", "PATCH", `repos/${parseOwnerRepo()?.owner}/${parseOwnerRepo()?.repo}/labels/${encodeURIComponent(name)}`, "-f", `description=${description}`]);
+    },
+    deleteLabel: async (name) => {
+      await runGhFn(["api", "--method", "DELETE", `repos/${parseOwnerRepo()?.owner}/${parseOwnerRepo()?.repo}/labels/${encodeURIComponent(name)}`]);
+    },
+  };
 
-  // Filter to relevant (those with wayfinder/triage/agent labels)
-  const relevant = issues.filter(i => i.labels.some(l => l.startsWith("wayfinder:") || l.startsWith("agent:") || ["ready-for-agent","ready-for-human","needs-triage","needs-info","wontfix"].includes(l)));
-  console.log(`Relevant for migration: ${relevant.length}`);
-
-  const plan = planMigration(relevant);
-
-  console.log(formatReceipt(plan, mode));
+  console.log(`Tracker migration — mode: ${mode}`);
 
   if (mode === "check") {
-    if (isCheckFailed(plan)) {
+    const result = await runTrackerMigration({ mode: "check", inventoryOps });
+    console.log(formatReceipt(result.plan, mode));
+    if (isCheckFailed(result.plan)) {
       console.error("CHECK FAILED: migration required or contradictions exist");
-      process.exit(1);
+      return { exitCode: 1, plan: result.plan };
     } else {
       console.log("CHECK PASSED: no migration required and no contradictions");
-      process.exit(0);
+      return { exitCode: 0, plan: result.plan };
     }
   }
 
   if (mode === "dry-run") {
-    // Emit machine-readable dry-run receipt with expected state for apply binding
-    const labelDescs: Record<string,string> = {};
-    for (const u of plan.labelDescriptionUpdates) labelDescs[u.name] = u.oldDesc;
-    const receipt = buildReviewedReceipt(relevant, labelDescs, plan.retiredLabelsToDelete.length > 0, plan);
+    const headSha = getHeadSha();
+    const result = await runTrackerMigration({ mode: "dry-run", inventoryOps, candidateHeadSha: headSha });
+    console.log(formatReceipt(result.plan, mode));
     const receiptPath = ".sandcastle/logs/migration-dry-run-receipt.json";
-    try { fsSync.mkdirSync(".sandcastle/logs", { recursive: true }); } catch {}
-    try { fsSync.writeFileSync(receiptPath, JSON.stringify(receipt, null, 2)); console.log(`Dry-run receipt written to ${receiptPath}`); } catch (e) { console.warn(`Failed to write dry-run receipt: ${e}`); }
+    try { mkdir(".sandcastle/logs", { recursive: true }); } catch {}
+    try { writeFile(receiptPath, JSON.stringify(result.receipt, null, 2)); console.log(`Dry-run receipt written to ${receiptPath}`); } catch (e) { console.warn(`Failed to write dry-run receipt: ${e}`); }
     console.log("DRY-RUN complete — no writes performed");
-    if (hasBlockingMigrationProblems(plan)) {
+    if (hasBlockingMigrationProblems(result.plan)) {
       console.log("NOTE: dry-run shows blocking contradictions/ambiguities that would block apply");
-    } else if (migrationRequired(plan)) {
-      console.log("NOTE: dry-run shows migration work required (mutations/desc/retired) — apply will execute");
+    } else if (migrationRequired(result.plan, { labelDescriptions: result.receipt.labelDescriptions, retiredLabelsExist: result.receipt.retiredLabelsExist })) {
+      console.log("NOTE: dry-run shows migration work required — apply will execute");
     }
-    process.exit(0);
+    return { exitCode: 0, receiptPath, plan: result.plan };
   }
 
   if (mode === "apply") {
-    if (hasBlockingMigrationProblems(plan)) {
-      console.error("APPLY BLOCKED: contradictions or ambiguous classifications exist — resolve before apply");
-      console.error(formatReceipt(plan, mode));
-      process.exit(1);
+    if (!receiptPathArg) {
+      console.error("APPLY requires --receipt <path>: missing receipt argument");
+      return { exitCode: 1 };
     }
-    if (!migrationRequired(plan)) {
-      console.log("APPLY: no migration required — already idempotent");
-      // Still need to verify postcondition via runTrackerMigration path for consistency
-    }
-    // Verify live state hasn't drifted from reviewed plan before any writes — re-fetch every affected issue
-    const driftErrors: string[] = [];
-    for (const mut of plan.plannedMutations) {
-      try {
-        const liveJson = await runGh(["issue", "view", String(mut.issue), "--json", "number,labels,assignees,state,body"]);
-        const live = JSON.parse(liveJson);
-        const liveLabels: string[] = (live.labels ?? []).map((l:any)=>l.name).sort();
-        const planExpectedAdd = (mut.addLabels ?? []).slice().sort();
-        const planExpectedRemove = (mut.removeLabels ?? []).slice().sort();
-        // If live issue missing or state drifted, fail
-        if (live.state?.toLowerCase() !== "open") driftErrors.push(`#${mut.issue} state drifted: ${live.state}`);
-        // Check that labels we intend to remove are still present if they were expected to be, and labels we intend to add are not already contradictory
-        // Simpler: if live labels differ from inventory snapshot for this issue, drift
-        const inventoryIssue = relevant.find(r=>r.number===mut.issue);
-        if (inventoryIssue) {
-          const invLabels = [...inventoryIssue.labels].sort().join(",");
-          const liveLabelStr = liveLabels.join(",");
-          if (invLabels !== liveLabelStr && mut.reason !== "retired residue cleanup" ) {
-            // Allow retired residue drift? Actually require exact match for safety
-            // Compare expected vs live
-            const expectedAfterAdd = [...new Set([...liveLabels, ...planExpectedAdd])].filter(l=>!planExpectedRemove.includes(l)).sort().join(",");
-            // Just record drift if inventory != live
-            if (invLabels !== liveLabelStr) driftErrors.push(`#${mut.issue} labels drifted: inventory [${invLabels}] vs live [${liveLabelStr}]`);
-          }
-        }
-      } catch (e) {
-        driftErrors.push(`#${mut.issue} re-fetch failed: ${e}`);
-      }
-    }
-    if (driftErrors.length > 0) {
-      console.error("Drift detected — aborting before any mutation:");
-      for (const e of driftErrors) console.error("  "+e);
-      process.exit(1);
-    }
-    console.log("Applying mutations...");
-    for (const m of plan.plannedMutations) {
-      const args: string[] = ["issue", "edit", String(m.issue)];
-      for (const add of m.addLabels) args.push("--add-label", add);
-      for (const rem of m.removeLabels) args.push("--remove-label", rem);
-      try {
-        await runGh(args);
-        console.log(`  Mutated #${m.issue}: +${m.addLabels.join(",")} -${m.removeLabels.join(",")} (${m.reason})`);
-      } catch (e) {
-        console.error(`  Failed to mutate #${m.issue}: ${e}`);
-        process.exit(1);
-      }
-    }
-    for (const upd of plan.labelDescriptionUpdates) {
-      try {
-        await runGh(["label", "edit", upd.name, "--description", upd.newDesc]);
-        console.log(`  Updated label ${upd.name} description`);
-      } catch (e) {
-        console.warn(`  Failed to update label ${upd.name}: ${e}`);
-      }
-    }
-    for (const del of plan.retiredLabelsToDelete) {
-      try {
-        await runGh(["label", "delete", del, "--yes"]);
-        console.log(`  Deleted retired label ${del}`);
-      } catch (e) {
-        console.warn(`  Failed to delete label ${del}: ${e}`);
-      }
-    }
-    console.log("APPLY complete — rerunning check...");
-    // Re-fetch full tracker state after mutations for post-check and receipt
-    let postIssues: IssueInput[] = relevant;
+    let reviewedReceipt: ReviewedReceipt;
     try {
-      const postJson = await runGh(["issue", "list", "--state","open","--limit","100","--json","number,title,body,labels,assignees,state"]);
-      const postRaw: any[] = JSON.parse(postJson);
-      const ownerRepo2 = (()=>{ try { const out=require("node:child_process").execSync("git remote get-url origin",{encoding:"utf8"}).trim(); const m=out.match(/github\.com[:/]([^/]+)\/([^/.]+)/); if(m) return {owner:m[1],repo:m[2]};}catch{return null;}})();
-      postIssues = await Promise.all(postRaw.map(async (r:any)=>{
-        let blockedByCount: number|undefined=undefined;
-        if(ownerRepo2){ try { const s=await runGh(["api", `repos/${ownerRepo2.owner}/${ownerRepo2.repo}/issues/${r.number}`, "--jq", ".issue_dependencies_summary.blocked_by"]); const n=parseInt(s.trim(),10); if(!isNaN(n)) blockedByCount=n;}catch{} }
-        return { number:r.number, title:r.title, state:r.state.toLowerCase() as "open"|"closed", labels:r.labels.map((l:any)=>l.name), assignees:r.assignees.map((a:any)=>a.login), blockedByCount, body:r.body };
-      }));
-    } catch {}
-    const postPlan = planMigration(postIssues);
-    if (isCheckFailed(postPlan)) {
-      console.error("POST-APPLY CHECK FAILED");
-      process.exit(1);
+      const raw = readFile(receiptPathArg, "utf8");
+      reviewedReceipt = JSON.parse(raw);
+    } catch (e) {
+      console.error(`Failed to read receipt ${receiptPathArg}: ${e}`);
+      return { exitCode: 1 };
     }
-    console.log("Migration successful and idempotent");
-    process.exit(0);
+    try {
+      const result = await runTrackerMigration({ mode: "apply", inventoryOps, mutationOps, reviewedReceipt });
+      console.log("Migration successful and idempotent");
+      const receiptPath = ".sandcastle/logs/migration-apply-receipt.json";
+      try { mkdir(".sandcastle/logs", { recursive: true }); } catch {}
+      try { writeFile(receiptPath, JSON.stringify(result.receipt, null, 2)); } catch {}
+      return { exitCode: 0, receiptPath, plan: result.plan };
+    } catch (e) {
+      console.error(`APPLY FAILED: ${e}`);
+      return { exitCode: 1 };
+    }
   }
+
+  return { exitCode: 1 };
+}
+
+// CLI entry — thin wrapper around runTrackerMigrationCli
+async function main() {
+  const args = process.argv.slice(2);
+  const result = await runTrackerMigrationCli(args, {});
+  process.exit(result.exitCode);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

@@ -779,16 +779,15 @@ async function reconcileInProgressIssues(): Promise<void> {
       console.warn(`  #${id} (${branch}) → conflicting profile — skipping reconciliation mutate, requires manual triage`);
       continue;
     }
-    // Implementation stale: conservative ADR 0010 policy
-    // Successfully claimed implementation has consumed agent:implement; stale in-progress is released without restoring command.
+    // Implementation stale: full reconciliation seam with required ops — no fallback
     const hasReady = issue.labels.includes(READY_FOR_AGENT);
     const hasImplement = issue.labels.includes(AGENT_IMPLEMENT);
     const hasInProgress = issue.labels.includes(AGENT_IN_PROGRESS);
     const hasAssignee = issue.assignees.length > 0;
-    // Detect stale claimed implementation (consumed implement) or contradictory both-present
     if (hasReady && hasInProgress && hasAssignee && !hasImplement) {
-      console.log(`  #${id} (${branch}) → stale implementation claim (consumed ${AGENT_IMPLEMENT}) — releasing assignee and ${AGENT_IN_PROGRESS}`);
-      const ops = {
+      console.log(`  #${id} (${branch}) → stale implementation claim (consumed ${AGENT_IMPLEMENT}) — full seam`);
+      const fullOps = {
+        fetchIssue: async (fid: string) => issue,
         releaseClaim: async (rid: string) => {
           return await safeRunGh(
             ["issue", "edit", rid, "--remove-label", "agent:in-progress", "--remove-assignee", "@me"],
@@ -798,11 +797,112 @@ async function reconcileInProgressIssues(): Promise<void> {
         comment: async (cid: string, body: string) => {
           return await safeRunGh(["issue", "comment", cid, "--body", body]);
         },
-        fetchIssue: async (fid: string) => issue,
+        getBatchPrNumber: async (issueNumber: string) => {
+          let batchPrNumber: string | null = null;
+          let commentsUnknown = false;
+          try {
+            const commentsJson = await runGh(["issue", "view", issueNumber, "--json", "comments", "--jq", ".comments[].body"]);
+            const match = commentsJson.match(/Batch PR #(\d+)/);
+            if (match) batchPrNumber = match[1];
+          } catch (e) {
+            const msg = getErrorMessage(e);
+            const lower = msg.toLowerCase();
+            const isNotFound = lower.includes("not found") || lower.includes("no pull") || lower.includes("404");
+            if (!isNotFound) commentsUnknown = true;
+          }
+          if (commentsUnknown) return { prNumber: null, state: "unknown" as const };
+          if (batchPrNumber) return { prNumber: batchPrNumber, state: "found" as const };
+          let prListUnknown = false;
+          try {
+            const prListJson = await runGh(["pr", "list", "--state", "open", "--limit", "100", "--json", "number,body"]);
+            const prs: any[] = JSON.parse(prListJson);
+            for (const pr of prs) {
+              if (pr.body && pr.body.includes(`Closes #${issueNumber}`)) {
+                return { prNumber: String(pr.number), state: "found" as const };
+              }
+            }
+          } catch (e) {
+            prListUnknown = true;
+          }
+          if (prListUnknown) return { prNumber: null, state: "unknown" as const };
+          return { prNumber: null, state: "absent" as const };
+        },
+        getPrState: async (prNumber: string) => {
+          try {
+            const prJson = await runGh(["pr", "view", prNumber, "--json", "state,mergedAt,number"]);
+            const pr = JSON.parse(prJson);
+            return { state: pr.state, mergedAt: pr.mergedAt ?? null, found: true };
+          } catch (e) {
+            const msg = getErrorMessage(e).toLowerCase();
+            const isNotFound = msg.includes("not found") || msg.includes("could not find") || msg.includes("404");
+            if (isNotFound) return { state: "CLOSED", mergedAt: null, found: false };
+            return { state: "UNKNOWN", mergedAt: null, found: false, unknown: true };
+          }
+        },
+        checkBranchExists: async (branchName: string) => {
+          try {
+            const out = execSync(`git branch --list "${branchName}"`, { encoding: "utf8" }).trim();
+            if (out) return true;
+            const ownerRepo = (() => {
+              try { const o = execSync("git remote get-url origin", { encoding: "utf8" }).trim(); const m=o.match(/github\.com[:\/]([^\/]+)\/([^\/\.]+)/); if(m) return {owner:m[1],repo:m[2]}; } catch {} return null;
+            })();
+            if (ownerRepo) {
+              try {
+                const ref = await runGh(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/git/refs/heads/${branchName}`, "--jq", ".ref"]);
+                if (ref && ref.includes(branchName)) return true;
+              } catch {}
+            }
+            return false;
+          } catch { return false; }
+        },
+        checkProvenanceValid: async (branchName: string) => {
+          let base = "";
+          let callerBranch = "";
+          let callerSha = "";
+          try {
+            base = execSync('git rev-parse origin/main', {encoding:'utf8', cwd: REPO_ROOT}).trim();
+            callerBranch = execSync('git branch --show-current', {encoding:'utf8', cwd: REPO_ROOT}).trim();
+            callerSha = execSync('git rev-parse HEAD', {encoding:'utf8', cwd: REPO_ROOT}).trim();
+          } catch {
+            try { base = execSync('git rev-parse HEAD', {encoding:'utf8', cwd: REPO_ROOT}).trim(); } catch { base = "HEAD"; }
+            callerBranch = "reconcile";
+            callerSha = base;
+          }
+          const prep = branchHelpers.prepareIssueBranch(REPO_ROOT, branchName, base, callerBranch, callerSha, id);
+          if (!prep.ok) {
+            return { valid: false, reason: prep.reason, contaminated: prep.action === 'blocked' };
+          }
+          if (prep.action === 'recreated') {
+            return { valid: true, reason: prep.reason };
+          }
+          return { valid: true, reason: prep.reason };
+        },
+        hasCommitsAhead: async (branchName: string) => {
+          try { return branchHelpers.hasCommitsAhead(REPO_ROOT, "origin/main", branchName); } catch { return false; }
+        },
+        deleteBranch: async (branchName: string) => {
+          try { execSync(`git branch -D ${branchName}`, { encoding: "utf8", cwd: REPO_ROOT }); } catch {}
+          try {
+            const ownerRepo = (() => { try { const o=execSync("git remote get-url origin",{encoding:"utf8"}).trim(); const m=o.match(/github\.com[:\/]([^\/]+)\/([^\/\.]+)/); if(m) return {owner:m[1],repo:m[2]}; } catch {} return null; })();
+            if (ownerRepo) await runGh(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/git/refs/heads/${branchName}`, "--method", "DELETE"]);
+          } catch {}
+          try {
+            const provPath = path.join(REPO_ROOT, ".sandcastle", "provenance", `${branchName.replace(/[^a-zA-Z0-9-]/g, "-")}.json`);
+            fs.unlinkSync(provPath);
+          } catch {}
+          return true;
+        },
+        addBlocked: async (issueId: string) => {
+          return await safeRunGh(["issue", "edit", issueId, "--add-label", "agent:blocked"], `Failed to add agent:blocked to #${issueId}`);
+        },
+        markIntegrated: async (issueId: string, branchName: string) => {
+          await markIntegrated(issueId, branchName);
+          return true;
+        },
       };
-      const result = await reconcileStaleImplementation(issue, branch, ops);
+      const result = await reconcileStaleImplementation(issue, branch, fullOps);
       if (!result.reconciled) {
-        console.warn(`  #${id} → ${result.reason} — factoryError=${result.factoryError}`);
+        console.warn(`  #${id} → ${result.reason} — decision=${result.decision?.type} factoryError=${result.factoryError}`);
         if (result.factoryError) {
           console.error(`  FACTORY_ERROR reconciling #${id}: ${result.reason}`);
         }

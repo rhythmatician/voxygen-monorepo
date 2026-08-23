@@ -95,79 +95,89 @@ describe("tracker-migration — check / dry-run / apply / idempotency", () => {
 
 describe("tracker-migration — runTrackerMigration production seam", () => {
   it("apply with valid nonempty plannedMutations actually mutates 6 Tasks and second inventory shows zero", async () => {
-    const { runTrackerMigration, hasBlockingMigrationProblems, migrationRequired } = await import("./tracker-migration.mts");
-    // 6 historical tasks without readiness, using explicit plan
+    const { runTrackerMigration, hasBlockingMigrationProblems, migrationRequired, buildReviewedReceipt, planMigration } = await import("./tracker-migration.mts");
     const tasks: any[] = [166,127,114,64,61,25].map(n => ({
       number: n, title: "task "+n, state: "open", labels: ["wayfinder:task"], assignees: [], body: "Task body", blockedByCount: 0
     }));
     const explicit: Record<number,string> = {166:"ready-for-human",127:"ready-for-human",114:"ready-for-human",64:"ready-for-human",61:"ready-for-human",25:"ready-for-human"};
-    // Mock inventory: first call returns tasks without readiness, second call returns them with readiness after mutation
-    let mutated = false;
-    let call = 0;
     let labelDescs: Record<string,string> = {};
+    const headSha = "test-head-sha-001";
+    // Build receipt from initial state (dry-run)
+    const initialPlan = planMigration(tasks, explicit);
+    const receipt = buildReviewedReceipt(tasks, {}, { "agent:research": false, "wayfinder:preserve-futures": false } as any, initialPlan, headSha);
+    let call = 0;
     const inventoryOps: any = {
       listOpenIssues: async () => {
         call++;
         if (call===1) return tasks;
-        // after mutation, return with readiness
         return tasks.map((t:any) => ({...t, labels: ["wayfinder:task","ready-for-human"]}));
       },
       getLabelDescriptions: async () => ({ ...labelDescs }),
-      getRetiredLabelsExist: async () => false,
+      getRetiredLabelsExist: async () => ({ "agent:research": false, "wayfinder:preserve-futures": false }),
+      getHeadSha: async () => headSha,
     };
     const mutatedIssues: number[] = [];
     const mutationOps: any = {
-      updateIssueLabels: async (n:number, add:string[], rem:string[]) => { mutatedIssues.push(n); mutated = true; },
+      updateIssueLabels: async (n:number, add:string[], rem:string[]) => { mutatedIssues.push(n); },
       updateLabelDescription: async (name:string, desc:string) => { labelDescs[name] = desc; },
       deleteLabel: async () => {},
     };
-    const result = await runTrackerMigration({ mode: "apply", inventoryOps, mutationOps, explicitTaskPlan: explicit });
+    const result = await runTrackerMigration({ mode: "apply", inventoryOps, mutationOps, explicitTaskPlan: explicit, reviewedReceipt: receipt });
     expect(result.applied).toBe(true);
     expect(mutatedIssues.length).toBe(6);
     expect(mutatedIssues.sort((a,b)=>a-b)).toEqual([25,61,64,114,127,166]);
     expect(hasBlockingMigrationProblems(result.plan)).toBe(false);
-    // Second inventory should show zero required
     const second = await inventoryOps.listOpenIssues();
-    const { planMigration } = await import("./tracker-migration.mts");
     const plan2 = planMigration(second, explicit);
     expect(migrationRequired(plan2)).toBe(false);
   });
 
   it("contradictions block all writes (no mutation attempted)", async () => {
-    const { runTrackerMigration } = await import("./tracker-migration.mts");
+    const { runTrackerMigration, buildReviewedReceipt, planMigration } = await import("./tracker-migration.mts");
     const bad: any = { number: 1, title:"bad", state:"open", labels:["wayfinder:research","agent:implement","ready-for-agent"], assignees:[], body:"## Question\n\nValid research body with sufficient length and words to pass validation but has contradiction", blockedByCount:0 };
+    const headSha = "test-head-sha-002";
+    const plan = planMigration([bad]);
+    const receipt = buildReviewedReceipt([bad], {}, { "agent:research": false, "wayfinder:preserve-futures": false } as any, plan, headSha);
     const inventoryOps: any = {
       listOpenIssues: async () => [bad],
       getLabelDescriptions: async () => ({}),
-      getRetiredLabelsExist: async () => false,
+      getRetiredLabelsExist: async () => ({ "agent:research": false, "wayfinder:preserve-futures": false }),
+      getHeadSha: async () => headSha,
     };
     const mutationOps: any = {
       updateIssueLabels: async () => { throw new Error("should not be called"); },
       updateLabelDescription: async () => { throw new Error("should not be called"); },
       deleteLabel: async () => { throw new Error("should not be called"); },
     };
-    await expect(runTrackerMigration({ mode:"apply", inventoryOps, mutationOps })).rejects.toThrow(/blocking/);
+    await expect(runTrackerMigration({ mode:"apply", inventoryOps, mutationOps, reviewedReceipt: receipt })).rejects.toThrow(/blocking/);
   });
 
   it("mutation failure is fatal", async () => {
-    const { runTrackerMigration } = await import("./tracker-migration.mts");
+    const { runTrackerMigration, buildReviewedReceipt, planMigration } = await import("./tracker-migration.mts");
     const task: any = { number: 99, title:"task", state:"open", labels:["wayfinder:task"], assignees:[], body:"Task body", blockedByCount:0 };
+    const headSha = "test-head-sha-003";
+    const plan = planMigration([task], {99:"ready-for-human"});
+    const receipt = buildReviewedReceipt([task], {}, { "agent:research": false, "wayfinder:preserve-futures": false } as any, plan, headSha);
     const inventoryOps: any = {
       listOpenIssues: async () => [task],
       getLabelDescriptions: async () => ({}),
-      getRetiredLabelsExist: async () => false,
+      getRetiredLabelsExist: async () => ({ "agent:research": false, "wayfinder:preserve-futures": false }),
+      getHeadSha: async () => headSha,
     };
     const mutationOps: any = {
       updateIssueLabels: async () => { throw new Error("gh edit failed"); },
       updateLabelDescription: async () => {},
       deleteLabel: async () => {},
     };
-    await expect(runTrackerMigration({ mode:"apply", inventoryOps, mutationOps, explicitTaskPlan: {99:"ready-for-human"} })).rejects.toThrow(/mutation failed/);
+    await expect(runTrackerMigration({ mode:"apply", inventoryOps, mutationOps, explicitTaskPlan: {99:"ready-for-human"}, reviewedReceipt: receipt })).rejects.toThrow(/mutation failed/);
   });
 
   it("post-inventory failure is fatal", async () => {
-    const { runTrackerMigration } = await import("./tracker-migration.mts");
+    const { runTrackerMigration, buildReviewedReceipt, planMigration } = await import("./tracker-migration.mts");
     const task: any = { number: 99, title:"task", state:"open", labels:["wayfinder:task"], assignees:[], body:"Task body", blockedByCount:0 };
+    const headSha = "test-head-sha-004";
+    const plan = planMigration([task], {99:"ready-for-human"});
+    const receipt = buildReviewedReceipt([task], {}, { "agent:research": false, "wayfinder:preserve-futures": false } as any, plan, headSha);
     let first = true;
     const inventoryOps: any = {
       listOpenIssues: async () => {
@@ -175,35 +185,30 @@ describe("tracker-migration — runTrackerMigration production seam", () => {
         throw new Error("post fetch failed");
       },
       getLabelDescriptions: async () => ({}),
-      getRetiredLabelsExist: async () => false,
+      getRetiredLabelsExist: async () => ({ "agent:research": false, "wayfinder:preserve-futures": false }),
+      getHeadSha: async () => headSha,
     };
     const mutationOps: any = {
       updateIssueLabels: async () => {},
       updateLabelDescription: async () => {},
       deleteLabel: async () => {},
     };
-    await expect(runTrackerMigration({ mode:"apply", inventoryOps, mutationOps, explicitTaskPlan: {99:"ready-for-human"} })).rejects.toThrow(/post-inventory/);
+    await expect(runTrackerMigration({ mode:"apply", inventoryOps, mutationOps, explicitTaskPlan: {99:"ready-for-human"}, reviewedReceipt: receipt })).rejects.toThrow(/post-inventory/);
   });
 
   it("drift in body/assignee/blocked_by aborts before any write (no stale snapshot)", async () => {
     const { runTrackerMigration, buildReviewedReceipt, planMigration } = await import("./tracker-migration.mts");
     const task: any = { number: 77, title:"task", state:"open", labels:["wayfinder:task"], assignees:[], body:"Task body", blockedByCount:0 };
     const explicit = {77:"ready-for-human"};
-    // Build reviewed receipt from original
-    const { createHash } = await import("node:crypto");
-    const bodySha = createHash("sha256").update(task.body).digest("hex");
-    const reviewed: any = {
-      issues: [{ number:77, state:"open", labels:["wayfinder:task"], assignees:[], blocked_by:0, bodySha256: bodySha }],
-      labelDescriptions:{},
-      retiredLabelsExist:false,
-      plan: planMigration([task], explicit),
-    };
-    // Inventory now returns drifted body
+    const headSha = "test-head-sha-005";
+    const plan = planMigration([task], explicit);
+    const reviewed = buildReviewedReceipt([task], {}, { "agent:research": false, "wayfinder:preserve-futures": false } as any, plan, headSha);
     const driftedTask = {...task, body:"Task body drifted content changed"};
     const inventoryOps: any = {
       listOpenIssues: async () => [driftedTask],
       getLabelDescriptions: async () => ({}),
-      getRetiredLabelsExist: async () => false,
+      getRetiredLabelsExist: async () => ({ "agent:research": false, "wayfinder:preserve-futures": false }),
+      getHeadSha: async () => headSha,
     };
     const mutationOps: any = {
       updateIssueLabels: async () => { throw new Error("should not be called due to drift"); },
