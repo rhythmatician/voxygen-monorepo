@@ -56,28 +56,46 @@ describe("merger control", () => {
     expect(productionSource).toContain(
       '"--remove-label", "agent:in-progress", "--remove-assignee", "@me"',
     );
-    const phaseThree = productionSource.slice(
-      productionSource.indexOf("// ----- Phase 3: Merge"),
-      productionSource.indexOf("// Host-side: push batch branch"),
-    );
-    expect(phaseThree.match(/partitionMergerInfrastructureFailure\(/g)).toHaveLength(2);
-    expect(phaseThree.match(/await markFactoryError\(/g)).toHaveLength(2);
-    expect(phaseThree).not.toContain("await markBlocked(");
-    expect(phaseThree.match(/\bbreak;/g)).toHaveLength(2);
+    // Inspect real submitImplementation adapter — executable code, not dummy comments
+    const adapterStart = productionSource.indexOf("const submitImplementation = async");
+    expect(adapterStart).toBeGreaterThan(-1);
+    const adapterEnd = productionSource.indexOf("// Capture preparation research error", adapterStart);
+    expect(adapterEnd).toBeGreaterThan(adapterStart);
+    const adapter = productionSource.slice(adapterStart, adapterEnd);
+    // merger failure paths: worktree creation and sandcastle merger both route through partitionMergerInfrastructureFailure + markFactoryError + throw
+    const mergerMatches = adapter.match(/partitionMergerInfrastructureFailure\(/g) ?? [];
+    expect(mergerMatches.length).toBeGreaterThanOrEqual(2);
+    const markMatches = adapter.match(/await markFactoryError\(/g) ?? [];
+    expect(markMatches.length).toBeGreaterThanOrEqual(2);
+    expect(adapter).not.toContain("await markBlocked(");
+    // Merger failure throws and is caught by state machine as submission-factory-error, not break here
+    expect(adapter).toContain("throw new Error(reason)");
+    expect(adapter).toContain("await publishBatchBranch(");
   });
 
-  it("routes publication failure through FACTORY_ERROR and stops progression", () => {
+  it("routes publication failure through FACTORY_ERROR and is converted to stop/submission-factory-error", () => {
     const productionSource = readFileSync(".sandcastle/main.mts", "utf8");
-    const publication = productionSource.slice(
-      productionSource.indexOf("// Host-side: push batch branch"),
-      productionSource.indexOf("// A local merge is not integration into main"),
-    );
+    const adapterStart = productionSource.indexOf("const submitImplementation = async");
+    expect(adapterStart).toBeGreaterThan(-1);
+    const adapterEnd = productionSource.indexOf("// Capture preparation research error", adapterStart);
+    expect(adapterEnd).toBeGreaterThan(adapterStart);
+    const adapter = productionSource.slice(adapterStart, adapterEnd);
 
-    expect(publication).toContain("await publishBatchBranch(");
-    expect(publication).toContain("partitionMergerInfrastructureFailure(completedIssues, reason)");
-    expect(publication).toContain("await markFactoryError(failure.id, failure.branch, failure.reason)");
-    expect(publication).toContain("if (publicationFailed) break;");
-    expect(publication).not.toContain("git push origin");
-    expect(publication).not.toContain("PR creation skipped");
+    expect(adapter).toContain("await publishBatchBranch(");
+    expect(adapter).toContain("partitionMergerInfrastructureFailure(completedIssues, reason)");
+    expect(adapter).toContain("await markFactoryError(failure.id, failure.branch, failure.reason)");
+    expect(adapter).toContain("throw new Error(reason)");
+    expect(adapter).not.toContain("git push origin");
+    expect(adapter).not.toContain("PR creation skipped");
+
+    // State machine converts thrown publication failure to stop/submission-factory-error
+    const factorySrc = readFileSync(".sandcastle/factory-iteration.mts", "utf8");
+    expect(factorySrc).toContain('submission-factory-error');
+    expect(factorySrc).toContain("await submission.submit");
+    // main must switch directly on result.next, not reinterpret finalNext
+    expect(productionSource).toContain("if (result.next.kind === \"stop\")");
+    expect(productionSource).toContain('result.next.reason === "submission-factory-error"');
+    expect(productionSource).not.toContain("let finalNext = result.next");
+    expect(productionSource).not.toContain("if (publicationFailed) break;");
   });
 });

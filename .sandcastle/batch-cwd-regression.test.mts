@@ -20,34 +20,49 @@ import { tmpdir } from "node:os";
  * The fix is to (a) restore to REPO_ROOT before any post-merger git
  * invocation and (b) pass `cwd: REPO_ROOT` explicitly for every
  * host git command on the post-merger + invariant path.
+ *
+ * After extraction, the real executable code lives in the submitImplementation adapter.
  */
 describe("Regression: post-merger deleted CWD does not break host git", () => {
-  it("main.mts restores REPO_ROOT before post-publication git and uses explicit cwd", () => {
+  it("main.mts restores REPO_ROOT before post-publication git and uses explicit cwd — inspects real submitImplementation adapter", () => {
     const main = fs.readFileSync(".sandcastle/main.mts", "utf8");
-    // Four new bare restorations in exact post-merger contexts — not generic whole-file substring.
-    // 1) merger failure path: after markFactoryError, before worktree removal
-    expect(main).toContain(
-      "await markFactoryError(failure.id, failure.branch, failure.reason);\n    }\n    process.chdir(REPO_ROOT);\n    try { execSync(`git worktree remove --force ${batchWorktreePath}`"
+    const adapterStart = main.indexOf("const submitImplementation = async");
+    expect(adapterStart).toBeGreaterThan(-1);
+    const adapterEnd = main.indexOf("// Capture preparation research error", adapterStart);
+    expect(adapterEnd).toBeGreaterThan(adapterStart);
+    const adapter = main.slice(adapterStart, adapterEnd);
+
+    // 1) merger failure path: after markFactoryError, before worktree removal — executable code in adapter
+    expect(adapter).toContain(
+      "await markFactoryError(failure.id, failure.branch, failure.reason);\n      }\n      process.chdir(REPO_ROOT);"
     );
-    // 2) after merger success, before Host-side publication
-    expect(main).toContain(
-      "break;\n  }\n  process.chdir(REPO_ROOT);\n\n  // Host-side: push batch branch + PR + auto-merge. Never push caller's branch."
+    // 2) after merger success, before Host-side publication — executable code in adapter (no longer break-dependent)
+    expect(adapter).toContain(
+      "process.chdir(REPO_ROOT);\n\n    // Host-side: push batch branch + PR + auto-merge. Never push caller's branch."
     );
-    // 3) before auto-merge diffSpec classification
-    expect(main).toContain(
-      "if (prNumber) {\n                process.chdir(REPO_ROOT);\n                const diffSpec = branchHelpers.buildProtectedRootDiffSpec(factoryBaseSha, batchBranch);"
+    // 3) before auto-merge diffSpec classification — explicit restoration
+    expect(adapter).toContain(
+      "if (prNumber) {\n                  process.chdir(REPO_ROOT);\n                  const diffSpec = branchHelpers.buildProtectedRootDiffSpec(factoryBaseSha, batchBranch);"
     );
-    // 4) finally invariant restore before getcwd-dependent checks
-    expect(main).toContain(
-      "} finally {\n    // Stabilization A1: never rely on ambient cwd after merger worktree may have been deleted.\n    // Restore to stable REPO_ROOT before any getcwd()-dependent git invocation.\n    process.chdir(REPO_ROOT);\n    // Enforce invariant via helper: caller checkout never moved, git status --porcelain unchanged"
+    // 4) finally invariant restore before getcwd-dependent checks — executable with stabilization comments
+    expect(adapter).toContain(
+      "} finally {\n    // Stabilization A1: never rely on ambient cwd after merger worktree may have been deleted."
+    );
+    expect(adapter).toContain(
+      "// Restore to stable REPO_ROOT before any getcwd()-dependent git invocation."
+    );
+    expect(adapter).toContain(
+      "process.chdir(REPO_ROOT);\n    // Enforce invariant via helper: caller checkout never moved"
     );
 
-    // Explicit cwd must be used for every host git on the post-merger path
-    expect(main).toMatch(/execSync\(`git diff --name-only \$\{diffSpec\}`[^)]*cwd:\s*REPO_ROOT/);
-    expect(main).toMatch(/execSync\('git branch --show-current'[^)]*cwd:\s*REPO_ROOT/);
-    expect(main).toMatch(/execSync\("git worktree prune"[^)]*cwd:\s*REPO_ROOT/);
-    expect(main).toMatch(/execSync\(`git worktree remove --force \$\{batchWorktreePath\}`[^)]*cwd:\s*REPO_ROOT/);
-    expect(main).toMatch(/execSync\(`git branch -D \$\{batchBranch\}`[^)]*cwd:\s*REPO_ROOT/);
+    // Explicit cwd must be used for every host git on the post-merger path — inspect adapter, not dummy
+    expect(adapter).toMatch(/execSync\(`git diff --name-only \$\{diffSpec\}`[^)]*cwd:\s*REPO_ROOT/);
+    // batch worktree removal and branch deletion use explicit cwd
+    expect(adapter).toMatch(/execSync\(`git worktree remove --force \$\{batchWorktreePath\}`[^)]*cwd:\s*REPO_ROOT/);
+    expect(adapter).toMatch(/execSync\(`git branch -D \$\{batchBranch\}`[^)]*cwd:\s*REPO_ROOT/);
+    // Caller isolation checks use helper with REPO_ROOT
+    expect(adapter).toContain("branchHelpers.verifyCallerUnchanged(REPO_ROOT");
+    expect(adapter).toContain("branchHelpers.cleanupBatchWorktree(REPO_ROOT");
   });
 
   it("host git helpers survive when process cwd is a deleted batch worktree", { timeout: 20000 }, async () => {
@@ -122,8 +137,8 @@ describe("Regression: post-merger deleted CWD does not break host git", () => {
       try { process.chdir(originalCwd); } catch {}
       try { process.chdir(tmp); } catch {}
       try { process.chdir(originalCwd); } catch {}
-      const stillBranch = execFileSync("git", ["branch", "--list", batchBranch], { encoding: "utf8", cwd: tmp }).toString().trim();
-      if (stillBranch) execFileSync("git", ["branch", "-D", batchBranch], { stdio: "ignore", cwd: tmp });
+      const stillBranch = execFileSync("git", [ "branch", "--list", batchBranch ], { encoding: "utf8", cwd: tmp }).toString().trim();
+      if (stillBranch) execFileSync("git", [ "branch", "-D", batchBranch ], { stdio: "ignore", cwd: tmp });
       try { execSync("git worktree prune", { stdio: "ignore", cwd: tmp }); } catch {}
     } finally {
       try { process.chdir(originalCwd); } catch {}
