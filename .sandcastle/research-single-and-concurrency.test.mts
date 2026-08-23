@@ -220,40 +220,36 @@ describe("Research + implementation concurrency via production coordinator", () 
       { id: "fail", branch: "sandcastle/issue-fail", title: "R", body: "Part of #22" },
     ];
 
-    // Start both batches concurrently as production does: research and impl promises created before awaiting
-    const researchPromise = orchestrateResearchBatch({
-      issues: researchIssues,
-      runWorker: researchWorker,
+    // Use production seam so tests exercise identical code to main.mts
+    const mixed = startMixedProfileBatch({
+      researchIssues,
+      implIssues: [{ id: "184", branch: "sandcastle/issue-184", title: "Impl" }],
+      eligible: [],
+      runResearchWorker: researchWorker as any,
+      runImplWorker: implWorker as any,
       ops: fakeOps as any,
+      shouldMutateOutcomeState: true,
     });
-    const implTrackPromise = (async () => {
-      await track("impl-184", 15);
-      return { commits: ["abc"] };
-    })();
 
-    // Use real production concurrent start: both promises already started
-    // Wait a bit to let fast research publish while slow still blocked
+    // Wait a bit to let fast research publish while slow still blocked — impl runs concurrently
     await new Promise(r => setTimeout(r, 25));
-    // At this point, fast should have completed and published, slow still blocked, impl active
-    // maxActive should have been 4 at some point (3 research +1 impl)
-    // We need to let impl complete and then release slow
-    const implResult = await implTrackPromise;
-    expect(implResult).toBeDefined();
+    const implSettled = await mixed.implSettled;
+    expect(implSettled[0].status).toBe("fulfilled");
     // Impl completed without waiting for slow research
     expect(publishTimes.has("fast")).toBe(true);
     expect(publishTimes.has("slow")).toBe(false);
     expect(maxActive).toBe(4);
 
     slowResearchResolve();
-    const researchBatch = await researchPromise;
+    const { researchBatch } = await mixed.settleResearch();
     // After slow completes, check outcomes
-    expect(researchBatch.succeededIds).toContain("fast");
-    expect(researchBatch.succeededIds).toContain("slow");
-    expect(researchBatch.failedIds).toContain("fail");
-    expect(researchBatch.hadFactoryError).toBe(true);
+    expect(researchBatch!.succeededIds).toContain("fast");
+    expect(researchBatch!.succeededIds).toContain("slow");
+    expect(researchBatch!.failedIds).toContain("fail");
+    expect(researchBatch!.hadFactoryError).toBe(true);
     // Fast remains successful despite fail and slow
-    expect(researchBatch.outcomes.get("fast")).toBe("SUCCESS");
-    expect(researchBatch.outcomes.get("fail")).toBe("FACTORY_ERROR");
+    expect(researchBatch!.outcomes.get("fast")).toBe("SUCCESS");
+    expect(researchBatch!.outcomes.get("fail")).toBe("FACTORY_ERROR");
     // Impl should have succeeded independently
     expect(maxActive).toBe(4);
   });
@@ -420,6 +416,26 @@ describe("Production coordinator research-only and failure isolation", () => {
     expect(researchBatch!.succeededIds).toContain("slow");
     // Impl end time should be before slow publish time
     expect(implEndTime).toBeLessThan(slowPublishTime);
+  });
+});
+
+describe("Coordinator structural seam — production consumer", () => {
+  it("mixed-profile-coordinator has a non-test production consumer", () => {
+    const files = fs.readdirSync(".sandcastle").filter(f => f.endsWith(".mts") && !f.endsWith(".test.mts") && f !== "mixed-profile-coordinator.mts");
+    const consumers = files.filter(f => {
+      const content = fs.readFileSync(`.sandcastle/${f}`, "utf8");
+      return content.includes('from "./mixed-profile-coordinator') || content.includes("from './mixed-profile-coordinator");
+    });
+    expect(consumers).toContain("main.mts");
+    // Verify the exact exported seam is used
+    const main = fs.readFileSync(".sandcastle/main.mts", "utf8");
+    expect(main).toMatch(/import\s*\{[^}]*startMixedProfileBatch[^}]*\}\s*from\s*["']\.\/mixed-profile-coordinator\.mts["']/);
+    expect(main).toMatch(/const mixed = startMixedProfileBatch\(/);
+    expect(main).toMatch(/await mixed\.implSettled/);
+    expect(main).toMatch(/await mixed\.settleResearch\(\)/);
+    // Ensure duplicate scheduling is removed — main must not directly orchestrate research or impl
+    expect(main).not.toMatch(/researchBatchPromise\s*=\s*orchestrateResearchBatch/);
+    expect(main).not.toMatch(/implSettledPromise\s*=\s*Promise\.allSettled/);
   });
 });
 
