@@ -1,7 +1,36 @@
 # 0001 — Wayfinder task executor is orthogonal to purpose (A1)
 
 Date: 2026-08-16
-Status: Accepted
+Status: Partially superseded
+Partially superseded by: ADR 0010 — Preserve upstream Wayfinder, triage, and Sandcastle label semantics
+
+## Supersession note
+
+ADR 0010 supersedes this ADR's concrete executor-signaling protocol.
+
+Superseded decisions:
+
+- HITL execution is no longer inferred from the absence of `agent:implement`.
+- An AFK Wayfinder Task no longer requires the triple signal
+  `wayfinder:task + agent:implement + Execution is carried into this map`.
+- `agent:implement` is no longer the sole durable AFK authorization signal. It is
+  a one-shot Sandcastle command added to an issue already classified
+  `ready-for-agent`.
+- `wayfinder:research` is now dispatched through Sandcastle's research profile
+  without a second research-authorization label.
+
+Decisions retained:
+
+- Wayfinder keeps its four canonical child-ticket types: Research, Prototype,
+  Grilling, and Task.
+- A Wayfinder Task's purpose is orthogonal to its executor.
+- Task executor is represented without introducing `wayfinder:afk-task` or
+  `wayfinder:hitl-task`.
+- Research is AFK by definition; Prototype and Grilling are HITL by definition.
+
+The original Context, Decision, Alternatives, and Consequences below are retained
+as the historical rationale for ADR 0001. ADR 0010 is authoritative where the
+two records conflict.
 
 ## Context
 
