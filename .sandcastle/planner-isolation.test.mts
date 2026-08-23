@@ -11,7 +11,7 @@ const git = (cwd: string, ...args: string[]) =>
 describe("planner caller isolation", () => {
   it("production planner uses an explicit managed branch strategy", () => {
     const source = readFileSync(".sandcastle/main.mts", "utf8");
-    const plannerCall = source.slice(source.indexOf("const planRun = await sandcastle.run"), source.indexOf("const rawPlanString"));
+    const plannerCall = source.slice(source.indexOf("const planRun = await runStructuredOnce(sandcastle.run,"), source.indexOf("const rawPlanString"));
     expect(plannerCall).toContain('branchStrategy: { type: "branch"');
     expect(plannerCall).toContain('baseBranch: "origin/main"');
   });
