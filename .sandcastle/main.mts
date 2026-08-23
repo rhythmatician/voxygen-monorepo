@@ -80,7 +80,6 @@ import {
   type ResearchResult,
 } from "./research-result.mts";
 import {
-  RESEARCH_MAX_ITERATIONS,
   type RunResearchWorker,
   type ResearchBatchIssue,
   markResearchFactoryError as markResearchFactoryErrorLifecycle,
