@@ -1,8 +1,57 @@
 # 0007 — Sandcastle is the common AFK execution substrate; Wayfinder owns purpose and frontier
 
 Date: 2026-08-21
-Status: Accepted
+Status: Partially superseded
 Supersedes: ADR 0006 — Wayfinder plans work; Sandcastle executes implementation work
+Partially superseded by: ADR 0010 — Preserve upstream Wayfinder, triage, and Sandcastle label semantics
+
+## Supersession note
+
+ADR 0010 supersedes this ADR's label-authorization model but retains its
+execution-substrate and research-lifecycle decisions.
+
+Superseded decisions:
+
+- `agent:research` is no longer an explicit authorization label.
+- Research eligibility no longer requires
+  `wayfinder:research + agent:research`.
+- `ready-for-agent` is no longer treated as merely informational for
+  implementation work. It is the durable AFK-readiness state.
+- `agent:implement` is a one-shot implementation command added to an issue that
+  is already `ready-for-agent`; the command is consumed on claim.
+- Successful Research tickets do not retain `agent:research`, because that label
+  is retired.
+- The repository no longer requires creation, rollout, or reconciliation of an
+  `agent:research` label.
+
+Current routing under ADR 0010:
+
+- An open, unassigned, unblocked `wayfinder:research` child is eligible for the
+  research profile without a second research label.
+- `ready-for-agent + agent:implement` selects the implementation profile.
+- `wayfinder:task + ready-for-agent` classifies an AFK Wayfinder Task;
+  `agent:implement` is added only when that task is launched.
+- `wayfinder:task + ready-for-human` classifies a HITL Wayfinder Task.
+
+Decisions retained:
+
+- Sandcastle remains the common AFK execution substrate for implementation and
+  Research.
+- Research keeps a lifecycle distinct from implementation.
+- Research workers use isolated worktrees and sandboxes from the frozen factory
+  base.
+- Research success does not require commits, and optional Research commits do
+  not enter review, merger, batch integration, PR creation, or auto-merge.
+- Tracker writes remain host-side.
+- Structured Research output, parent-map publication, closure, idempotency
+  markers, sibling-success preservation, profile-specific environments, and
+  `FACTORY_ERROR` semantics remain in force.
+- Eligible Research workers may execute concurrently with one another and with
+  implementation workers through the production iteration state machine.
+
+The original Context, Decision, Alternatives, and Consequences below are retained
+as the historical rationale for ADR 0007. ADR 0010 is authoritative where the
+two records conflict.
 
 ## Context
 
