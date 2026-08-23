@@ -46,46 +46,28 @@ describe("Research single-iteration production-shaped", () => {
   });
 
   it("production research worker spec uses maxIterations 1: one valid <research> invokes sandbox.run exactly once", async () => {
-    // Simulate Sandcastle's iteration semantics:
-    // - With maxIterations 1, one valid structured output succeeds immediately
-    // - With maxIterations 30 and no <promise>COMPLETE, Sandcastle would loop 30 times
-    // Our production spec must be 1, so fake Sandcastle should be called once
-    let sandboxRunCalls = 0;
-    const fakeSandboxRun = async (spec: { maxIterations: number; output?: unknown }) => {
-      sandboxRunCalls++;
-      // Simulate Sandcastle behavior: if maxIterations !==1 and output is research without promise, loop
-      if (spec.maxIterations !== 1) {
-        // Simulate 30 iterations: would call agent 30 times
-        sandboxRunCalls += 29; // simulate loop
-        throw new Error("maxIterations 30 with <research> would loop 30 times without <promise>COMPLETE");
-      }
-      // Valid research output succeeds in one call
-      return {
-        output: `<research>{"summary":"s","findings":[{"claim":"c","evidence":"e","source":"s"}],"recommendation":"r","uncertainties":[],"followUps":[]}</research>`,
-      };
-    };
-
-    // Use adapter via recording executor instead of handwritten spec
-    const { executor: exec2, calls: calls2 } = (() => {
+    // Verify via adapter: single-iteration adapter should invoke executor exactly once with maxIterations 1
+    const { executor, calls } = (() => {
       const calls: any[] = [];
       const exec = async (opts: any) => {
         calls.push(opts);
-        return fakeSandboxRun(opts);
+        // Simulate successful research output
+        return { output: `<research>{"summary":"s","findings":[{"claim":"c","evidence":"e","source":"s"}],"recommendation":"r","uncertainties":[],"followUps":[]}</research>` };
       };
       return { executor: exec, calls };
     })();
-    await runStructuredOnce(exec2 as any, {
+    await runStructuredOnce(executor as any, {
       name: "researcher",
       agent: sandcastle.muse("muse-spark-1.2-contributor"),
       promptFile: "./.sandcastle/research-prompt.md",
       promptArgs: { TASK_ID: "1", ISSUE_TITLE: "t", ISSUE_BODY: "b" },
       tag: RESEARCH_OUTPUT_TAG,
     });
-    expect(calls2).toHaveLength(1);
-    expect(calls2[0].maxIterations).toBe(1);
-    const result = await fakeSandboxRun({ maxIterations: 1, output: { tag: RESEARCH_OUTPUT_TAG } } as any);
-    expect(sandboxRunCalls).toBe(1);
-    expect(result.output).toContain("<research>");
+    expect(calls).toHaveLength(1);
+    expect(calls[0].maxIterations).toBe(1);
+    expect(calls[0].output).toBeDefined();
+    // Verify extracted research result is valid
+    const result = { output: `<research>{"summary":"s","findings":[{"claim":"c","evidence":"e","source":"s"}],"recommendation":"r","uncertainties":[],"followUps":[]}</research>` };
     const extracted = extractResearchResult({ output: result.output, text: result.output, stdout: result.output });
     expect(extracted).not.toBeNull();
     expect(extracted!.summary).toBe("s");
