@@ -82,6 +82,8 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm }
       - run: npm ci
+      - name: Bootstrap pinned Sandcastle runtime
+        run: npx tsx .sandcastle/sandcastle-bootstrap.mts
       - run: npm run typecheck
       - run: npm test
       - uses: raven-actions/actionlint@v2

@@ -22,7 +22,6 @@ import type { WorkerOutcome } from "./factory-verdict-gate.mts";
  *   FACTORY_ERROR, not non-blocking. Close is not attempted on parent failure.
  */
 
-export const RESEARCH_MAX_ITERATIONS = 1 as const;
 export const RESEARCH_OUTPUT_TAG = "research" as const;
 
 export function extractParentMapId(body?: string): string | null {
