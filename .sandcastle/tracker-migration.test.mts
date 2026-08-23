@@ -19,7 +19,7 @@ function issue(overrides: Partial<IssueInput> = {}): IssueInput {
 describe("tracker-migration — check / dry-run / apply / idempotency", () => {
   it("detects retired labels and contradictions before mutation", () => {
     const issues: IssueInput[] = [
-      issue({ number: 1, labels: ["wayfinder:research", "agent:research"], body: "q" }),
+      issue({ number: 1, labels: ["wayfinder:research", "agent:research"], body: "Research question with sufficient length for validation, part of #190" }),
       issue({ number: 2, labels: ["wayfinder:preserve-futures"], body: "preserve checkpoint" }),
     ];
     const plan = planMigration(issues);
@@ -29,13 +29,13 @@ describe("tracker-migration — check / dry-run / apply / idempotency", () => {
   });
 
   it("reports newly eligible research from wayfinder:research alone", () => {
-    const r: IssueInput = { number: 10, title: "research", state: "open", labels: ["wayfinder:research"], assignees: [], blockedByCount: 0, body: "q" };
+    const r: IssueInput = { number: 10, title: "research", state: "open", labels: ["wayfinder:research"], assignees: [], blockedByCount: 0, body: "Research question with sufficient length for validation, part of #190" };
     const plan = planMigration([r]);
     expect(plan.newlyEligibleResearch).toContain(10);
   });
 
   it("reports blocked research separately", () => {
-    const r: IssueInput = { number: 11, title: "r", state: "open", labels: ["wayfinder:research"], assignees: [], blockedByCount: 1, body: "q" };
+    const r: IssueInput = { number: 11, title: "r", state: "open", labels: ["wayfinder:research"], assignees: [], blockedByCount: 1, body: "Research question with sufficient length for validation, part of #190" };
     const plan = planMigration([r]);
     expect(plan.blockedResearch).toContain(11);
   });
@@ -56,7 +56,7 @@ describe("tracker-migration — check / dry-run / apply / idempotency", () => {
 
   it("dry-run receipt includes required fields", () => {
     const issues: IssueInput[] = [
-      issue({ number: 30, labels: ["wayfinder:research"], body: "q", blockedByCount: 0 }),
+      issue({ number: 30, labels: ["wayfinder:research"], body: "Research question with sufficient length for validation, part of #190", blockedByCount: 0 }),
       issue({ number: 31, labels: ["wayfinder:task"], body: "task", blockedByCount: 0 }),
     ];
     const plan = planMigration(issues);
@@ -95,7 +95,7 @@ describe("tracker-migration — check / dry-run / apply / idempotency", () => {
   it("never adds agent:implement", () => {
     const issues: IssueInput[] = [
       issue({ number: 60, labels: ["wayfinder:task"], body: "task" }),
-      issue({ number: 61, labels: ["wayfinder:research"], body: "q" }),
+      issue({ number: 61, labels: ["wayfinder:research"], body: "Research question with sufficient length for validation, part of #190" }),
     ];
     const plan = planMigration(issues, { 60: "ready-for-agent" });
     for (const m of plan.plannedMutations) {

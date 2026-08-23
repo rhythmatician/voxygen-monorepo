@@ -6,6 +6,7 @@ import {
   AGENT_BLOCKED,
   isImplementationEligible,
   detectContradictions,
+  isResearchEligible,
 } from "./tracker-policy.mts";
 
 /**
@@ -196,7 +197,11 @@ export async function claimResearch(
     return { success: false, reason: `revalidation fetch failed for research #${issueId}: ${reason}`, code: CLAIM_CODES.FETCH_FAILED, compensated: true };
   }
 
-  // Research eligibility already checked by caller via isResearchEligible, but double-check contradictions
+  // Revalidate full research eligibility (assignment, blocked, contradictions, body)
+  const eligibility = isResearchEligible(fresh);
+  if (!eligibility.eligible) {
+    return { success: false, reason: eligibility.reason, code: eligibility.code ?? "ELIGIBILITY_FAILED", compensated: true };
+  }
   const contradictions = detectContradictions(fresh);
   if (contradictions.contradictions.length > 0) {
     return { success: false, reason: contradictions.contradictions[0].reason, code: contradictions.contradictions[0].code, compensated: true, issue: fresh };

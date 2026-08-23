@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { runCanary } from "./tracker-canary.mts";
+import { claimImplementation, reconcileStaleImplementation } from "./tracker-operations.mts";
 import type { IssueInput } from "./tracker-policy.mts";
 import { TRACER_BODY } from "./fixtures.mts";
 
@@ -36,40 +37,61 @@ function makeMockOps() {
       issue.labels = issue.labels.filter(l => !remove.includes(l));
     },
     claimImplementation: async (issue: IssueInput) => {
+      // Delegate to production claimImplementation — not a reimplementation
+      const claimOps = {
+        fetchIssue: async (id: string) => {
+          const n=parseInt(id,10);
+          const st=store.get(n);
+          if(!st) throw new Error("not found "+id);
+          return { ...st, labels:[...st.labels], assignees:[...st.assignees] };
+        },
+        applyClaim: async (id: string) => {
+          const n=parseInt(id,10);
+          const st=store.get(n)!;
+          if(!st.labels.includes("agent:in-progress")) st.labels.push("agent:in-progress");
+          st.labels=st.labels.filter(l=>l!=="agent:implement");
+          if(st.assignees.length===0) st.assignees.push("bot");
+        },
+        verifyClaim: async (id: string) => {
+          const n=parseInt(id,10);
+          const st=store.get(n);
+          if(!st) throw new Error("not found "+id);
+          return { ...st, labels:[...st.labels], assignees:[...st.assignees] };
+        },
+        compensateClaim: async (id: string) => {
+          const n=parseInt(id,10);
+          const st=store.get(n);
+          if(!st) return false;
+          st.labels=st.labels.filter(l=>l!=="agent:in-progress");
+          st.assignees=[];
+          return true;
+        },
+      };
       const stored = store.get(issue.number);
       if (!stored) return { success: false, reason: "not found" };
-      // Check contradictions via policy
-      const { detectContradictions } = await import("./tracker-policy.mts");
-      const v = detectContradictions(stored);
-      if (v.contradictions.length > 0) return { success: false, reason: v.contradictions[0].reason };
-      const hasReady = stored.labels.includes("ready-for-agent");
-      const hasImplement = stored.labels.includes("agent:implement");
-      if (!hasReady || !hasImplement) return { success: false, reason: "not eligible" };
-      if (stored.labels.includes("agent:in-progress")) return { success: false, reason: "already in progress" };
-      stored.labels = stored.labels.filter(l => l !== "agent:implement");
-      if (!stored.labels.includes("agent:in-progress")) stored.labels.push("agent:in-progress");
-      if (stored.assignees.length === 0) stored.assignees.push("bot");
-      return { success: true };
+      const res = await claimImplementation(String(issue.number), stored, claimOps as any);
+      return { success: res.success, reason: (res as any).reason };
     },
     reconcile: async (issue: IssueInput) => {
-      const stored = store.get(issue.number);
-      if (!stored) return false;
-      const hasInProgress = stored.labels.includes("agent:in-progress");
-      const hasAssignee = stored.assignees.length > 0;
-      const hasReady = stored.labels.includes("ready-for-agent");
-      const hasImplement = stored.labels.includes("agent:implement");
-      if (hasReady && hasInProgress && hasAssignee && !hasImplement) {
-        stored.labels = stored.labels.filter(l => l !== "agent:in-progress");
-        stored.assignees = [];
-        return true;
-      }
-      // For contradictory case, just remove in-progress
-      if (hasImplement && hasInProgress) {
-        stored.labels = stored.labels.filter(l => l !== "agent:in-progress");
-        stored.assignees = [];
-        return true;
-      }
-      return false;
+      const reconcileOps: any = {
+        releaseClaim: async (id: string) => {
+          const n=parseInt(id,10);
+          const st=store.get(n);
+          if(!st) return false;
+          st.labels=st.labels.filter(l=>l!=="agent:in-progress");
+          st.assignees=[];
+          return true;
+        },
+        comment: async () => true,
+        fetchIssue: async (id: string) => {
+          const n=parseInt(id,10);
+          const st=store.get(n);
+          if(!st) throw new Error("not found "+id);
+          return { ...st, labels:[...st.labels], assignees:[...st.assignees] };
+        },
+      };
+      const res = await reconcileStaleImplementation(issue, `sandcastle/issue-${issue.number}`, reconcileOps);
+      return res.reconciled;
     },
     comment: async () => {},
     _store: store,

@@ -64,8 +64,19 @@ export const CANONICAL_LABEL_DESCRIPTIONS: Record<string, string> = {
 // Explicit task classification plan for historical tasks — to avoid inferring from prose
 // If empty, ambiguous tasks will be reported and migration will fail before mutation
 export const EXPLICIT_TASK_PLAN: Record<number, "ready-for-agent" | "ready-for-human"> = {
-  // Example: 166 is feedback-baseline-run — likely AFK? But we must not infer; leave empty to trigger ambiguity receipt
-  // Maintainer must review dry-run and provide explicit mapping before apply
+  // Reviewed per #195 verdict provisional classifications — committed, not edited after merge
+  // 166: feedback-baseline-run includes IDE/startup/visual evidence => ready-for-human
+  // 127: real-client visual/screenshot already assigned => ready-for-human
+  // 114: HITL assembly/validation => ready-for-human
+  // 64: AFK evidence-task executor not yet available => ready-for-human for now
+  // 61: first human-attended capability audit => ready-for-human
+  // 25: bounded repo implementation, blocker #24 closed, but body not tracer-ready => ready-for-human for this migration
+  166: "ready-for-human",
+  127: "ready-for-human",
+  114: "ready-for-human",
+  64: "ready-for-human",
+  61: "ready-for-human",
+  25: "ready-for-human",
 };
 
 export function planMigration(issues: IssueInput[], explicitTaskPlan: Record<number, string> = EXPLICIT_TASK_PLAN): MigrationPlan {
@@ -260,7 +271,8 @@ export interface ApplyOps {
 }
 
 export function isCheckFailed(plan: MigrationPlan): boolean {
-  return plan.contradictions.length > 0 || plan.ambiguousResearch.length > 0 || plan.taskClassificationPlan.some(t => t.planned === "ambiguous");
+  const hasRealLabelUpdates = plan.labelDescriptionUpdates.some(u => u.oldDesc !== "(unknown — will fetch live)");
+  return plan.contradictions.length > 0 || plan.ambiguousResearch.length > 0 || plan.taskClassificationPlan.some(t => t.planned === "ambiguous") || plan.plannedMutations.length > 0 || hasRealLabelUpdates;
 }
 
 export function formatReceipt(plan: MigrationPlan, mode: string): string {
@@ -390,8 +402,40 @@ async function main() {
       console.error(formatReceipt(plan, mode));
       process.exit(1);
     }
-    // Verify live state hasn't drifted from plan (check issue numbers and labels still match)
-    // For now, just apply mutations
+    // Verify live state hasn't drifted from reviewed plan before any writes — re-fetch every affected issue
+    const driftErrors: string[] = [];
+    for (const mut of plan.plannedMutations) {
+      try {
+        const liveJson = await runGh(["issue", "view", String(mut.issue), "--json", "number,labels,assignees,state,body"]);
+        const live = JSON.parse(liveJson);
+        const liveLabels: string[] = (live.labels ?? []).map((l:any)=>l.name).sort();
+        const planExpectedAdd = (mut.addLabels ?? []).slice().sort();
+        const planExpectedRemove = (mut.removeLabels ?? []).slice().sort();
+        // If live issue missing or state drifted, fail
+        if (live.state?.toLowerCase() !== "open") driftErrors.push(`#${mut.issue} state drifted: ${live.state}`);
+        // Check that labels we intend to remove are still present if they were expected to be, and labels we intend to add are not already contradictory
+        // Simpler: if live labels differ from inventory snapshot for this issue, drift
+        const inventoryIssue = relevant.find(r=>r.number===mut.issue);
+        if (inventoryIssue) {
+          const invLabels = [...inventoryIssue.labels].sort().join(",");
+          const liveLabelStr = liveLabels.join(",");
+          if (invLabels !== liveLabelStr && mut.reason !== "retired residue cleanup" ) {
+            // Allow retired residue drift? Actually require exact match for safety
+            // Compare expected vs live
+            const expectedAfterAdd = [...new Set([...liveLabels, ...planExpectedAdd])].filter(l=>!planExpectedRemove.includes(l)).sort().join(",");
+            // Just record drift if inventory != live
+            if (invLabels !== liveLabelStr) driftErrors.push(`#${mut.issue} labels drifted: inventory [${invLabels}] vs live [${liveLabelStr}]`);
+          }
+        }
+      } catch (e) {
+        driftErrors.push(`#${mut.issue} re-fetch failed: ${e}`);
+      }
+    }
+    if (driftErrors.length > 0) {
+      console.error("Drift detected — aborting before any mutation:");
+      for (const e of driftErrors) console.error("  "+e);
+      process.exit(1);
+    }
     console.log("Applying mutations...");
     for (const m of plan.plannedMutations) {
       const args: string[] = ["issue", "edit", String(m.issue)];
@@ -422,7 +466,19 @@ async function main() {
       }
     }
     console.log("APPLY complete — rerunning check...");
-    const postPlan = planMigration(relevant); // In real, would re-fetch
+    // Re-fetch full tracker state after mutations for post-check and receipt
+    let postIssues: IssueInput[] = relevant;
+    try {
+      const postJson = await runGh(["issue", "list", "--state","open","--limit","100","--json","number,title,body,labels,assignees,state"]);
+      const postRaw: any[] = JSON.parse(postJson);
+      const ownerRepo2 = (()=>{ try { const out=require("node:child_process").execSync("git remote get-url origin",{encoding:"utf8"}).trim(); const m=out.match(/github\.com[:/]([^/]+)\/([^/.]+)/); if(m) return {owner:m[1],repo:m[2]};}catch{return null;}})();
+      postIssues = await Promise.all(postRaw.map(async (r:any)=>{
+        let blockedByCount: number|undefined=undefined;
+        if(ownerRepo2){ try { const s=await runGh(["api", `repos/${ownerRepo2.owner}/${ownerRepo2.repo}/issues/${r.number}`, "--jq", ".issue_dependencies_summary.blocked_by"]); const n=parseInt(s.trim(),10); if(!isNaN(n)) blockedByCount=n;}catch{} }
+        return { number:r.number, title:r.title, state:r.state.toLowerCase() as "open"|"closed", labels:r.labels.map((l:any)=>l.name), assignees:r.assignees.map((a:any)=>a.login), blockedByCount, body:r.body };
+      }));
+    } catch {}
+    const postPlan = planMigration(postIssues);
     if (isCheckFailed(postPlan)) {
       console.error("POST-APPLY CHECK FAILED");
       process.exit(1);

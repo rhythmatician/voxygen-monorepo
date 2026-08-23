@@ -578,7 +578,7 @@ async function markFactoryError(issueId: string, branch: string, reason: string)
     "comment",
     issueId,
     "--body",
-    `Sandcastle factory infrastructure failed on \`${branch}\` — preserved branch for inspection.\n\n**Reason:** ${shortReason}\n\nBranch: \`${branch}\`\n\nThe issue was released for retry without being marked semantically blocked.`,
+    `Sandcastle factory infrastructure failed on \`${branch}\` — preserved branch for inspection.\n\n**Reason:** ${shortReason}\n\nBranch: \`${branch}\`\n\nThe issue was released — requires explicit \`agent:implement\` re-authorization to retry without being marked semantically blocked.`,
   ]);
   return removed && commentOk;
 }
@@ -1312,10 +1312,8 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
     claimedIssues = [...plannedIssues];
   }
 
-  if (claimedIssues.length === 0) {
-    console.log("No issues prepared for execution -- nothing to execute this iteration.");
-    continue;
-  }
+  // Research and implementation are independent — do not skip if only one profile has work.
+  // Empty check deferred until both profiles prepared.
 
   // Prepare issue branches via single write-once provenance state machine (claim/retry and reconciliation share it).
   // Never overwrite provenance — fail closed on legacy contaminated branches, recreate only truly empty stale.

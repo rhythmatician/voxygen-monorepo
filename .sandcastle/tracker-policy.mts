@@ -424,10 +424,18 @@ export function isResearchEligible(issue: IssueInput): EligibilityResult {
     }
   }
 
-  // Research body contract — minimal: body should be non-empty? Keep permissive for now
-  // The prompt says "existing Research input/body contract satisfied" — we consider that satisfied if body exists or is undefined but we don't fail.
+  // Research body contract — from docs/wayfinder/research-receipt.md and research input contract:
+  // Body must be non-empty, contain a research question (>=10 chars after trim),
+  // and not be a single trivial token. Prevents wayfinder:research alone from
+  // authorizing empty AFK work. Pure production validator.
+  if (issue.body === undefined || issue.body === null || issue.body.trim().length < 10) {
+    return { eligible: false, reason: "research body must contain a research question (>=10 chars)", code: "RESEARCH_BODY_INVALID" };
+  }
+  const trimmed = issue.body.trim();
+  if (trimmed.split(/\s+/).length < 2 || trimmed.length < 10) {
+    return { eligible: false, reason: "research body too short or not a question", code: "RESEARCH_BODY_INVALID" };
+  }
   // No tracer required for research.
-
   return { eligible: true };
 }
 
