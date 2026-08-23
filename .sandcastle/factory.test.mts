@@ -11,7 +11,7 @@ function issue(overrides: Partial<IssueInput> = {}): IssueInput {
     number: 1,
     title: "Test",
     state: "open",
-    labels: ["agent:implement"],
+    labels: ["ready-for-agent", "agent:implement"],
     assignees: [],
     body: TRACER_BODY,
     blockedByCount: 0,
@@ -88,24 +88,24 @@ describe("AC11: successful reviewed branch reaches integration and only then clo
 
 describe("AC12: re-running dispatcher does not duplicate", () => {
   it("already in-progress issue is not eligible on re-run", () => {
-    const firstRun = issue({ number: 30, labels: ["agent:implement"] });
+    const firstRun = issue({ number: 30, labels: ["ready-for-agent", "agent:implement"] });
     expect(isEligible(firstRun).eligible).toBe(true);
     // After claim, issue has in-progress + assignee
     const secondRun = issue({
       number: 30,
-      labels: ["agent:implement", "agent:in-progress"],
+      labels: ["ready-for-agent", "agent:implement", "agent:in-progress"],
       assignees: ["bot"],
     });
     expect(isEligible(secondRun).eligible).toBe(false);
   });
 
   it("already blocked issue is not eligible on re-run", () => {
-    const blocked = issue({ number: 31, labels: ["agent:implement", "agent:blocked"] });
+    const blocked = issue({ number: 31, labels: ["ready-for-agent", "agent:implement", "agent:blocked"] });
     expect(isEligible(blocked).eligible).toBe(false);
   });
 
   it("already closed/completed issue is not eligible", () => {
-    const closed = issue({ number: 32, state: "closed", labels: ["agent:implement"] });
+    const closed = issue({ number: 32, state: "closed", labels: ["ready-for-agent", "agent:implement"] });
     expect(isEligible(closed).eligible).toBe(false);
   });
 
@@ -113,15 +113,15 @@ describe("AC12: re-running dispatcher does not duplicate", () => {
     const issues = [
       issue({ number: 40 }),
       issue({ number: 41 }),
-      issue({ number: 42, labels: ["agent:implement", "agent:in-progress"] }),
+      issue({ number: 42, labels: ["ready-for-agent", "agent:implement", "agent:in-progress"] }),
     ];
     const firstEligible = issues.filter((i) => isEligible(i).eligible);
     expect(firstEligible.map((i) => i.number).sort()).toEqual([40, 41]);
     // After claiming 40
     const afterClaim = [
-      issue({ number: 40, labels: ["agent:implement", "agent:in-progress"], assignees: ["bot"] }),
+      issue({ number: 40, labels: ["ready-for-agent", "agent:implement", "agent:in-progress"], assignees: ["bot"] }),
       issue({ number: 41 }),
-      issue({ number: 42, labels: ["agent:implement", "agent:in-progress"] }),
+      issue({ number: 42, labels: ["ready-for-agent", "agent:implement", "agent:in-progress"] }),
     ];
     const secondEligible = afterClaim.filter((i) => isEligible(i).eligible);
     expect(secondEligible.map((i) => i.number)).toEqual([41]);
@@ -130,14 +130,14 @@ describe("AC12: re-running dispatcher does not duplicate", () => {
 
 describe("Wayfinder seam", () => {
   it("wayfinder:task is allowed but leaves seam for future routing", () => {
-    const t = issue({ labels: ["agent:implement", "wayfinder:task"], body: TRACER_BODY });
+    const t = issue({ labels: ["ready-for-agent", "agent:implement", "wayfinder:task"], body: TRACER_BODY });
     expect(isEligible(t).eligible).toBe(true);
     // Future: if wayfinder:task needs special routing, add check here without affecting
     // research/prototype/grilling block-list.
   });
 
   it("wayfinder:task without Notes is blocked by triple-signal", () => {
-    const t = issue({ labels: ["agent:implement", "wayfinder:task"], body: "no notes" });
+    const t = issue({ labels: ["ready-for-agent", "agent:implement", "wayfinder:task"], body: "no notes" });
     expect(isEligible(t).eligible).toBe(false);
   });
 });

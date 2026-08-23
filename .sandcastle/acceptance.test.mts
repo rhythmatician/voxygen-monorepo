@@ -15,7 +15,7 @@ function issue(overrides: Partial<IssueInput> = {}): IssueInput {
     number: 1,
     title: "Test issue",
     state: "open",
-    labels: ["agent:implement"],
+    labels: ["ready-for-agent", "agent:implement"],
     assignees: [],
     body: TRACER_BODY,
     blockedByCount: 0,
@@ -35,7 +35,7 @@ describe("Factory v0 acceptance dry runs G1-G6 (issue #32)", () => {
   // Proves: normal impl path is boring/reviewable; single eligible issue dispatches and would be merged/closed.
   describe("G1 Normal impl e2e", () => {
     it("single agent:implement issue is eligible and maps to deterministic branch", () => {
-      const i = issue({ number: 101, title: "docs: fix copy in DOMAIN.md", labels: ["agent:implement"] });
+      const i = issue({ number: 101, title: "docs: fix copy in DOMAIN.md", labels: ["ready-for-agent", "agent:implement"] });
       expect(isEligible(i)).toEqual({ eligible: true });
       expect(branchForIssue(i.number)).toBe("sandcastle/issue-101");
     });
@@ -60,11 +60,11 @@ describe("Factory v0 acceptance dry runs G1-G6 (issue #32)", () => {
     });
 
     it("claim semantics: after host claim (agent:in-progress + assignee) re-run does not re-dispatch", () => {
-      const before = issue({ number: 101, labels: ["agent:implement"], assignees: [] });
+      const before = issue({ number: 101, labels: ["ready-for-agent", "agent:implement"], assignees: [] });
       expect(isEligible(before).eligible).toBe(true);
       const afterClaim = issue({
         number: 101,
-        labels: ["agent:implement", "agent:in-progress"],
+        labels: ["ready-for-agent", "agent:implement", "agent:in-progress"],
         assignees: ["rhythmatician"],
       });
       const res = isEligible(afterClaim);
@@ -76,8 +76,8 @@ describe("Factory v0 acceptance dry runs G1-G6 (issue #32)", () => {
   // G2 Concurrent impl — two disjoint issues run in Promise.allSettled isolated sandboxes and merger integrates both
   describe("G2 Concurrent impl", () => {
     it("two disjoint eligible issues are both eligible and can be scheduled concurrently", () => {
-      const a = issue({ number: 201, title: "java: fix util", labels: ["agent:implement"] });
-      const b = issue({ number: 202, title: "python: fix harvest", labels: ["agent:implement"] });
+      const a = issue({ number: 201, title: "java: fix util", labels: ["ready-for-agent", "agent:implement"] });
+      const b = issue({ number: 202, title: "python: fix harvest", labels: ["ready-for-agent", "agent:implement"] });
       const eligible = filterEligible([a, b]);
       expect(eligible).toHaveLength(2);
       expect(eligible.map((i) => i.number).sort()).toEqual([201, 202]);
@@ -117,8 +117,8 @@ describe("Factory v0 acceptance dry runs G1-G6 (issue #32)", () => {
 
     it("planner subset invariant: planned ⊆ eligible (hallucinated IDs dropped host-side)", () => {
       const eligible = [
-        issue({ number: 201, labels: ["agent:implement"] }),
-        issue({ number: 202, labels: ["agent:implement"] }),
+        issue({ number: 201, labels: ["ready-for-agent", "agent:implement"] }),
+        issue({ number: 202, labels: ["ready-for-agent", "agent:implement"] }),
       ];
       const eligibleIds = new Set(eligible.map((e) => String(e.number)));
       const rawPlanned = [
@@ -148,12 +148,12 @@ describe("Factory v0 acceptance dry runs G1-G6 (issue #32)", () => {
     });
 
     it("after blocker B closes, blocked A becomes eligible next iteration", () => {
-      const blockerB = issue({ number: 300, labels: ["agent:implement"], blockedByCount: 0 });
-      const blockedA_before = issue({ number: 301, labels: ["agent:implement"], blockedByCount: 1 });
+      const blockerB = issue({ number: 300, labels: ["ready-for-agent", "agent:implement"], blockedByCount: 0 });
+      const blockedA_before = issue({ number: 301, labels: ["ready-for-agent", "agent:implement"], blockedByCount: 1 });
       expect(isEligible(blockedA_before).eligible).toBe(false);
       expect(isEligible(blockerB).eligible).toBe(true);
       // Simulate B closed → A's blockedByCount drops to 0
-      const blockedA_after = issue({ number: 301, labels: ["agent:implement"], blockedByCount: 0 });
+      const blockedA_after = issue({ number: 301, labels: ["ready-for-agent", "agent:implement"], blockedByCount: 0 });
       expect(isEligible(blockedA_after).eligible).toBe(true);
     });
 
@@ -168,45 +168,54 @@ describe("Factory v0 acceptance dry runs G1-G6 (issue #32)", () => {
 
   // G4 Wayfinder HITL refused — research|prototype|grilling are never dispatched/sandboxed/mutated
   describe("G4 Wayfinder HITL refused", () => {
-    it.each([...FORBIDDEN_WAYFINDER_LABELS])(
-      "forbidden %s with agent:implement yields SKIP(forbidden Wayfinder type ...)",
+    it.each([...FORBIDDEN_WAYFINDER_LABELS.filter(l => l !== "wayfinder:preserve-futures")])(
+      "forbidden %s with agent:implement yields SKIP",
       (label) => {
-        const i = issue({ labels: ["agent:implement", label] });
+        const i = issue({ labels: ["ready-for-agent", "agent:implement", label] });
         const res = isEligible(i);
         expect(res.eligible).toBe(false);
         if (!res.eligible) {
-          expect(res.reason).toContain(`forbidden Wayfinder type ${label}`);
-          expect(res.reason).toContain("requires HITL/other workflow");
+          expect(res.reason.toLowerCase()).toMatch(/hitl|forbidden|retired|map/);
         }
       }
     );
+    it("retired wayfinder:preserve-futures with agent:implement yields retired label error", () => {
+      const i = issue({ labels: ["ready-for-agent", "agent:implement", "wayfinder:preserve-futures"] });
+      const res = isEligible(i);
+      expect(res.eligible).toBe(false);
+      if (!res.eligible) expect(res.reason).toContain("retired label wayfinder:preserve-futures");
+    });
 
     it("defense-in-depth: HITL wayfinder types remain blocked; research is AFK via Wayfinder not Sandcastle (see ADR 0001)", () => {
       // This test documents that main.mts never creates a sandbox for ineligible issues.
       // Eligibility gate is host-side before createSandbox; no sandbox, no mutation.
-      const forbidden = issue({ labels: ["agent:implement", "wayfinder:grilling"] });
+      const forbidden = issue({ labels: ["ready-for-agent", "agent:implement", "wayfinder:grilling"] });
       expect(isEligible(forbidden).eligible).toBe(false);
       // Filter ensures zero eligible → zero claimed → zero sandboxes
       expect(filterEligible([forbidden])).toHaveLength(0);
     });
 
-    it("wayfinder:task without Notes is also refused (triple-signal), but with Notes is allowed — seam for v1", () => {
-      const withoutNotes = issue({
-        labels: ["agent:implement", "wayfinder:task"],
-        body: "Part of #14 — no execution line",
-      });
-      expect(isEligible(withoutNotes).eligible).toBe(false);
-      if (!isEligible(withoutNotes).eligible) {
-        // Reason is the triple-signal one
-        const r = isEligible(withoutNotes);
-        if (!r.eligible) expect(r.reason).toContain("wayfinder:task: map Notes does not authorize");
-      }
-      const withNotes = issue({
+    it("wayfinder:task requires ready-for-agent and tracer — Notes sentence no longer authoritative", () => {
+      const withoutReady = issue({
         labels: ["agent:implement", "wayfinder:task"],
         body: TRACER_BODY,
       });
-      expect(isEligible(withNotes).eligible).toBe(true);
-      expect(withNotes.body).toContain(WAYFINDER_TASK_MAP_SIGNAL);
+      expect(isEligible(withoutReady).eligible).toBe(false);
+      if (!isEligible(withoutReady).eligible) {
+        const r = isEligible(withoutReady);
+        if (!r.eligible) expect(r.reason).toContain("agent:implement without ready-for-agent");
+      }
+      const withoutTracer = issue({
+        labels: ["ready-for-agent", "agent:implement", "wayfinder:task"],
+        body: "Part of #14 — no tracer",
+      });
+      expect(isEligible(withoutTracer).eligible).toBe(false);
+      if (!isEligible(withoutTracer).eligible) expect((isEligible(withoutTracer) as any).reason).toContain("tracer contract");
+      const withReadyAndTracer = issue({
+        labels: ["ready-for-agent", "agent:implement", "wayfinder:task"],
+        body: TRACER_BODY,
+      });
+      expect(isEligible(withReadyAndTracer).eligible).toBe(true);
     });
   });
 
@@ -250,10 +259,10 @@ describe("Factory v0 acceptance dry runs G1-G6 (issue #32)", () => {
 
     it("blocked issue remains open and retryable after removing agent:blocked and re-adding agent:implement", () => {
       // After markBlocked, issue has agent:blocked; to retry, human removes blocked and ensures implement remains.
-      const blocked = issue({ number: 401, labels: ["agent:implement", "agent:blocked"] });
+      const blocked = issue({ number: 401, labels: ["ready-for-agent", "agent:implement", "agent:blocked"] });
       expect(isEligible(blocked).eligible).toBe(false);
       if (!isEligible(blocked).eligible) expect((blocked.labels as string[]).includes("agent:blocked")).toBe(true);
-      const retried = issue({ number: 401, labels: ["agent:implement"] }); // blocked removed
+      const retried = issue({ number: 401, labels: ["ready-for-agent", "agent:implement"] }); // blocked removed
       expect(isEligible(retried).eligible).toBe(true);
     });
   });

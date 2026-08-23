@@ -42,7 +42,7 @@ async function initRepo(tmp: string, withOrigin = false) {
 
 describe("Adversarial: one normal eligible issue", () => {
   it("single eligible dispatches without planner (serial invariant)", () => {
-    const eligible = [{ number: 151, title: "a", state: "open" as const, labels: ["agent:implement"], assignees: [], body: TRACER_BODY, blockedByCount: 0 }];
+    const eligible = [{ number: 151, title: "a", state: "open" as const, labels: ["ready-for-agent", "agent:implement"], assignees: [], body: TRACER_BODY, blockedByCount: 0 }];
     expect(eligible.filter(e => isEligible(e).eligible)).toHaveLength(1);
     // main path: eligible.length===1 => planned = that one, no LLM
     const planned = [{ id: String(eligible[0].number), title: eligible[0].title, branch: branchForIssue(eligible[0].number) }];

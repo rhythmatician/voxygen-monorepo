@@ -41,7 +41,7 @@ function researchIssue(overrides: Partial<IssueInput> = {}): IssueInput {
     number: 10,
     title: "Research question",
     state: "open",
-    labels: ["wayfinder:research", "agent:research"],
+    labels: ["wayfinder:research"],
     assignees: [],
     body: "Part of #22\nResearch the terrain signal",
     blockedByCount: 0,
@@ -50,45 +50,46 @@ function researchIssue(overrides: Partial<IssueInput> = {}): IssueInput {
 }
 
 describe("Research eligibility", () => {
-  it("wayfinder:research + agent:research open unassigned unblocked is eligible", () => {
+  it("wayfinder:research open unassigned unblocked is eligible — no agent:research required", () => {
     const r = researchIssue();
     expect(isResearchEligible(r)).toEqual({ eligible: true });
     expect(classifyTicket(r).profile).toBe("research");
     expect(classifyTicket(r).eligible).toBe(true);
   });
 
-  it("ready-for-agent + wayfinder:research without agent:research is not executed", () => {
+  it("wayfinder:research + ready-for-agent is still eligible — readiness residue is removable but not blocking", () => {
     const r = researchIssue({ labels: ["wayfinder:research", "ready-for-agent"] });
-    expect(isResearchEligible(r).eligible).toBe(false);
-    expect(classifyTicket(r).eligible).toBe(false);
-    // Not research eligible, and also not implement eligible (missing implement)
-    expect(isEligible(r).eligible).toBe(false);
+    expect(isResearchEligible(r).eligible).toBe(true);
+    expect(classifyTicket(r).profile).toBe("research");
+    expect(classifyTicket(r).eligible).toBe(true);
   });
 
-  it("conflicting agent:implement + agent:research fails closed before claim", () => {
-    const c = issue({ labels: ["agent:implement", "agent:research", "wayfinder:research"], body: TRACER_BODY });
+  it("conflicting agent:implement + wayfinder:research fails closed before claim", () => {
+    const c = issue({ labels: ["ready-for-agent", "agent:implement", "wayfinder:research"], body: TRACER_BODY });
     expect(isEligible(c).eligible).toBe(false);
-    if (!isEligible(c).eligible) expect((isEligible(c) as { reason: string }).reason).toBe(CONFLICT_BOTH_LABELS_REASON);
     expect(isResearchEligible(c).eligible).toBe(false);
-    if (!isResearchEligible(c).eligible) expect((isResearchEligible(c) as { reason: string }).reason).toBe(CONFLICT_BOTH_LABELS_REASON);
     expect(classifyTicket(c).profile).toBe("conflicting");
     expect(classifyTicket(c).eligible).toBe(false);
   });
 
-  it("agent:research without wayfinder:research fails closed", () => {
+  it("retired agent:research label fails closed", () => {
+    const r = researchIssue({ labels: ["wayfinder:research", "agent:research"] });
+    expect(isResearchEligible(r).eligible).toBe(false);
+    expect(classifyTicket(r).profile).toBe("conflicting");
+  });
+
+  it("agent:research without wayfinder:research fails closed — retired label", () => {
     const r = issue({ labels: ["agent:research"], body: "something" });
     expect(isResearchEligible(r).eligible).toBe(false);
-    expect((isResearchEligible(r) as { reason: string }).reason).toBe(RESEARCH_REQUIRES_WAYFINDER_REASON);
     expect(isEligible(r).eligible).toBe(false);
-    expect((isEligible(r) as { reason: string }).reason).toBe(RESEARCH_REQUIRES_WAYFINDER_REASON);
     expect(classifyTicket(r).profile).toBe("conflicting");
   });
 
   it("deterministic classification distinguishes implementation, research, ineligible", () => {
-    const impl = issue({ number: 1, labels: ["agent:implement"], body: TRACER_BODY, blockedByCount: 0 });
+    const impl = issue({ number: 1, labels: ["ready-for-agent", "agent:implement"], body: TRACER_BODY, blockedByCount: 0 });
     const res = researchIssue({ number: 2 });
     const inelig = issue({ number: 3, labels: ["ready-for-agent"], body: "hi" });
-    const conflict = issue({ number: 4, labels: ["agent:implement", "agent:research"], body: "hi" });
+    const conflict = issue({ number: 4, labels: ["ready-for-agent", "agent:implement", "wayfinder:research"], body: "hi" });
     expect(classifyTicket(impl).profile).toBe("implementation");
     expect(classifyTicket(impl).eligible).toBe(true);
     expect(classifyTicket(res).profile).toBe("research");
@@ -98,17 +99,14 @@ describe("Research eligibility", () => {
     expect(classifyTicket(conflict).profile).toBe("conflicting");
   });
 
-  it("existing agent:implement decisions unchanged (no regression)", () => {
-    // Valid implement with tracer still eligible
-    const impl = issue({ labels: ["agent:implement"], body: TRACER_BODY });
+  it("existing agent:implement decisions unchanged except for ready-for-agent pairing", () => {
+    const impl = issue({ labels: ["ready-for-agent", "agent:implement"], body: TRACER_BODY });
     expect(isEligible(impl).eligible).toBe(true);
-    // Missing tracer still ineligible with tracer reason, not conflicting
-    const missingTracer = issue({ labels: ["agent:implement"], body: "no tracer" });
+    const missingTracer = issue({ labels: ["ready-for-agent", "agent:implement"], body: "no tracer" });
     const res = isEligible(missingTracer);
     expect(res.eligible).toBe(false);
     if (!res.eligible) expect(res.reason).toContain("tracer contract");
-    // Forbidden wayfinder still blocked
-    const forbidden = issue({ labels: ["agent:implement", "wayfinder:prototype"], body: TRACER_BODY });
+    const forbidden = issue({ labels: ["ready-for-agent", "agent:implement", "wayfinder:prototype"], body: TRACER_BODY });
     expect(isEligible(forbidden).eligible).toBe(false);
   });
 
@@ -116,8 +114,8 @@ describe("Research eligibility", () => {
     expect(isResearchEligible(researchIssue({ blockedByCount: 1 })).eligible).toBe(false);
     expect(isResearchEligible(researchIssue({ blockedByCount: undefined })).eligible).toBe(false);
     expect(isResearchEligible(researchIssue({ assignees: ["someone"] })).eligible).toBe(false);
-    expect(isResearchEligible(researchIssue({ labels: ["wayfinder:research", "agent:research", "agent:in-progress"] })).eligible).toBe(false);
-    expect(isResearchEligible(researchIssue({ labels: ["wayfinder:research", "agent:research", "agent:blocked"] })).eligible).toBe(false);
+    expect(isResearchEligible(researchIssue({ labels: ["wayfinder:research", "agent:in-progress"] })).eligible).toBe(false);
+    expect(isResearchEligible(researchIssue({ labels: ["wayfinder:research", "agent:blocked"] })).eligible).toBe(false);
     expect(isResearchEligible(researchIssue({ state: "closed" })).eligible).toBe(false);
   });
 

@@ -13,7 +13,7 @@ function issue(overrides: Partial<IssueInput> = {}): IssueInput {
     number: 1,
     title: "Test issue",
     state: "open",
-    labels: ["agent:implement"],
+    labels: ["ready-for-agent", "agent:implement"],
     assignees: [],
     body: TRACER_BODY,
     blockedByCount: 0,
@@ -34,9 +34,11 @@ describe("isEligible", () => {
     expect(isEligible(i).eligible).toBe(false);
   });
 
-  it("AC2: eligible normal implementation issue is dispatched", () => {
+  it("AC2: eligible normal implementation issue is dispatched — requires ready-for-agent + agent:implement", () => {
     const i = issue({ labels: ["agent:implement"] });
-    expect(isEligible(i)).toEqual({ eligible: true });
+    expect(isEligible(i).eligible).toBe(false);
+    const j = issue({ labels: ["ready-for-agent", "agent:implement"] });
+    expect(isEligible(j)).toEqual({ eligible: true });
   });
 
   it("AC2: eligible with ready-for-agent + agent:implement is dispatched", () => {
@@ -52,7 +54,7 @@ describe("isEligible", () => {
   });
 
   it("AC3: blockedByCount 0 is dispatched", () => {
-    const i = issue({ blockedByCount: 0 });
+    const i = issue({ blockedByCount: 0, labels: ["ready-for-agent", "agent:implement"] });
     expect(isEligible(i).eligible).toBe(true);
   });
 
@@ -91,14 +93,13 @@ describe("isEligible", () => {
     expect(isEligible(i).eligible).toBe(false);
   });
 
-  it("AC8: wayfinder:research is AFK via Wayfinder subagents, not Sandcastle — with agent:implement it follows normal tracer gate (see ADR 0001)", () => {
-    // research is not forbidden; without agent:implement it is ineligible at gate 2, with it it must pass tracer like any other AFK ticket.
+  it("AC8: wayfinder:research with agent:implement is contradictory — research is AFK via wayfinder:research alone", () => {
     const withoutImplement = issue({ labels: ["wayfinder:research"], body: "Execution is carried into this map" });
     expect(isEligible(withoutImplement).eligible).toBe(false);
-    const withImplementNoTracer = issue({ labels: ["agent:implement", "wayfinder:research"], body: "no tracer" });
+    const withImplementNoTracer = issue({ labels: ["ready-for-agent", "agent:implement", "wayfinder:research"], body: "no tracer" });
     expect(isEligible(withImplementNoTracer).eligible).toBe(false);
     const r = isEligible(withImplementNoTracer);
-    if (!r.eligible) expect(r.reason).toContain("tracer contract missing");
+    if (!r.eligible) expect(r.reason).toContain("wayfinder:research with agent:implement");
   });
 
   it("wayfinder:map and preserve-futures also blocked", () => {
@@ -109,28 +110,27 @@ describe("isEligible", () => {
   });
 
   it("AC9: two eligible independent issues can be scheduled concurrently", () => {
-    const issues = [issue({ number: 1 }), issue({ number: 2 })];
+    const issues = [issue({ number: 1, labels: ["ready-for-agent", "agent:implement"] }), issue({ number: 2, labels: ["ready-for-agent", "agent:implement"] })];
     const eligible = filterEligible(issues);
     expect(eligible).toHaveLength(2);
   });
 
-  it("wayfinder:task is allowed (seam for future routing)", () => {
-    // wayfinder:task is AFK-task — allowed if explicitly authorized via triple-signal + tracer.
-    const i = issue({ labels: ["agent:implement", "wayfinder:task"], body: TRACER_BODY });
+  it("wayfinder:task is allowed — AFK Task requires wayfinder:task + ready-for-agent + agent:implement + tracer", () => {
+    const i = issue({ labels: ["ready-for-agent", "agent:implement", "wayfinder:task"], body: TRACER_BODY });
     expect(isEligible(i).eligible).toBe(true);
   });
 
-  it("wayfinder:task without Notes is not dispatched (triple-signal gate)", () => {
-    const i = issue({ labels: ["agent:implement", "wayfinder:task"], body: "Part of #14" });
+  it("wayfinder:task without ready-for-agent is not dispatched — only AFK task may be implemented", () => {
+    const i = issue({ labels: ["agent:implement", "wayfinder:task"], body: TRACER_BODY });
     const res = isEligible(i);
     expect(res.eligible).toBe(false);
     if (!res.eligible) {
-      expect(res.reason).toContain("wayfinder:task: map Notes does not authorize");
+      expect(res.reason).toContain("agent:implement without ready-for-agent");
     }
   });
 
   it("wayfinder:task without body is not dispatched", () => {
-    const i = issue({ labels: ["agent:implement", "wayfinder:task"], body: undefined });
+    const i = issue({ labels: ["ready-for-agent", "agent:implement", "wayfinder:task"], body: undefined });
     expect(isEligible(i).eligible).toBe(false);
   });
 
@@ -140,10 +140,9 @@ describe("isEligible", () => {
   });
 
   it("duplicate prevention: re-running dispatcher on same issue does not re-dispatch if already in-progress", () => {
-    const original = issue({ number: 5, labels: ["agent:implement"] });
+    const original = issue({ number: 5, labels: ["ready-for-agent", "agent:implement"] });
     expect(isEligible(original).eligible).toBe(true);
-    // After claim, labels include in-progress
-    const claimed = issue({ number: 5, labels: ["agent:implement", "agent:in-progress"], assignees: ["bot"] });
+    const claimed = issue({ number: 5, labels: ["ready-for-agent", "agent:implement", "agent:in-progress"], assignees: ["bot"] });
     expect(isEligible(claimed).eligible).toBe(false);
   });
 });

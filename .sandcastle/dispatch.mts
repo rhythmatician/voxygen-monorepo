@@ -1,43 +1,41 @@
-import { missingTracerConcepts } from "./tracer-contract.mts";
+import {
+  isImplementationEligible,
+  isResearchEligible as policyIsResearchEligible,
+  classifyTicket as policyClassifyTicket,
+  branchForIssue as policyBranchForIssue,
+  detectContradictions,
+  WAYFINDER_RESEARCH as POLICY_WAYFINDER_RESEARCH,
+  WAYFINDER_TASK as POLICY_WAYFINDER_TASK,
+  WAYFINDER_MAP as POLICY_WAYFINDER_MAP,
+  AGENT_IMPLEMENT as POLICY_AGENT_IMPLEMENT,
+  AGENT_RESEARCH_RETIRED as POLICY_AGENT_RESEARCH,
+  READY_FOR_AGENT as POLICY_READY_FOR_AGENT,
+  AGENT_IN_PROGRESS as POLICY_AGENT_IN_PROGRESS,
+  AGENT_BLOCKED as POLICY_AGENT_BLOCKED,
+  CONTRADICTION_CODES,
+  type IssueInput as PolicyIssueInput,
+  type TicketClassification as PolicyTicketClassification,
+} from "./tracker-policy.mts";
 
 /**
- * Factory v0 dispatch — deterministic eligibility for AFK implementation.
- *
- * Separates semantic readiness (`ready-for-agent`) from execution authorization
- * (`agent:implement`). The LLM planner is never the authority on eligibility.
+ * Factory dispatch — deterministic eligibility for AFK implementation and research.
+ * Delegates to tracker-policy (single production seam per ADR 0010).
+ * This module is a thin adapter preserving the historic dispatch import surface.
  */
 
-export interface IssueInput {
-  number: number;
-  title: string;
-  state: "open" | "closed";
-  labels: string[];
-  assignees: string[];
-  blockedByCount?: number; // from GitHub native issue_dependencies_summary.blocked_by
-  body?: string;
-}
+export type IssueInput = PolicyIssueInput;
 
-export const REQUIRED_LABEL = "agent:implement";
-export const RESEARCH_LABEL = "agent:research" as const;
-export const WAYFINDER_RESEARCH_LABEL = "wayfinder:research" as const;
-export const IN_PROGRESS_LABEL = "agent:in-progress";
-export const BLOCKED_LABEL = "agent:blocked";
+export const REQUIRED_LABEL = POLICY_AGENT_IMPLEMENT;
+export const RESEARCH_LABEL = POLICY_AGENT_RESEARCH;
+export const WAYFINDER_RESEARCH_LABEL = POLICY_WAYFINDER_RESEARCH;
+export const IN_PROGRESS_LABEL = POLICY_AGENT_IN_PROGRESS;
+export const BLOCKED_LABEL = POLICY_AGENT_BLOCKED;
 
 export const CONFLICT_BOTH_LABELS_REASON =
   "conflicting authorization labels agent:implement and agent:research — fail closed" as const;
 export const RESEARCH_REQUIRES_WAYFINDER_REASON =
   "agent:research requires wayfinder:research — fail closed" as const;
 
-// Wayfinder workflow types that the generic implementation pipeline must never
-// execute. `wayfinder:task` is intentionally NOT in this list — it is the
-// only Wayfinder type that may be AFK-executable via Sandcastle (AFK Task =
-// wayfinder:task + agent:implement + map Notes signal + tracer contract).
-// `wayfinder:research` is AFK but via Wayfinder research subagents during
-// charting, not via Sandcastle — it has no agent:implement so it remains
-// ineligible here without being forbidden. See ADR 0001 and CONTEXT.md.
-// Leave a seam: if future
-// task routing needs special handling, gate it here instead of expanding
-// this block-list.
 export const FORBIDDEN_WAYFINDER_LABELS = [
   "wayfinder:prototype",
   "wayfinder:grilling",
@@ -45,142 +43,42 @@ export const FORBIDDEN_WAYFINDER_LABELS = [
   "wayfinder:preserve-futures",
 ] as const;
 
-export const WAYFINDER_TASK_LABEL = "wayfinder:task" as const;
+export const WAYFINDER_TASK_LABEL = POLICY_WAYFINDER_TASK;
+// Retained for historical reference only — machine authorization no longer parses this sentence
 export const WAYFINDER_TASK_MAP_SIGNAL = "Execution is carried into this map" as const;
-const WAYFINDER_TASK_REASON = "wayfinder:task: map Notes does not authorize AFK execution" as const;
 
 export type EligibilityResult =
   | { eligible: true }
-  | { eligible: false; reason: string };
+  | { eligible: false; reason: string; code?: string };
 
 export function branchForIssue(id: number | string): string {
-  return `sandcastle/issue-${id}`;
+  return policyBranchForIssue(id);
 }
 
-/**
- * Deterministic eligibility check. Must satisfy ALL conditions.
- * Returns eligible:false with a human-readable reason when any gate fails.
- */
 export function isEligible(issue: IssueInput): EligibilityResult {
-  // 1. Issue must be open (GH returns "OPEN" uppercase; normalize)
-  if (issue.state.toLowerCase() !== "open") {
-    return { eligible: false, reason: `state is ${issue.state}, expected open` };
+  const result = isImplementationEligible(issue);
+  if (result.eligible) return { eligible: true };
+  const r = result as { reason: string; code?: string };
+  if (r.code === CONTRADICTION_CODES.RETIRED_AGENT_RESEARCH && issue.labels.includes(REQUIRED_LABEL) && issue.labels.includes(RESEARCH_LABEL)) {
+    return { eligible: false, reason: CONFLICT_BOTH_LABELS_REASON, code: r.code };
   }
-
-  // 1b. Authorization conflicts fail closed before any other gate
-  const hasResearchAuth = issue.labels.includes(RESEARCH_LABEL);
-  const hasImplementAuth = issue.labels.includes(REQUIRED_LABEL);
-  const hasWayfinderResearch = issue.labels.includes(WAYFINDER_RESEARCH_LABEL);
-  if (hasImplementAuth && hasResearchAuth) {
-    return { eligible: false, reason: CONFLICT_BOTH_LABELS_REASON };
+  if (r.code === CONTRADICTION_CODES.RETIRED_AGENT_RESEARCH && !issue.labels.includes(POLICY_WAYFINDER_RESEARCH)) {
+    return { eligible: false, reason: RESEARCH_REQUIRES_WAYFINDER_REASON, code: r.code };
   }
-  if (hasResearchAuth && !hasWayfinderResearch) {
-    return { eligible: false, reason: RESEARCH_REQUIRES_WAYFINDER_REASON };
-  }
-
-  // 2. Must have explicit execution authorization
-  if (!issue.labels.includes(REQUIRED_LABEL)) {
-    return { eligible: false, reason: `missing required label ${REQUIRED_LABEL}` };
-  }
-
-  // 3. Must not already be claimed/in-progress
-  if (issue.labels.includes(IN_PROGRESS_LABEL)) {
-    return { eligible: false, reason: `already has ${IN_PROGRESS_LABEL}` };
-  }
-  if (issue.labels.includes(BLOCKED_LABEL)) {
-    return { eligible: false, reason: `already has ${BLOCKED_LABEL}` };
-  }
-  if (issue.assignees.length > 0) {
-    return { eligible: false, reason: `already assigned to ${issue.assignees.join(",")}` };
-  }
-
-  // 4. Native blockers must be resolved — fail-closed: unknown (undefined) is ineligible.
-  // Unknown can never become zero; fetchOpenImplementIssues throws or marks unknown.
-  if (issue.blockedByCount === undefined) {
-    return { eligible: false, reason: "blocked state unknown — GitHub dependency API unavailable (fail-closed)" };
-  }
-  if (issue.blockedByCount > 0) {
-    return { eligible: false, reason: `blocked by ${issue.blockedByCount} open blocker(s)` };
-  }
-
-  // 5. Wayfinder workflow boundary — generic worker must not execute HITL tickets
-  // HITL-only: prototype, grilling, map, preserve-futures. Research is AFK via
-  // Wayfinder subagents (no agent:implement) so not forbidden — see ADR 0001.
-  for (const label of FORBIDDEN_WAYFINDER_LABELS) {
-    if (issue.labels.includes(label)) {
-      return {
-        eligible: false,
-        reason: `forbidden Wayfinder type ${label} — requires HITL/other workflow`,
-      };
-    }
-  }
-
-  // 6. AFK wayfinder:task triple-signal gate — labels + map Notes as durable signal.
-  // Wayfinder Task executor is orthogonal (CONTEXT.md): HITL Task = wayfinder:task
-  // without agent:implement (ineligible at gate 2); AFK Task = wayfinder:task +
-  // agent:implement + signal + tracer contract.
-  // Requires `wayfinder:task` + `agent:implement` + map Notes. Gate 2 already
-  // ensures REQUIRED_LABEL, so only the Wayfinder label is checked here.
-  // v0 proxies map Notes via ticket body; v1 can fetch map body via `gh api`.
-  if (issue.labels.includes(WAYFINDER_TASK_LABEL)) {
-    const notesAllowsExecution = issue.body?.includes(WAYFINDER_TASK_MAP_SIGNAL);
-    if (!notesAllowsExecution) return { eligible: false, reason: WAYFINDER_TASK_REASON };
-  }
-
-  // 7. Tracer-bullet contract — fail-closed. By gate 2 REQUIRED_LABEL is
-  //    guaranteed present, so no second includes() check is needed.
-  //    ready-for-agent remains triage/readiness, not an execution gate.
-  //    Alias-tolerant: see docs/agents/tracer-contract.md + tracer-contract.mts.
-  {
-    const missing = missingTracerConcepts(issue.body);
-    if (missing.length > 0) {
-      return {
-        eligible: false,
-        reason: `tracer contract missing: ${missing.join(", ")} — see docs/agents/tracer-contract.md`,
-      };
-    }
-  }
-
-  return { eligible: true };
+  return { eligible: false, reason: r.reason, code: r.code };
 }
 
 export function isResearchEligible(issue: IssueInput): EligibilityResult {
-  if (issue.state.toLowerCase() !== "open") {
-    return { eligible: false, reason: `state is ${issue.state}, expected open` };
+  const result = policyIsResearchEligible(issue);
+  if (result.eligible) return { eligible: true };
+  const r = result as { reason: string; code?: string };
+  if (r.code === CONTRADICTION_CODES.RETIRED_AGENT_RESEARCH && issue.labels.includes(RESEARCH_LABEL) && !issue.labels.includes(WAYFINDER_RESEARCH_LABEL)) {
+    return { eligible: false, reason: RESEARCH_REQUIRES_WAYFINDER_REASON, code: r.code };
   }
-  const hasResearch = issue.labels.includes(RESEARCH_LABEL);
-  const hasImplement = issue.labels.includes(REQUIRED_LABEL);
-  const hasWayfinderResearch = issue.labels.includes(WAYFINDER_RESEARCH_LABEL);
-  if (hasImplement && hasResearch) {
-    return { eligible: false, reason: CONFLICT_BOTH_LABELS_REASON };
+  if (issue.labels.includes(REQUIRED_LABEL) && issue.labels.includes(RESEARCH_LABEL)) {
+    return { eligible: false, reason: CONFLICT_BOTH_LABELS_REASON, code: r.code };
   }
-  if (hasResearch && !hasWayfinderResearch) {
-    return { eligible: false, reason: RESEARCH_REQUIRES_WAYFINDER_REASON };
-  }
-  if (!hasResearch) {
-    return { eligible: false, reason: `missing required label ${RESEARCH_LABEL}` };
-  }
-  if (!hasWayfinderResearch) {
-    return { eligible: false, reason: `missing required label ${WAYFINDER_RESEARCH_LABEL}` };
-  }
-  if (issue.labels.includes(IN_PROGRESS_LABEL)) {
-    return { eligible: false, reason: `already has ${IN_PROGRESS_LABEL}` };
-  }
-  if (issue.labels.includes(BLOCKED_LABEL)) {
-    return { eligible: false, reason: `already has ${BLOCKED_LABEL}` };
-  }
-  if (issue.assignees.length > 0) {
-    return { eligible: false, reason: `already assigned to ${issue.assignees.join(",")}` };
-  }
-  if (issue.blockedByCount === undefined) {
-    return { eligible: false, reason: "blocked state unknown — GitHub dependency API unavailable (fail-closed)" };
-  }
-  if (issue.blockedByCount > 0) {
-    return { eligible: false, reason: `blocked by ${issue.blockedByCount} open blocker(s)` };
-  }
-  // research does not require tracer contract, forbids ready-for-agent alone, etc.
-  // Note: ready-for-agent is intentionally ignored — RESEARCH_LABEL is authorization.
-  return { eligible: true };
+  return { eligible: false, reason: r.reason, code: r.code };
 }
 
 export function filterEligible(issues: IssueInput[]): IssueInput[] {
@@ -197,40 +95,19 @@ export interface TicketClassification {
   profile: TicketProfile;
   eligible: boolean;
   reason?: string;
+  code?: string;
 }
 
 export function classifyTicket(issue: IssueInput): TicketClassification {
-  const hasImplement = issue.labels.includes(REQUIRED_LABEL);
-  const hasResearch = issue.labels.includes(RESEARCH_LABEL);
-  const hasWayfinderResearch = issue.labels.includes(WAYFINDER_RESEARCH_LABEL);
-  if (hasImplement && hasResearch) {
-    return { profile: "conflicting", eligible: false, reason: CONFLICT_BOTH_LABELS_REASON };
-  }
-  if (hasResearch && !hasWayfinderResearch) {
-    return { profile: "conflicting", eligible: false, reason: RESEARCH_REQUIRES_WAYFINDER_REASON };
-  }
-  if (hasResearch && hasWayfinderResearch) {
-    const r = isResearchEligible(issue);
-    if (r.eligible) return { profile: "research", eligible: true };
-    // research-eligible false but carries research labels — still classified as research (ineligible)
-    return { profile: "research", eligible: false, reason: r.reason };
-  }
-  if (hasImplement) {
-    const r = isEligible(issue);
-    if (r.eligible) return { profile: "implementation", eligible: true };
-    return { profile: "implementation", eligible: false, reason: r.reason };
-  }
-  // neither authorization
-  const implReason = isEligible(issue);
-  const researchReason = isResearchEligible(issue);
-  // Prefer research missing reason if wayfinder:research present, else implement missing
-  if (hasWayfinderResearch) {
-    return { profile: "ineligible", eligible: false, reason: researchReason.eligible ? undefined : (researchReason as { reason: string }).reason };
-  }
-  return { profile: "ineligible", eligible: false, reason: (implReason as { reason: string }).reason };
+  const c = policyClassifyTicket(issue);
+  return {
+    profile: c.profile,
+    eligible: c.eligible,
+    reason: c.reason,
+    code: (c as { code?: string }).code,
+  };
 }
 
-/** Pure helper for tests: count ineligible reasons distribution (not used in prod). */
 export function classifyIssues(issues: IssueInput[]): {
   eligible: IssueInput[];
   ineligible: Array<{ issue: IssueInput; reason: string }>;
@@ -240,17 +117,12 @@ export function classifyIssues(issues: IssueInput[]): {
   for (const issue of issues) {
     const res = isEligible(issue);
     if (res.eligible) eligible.push(issue);
-    else ineligible.push({ issue, reason: res.reason });
+    else ineligible.push({ issue, reason: (res as { reason: string }).reason });
   }
   return { eligible, ineligible };
 }
 
-/**
- * Partition worker outcomes into completed vs failed — pure, testable.
- * `settled` shape mirrors Promise.allSettled for worker pipelines.
- * A fulfilled worker with zero commits is treated as failed (no work).
- */
-export type SettledWorker = 
+export type SettledWorker =
   | { status: "fulfilled"; commits: string[] }
   | { status: "rejected"; reason: string };
 
@@ -273,3 +145,5 @@ export function partitionWorkers(
   }
   return { completed, failed };
 }
+
+export { detectContradictions } from "./tracker-policy.mts";
