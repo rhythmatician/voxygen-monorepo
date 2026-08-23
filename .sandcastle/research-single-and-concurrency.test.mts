@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import * as fs from "node:fs";
 import { RESEARCH_MAX_ITERATIONS, RESEARCH_OUTPUT_TAG, orchestrateResearchBatch } from "./research-lifecycle.mts";
-import { coordinateMixedProfileBatch } from "./mixed-profile-coordinator.mts";
+import { coordinateMixedProfileBatch, startMixedProfileBatch } from "./mixed-profile-coordinator.mts";
 import { extractResearchResult } from "./research-result.mts";
 
 /**
@@ -158,16 +158,15 @@ describe("Research + implementation concurrency via production coordinator", () 
   it("research and implementation batches run concurrently via production Promise.all", async () => {
     const main = fs.readFileSync(".sandcastle/main.mts", "utf8");
     expect(main).not.toMatch(/const batch = await orchestrateResearchBatch[\s\S]*?const settled = await Promise\.allSettled/s);
-    const hasResearchPromise = main.includes("researchBatchPromise");
-    const hasImplPromise = main.includes("implSettledPromise");
-    const hasConcurrent = /Promise\.all\s*\(\s*\[[\s\S]*?researchBatchPromise[\s\S]*?implSettledPromise/s.test(main) ||
-                          /implSettledPromise[\s\S]*?researchBatchPromise/s.test(main);
-    // Now we use split await: impl first, then research, but both started before either awaited
-    // So check that both promises are created before first await
-    const hasSplitAwait = main.includes("const settled = (await (implSettledPromise") && main.includes("await researchBatchPromise");
-    expect(hasResearchPromise).toBe(true);
-    expect(hasImplPromise).toBe(true);
-    expect(hasConcurrent || hasSplitAwait).toBe(true);
+    // Production must use the genuine helper so tests exercise identical code
+    const usesHelper = main.includes("startMixedProfileBatch");
+    const hasMixedStart = /const mixed = startMixedProfileBatch/.test(main);
+    const hasImplSettled = main.includes("mixed.implSettled");
+    const hasSettleResearch = main.includes("mixed.settleResearch");
+    expect(usesHelper).toBe(true);
+    expect(hasMixedStart).toBe(true);
+    expect(hasImplSettled).toBe(true);
+    expect(hasSettleResearch).toBe(true);
   });
 
   it("production mixed-profile: 3 research + 1 impl achieve 4-way overlap, impl not blocked by slow research, fast research publishes early, failure isolated", async () => {
@@ -333,7 +332,8 @@ describe("Production coordinator research-only and failure isolation", () => {
       await track(20);
       throw new Error("impl factory error");
     };
-    const { researchBatch, implSettled, researchHadFactoryError } = await coordinateMixedProfileBatch({
+    // Use production seam: startMixedProfileBatch so tests exercise identical code to main.mts
+    const mixed = startMixedProfileBatch({
       researchIssues: [
         { id: "r1", branch: "sandcastle/issue-r1", title: "R", body: "Part of #22" },
         { id: "r2", branch: "sandcastle/issue-r2", title: "R", body: "Part of #22" },
@@ -346,6 +346,8 @@ describe("Production coordinator research-only and failure isolation", () => {
       ops: fakeOps,
       shouldMutateOutcomeState: true,
     });
+    const implSettled = await mixed.implSettled;
+    const { researchBatch, researchHadFactoryError } = await mixed.settleResearch();
     expect(implSettled[0].status).toBe("rejected");
     expect(researchBatch).not.toBeNull();
     expect(researchBatch!.succeededIds).toContain("r1");
@@ -388,8 +390,8 @@ describe("Production coordinator research-only and failure isolation", () => {
       implEndTime = Date.now();
       return { commits: ["abc"], verdict: { approved: true } };
     };
-    // Start coordinator (which starts both concurrently)
-    const coordinatorPromise = coordinateMixedProfileBatch({
+    // Use production seam: startMixedProfileBatch genuinely starts both together
+    const mixed = startMixedProfileBatch({
       researchIssues: [
         { id: "fast", branch: "sandcastle/issue-fast", title: "R", body: "Part of #22" },
         { id: "slow", branch: "sandcastle/issue-slow", title: "R", body: "Part of #22" },
@@ -401,15 +403,19 @@ describe("Production coordinator research-only and failure isolation", () => {
       ops: wrappedOps as any,
       shouldMutateOutcomeState: true,
     });
-    // Impl should finish before slow research's publish
+    const implSettledPromise = mixed.implSettled;
+    // Impl should finish before slow research's publish — impl not blocked by slow research
     await new Promise(r => setTimeout(r, 30));
     // At this point impl should have finished (20ms) but slow still blocked
     expect(implEndTime).toBeGreaterThan(0);
     // Slow publish not yet
     expect(slowPublishTime).toBe(0);
-    slowResolve();
-    const { researchBatch, implSettled } = await coordinatorPromise;
+    // Ensure impl settled without waiting for slow research
+    const implSettled = await implSettledPromise;
     expect(implSettled[0].status).toBe("fulfilled");
+    expect(implSettled[0].status).toBe("fulfilled");
+    slowResolve();
+    const { researchBatch } = await mixed.settleResearch();
     expect(researchBatch!.succeededIds).toContain("fast");
     expect(researchBatch!.succeededIds).toContain("slow");
     // Impl end time should be before slow publish time

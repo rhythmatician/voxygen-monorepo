@@ -91,6 +91,7 @@ import {
   shouldStopBeforeNextClaimForResearchError,
 } from "./research-lifecycle.mts";
 import { mergerDockerOptions } from "./merger-control.mts";
+import { startMixedProfileBatch } from "./mixed-profile-coordinator.mts";
 
 const execFileAsync = promisify(execFile);
 
@@ -1363,17 +1364,19 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
   }
 
   // ----- Research + Implementation: concurrent overlap (4-way) -----
-  // Start both batches together; await at correct lifecycle boundary so #184 does not idle while research runs.
+  // Genuinely start both batches together via production seam so tests exercise identical code.
   let researchBatch: Awaited<ReturnType<typeof orchestrateResearchBatch>> | null = null;
-  let researchBatchPromise: Promise<Awaited<ReturnType<typeof orchestrateResearchBatch>>> | null = null;
+  // researchHadFactoryError already declared above
+  let runResearchWorker: ((issue: { id: string; branch: string; title: string; body?: string }) => Promise<{ result: ResearchResult; rawText: string; commits?: string[] }>) | undefined;
+  let researchSourceMap: Map<string, IssueInput> | undefined;
   if (claimedResearch.length > 0) {
     console.log(`\n=== Research profile: launching ${claimedResearch.length} isolated researcher(s) ===\n`);
     const metaKey = resolveFactoryMetaApiKey(REPO_ROOT);
-    const researchSourceMap = new Map<string, IssueInput>();
+    researchSourceMap = new Map<string, IssueInput>();
     for (const r of researchEligible) researchSourceMap.set(String(r.number), r);
 
-    const runResearchWorker = async (issue: { id: string; branch: string; title: string; body?: string }): Promise<{ result: ResearchResult; rawText: string; commits?: string[] }> => {
-      const src = researchSourceMap.get(issue.id);
+    runResearchWorker = async (issue: { id: string; branch: string; title: string; body?: string }): Promise<{ result: ResearchResult; rawText: string; commits?: string[] }> => {
+      const src = researchSourceMap!.get(issue.id);
       if (!src) throw new Error(`research source not found for #${issue.id}`);
       const exactBody = src.body ?? "";
       const exactTitle = src.title;
@@ -1401,6 +1404,7 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
         const runResult: unknown = await sandbox!.run({
           name: "researcher",
           maxIterations: RESEARCH_MAX_ITERATIONS,
+          // Emergency deadman only — not liveness detection. 30m matches sandcastle principled fix.
           idleTimeoutSeconds: 1800,
           agent: sandcastle.muse("muse-spark-1.2-contributor"),
           promptFile: "./.sandcastle/research-prompt.md",
@@ -1428,25 +1432,10 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
         try { process.chdir(REPO_ROOT); } catch {}
       }
     };
-
-    researchBatchPromise = orchestrateResearchBatch({
-      issues: claimedResearch.map((p) => ({
-        id: p.id,
-        branch: p.branch,
-        title: p.title,
-        body: researchSourceMap.get(p.id)?.body,
-      })),
-      runWorker: runResearchWorker,
-      ops: { safeRunGh, runGh },
-      shouldMutateOutcomeState: QUALIFICATION_LIFECYCLE.mutateOutcomeState,
-    });
   }
 
   // ----- Phase 2: Execute + Review (parallel, isolated) -----
-  let implSettledPromise: Promise<PromiseSettledResult<WorkerResult>[]> | null = null;
-  if (claimedIssues.length > 0) {
-    implSettledPromise = Promise.allSettled<WorkerResult>(
-    claimedIssues.map(async (issue): Promise<WorkerResult> => {
+  const runImplWorker = async (issue: { id: string; branch: string; title: string }): Promise<WorkerResult> => {
       const implementationIssueBody = issueBodyForPlannedIssue(issue.id, eligible);
       let sandbox: Awaited<ReturnType<typeof sandcastle.createSandbox>> | null = null;
       for (let attempt = 0; attempt <= MECHANICAL_RETRY_BUDGET; attempt++) {
@@ -1467,14 +1456,11 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
           await new Promise(r => setTimeout(r, backoff));
         }
       }
-      // sandbox is guaranteed non-null here (otherwise thrown)
       try {
         let implement = await sandbox!.run({
           name: "implementer",
           maxIterations: 100,
-          // Emergency deadman only — not liveness detection. 30m matches
-          // sandcastle's principled fix: live agent thinking quietly for
-          // #126-class work must not be killed; only hard cap as safety.
+          // Emergency deadman only — not liveness detection. 30m matches sandcastle principled fix.
           idleTimeoutSeconds: 1800,
           agent: sandcastle.muse("muse-spark-1.2-contributor"),
           promptFile: "./.sandcastle/implement-prompt.md",
@@ -1486,11 +1472,9 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
             REVIEW_FEEDBACK: "",
           },
         });
-        // Reviewer→implementer feedback loop — one bounded retry for mechanical/semantic misses
         let reviewVerdict: ReviewVerdict | null = null;
         let reviewTextForRetry = "";
         let allCommits = [...implement.commits];
-        // If no new commits but branch already has implementation (e.g., canary already at target SHA), use existing commits for review
         if (allCommits.length === 0) {
           try {
             const existing = execFileSync("git", ["log", `main..${issue.branch}`, "--oneline"], { encoding: "utf8", cwd: REPO_ROOT }).toString().trim();
@@ -1507,14 +1491,12 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
         let shouldRetryReview = false;
         for (let reviewAttempt = 0; reviewAttempt <= REVIEW_RETRY_BUDGET; reviewAttempt++) {
           if (implement.commits.length === 0) break;
-          // On retry, re-run implementer with reviewer feedback
           if (reviewAttempt > 0) {
             const feedback = formatVerdictForRetry(reviewVerdict, reviewTextForRetry);
             console.log(`  Reviewer requested changes for #${issue.id} (attempt ${reviewAttempt}/${REVIEW_RETRY_BUDGET}) — re-running implementer with feedback`);
             const retryImplement = await sandbox!.run({
               name: "implementer-retry",
               maxIterations: 50,
-              // Emergency deadman — see implementer above.
               idleTimeoutSeconds: 1800,
               agent: sandcastle.muse("muse-spark-1.2-contributor"),
               promptFile: "./.sandcastle/implement-prompt.md",
@@ -1530,7 +1512,6 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
             implement = retryImplement;
             if (retryImplement.commits.length === 0) break;
           }
-          // Fresh fetch of original issue body - no stale caching.
           const issueBody = await fetchIssueBody(issue.id);
           const reviewerResult = await runReviewerPass({
             issueId: issue.id,
@@ -1576,19 +1557,16 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
               reviewText: reviewerResult.reviewText,
             };
           }
-          // Not approved — loop will retry if budget remains
           if (reviewAttempt < REVIEW_RETRY_BUDGET) {
             shouldRetryReview = true;
             continue;
           }
-          // Budget exhausted — return last result for blocked handling
           return {
             commits: allCommits,
             verdict,
             reviewText: reviewerResult.reviewText,
           };
           }
-          // No commits or loop exhausted without early return
           if (implement.commits.length > 0 && shouldRetryReview) {
             return {
               commits: allCommits,
@@ -1596,54 +1574,57 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
               reviewText: reviewTextForRetry,
             };
           }
-          if (implement.commits.length > 0) {
-            // (review handled in loop above)
-          }
           return { commits: allCommits.length > 0 ? allCommits : implement.commits, verdict: reviewVerdict, reviewText: reviewTextForRetry };
       } finally {
         await sandbox!.close();
         try { process.chdir(REPO_ROOT); } catch {}
       }
-    }),
-  );
-  }
-  // Await implementation batch immediately so it can proceed to review/merger without waiting for slowest research.
-  // Research continues concurrently in the background; per-ticket publishing already happens inside orchestrateResearchBatch.
-  // Single iteration epilogue: before leaving this outer iteration for ANY reason, settle research.
+    };
+
+  const mixed = startMixedProfileBatch({
+    researchIssues: claimedResearch.map((p) => ({
+      id: p.id,
+      branch: p.branch,
+      title: p.title,
+      body: researchSourceMap?.get(p.id)?.body,
+    })),
+    implIssues: claimedIssues,
+    eligible,
+    runResearchWorker: runResearchWorker as any,
+    runImplWorker: runImplWorker as any,
+    ops: { safeRunGh, runGh },
+    shouldMutateOutcomeState: QUALIFICATION_LIFECYCLE.mutateOutcomeState,
+  });
+
   let _researchSettled = false;
   const settleResearchEpilogue = async () => {
     if (_researchSettled) return;
     _researchSettled = true;
-    if (researchBatchPromise) {
-      try {
-        const concurrentResearchBatch = await researchBatchPromise;
-        researchBatch = concurrentResearchBatch;
-        if (researchBatch) {
-          researchHadFactoryError = researchHadFactoryError || researchBatch.hadFactoryError;
-          for (const [id, outcome] of researchBatch.outcomes) {
-            if (outcome === "SUCCESS") {
-              console.log(`  Research #${id} completed and closed`);
-            } else {
-              const settledIdx = claimedResearch.findIndex((c) => c.id === id);
-              const settledEntry = researchBatch.settled[settledIdx];
-              const reason = settledEntry?.status === "rejected" ? String((settledEntry as PromiseRejectedResult).reason ?? "unknown").slice(0, 800) : "publication/parent/close failure";
-              console.warn(`  Research #${id} FACTORY_ERROR: ${reason}`);
-              if (!QUALIFICATION_LIFECYCLE.mutateOutcomeState) {
-                console.warn(`  Research #${id} FACTORY_ERROR suppressed by qualification policy`);
-              }
-            }
-          }
-          if (researchHadFactoryError) {
-            console.log("Research profile encountered FACTORY_ERROR — stopping outer loop (preserving sibling successes)");
+    const { researchBatch: b, researchHadFactoryError: had } = await mixed.settleResearch();
+    researchBatch = b as any;
+    researchHadFactoryError = researchHadFactoryError || had;
+    if (researchBatch) {
+      for (const [id, outcome] of (researchBatch as any).outcomes) {
+        if (outcome === "SUCCESS") {
+          console.log(`  Research #${id} completed and closed`);
+        } else {
+          const settledIdx = claimedResearch.findIndex((c) => c.id === id);
+          const settledEntry = (researchBatch as any).settled[settledIdx];
+          const reason = settledEntry?.status === "rejected" ? String((settledEntry as PromiseRejectedResult).reason ?? "unknown").slice(0, 800) : "publication/parent/close failure";
+          console.warn(`  Research #${id} FACTORY_ERROR: ${reason}`);
+          if (!QUALIFICATION_LIFECYCLE.mutateOutcomeState) {
+            console.warn(`  Research #${id} FACTORY_ERROR suppressed by qualification policy`);
           }
         }
-      } catch (e) {
-        console.warn(`Research batch settlement failed: ${getErrorMessage(e)}`);
+      }
+      if (researchHadFactoryError) {
+        console.log("Research profile encountered FACTORY_ERROR — stopping outer loop (preserving sibling successes)");
       }
     }
   };
 
-  const settled = (await (implSettledPromise ?? Promise.resolve([] as PromiseSettledResult<WorkerResult>[]))) as PromiseSettledResult<WorkerResult>[];
+  const settled = await mixed.implSettled as unknown as PromiseSettledResult<WorkerResult>[];
+
 
   // ----- Failure visibility per worker + review verdict gating -----
   const partition = partitionWorkerOutcomes(
