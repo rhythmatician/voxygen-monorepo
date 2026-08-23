@@ -157,16 +157,19 @@ describe("Research independent per-ticket publication", () => {
 describe("Research + implementation concurrency via production coordinator", () => {
   it("research and implementation batches run concurrently via production Promise.all", async () => {
     const main = fs.readFileSync(".sandcastle/main.mts", "utf8");
+    const factoryIteration = fs.readFileSync(".sandcastle/factory-iteration.mts", "utf8");
     expect(main).not.toMatch(/const batch = await orchestrateResearchBatch[\s\S]*?const settled = await Promise\.allSettled/s);
-    // Production must use the genuine helper so tests exercise identical code
-    const usesHelper = main.includes("startMixedProfileBatch");
-    const hasMixedStart = /const mixed = startMixedProfileBatch/.test(main);
-    const hasImplSettled = main.includes("mixed.implSettled");
-    const hasSettleResearch = main.includes("mixed.settleResearch");
+    // After extraction, main uses runFactoryIteration, factory-iteration uses startMixedProfileBatch
+    expect(main).toContain("runFactoryIteration");
+    expect(main).toMatch(/import\s*\{[^}]*runFactoryIteration[^}]*\}\s*from\s*["']\.\/factory-iteration\.mts["']/);
+    expect(main).toMatch(/await runFactoryIteration\(/);
+    expect(factoryIteration).toContain("startMixedProfileBatch");
+    expect(factoryIteration).toMatch(/startMixedProfileBatch\(/);
+    expect(factoryIteration).toContain("mixed.implSettled");
+    expect(factoryIteration).toContain("mixed.settleResearch");
+    // Production must use the genuine helper so tests exercise identical code via factory-iteration
+    const usesHelper = factoryIteration.includes("startMixedProfileBatch");
     expect(usesHelper).toBe(true);
-    expect(hasMixedStart).toBe(true);
-    expect(hasImplSettled).toBe(true);
-    expect(hasSettleResearch).toBe(true);
   });
 
   it("production mixed-profile: 3 research + 1 impl achieve 4-way overlap, impl not blocked by slow research, fast research publishes early, failure isolated", async () => {
@@ -224,7 +227,6 @@ describe("Research + implementation concurrency via production coordinator", () 
     const mixed = startMixedProfileBatch({
       researchIssues,
       implIssues: [{ id: "184", branch: "sandcastle/issue-184", title: "Impl" }],
-      eligible: [],
       runResearchWorker: researchWorker as any,
       runImplWorker: implWorker as any,
       ops: fakeOps as any,
@@ -336,7 +338,6 @@ describe("Production coordinator research-only and failure isolation", () => {
         { id: "fail", branch: "sandcastle/issue-fail", title: "R", body: "Part of #22" },
       ],
       implIssues: [{ id: "184", branch: "sandcastle/issue-184", title: "Impl" }],
-      eligible: [],
       runResearchWorker: runResearch as any,
       runImplWorker: runImpl as any,
       ops: fakeOps,
@@ -393,7 +394,6 @@ describe("Production coordinator research-only and failure isolation", () => {
         { id: "slow", branch: "sandcastle/issue-slow", title: "R", body: "Part of #22" },
       ],
       implIssues: [{ id: "184", branch: "sandcastle/issue-184", title: "Impl" }],
-      eligible: [],
       runResearchWorker: runResearch as any,
       runImplWorker: runImpl as any,
       ops: wrappedOps as any,
@@ -426,16 +426,23 @@ describe("Coordinator structural seam — production consumer", () => {
       const content = fs.readFileSync(`.sandcastle/${f}`, "utf8");
       return content.includes('from "./mixed-profile-coordinator') || content.includes("from './mixed-profile-coordinator");
     });
-    expect(consumers).toContain("main.mts");
-    // Verify the exact exported seam is used
+    expect(consumers).toContain("factory-iteration.mts");
+    expect(consumers).not.toContain("main.mts");
+    // Verify the exact exported seam is used via factory-iteration
+    const factoryIteration = fs.readFileSync(".sandcastle/factory-iteration.mts", "utf8");
     const main = fs.readFileSync(".sandcastle/main.mts", "utf8");
-    expect(main).toMatch(/import\s*\{[^}]*startMixedProfileBatch[^}]*\}\s*from\s*["']\.\/mixed-profile-coordinator\.mts["']/);
-    expect(main).toMatch(/const mixed = startMixedProfileBatch\(/);
-    expect(main).toMatch(/await mixed\.implSettled/);
-    expect(main).toMatch(/await mixed\.settleResearch\(\)/);
+    expect(factoryIteration).toMatch(/import\s*\{[^}]*startMixedProfileBatch[^}]*\}\s*from\s*["']\.\/mixed-profile-coordinator\.mts["']/);
+    expect(factoryIteration).toMatch(/const mixed = startMixedProfileBatch\(/);
+    expect(factoryIteration).toMatch(/await mixed\.implSettled/);
+    expect(factoryIteration).toMatch(/await mixed\.settleResearch\(\)/);
+    expect(main).toMatch(/import\s*\{[^}]*runFactoryIteration[^}]*\}\s*from\s*["']\.\/factory-iteration\.mts["']/);
+    expect(main).toMatch(/await runFactoryIteration\(/);
     // Ensure duplicate scheduling is removed — main must not directly orchestrate research or impl
     expect(main).not.toMatch(/researchBatchPromise\s*=\s*orchestrateResearchBatch/);
     expect(main).not.toMatch(/implSettledPromise\s*=\s*Promise\.allSettled/);
+    expect(main).not.toMatch(/const mixed = startMixedProfileBatch/);
+    expect(main).not.toContain("mixed.implSettled");
+    expect(main).not.toContain("mixed.settleResearch");
   });
 });
 

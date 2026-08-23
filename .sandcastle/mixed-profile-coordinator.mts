@@ -1,13 +1,11 @@
-import { orchestrateResearchBatch, type ResearchBatchIssue, type RunResearchWorker, type BatchOrchestrationOps } from "./research-lifecycle.mts";
-import { partitionWorkerOutcomes, partitionToMutationPlan, type WorkerOutcome } from "./factory-verdict-gate.mts";
-import type { IssueInput } from "./dispatch.mts";
+import { orchestrateResearchBatch, type ResearchBatchIssue, type ResearchWorkerResult, type RunResearchWorker, type BatchOrchestrationOps } from "./research-lifecycle.mts";
+import type { ReviewVerdict } from "./review-verdict.mts";
 
-export type ImplWorkerResult = { commits: string[]; verdict: any };
+export type ImplWorkerResult = { commits: string[]; verdict: ReviewVerdict | null; reviewText?: string };
 
 export interface MixedProfileBatchParams {
   researchIssues: ResearchBatchIssue[];
   implIssues: { id: string; branch: string; title: string }[];
-  eligible: IssueInput[]; // for impl body
   runResearchWorker: RunResearchWorker;
   runImplWorker: (issue: { id: string; branch: string; title: string }) => Promise<ImplWorkerResult>;
   ops: BatchOrchestrationOps;
@@ -42,31 +40,26 @@ export function startMixedProfileBatch(params: MixedProfileBatchParams): {
     implSettledPromise = Promise.allSettled(implIssues.map(issue => runImplWorker(issue)));
   }
 
-  // implSettled is already a promise started concurrently with research
   const implSettled: Promise<PromiseSettledResult<ImplWorkerResult>[]> = implSettledPromise ?? Promise.resolve([] as PromiseSettledResult<ImplWorkerResult>[]);
 
-  let _researchSettled = false;
-  let _researchBatch: Awaited<ReturnType<typeof orchestrateResearchBatch>> | null = null;
-  let _hadFactoryError = false;
+  // Memoized settlement promise — concurrent callers await same result, fail-closed on unexpected rejection
+  let settlementPromise: Promise<{ researchBatch: Awaited<ReturnType<typeof orchestrateResearchBatch>> | null; researchHadFactoryError: boolean }> | null = null;
 
-  const settleResearch = async (): Promise<{ researchBatch: Awaited<ReturnType<typeof orchestrateResearchBatch>> | null; researchHadFactoryError: boolean }> => {
-    if (_researchSettled) {
-      return { researchBatch: _researchBatch, researchHadFactoryError: _hadFactoryError };
-    }
-    _researchSettled = true;
-    if (researchBatchPromise) {
+  const settleResearch = (): Promise<{ researchBatch: Awaited<ReturnType<typeof orchestrateResearchBatch>> | null; researchHadFactoryError: boolean }> => {
+    if (settlementPromise) return settlementPromise;
+    settlementPromise = (async () => {
+      if (!researchBatchPromise) {
+        return { researchBatch: null, researchHadFactoryError: false };
+      }
       try {
         const batch = await researchBatchPromise;
-        _researchBatch = batch;
-        _hadFactoryError = batch.hadFactoryError;
+        return { researchBatch: batch, researchHadFactoryError: batch.hadFactoryError };
       } catch {
-        // orchestrateResearchBatch never throws for per-ticket failures; only for total failure.
-        // Treat as no batch but already settled.
-        _researchBatch = null;
-        _hadFactoryError = false;
+        // Unexpected rejection escaping the whole research batch is a FACTORY_ERROR — fail closed
+        return { researchBatch: null, researchHadFactoryError: true };
       }
-    }
-    return { researchBatch: _researchBatch, researchHadFactoryError: _hadFactoryError };
+    })();
+    return settlementPromise;
   };
 
   return { implSettled, settleResearch, researchBatchPromise };

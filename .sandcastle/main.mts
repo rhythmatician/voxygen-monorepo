@@ -37,12 +37,7 @@ import {
   type IssueInput,
 } from "./dispatch.mts";
 import {
-  canClaimNextOuterIteration,
   partitionMergerInfrastructureFailure,
-  partitionWorkerOutcomes,
-  partitionToMutationPlan,
-  type WorkerMutationKind,
-  type WorkerOutcome,
 } from "./factory-verdict-gate.mts";
 import * as branchHelpers from "./branch-helpers.mts";
 import { publishBatchBranch } from "./batch-publication.mts";
@@ -85,13 +80,13 @@ import {
 } from "./research-result.mts";
 import {
   RESEARCH_MAX_ITERATIONS,
-  orchestrateResearchBatch,
+  type RunResearchWorker,
+  type ResearchBatchIssue,
   markResearchFactoryError as markResearchFactoryErrorLifecycle,
-  shouldStopBeforeMergerForFactoryError,
   shouldStopBeforeNextClaimForResearchError,
 } from "./research-lifecycle.mts";
 import { mergerDockerOptions } from "./merger-control.mts";
-import { startMixedProfileBatch } from "./mixed-profile-coordinator.mts";
+import { runFactoryIteration, type PreparedImplIssue, type PreparedResearchIssue, type FactoryIterationDependencies } from "./factory-iteration.mts";
 
 const execFileAsync = promisify(execFile);
 
@@ -1363,12 +1358,10 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
     console.log(`\nClaimed and prepared ${claimedIssues.length} implementation issue(s), launching parallel workers...\n`);
   }
 
-  // ----- Research + Implementation: concurrent overlap (4-way) -----
-  // Genuinely start both batches together via production seam so tests exercise identical code.
-  let researchBatch: Awaited<ReturnType<typeof orchestrateResearchBatch>> | null = null;
-  // researchHadFactoryError already declared above
-  let runResearchWorker: ((issue: { id: string; branch: string; title: string; body?: string }) => Promise<{ result: ResearchResult; rawText: string; commits?: string[] }>) | undefined;
+  // ----- Research + Implementation: via single production state machine -----
+  // Construct concrete workers via existing sandbox/LLM mechanics; state machine owns ordering and settlement.
   let researchSourceMap: Map<string, IssueInput> | undefined;
+  let runResearchWorker: RunResearchWorker | undefined;
   if (claimedResearch.length > 0) {
     console.log(`\n=== Research profile: launching ${claimedResearch.length} isolated researcher(s) ===\n`);
     const metaKey = resolveFactoryMetaApiKey(REPO_ROOT);
@@ -1497,6 +1490,7 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
             const retryImplement = await sandbox!.run({
               name: "implementer-retry",
               maxIterations: 50,
+              // Emergency deadman only — not liveness detection. 30m matches sandcastle principled fix.
               idleTimeoutSeconds: 1800,
               agent: sandcastle.muse("muse-spark-1.2-contributor"),
               promptFile: "./.sandcastle/implement-prompt.md",
@@ -1581,366 +1575,297 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
       }
     };
 
-  const mixed = startMixedProfileBatch({
-    researchIssues: claimedResearch.map((p) => ({
-      id: p.id,
-      branch: p.branch,
-      title: p.title,
-      body: researchSourceMap?.get(p.id)?.body,
-    })),
-    implIssues: claimedIssues,
-    eligible,
-    runResearchWorker: runResearchWorker as any,
-    runImplWorker: runImplWorker as any,
-    ops: { safeRunGh, runGh },
-    shouldMutateOutcomeState: QUALIFICATION_LIFECYCLE.mutateOutcomeState,
-  });
-
-  let _researchSettled = false;
-  const settleResearchEpilogue = async () => {
-    if (_researchSettled) return;
-    _researchSettled = true;
-    const { researchBatch: b, researchHadFactoryError: had } = await mixed.settleResearch();
-    researchBatch = b as any;
-    researchHadFactoryError = researchHadFactoryError || had;
-    if (researchBatch) {
-      for (const [id, outcome] of (researchBatch as any).outcomes) {
-        if (outcome === "SUCCESS") {
-          console.log(`  Research #${id} completed and closed`);
-        } else {
-          const settledIdx = claimedResearch.findIndex((c) => c.id === id);
-          const settledEntry = (researchBatch as any).settled[settledIdx];
-          const reason = settledEntry?.status === "rejected" ? String((settledEntry as PromiseRejectedResult).reason ?? "unknown").slice(0, 800) : "publication/parent/close failure";
-          console.warn(`  Research #${id} FACTORY_ERROR: ${reason}`);
-          if (!QUALIFICATION_LIFECYCLE.mutateOutcomeState) {
-            console.warn(`  Research #${id} FACTORY_ERROR suppressed by qualification policy`);
-          }
-        }
+  // Low-level submission adapter — wraps existing merger/worktree/push/PR mechanics unchanged.
+  // State machine owns when submission is called; adapter owns how.
+  const submitImplementation = async (completed: Array<{ id: string; branch: string; title: string }>): Promise<{ issueIds: string[]; batchBranch?: string; pullRequest?: string }> => {
+    const completedBranches = completed.map((i) => i.branch);
+    const completedIssues = completed;
+    const callerBranchForBatch = callerBranch;
+    const callerShaForBatch = callerSha;
+    const callerStatusBeforeForBatch = callerStatusBefore;
+    const callerHeadBefore = callerSha;
+    const batchBranch = `sandcastle/batch-${completedIssues.map(i=>i.id).join('-')}-${Date.now().toString(36)}`;
+    console.log(`Creating dedicated batch branch ${batchBranch} from factoryBaseSha ${factoryBaseSha.slice(0,7)} (caller ${callerBranchForBatch}@${callerShaForBatch.slice(0,7)} — will NOT be mutated)`);
+    let batchWorktreePath: string | null = null;
+    try {
+      batchWorktreePath = branchHelpers.createBatchWorktree(REPO_ROOT, batchBranch, factoryBaseSha);
+      console.log(`Created batch worktree ${batchWorktreePath} for ${batchBranch} from ${factoryBaseSha.slice(0,7)} — caller ${callerBranchForBatch} never moved`);
+    } catch (e) {
+      const reason = `Batch worktree creation failed for ${batchBranch} from ${factoryBaseSha.slice(0,7)}: ${String(getErrorMessage(e)).slice(0, MERGER_REASON_TRUNCATE)} -- branch preserved`;
+      console.error(reason);
+      const mergerFailure = partitionMergerInfrastructureFailure(completedIssues, reason);
+      for (const failure of mergerFailure.factoryErrors) {
+        await markFactoryError(failure.id, failure.branch, failure.reason);
       }
-      if (researchHadFactoryError) {
-        console.log("Research profile encountered FACTORY_ERROR — stopping outer loop (preserving sibling successes)");
+      if (batchWorktreePath) { try { execSync(`git worktree remove --force ${batchWorktreePath}`, {stdio:'ignore', cwd: REPO_ROOT}); } catch {} }
+      try { execSync(`git branch -D ${batchBranch}`, {stdio:'ignore', cwd: REPO_ROOT}); } catch {}
+      throw new Error(reason);
+    }
+
+    try {
+      await sandcastle.run({
+        hooks,
+        sandbox: docker(mergerDockerOptions(WORKER_SANDBOX_ENV)),
+        name: "merger",
+        maxIterations: 1,
+        cwd: batchWorktreePath,
+        agent: sandcastle.muse("muse-spark-1.2-contributor"),
+        promptFile: path.join(REPO_ROOT, ".sandcastle", "merge-prompt.md"),
+        promptArgs: {
+          BRANCHES: completedBranches.map((b) => `- ${b}`).join("\n"),
+          ISSUES: completedIssues.map((i) => `- ${i.id}: ${i.title}`).join("\n"),
+        },
+      });
+      console.log(`\nBranches merged locally into ${batchBranch} via merger agent in worktree ${batchWorktreePath}.`);
+    } catch (error: unknown) {
+      const reason = `Merger failed on ${batchBranch}: ${String(getErrorMessage(error)).slice(0, MERGER_REASON_TRUNCATE)} -- branch preserved`;
+      console.error(`Merger failed on ${batchBranch} in ${batchWorktreePath}: ${getErrorMessage(error)}`);
+      const mergerFailure = partitionMergerInfrastructureFailure(completedIssues, reason);
+      for (const failure of mergerFailure.factoryErrors) {
+        await markFactoryError(failure.id, failure.branch, failure.reason);
       }
-    }
-  };
-
-  const settled = await mixed.implSettled as unknown as PromiseSettledResult<WorkerResult>[];
-
-
-  // ----- Failure visibility per worker + review verdict gating -----
-  const partition = partitionWorkerOutcomes(
-    claimedIssues,
-    settled as unknown as WorkerOutcome[],
-  );
-  const {
-    completed,
-    failed,
-    reviewRejected,
-    factoryErrors,
-    shouldStopOuterLoop,
-  } = partition;
-  const completedIssues = completed;
-  const failedMarkResults: boolean[] = [];
-
-  const failedIssueIds = failed.map((issue) => issue.id);
-  const mutationPlan = partitionToMutationPlan(partition);
-  for (const mutation of mutationPlan) {
-    if (!QUALIFICATION_LIFECYCLE.mutateOutcomeState) {
-      if (mutation.kind === "failed") {
-        const reason = mutation.reason.slice(0, WORKER_REASON_TRUNCATE);
-        console.error(`  ✗ ${mutation.issue.id} (${mutation.issue.branch}) failed: ${reason} [external mutation suppressed by qualification policy]`);
-      } else if (mutation.kind === "reviewRejected") {
-        const reason = mutation.reason;
-        console.warn(`  ⚠ ${mutation.issue.id} review rejected (${reason.slice(0, REVIEW_ERROR_TRUNCATE)}) [external mutation suppressed by qualification policy]`);
-      } else {
-        const reason = mutation.reason;
-        console.warn(`  ⚠ ${mutation.issue.id} review verdict contract failed (FACTORY_ERROR): ${reason.slice(0, REVIEW_ERROR_TRUNCATE)} [external mutation suppressed by qualification policy]`);
-      }
-      continue;
-    }
-
-    if (mutation.kind === "failed") {
-      const reason = mutation.reason.slice(0, WORKER_REASON_TRUNCATE);
-      console.error(`  ✗ ${mutation.issue.id} (${mutation.issue.branch}) failed: ${reason}`);
-      const marked = await markBlocked(mutation.issue.id, mutation.issue.branch, mutation.reason);
-      failedMarkResults.push(marked);
-      continue;
-    }
-
-    if (mutation.kind === "reviewRejected") {
-      const reason = mutation.reason;
-      console.warn(`  ⚠ ${mutation.issue.id} review rejected - not eligible for merger: ${reason.slice(0, REVIEW_ERROR_TRUNCATE)}`);
-      await markReviewRejected(
-        mutation.issue.id,
-        mutation.issue.branch,
-        mutation.verdict!,
-        reason,
-      );
-      continue;
-    }
-
-    const reason = mutation.reason;
-    console.warn(`  ⚠ ${mutation.issue.id} review verdict contract failed (FACTORY_ERROR): ${reason.slice(0, REVIEW_ERROR_TRUNCATE)} — preserving branch and stopping outer run.`);
-    await markFactoryError(mutation.issue.id, mutation.issue.branch, reason);
-  }
-
-  const completedBranches = completedIssues.map((i) => i.branch);
-
-  const failedIndices = failedIssueIds;
-
-  console.log(`\nExecution complete. ${completedBranches.length} branch(es) approved for merger:`);
-  for (const b of completedBranches) console.log(`  ${b}`);
-  if (failedIndices.length > 0) {
-    const markedCount = failedMarkResults.filter(Boolean).length;
-    const unmarkedCount = failedIndices.length - markedCount;
-    if (unmarkedCount === 0) {
-      console.log(`  ${failedIndices.length} branch(es) failed and were marked agent:blocked`);
-    } else {
-      console.log(`  ${failedIndices.length} branch(es) failed: ${markedCount} marked agent:blocked, ${unmarkedCount} NOT marked (GitHub unavailable — local recovery at .sandcastle/recovery/*.json, will reconcile truthfully after connectivity returns)`);
-    }
-  }
-  if (reviewRejected.length > 0) {
-    if (QUALIFICATION_LIFECYCLE.mutateOutcomeState) {
-      console.log(`  ${reviewRejected.length} branch(es) review-rejected (approved=false) - preserved, marked agent:blocked, not merged`);
-    } else {
-      console.log(`  ${reviewRejected.length} branch(es) review-rejected (approved=false) - external mutation suppressed by qualification policy`);
-    }
-  }
-  if (factoryErrors.length > 0) {
-    if (QUALIFICATION_LIFECYCLE.mutateOutcomeState) {
-      console.log(`  ${factoryErrors.length} branch(es) produced FACTORY_ERROR - preserved for inspection, stopping outer run`);
-    } else {
-      console.log(`  ${factoryErrors.length} branch(es) produced FACTORY_ERROR - external mutation suppressed by qualification policy, preserved for inspection`);
-    }
-  }
-
-  if (shouldStopBeforeMergerForFactoryError(partition)) {
-    console.log("Factory error detected during review verdict handling. Stopping outer loop to prevent unsafe progression.");
-    await settleResearchEpilogue();
-    break;
-  }
-
-  if (completedBranches.length === 0) {
-    console.log("No commits produced. Nothing to merge this iteration.");
-    await settleResearchEpilogue();
-    // Still need to handle research-only iteration: if research succeeded, we already published/closed and should continue or exit?
-    // If no implement work but research succeeded, iteration is done — continue to next (which will exit if no more eligible).
-    if (shouldStopBeforeNextClaimForResearchError(researchHadFactoryError)) break;
-    if (claimedResearch.length > 0) {
-      console.log("Research iteration complete — checking for more work");
-      continue;
-    }
-    continue;
-  }
-
-  if (!QUALIFICATION_LIFECYCLE.integrate) {
-    console.log("Qualification mode: integration suppressed by lifecycle policy; preserving local branches/logs for inspection.");
-    await settleResearchEpilogue();
-    continue;
-  }
-
-  // ----- Phase 3: Merge (single agent merges all completed branches) -----
-  // INVARIANT: Sandcastle never integrates agent work into the caller's current branch.
-  // Use helper so production and regression test the same batch-worktree seam.
-  const callerBranchForBatch = callerBranch;
-  const callerShaForBatch = callerSha;
-  // Use frozen snapshot from factory-base freeze (whole-run invariant), not a late Phase-3 snapshot
-  const callerStatusBeforeForBatch = callerStatusBefore;
-  const callerHeadBefore = callerSha;
-  const batchBranch = `sandcastle/batch-${completedIssues.map(i=>i.id).join('-')}-${Date.now().toString(36)}`;
-  console.log(`Creating dedicated batch branch ${batchBranch} from factoryBaseSha ${factoryBaseSha.slice(0,7)} (caller ${callerBranchForBatch}@${callerShaForBatch.slice(0,7)} — will NOT be mutated)`);
-  let batchWorktreePath: string | null = null;
-  try {
-    batchWorktreePath = branchHelpers.createBatchWorktree(REPO_ROOT, batchBranch, factoryBaseSha);
-    console.log(`Created batch worktree ${batchWorktreePath} for ${batchBranch} from ${factoryBaseSha.slice(0,7)} — caller ${callerBranchForBatch} never moved`);
-  } catch (e) {
-    const reason = `Batch worktree creation failed for ${batchBranch} from ${factoryBaseSha.slice(0,7)}: ${String(getErrorMessage(e)).slice(0, MERGER_REASON_TRUNCATE)} -- branch preserved`;
-    console.error(reason);
-    const mergerFailure = partitionMergerInfrastructureFailure(completedIssues, reason);
-    for (const failure of mergerFailure.factoryErrors) {
-      await markFactoryError(failure.id, failure.branch, failure.reason);
-    }
-    if (batchWorktreePath) { try { execSync(`git worktree remove --force ${batchWorktreePath}`, {stdio:'ignore', cwd: REPO_ROOT}); } catch {} }
-    try { execSync(`git branch -D ${batchBranch}`, {stdio:'ignore', cwd: REPO_ROOT}); } catch {}
-    await settleResearchEpilogue();
-    break;
-  }
-
-  try {
-    await sandcastle.run({
-      hooks,
-      sandbox: docker(mergerDockerOptions(WORKER_SANDBOX_ENV)),
-      name: "merger",
-      maxIterations: 1,
-      cwd: batchWorktreePath,
-      agent: sandcastle.muse("muse-spark-1.2-contributor"),
-      promptFile: path.join(REPO_ROOT, ".sandcastle", "merge-prompt.md"),
-      promptArgs: {
-        BRANCHES: completedBranches.map((b) => `- ${b}`).join("\n"),
-        ISSUES: completedIssues.map((i) => `- ${i.id}: ${i.title}`).join("\n"),
-      },
-    });
-    console.log(`\nBranches merged locally into ${batchBranch} via merger agent in worktree ${batchWorktreePath}.`);
-  } catch (error: unknown) {
-    const reason = `Merger failed on ${batchBranch}: ${String(getErrorMessage(error)).slice(0, MERGER_REASON_TRUNCATE)} -- branch preserved`;
-    console.error(`Merger failed on ${batchBranch} in ${batchWorktreePath}: ${getErrorMessage(error)}`);
-    const mergerFailure = partitionMergerInfrastructureFailure(completedIssues, reason);
-    for (const failure of mergerFailure.factoryErrors) {
-      await markFactoryError(failure.id, failure.branch, failure.reason);
+      process.chdir(REPO_ROOT);
+      try { execSync(`git worktree remove --force ${batchWorktreePath}`, {stdio:'ignore', cwd: REPO_ROOT}); } catch {}
+      try { execSync(`git branch -D ${batchBranch}`, {stdio:'ignore', cwd: REPO_ROOT}); } catch {}
+      throw new Error(reason);
     }
     process.chdir(REPO_ROOT);
-    try { execSync(`git worktree remove --force ${batchWorktreePath}`, {stdio:'ignore', cwd: REPO_ROOT}); } catch {}
-    try { execSync(`git branch -D ${batchBranch}`, {stdio:'ignore', cwd: REPO_ROOT}); } catch {}
-    await settleResearchEpilogue();
-    break;
-  }
-  process.chdir(REPO_ROOT);
 
-  // Host-side: push batch branch + PR + auto-merge. Never push caller's branch.
-  let currentBranch = batchBranch;
-  let publicationFailed = false;
-  try {
-    console.log(`Batch branch after merge: ${currentBranch} (caller ${callerBranchForBatch} untouched, caller SHA ${callerShaForBatch.slice(0,7)})`);
+    // Host-side: push batch branch + PR + auto-merge. Never push caller's branch.
+    let currentBranch = batchBranch;
+    let publicationFailed = false;
+    let pullRequestUrl: string | undefined;
+    try {
+      console.log(`Batch branch after merge: ${currentBranch} (caller ${callerBranchForBatch} untouched, caller SHA ${callerShaForBatch.slice(0,7)})`);
 
-    // Attempt to create/update PR for batch -- best effort. Identify existing PR by exact expected head branch, never by implicit current branch.
-    const ownerRepo = parseOwnerRepo();
-    if (ownerRepo) {
-      try {
-        // Check if PR already exists for the dedicated batch branch (exact head), not caller's branch
-        let existingPr = "";
+      const ownerRepo = parseOwnerRepo();
+      if (ownerRepo) {
         try {
-          existingPr = await runGh(["pr", "list", "--head", batchBranch, "--state", "open", "--json", "number", "--jq", ".[0].number"]);
-        } catch {}
-        if (!existingPr) {
+          let existingPr = "";
           try {
-            const prBody = `Sandcastle batch integration -- branches:\n${completedBranches.map((b) => `- \`${b}\``).join("\n")}\n\n${completedIssues.map((i) => `Closes #${i.id} - ${i.title}`).join("\n")}\n\n<!-- batch-pr-map: ${completedIssues.map(i=>i.id).join(',')} -->`;
-            const prCreateBase = branchHelpers.buildPrCreateArgs(batchBranch, completedIssues);
-            const publication = await publishBatchBranch({
-              repoRoot: REPO_ROOT,
-              batchWorktreePath,
-              batchBranch,
-              createPullRequest: () => runGh([...prCreateBase, "--body", prBody]),
-            });
-            const prUrl = publication.pullRequest!;
-            console.log(`Created PR: ${prUrl}`);
-            // Durable batch-PR correlation: record exact PR number against every issue (for reconciliation)
+            existingPr = await runGh(["pr", "list", "--head", batchBranch, "--state", "open", "--json", "number", "--jq", ".[0].number"]);
+          } catch {}
+          if (!existingPr) {
             try {
-              const prNumberForMap = prUrl.match(/\/pull\/(\d+)/)?.[1];
-              if(prNumberForMap){
-                for(const iss of completedIssues){
-                  await safeRunGh(["issue","comment", iss.id, "--body", `Sandcastle batch integration: branch \`${iss.branch}\` merged into \`${currentBranch}\`, batch PR #${prNumberForMap} (${prUrl}) awaiting Factory / Merge Oracle. Closes #${iss.id}`]);
+              const prBody = `Sandcastle batch integration -- branches:\n${completedBranches.map((b) => `- \`${b}\``).join("\n")}\n\n${completedIssues.map((i) => `Closes #${i.id} - ${i.title}`).join("\n")}\n\n<!-- batch-pr-map: ${completedIssues.map(i=>i.id).join(',')} -->`;
+              const prCreateBase = branchHelpers.buildPrCreateArgs(batchBranch, completedIssues);
+              const publication = await publishBatchBranch({
+                repoRoot: REPO_ROOT,
+                batchWorktreePath,
+                batchBranch,
+                createPullRequest: () => runGh([...prCreateBase, "--body", prBody]),
+              });
+              const prUrl = publication.pullRequest!;
+              pullRequestUrl = prUrl;
+              console.log(`Created PR: ${prUrl}`);
+              try {
+                const prNumberForMap = prUrl.match(/\/pull\/(\d+)/)?.[1];
+                if(prNumberForMap){
+                  for(const iss of completedIssues){
+                    await safeRunGh(["issue","comment", iss.id, "--body", `Sandcastle batch integration: branch \`${iss.branch}\` merged into \`${currentBranch}\`, batch PR #${prNumberForMap} (${prUrl}) awaiting Factory / Merge Oracle. Closes #${iss.id}`]);
+                  }
                 }
-              }
-            } catch {}
-            // Privileged changes may never grant themselves autonomous merge authority.
-            // Classify the exact batch candidate via helper, not caller HEAD.
-            try {
-              const prNumber = prUrl.match(/\/pull\/(\d+)/)?.[1];
-              if (prNumber) {
-                process.chdir(REPO_ROOT);
-                const diffSpec = branchHelpers.buildProtectedRootDiffSpec(factoryBaseSha, batchBranch);
-                const changed = execSync(`git diff --name-only ${diffSpec}`, { encoding: "utf8", cwd: REPO_ROOT }).split(/\r?\n/).filter(Boolean);
-                if (!mayAutonomouslyMerge(changed)) {
-                  console.log(`PR #${prNumber} changes a protected root; independent human approval is required`);
-                } else {
-                  await runGh(["pr", "merge", prNumber, "--auto", "--squash"]);
-                  console.log(`Auto-merge enabled for PR #${prNumber}; Factory / Merge Oracle remains authoritative`);
+              } catch {}
+              try {
+                const prNumber = prUrl.match(/\/pull\/(\d+)/)?.[1];
+                if (prNumber) {
+                  process.chdir(REPO_ROOT);
+                  const diffSpec = branchHelpers.buildProtectedRootDiffSpec(factoryBaseSha, batchBranch);
+                  const changed = execSync(`git diff --name-only ${diffSpec}`, { encoding: "utf8", cwd: REPO_ROOT }).split(/\r?\n/).filter(Boolean);
+                  if (!mayAutonomouslyMerge(changed)) {
+                    console.log(`PR #${prNumber} changes a protected root; independent human approval is required`);
+                  } else {
+                    await runGh(["pr", "merge", prNumber, "--auto", "--squash"]);
+                    console.log(`Auto-merge enabled for PR #${prNumber}; Factory / Merge Oracle remains authoritative`);
+                  }
                 }
+              } catch (error: unknown) {
+                console.warn(`Auto-merge not enabled: ${getErrorMessage(error)}`);
               }
             } catch (error: unknown) {
-              console.warn(`Auto-merge not enabled: ${getErrorMessage(error)}`);
+              const reason = `Batch publication failed for ${batchBranch}: ${getErrorMessage(error)} -- branches preserved`;
+              console.error(reason);
+              const publicationFailure = partitionMergerInfrastructureFailure(completedIssues, reason);
+              for (const failure of publicationFailure.factoryErrors) {
+                await markFactoryError(failure.id, failure.branch, failure.reason);
+              }
+              publicationFailed = true;
+              throw new Error(reason);
             }
-          } catch (error: unknown) {
-            const reason = `Batch publication failed for ${batchBranch}: ${getErrorMessage(error)} -- branches preserved`;
-            console.error(reason);
-            const publicationFailure = partitionMergerInfrastructureFailure(completedIssues, reason);
-            for (const failure of publicationFailure.factoryErrors) {
-              await markFactoryError(failure.id, failure.branch, failure.reason);
+          } else {
+            try {
+              await publishBatchBranch({ repoRoot: REPO_ROOT, batchWorktreePath, batchBranch });
+              console.log(`PR #${existingPr} already exists for ${batchBranch} (dedicated batch, not caller ${callerBranchForBatch})`);
+              pullRequestUrl = `https://github.com/${ownerRepo.owner}/${ownerRepo.repo}/pull/${existingPr}`;
+            } catch (error: unknown) {
+              const reason = `Batch publication failed for ${batchBranch}: ${getErrorMessage(error)} -- branches preserved`;
+              console.error(reason);
+              const publicationFailure = partitionMergerInfrastructureFailure(completedIssues, reason);
+              for (const failure of publicationFailure.factoryErrors) {
+                await markFactoryError(failure.id, failure.branch, failure.reason);
+              }
+              publicationFailed = true;
+              throw new Error(reason);
             }
-            publicationFailed = true;
           }
-        } else {
-          try {
-            await publishBatchBranch({ repoRoot: REPO_ROOT, batchWorktreePath, batchBranch });
-            console.log(`PR #${existingPr} already exists for ${batchBranch} (dedicated batch, not caller ${callerBranchForBatch})`);
-          } catch (error: unknown) {
-            const reason = `Batch publication failed for ${batchBranch}: ${getErrorMessage(error)} -- branches preserved`;
-            console.error(reason);
-            const publicationFailure = partitionMergerInfrastructureFailure(completedIssues, reason);
-            for (const failure of publicationFailure.factoryErrors) {
-              await markFactoryError(failure.id, failure.branch, failure.reason);
-            }
-            publicationFailed = true;
-          }
+        } catch (error: unknown) {
+          if (!publicationFailed) console.warn(`PR handling failed: ${getErrorMessage(error)}`);
+          else throw error;
         }
-      } catch (error: unknown) {
-        console.warn(`PR handling failed: ${getErrorMessage(error)}`);
       }
-    }
-  } catch (error: unknown) {
-    console.warn(`Post-merge PR handling failed (non-fatal): ${getErrorMessage(error)}`);
-  } finally {
+    } catch (error: unknown) {
+      if (!publicationFailed) console.warn(`Post-merge PR handling failed (non-fatal): ${getErrorMessage(error)}`);
+      else throw error;
+    } finally {
     // Stabilization A1: never rely on ambient cwd after merger worktree may have been deleted.
     // Restore to stable REPO_ROOT before any getcwd()-dependent git invocation.
-    process.chdir(REPO_ROOT);
+      process.chdir(REPO_ROOT);
     // Enforce invariant via helper: caller checkout never moved, git status --porcelain unchanged
-    try {
-      const afterBranch = execSync('git branch --show-current', {encoding:'utf8', cwd: REPO_ROOT}).trim();
-      const callerStatusAfter = (() => { try { return execSync('git status --porcelain', {encoding:'utf8', cwd: REPO_ROOT}).trim(); } catch { return null; } })();
-      const callerHeadAfter = (() => { try { return execSync('git rev-parse HEAD', {encoding:'utf8', cwd: REPO_ROOT}).trim(); } catch { return null; } })();
-      // Use helper for caller-unchanged check (same seam as tests) — compare against frozen snapshot from iteration start
-      const callerCheck = branchHelpers.verifyCallerUnchanged(REPO_ROOT, callerBranchForBatch, callerShaForBatch);
-      const refSha = callerCheck.refSha;
-      if (!callerCheck.ok) {
-        console.error(`INVARIANT VIOLATION: caller unchanged FAILED — ref ${callerCheck.refSha.slice(0,7)} vs ${callerShaForBatch.slice(0,7)} checkout ${callerCheck.checkoutBranch} vs ${callerBranchForBatch}`);
-      } else {
-        console.log(`Invariant OK: caller ref ${callerCheck.refSha.slice(0,7)} checkout ${callerCheck.checkoutBranch} (batch ${batchBranch} pushed)`);
+      try {
+        const afterBranch = execSync('git branch --show-current', {encoding:'utf8', cwd: REPO_ROOT}).trim();
+        const callerStatusAfter = (() => { try { return execSync('git status --porcelain', {encoding:'utf8', cwd: REPO_ROOT}).trim(); } catch { return null; } })();
+        const callerHeadAfter = (() => { try { return execSync('git rev-parse HEAD', {encoding:'utf8', cwd: REPO_ROOT}).trim(); } catch { return null; } })();
+        const callerCheck = branchHelpers.verifyCallerUnchanged(REPO_ROOT, callerBranchForBatch, callerShaForBatch);
+        const refSha = callerCheck.refSha;
+        if (!callerCheck.ok) {
+          console.error(`INVARIANT VIOLATION: caller unchanged FAILED — ref ${callerCheck.refSha.slice(0,7)} vs ${callerShaForBatch.slice(0,7)} checkout ${callerCheck.checkoutBranch} vs ${callerBranchForBatch}`);
+        } else {
+          console.log(`Invariant OK: caller ref ${callerCheck.refSha.slice(0,7)} checkout ${callerCheck.checkoutBranch} (batch ${batchBranch} pushed)`);
+        }
+        if (refSha !== callerShaForBatch) {
+          console.error(`INVARIANT VIOLATION: refs/heads/${callerBranchForBatch} changed! Before ${callerShaForBatch.slice(0,7)} after ${refSha.slice(0,7)} — caller branch was mutated`);
+        }
+        if (callerStatusBeforeForBatch !== null && callerStatusAfter !== null && callerStatusBeforeForBatch !== callerStatusAfter) {
+          console.error(`INVARIANT VIOLATION: git status --porcelain changed from "${callerStatusBeforeForBatch.slice(0,200)}" to "${callerStatusAfter.slice(0,200)}" — caller working tree was mutated (whole-run invariant from freeze)`);
+        } else {
+          console.log(`Caller status unchanged (whole-run): "${(callerStatusAfter||'').slice(0,100)}" vs frozen "${(callerStatusBeforeForBatch||'').slice(0,50)}"`);
+        }
+        if (callerHeadBefore !== callerHeadAfter) {
+          console.error(`INVARIANT VIOLATION: caller HEAD moved from ${callerHeadBefore?.slice(0,7)} to ${callerHeadAfter?.slice(0,7)} — should remain on ${callerBranchForBatch}`);
+        }
+        if (afterBranch !== callerBranchForBatch) {
+          console.warn(`Caller checkout moved from ${callerBranchForBatch} to ${afterBranch} — restoring (should not have happened with dedicated worktree)`);
+          try { execFileSync("git", ["checkout", callerBranchForBatch], { stdio: "ignore", cwd: REPO_ROOT }); } catch {}
+        }
+        if (batchWorktreePath) {
+          try { branchHelpers.cleanupBatchWorktree(REPO_ROOT, batchWorktreePath); } catch { try { execSync(`git worktree remove --force ${batchWorktreePath}`, {stdio:'ignore', cwd: REPO_ROOT}); } catch {} }
+          console.log(`Batch worktree ${batchWorktreePath} removed (branch ${batchBranch} remains for PR)`);
+        }
+      } catch (e) {
+        console.warn(`Failed to verify caller invariant: ${getErrorMessage(e)}`);
+        if (batchWorktreePath) { try { branchHelpers.cleanupBatchWorktree(REPO_ROOT, batchWorktreePath); } catch { try { execSync(`git worktree remove --force ${batchWorktreePath}`, {stdio:'ignore', cwd: REPO_ROOT}); } catch {} } }
       }
-      if (refSha !== callerShaForBatch) {
-        console.error(`INVARIANT VIOLATION: refs/heads/${callerBranchForBatch} changed! Before ${callerShaForBatch.slice(0,7)} after ${refSha.slice(0,7)} — caller branch was mutated`);
-      }
-      if (callerStatusBeforeForBatch !== null && callerStatusAfter !== null && callerStatusBeforeForBatch !== callerStatusAfter) {
-        console.error(`INVARIANT VIOLATION: git status --porcelain changed from "${callerStatusBeforeForBatch.slice(0,200)}" to "${callerStatusAfter.slice(0,200)}" — caller working tree was mutated (whole-run invariant from freeze)`);
-      } else {
-        console.log(`Caller status unchanged (whole-run): "${(callerStatusAfter||'').slice(0,100)}" vs frozen "${(callerStatusBeforeForBatch||'').slice(0,50)}"`);
-      }
-      if (callerHeadBefore !== callerHeadAfter) {
-        console.error(`INVARIANT VIOLATION: caller HEAD moved from ${callerHeadBefore?.slice(0,7)} to ${callerHeadAfter?.slice(0,7)} — should remain on ${callerBranchForBatch}`);
-      }
-      // Also verify checkout still on caller (should never have left)
-      if (afterBranch !== callerBranchForBatch) {
-        console.warn(`Caller checkout moved from ${callerBranchForBatch} to ${afterBranch} — restoring (should not have happened with dedicated worktree)`);
-        try { execFileSync("git", ["checkout", callerBranchForBatch], { stdio: "ignore", cwd: REPO_ROOT }); } catch {}
-      }
-      // Clean up batch worktree (if used) — keep branch for PR, remove worktree via helper
-      if (batchWorktreePath) {
-        try { branchHelpers.cleanupBatchWorktree(REPO_ROOT, batchWorktreePath); } catch { try { execSync(`git worktree remove --force ${batchWorktreePath}`, {stdio:'ignore', cwd: REPO_ROOT}); } catch {} }
-        console.log(`Batch worktree ${batchWorktreePath} removed (branch ${batchBranch} remains for PR)`);
-      }
-    } catch (e) {
-      console.warn(`Failed to verify caller invariant: ${getErrorMessage(e)}`);
-      if (batchWorktreePath) { try { branchHelpers.cleanupBatchWorktree(REPO_ROOT, batchWorktreePath); } catch { try { execSync(`git worktree remove --force ${batchWorktreePath}`, {stdio:'ignore', cwd: REPO_ROOT}); } catch {} } }
     }
-  }
 
-  if (publicationFailed) await settleResearchEpilogue();
-  if (publicationFailed) break;
+    if (publicationFailed) throw new Error(`Batch publication failed for ${batchBranch}`);
 
-  // A local merge is not integration into main. Leave tickets open until the
-  // PR is actually merged under Factory / Merge Oracle authority.
-  for (const iss of completedIssues) {
-    await safeRunGh(["issue", "comment", iss.id, "--body", `Sandcastle produced and reviewed \`${iss.branch}\`. Awaiting exact-SHA Factory / Merge Oracle evidence and PR merge; this issue remains open.`]);
-    console.log(`  #${iss.id} remains open pending authoritative PR merge`);
-  }
+    for (const iss of completedIssues) {
+      await safeRunGh(["issue", "comment", iss.id, "--body", `Sandcastle produced and reviewed \`${iss.branch}\`. Awaiting exact-SHA Factory / Merge Oracle evidence and PR merge; this issue remains open.`]);
+      console.log(`  #${iss.id} remains open pending authoritative PR merge`);
+    }
 
-  // Ensure research is settled before deciding outer loop progression (epilogue guarantees this, but call again for safety if no early exit taken)
-  await settleResearchEpilogue();
+    return { issueIds: completedIssues.map(i => i.id), batchBranch, pullRequest: pullRequestUrl };
+  };
 
-  // Research FACTORY_ERROR should not strand already-completed implementation work.
-  // If research failed this iteration, implementation batch has already been
-  // submitted above; stop before claiming additional work next iteration.
-  if (shouldStopBeforeNextClaimForResearchError(researchHadFactoryError)) {
-    console.log("Research FACTORY_ERROR — implementation batch already submitted, stopping before next outer iteration (sibling research successes preserved)");
-    break;
+  // Capture preparation research error for final decision
+  const initialResearchHadFactoryError = researchHadFactoryError;
+
+  // State-machine research input from exact host-fetched source map — body required, no cast
+  const preparedResearchIssues: PreparedResearchIssue[] = claimedResearch.map((issue) => {
+    const source = researchSourceMap!.get(issue.id);
+    if (!source) throw new Error(`research source not found for #${issue.id}`);
+    return { ...issue, body: source.body ?? "" };
+  });
+  const preparedImplIssues: PreparedImplIssue[] = claimedIssues.map((issue) => ({ ...issue }));
+
+  // Call single production state machine — typed satisfies
+  const result = await runFactoryIteration(
+    {
+      implIssues: preparedImplIssues,
+      researchIssues: preparedResearchIssues,
+      initialResearchHadFactoryError,
+    },
+    {
+      workers: {
+        runImplementation: runImplWorker,
+        runResearch: runResearchWorker ?? (async () => { throw new Error("runResearchWorker should not be called when no research issues"); }) as RunResearchWorker,
+        researchOps: { safeRunGh, runGh },
+      },
+      mutations: {
+        apply: async (action) => {
+          if (action.kind === "failed") {
+            await markBlocked(action.issue.id, action.issue.branch, action.reason);
+          } else if (action.kind === "reviewRejected") {
+            await markReviewRejected(action.issue.id, action.issue.branch, action.verdict!, action.reason);
+          } else {
+            await markFactoryError(action.issue.id, action.issue.branch, action.reason);
+          }
+        },
+      },
+      submission: {
+        submit: submitImplementation,
+      },
+      policy: {
+        mutateOutcomeState: QUALIFICATION_LIFECYCLE.mutateOutcomeState,
+        integrate: QUALIFICATION_LIFECYCLE.integrate,
+      },
+      logger: {
+        info: (msg: string) => console.log(msg),
+        warn: (msg: string) => console.warn(msg),
+        error: (msg: string) => console.error(msg),
+      },
+    } satisfies FactoryIterationDependencies
+  );
+
+  // Log implementation/research summary from state machine — direct result.next, no reinterpretation
+  console.log(`\nExecution complete via state machine: ${result.implementation.completedIds.length} completed, ${result.implementation.failedIds.length} failed, ${result.implementation.reviewRejectedIds.length} reviewRejected, ${result.implementation.factoryErrorIds.length} factoryErrors`);
+  if (result.implementation.completedIds.length > 0) console.log(`  completed: ${result.implementation.completedIds.join(", ")}`);
+  if (result.implementation.failedIds.length > 0) console.log(`  failed: ${result.implementation.failedIds.join(", ")}`);
+  if (result.implementation.reviewRejectedIds.length > 0) console.log(`  reviewRejected: ${result.implementation.reviewRejectedIds.join(", ")}`);
+  if (result.implementation.factoryErrorIds.length > 0) console.log(`  factoryErrors: ${result.implementation.factoryErrorIds.join(", ")}`);
+  console.log(`Research: ${result.research.succeededIds.length} succeeded, ${result.research.failedIds.length} failed, hadFactoryError=${result.research.hadFactoryError}`);
+  if (result.submission) console.log(`Submission: ${result.submission.issueIds.join(", ")} -> ${result.submission.batchBranch} ${result.submission.pullRequest ?? ""}`);
+
+  if (result.next.kind === "stop") {
+    if (result.next.reason === "implementation-factory-error") {
+      console.log("Factory error detected during review verdict handling. Stopping outer loop to prevent unsafe progression.");
+      break;
+    }
+    if (result.next.reason === "submission-factory-error") {
+      console.log("Submission FACTORY_ERROR — stopping outer loop.");
+      break;
+    }
+    if (result.next.reason === "research-factory-error") {
+      // Preserve successful submission receipt if present
+      if (result.submission) {
+        console.log("Research FACTORY_ERROR — implementation batch already submitted, stopping before next outer iteration (sibling research successes preserved)");
+      } else {
+        console.log("Research FACTORY_ERROR — stopping outer loop (preserving sibling successes)");
+      }
+      break;
+    }
+  } else {
+    if (result.next.reason === "no-completed-implementation") {
+      console.log("No commits produced. Nothing to merge this iteration.");
+      if (claimedResearch.length > 0) {
+        console.log("Research iteration complete — checking for more work");
+      }
+      // GC handled below for submission-complete; for no-completed, just continue
+      continue;
+    }
+    if (result.next.reason === "qualification-complete") {
+      console.log("Qualification mode: integration suppressed by lifecycle policy; preserving local branches/logs for inspection.");
+      continue;
+    }
+    if (result.next.reason === "submission-complete") {
+      // Successful submission — note that authoritative CI/merge remains pending
+      // If research had factory error, result.next would have been stop, so here we know research is clean
+      // Do GC for ephemeral batch artefacts
+      try { branchHelpers.cleanupPreserveLocalBranches(REPO_ROOT); } catch {}
+      try { execSync("git worktree prune", { stdio: "ignore", cwd: REPO_ROOT }); } catch {}
+      console.log("\nBatch submitted -- authoritative CI and merge remain pending.");
+      continue;
+    }
   }
 
   // Immediate GC for ephemeral batch artefacts -- same-process lifecycle (not weekly cron)
