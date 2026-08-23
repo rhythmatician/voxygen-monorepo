@@ -356,6 +356,40 @@ export function validateTaskClassification(issue: IssueInput): ValidationResult 
 
 export type EligibilityResult = { eligible: true } | { eligible: false; reason: string; code?: string };
 
+/**
+ * Pure validator for Wayfinder Research ticket body — owned contract.
+ * Used by production isResearchEligible and tests.
+ * Requires a substantive nonempty "## Question" section, consistent with
+ * current research tickets (e.g., #163 fresh-world-scenario-automation,
+ * #86 refinement-topology). No tracer, no implementation contract.
+ * See CONTEXT.md “Research Ticket” and ADR 0010 research input contract.
+ */
+export function validateResearchTicketInput(body: string | undefined): { valid: boolean; reason?: string; code?: string } {
+  if (body === undefined || body === null || body.trim().length === 0) {
+    return { valid: false, reason: "research body must contain a ## Question section", code: "RESEARCH_BODY_INVALID" };
+  }
+  // Find ## Question heading (case-insensitive, allow 1-3 #)
+  const match = body.match(/##\s*Question\b/i);
+  if (!match || match.index === undefined) {
+    return { valid: false, reason: "research body must contain a ## Question heading", code: "RESEARCH_BODY_INVALID" };
+  }
+  const after = body.slice(match.index + match[0].length).trim();
+  // Require substantive content after heading: at least 20 chars and 5 words
+  if (after.length < 20) {
+    return { valid: false, reason: "research Question section too short (<20 chars after heading)", code: "RESEARCH_BODY_INVALID" };
+  }
+  const words = after.split(/\s+/).filter(Boolean);
+  if (words.length < 5) {
+    return { valid: false, reason: "research Question section too short (<5 words)", code: "RESEARCH_BODY_INVALID" };
+  }
+  // Check not just placeholder like "please investigate this" (we already require 5 words and 20 chars, so that would pass, but we keep minimal)
+  // Ensure contains at least one alphabetic character and not just punctuation
+  if (!/[a-zA-Z]{3,}/.test(after)) {
+    return { valid: false, reason: "research Question section must contain substantive text", code: "RESEARCH_BODY_INVALID" };
+  }
+  return { valid: true };
+}
+
 export function isResearchEligible(issue: IssueInput): EligibilityResult {
   if (issue.state.toLowerCase() !== "open") {
     return { eligible: false, reason: `state is ${issue.state}, expected open`, code: "STATE_NOT_OPEN" };
@@ -424,16 +458,13 @@ export function isResearchEligible(issue: IssueInput): EligibilityResult {
     }
   }
 
-  // Research body contract — from docs/wayfinder/research-receipt.md and research input contract:
-  // Body must be non-empty, contain a research question (>=10 chars after trim),
-  // and not be a single trivial token. Prevents wayfinder:research alone from
-  // authorizing empty AFK work. Pure production validator.
-  if (issue.body === undefined || issue.body === null || issue.body.trim().length < 10) {
-    return { eligible: false, reason: "research body must contain a research question (>=10 chars)", code: "RESEARCH_BODY_INVALID" };
-  }
-  const trimmed = issue.body.trim();
-  if (trimmed.split(/\s+/).length < 2 || trimmed.length < 10) {
-    return { eligible: false, reason: "research body too short or not a question", code: "RESEARCH_BODY_INVALID" };
+  // Research input contract — per CONTEXT.md Research Ticket and ADR 0010:
+  // Research ticket body must contain a substantive nonempty Question section
+  // ("## Question" heading) consistent with current Wayfinder Research tickets
+  // (e.g., #163, #86, #68, #66, #37). No tracer required.
+  const v = validateResearchTicketInput(issue.body);
+  if (!v.valid) {
+    return { eligible: false, reason: v.reason!, code: v.code! };
   }
   // No tracer required for research.
   return { eligible: true };

@@ -63,3 +63,18 @@ Current canonical labels (see `.sandcastle/tracker-policy.mts` and ADR 0010):
 - Native: assignee (concurrency claim), `blocked_by` (product/planning dependency)
 
 Reference ADR 0010 for label roles. Do not parse exact map Notes sentences or create speculative Research children; keep unready questions in map fog until sharp.
+## Research input contract
+
+Research tickets (`wayfinder:research`) are eligible for Sandcastle research profile only when their body satisfies the research input contract, per CONTEXT.md “Research Ticket” and ADR 0010.
+
+**Contract — pure `validateResearchTicketInput(body)` in `.sandcastle/tracker-policy.mts`:**
+
+- Body must contain a substantive nonempty `## Question` heading (case-insensitive, `## Question`).
+- Content after the heading must be at least 20 characters and 5 words, with substantive alphabetic text.
+- Examples: #163 fresh-world-scenario-automation, #86 refinement-topology, #68 voxygen-dev-loop, #66 ml-data-supply-research, #37 vocab-audit all contain `## Question` with multi-paragraph evidence-seeking questions.
+- Trivial bodies such as `please investigate this` (despite passing a 10-char/2-word heuristic) fail because they lack a `## Question` section or are too short to be substantive.
+- No tracer/bullet contract required for research; tracer is implementation-only.
+
+This validator is used by production `isResearchEligible()` and tests. It prevents empty or placeholder `wayfinder:research` issues from authorizing AFK work while keeping the check pure and owned.
+
+Historical bodies without a Question section are ineligible and must be triaged before dispatch.

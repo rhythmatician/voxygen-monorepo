@@ -110,6 +110,28 @@ const execFileAsync = promisify(execFile);
 // Configuration
 // ---------------------------------------------------------------------------
 const MAX_ITERATIONS = 10;
+// Resolve current GitHub login once for claim ownership verification (fail-closed if unavailable)
+let cachedClaimantLogin: string | null = null;
+async function resolveClaimantLogin(): Promise<string> {
+  if (cachedClaimantLogin) return cachedClaimantLogin;
+  // Try gh api user
+  const candidates = [
+    ["api", "user", "--jq", ".login"],
+    ["api", "/user", "--jq", ".login"],
+  ];
+  for (const args of candidates) {
+    try {
+      const out = await runGh(args);
+      const login = out.trim();
+      if (login && login !== "null" && !login.includes(" ")) {
+        cachedClaimantLogin = login;
+        return login;
+      }
+    } catch {}
+  }
+  throw new Error("failed to resolve claimant login via gh api user");
+}
+
 const REASON_TRUNCATE = 800;
 const MERGER_REASON_TRUNCATE = 1000;
 const WORKER_REASON_TRUNCATE = 2000;
@@ -358,7 +380,17 @@ async function fetchOpenResearchIssues(): Promise<IssueInput[]> {
 async function claimIssue(issue: IssueInput): Promise<boolean> {
   const id = String(issue.number);
   const branch = branchForIssue(issue.number);
-  const ops: ClaimOps = {
+  // Resolve claimant once per claim attempt
+  let claimantLogin: string;
+  try {
+    claimantLogin = await resolveClaimantLogin();
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : String(e);
+    console.error(`  FACTORY_ERROR resolving claimant for #${id}: ${reason} — fail closed`);
+    throw new Error(`FACTORY_ERROR resolving claimant for #${id}: ${reason}`);
+  }
+  const ops: ClaimOps & { claimantLogin: string } = {
+    claimantLogin,
     fetchIssue: async (fetchId: string) => {
       const rawJson = await runGh(["issue", "view", fetchId, "--json", "number,title,body,labels,assignees,state"]);
       let raw: any;
@@ -447,7 +479,17 @@ async function claimIssue(issue: IssueInput): Promise<boolean> {
 async function claimResearchIssue(issue: IssueInput): Promise<boolean> {
   const id = String(issue.number);
   const branch = branchForIssue(issue.number);
-  const ops: ResearchClaimOps = {
+  let claimantLogin: string;
+  try {
+    claimantLogin = await resolveClaimantLogin();
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : String(e);
+    console.error(`  FACTORY_ERROR resolving claimant for research #${id}: ${reason} — fail closed`);
+    throw new Error(`FACTORY_ERROR resolving claimant for research #${id}: ${reason}`);
+  }
+  const ops: ResearchClaimOps & { claimantLogin: string } = {
+    claimantLogin,
+
     fetchIssue: async (fetchId: string) => {
       const rawJson = await runGh(["issue", "view", fetchId, "--json", "number,title,body,labels,assignees,state"]);
       let raw: any;
@@ -529,15 +571,21 @@ async function claimResearchIssue(issue: IssueInput): Promise<boolean> {
 }
 
 async function transitionToBlocked(issueId: string): Promise<boolean> {
-  const removed = await safeRunGh(
+  // Per ADR 0010: remove agent:in-progress, remove claimant assignee, retain ready-for-agent, add agent:blocked, do not restore implement, preserve branch/provenance
+  const removedProgress = await safeRunGh(
     ["issue", "edit", issueId, "--remove-label", "agent:in-progress"],
     `Failed to remove agent:in-progress from #${issueId}`,
   );
-  const added = await safeRunGh(
+  const removedAssignee = await safeRunGh(
+    ["issue", "edit", issueId, "--remove-assignee", "@me"],
+    `Failed to remove claimant assignee from #${issueId}`,
+  );
+  const addedBlocked = await safeRunGh(
     ["issue", "edit", issueId, "--add-label", "agent:blocked"],
     `Failed to add agent:blocked to #${issueId}`,
   );
-  return removed && added;
+  // Also ensure implement not restored — verify not present (do not add)
+  return removedProgress && removedAssignee && addedBlocked;
 }
 
 async function markBlocked(issueId: string, branch: string, reason: string): Promise<boolean> {
@@ -548,7 +596,7 @@ async function markBlocked(issueId: string, branch: string, reason: string): Pro
     "comment",
     issueId,
     "--body",
-    `Sandcastle failed on \`${branch}\` -- not merged. Preserved branch for inspection.\n\n**Reason:** ${shortReason}\n\nBranch: \`${branch}\`\n\nTo retry: remove \`agent:blocked\`, ensure \`agent:implement\` is still present, and re-run factory.`,
+    `Sandcastle failed on \`${branch}\` -- not merged. Preserved branch for inspection.\n\n**Reason:** ${shortReason}\n\nBranch: \`${branch}\`\n\nTo retry: remove \`agent:blocked\` and explicitly re-add \`agent:implement\`, then re-run factory. Branch \`${branch}\` preserved, ready-for-agent retained, agent:in-progress and claimant assignee removed, agent:implement not restored.`,
   ]);
   const ok = transitionOk && commentOk;
   if (!ok) {
@@ -578,7 +626,7 @@ async function markFactoryError(issueId: string, branch: string, reason: string)
     "comment",
     issueId,
     "--body",
-    `Sandcastle factory infrastructure failed on \`${branch}\` — preserved branch for inspection.\n\n**Reason:** ${shortReason}\n\nBranch: \`${branch}\`\n\nThe issue was released — requires explicit \`agent:implement\` re-authorization to retry without being marked semantically blocked.`,
+    `Sandcastle factory infrastructure failed on \`${branch}\` — preserved branch for inspection.\n\n**Reason:** ${shortReason}\n\nBranch: \`${branch}\`\n\nThe issue was released — remove \`agent:blocked\` if present and explicitly re-add \`agent:implement\` to retry. Branch preserved, ready-for-agent retained, agent:in-progress and claimant assignee removed, agent:implement not restored.`,
   ]);
   return removed && commentOk;
 }
@@ -662,7 +710,7 @@ ${JSON.stringify(verdict ?? { approved: false, reason: fallbackReason }, null, 2
 
 Branch: \`${branch}\`
 
-To retry: fix implementation to address findings, ensure \`agent:blocked\` is removed, \`agent:implement\` remains, and re-run factory.`;
+To retry: fix implementation to address findings, remove \`agent:blocked\` and explicitly re-add \`agent:implement\`, then re-run factory. Branch preserved, ready-for-agent retained, agent:in-progress and claimant assignee removed, agent:implement not restored.`;
   await transitionToBlocked(issueId);
   await safeRunGh(["issue", "comment", issueId, "--body", body]);
 }

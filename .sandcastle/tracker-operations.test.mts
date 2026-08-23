@@ -24,7 +24,8 @@ describe("tracker-operations — implementation claim", () => {
       labels: ["ready-for-agent", "agent:in-progress"],
       assignees: ["bot"],
     };
-    const ops: ClaimOps = {
+    const ops: any = {
+      claimantLogin: "bot",
       fetchIssue: async () => ({ ...initial }),
       applyClaim: async () => {},
       verifyClaim: async () => ({ ...after }),
@@ -51,7 +52,8 @@ describe("tracker-operations — implementation claim", () => {
       labels: ["ready-for-agent", "agent:implement", "agent:in-progress"], // both present — mismatch
       assignees: ["bot"],
     };
-    const ops: ClaimOps = {
+    const ops: any = {
+      claimantLogin: "bot",
       fetchIssue: async () => ({ ...initial }),
       applyClaim: async () => {},
       verifyClaim: async () => ({ ...mismatch }),
@@ -68,7 +70,8 @@ describe("tracker-operations — implementation claim", () => {
   it("each partial claim failure compensates", async () => {
     const initial = baseIssue();
     // applyClaim throws
-    const ops1: ClaimOps = {
+    const ops1: any = {
+      claimantLogin: "bot",
       fetchIssue: async () => ({ ...initial }),
       applyClaim: async () => { throw new Error("gh edit failed"); },
       verifyClaim: async () => ({ ...initial }),
@@ -79,7 +82,8 @@ describe("tracker-operations — implementation claim", () => {
     expect((r1 as any).compensated).toBe(true);
 
     // verify throws
-    const ops2: ClaimOps = {
+    const ops2: any = {
+      claimantLogin: "bot",
       fetchIssue: async () => ({ ...initial }),
       applyClaim: async () => {},
       verifyClaim: async () => { throw new Error("fetch failed"); },
@@ -90,7 +94,8 @@ describe("tracker-operations — implementation claim", () => {
     expect((r2 as any).compensated).toBe(true);
 
     // postcondition mismatch
-    const ops3: ClaimOps = {
+    const ops3: any = {
+      claimantLogin: "bot",
       fetchIssue: async () => ({ ...initial }),
       applyClaim: async () => {},
       verifyClaim: async () => ({ ...initial, labels: ["ready-for-agent"], assignees: [] }), // missing in-progress + assignee
@@ -102,7 +107,8 @@ describe("tracker-operations — implementation claim", () => {
 
   it("compensation success still prevents worker", async () => {
     const initial = baseIssue();
-    const ops: ClaimOps = {
+    const ops: any = {
+      claimantLogin: "bot",
       fetchIssue: async () => ({ ...initial }),
       applyClaim: async () => { throw new Error("partial"); },
       verifyClaim: async () => ({ ...initial }),
@@ -117,7 +123,8 @@ describe("tracker-operations — implementation claim", () => {
 
   it("compensation failure returns FACTORY_ERROR and prevents worker", async () => {
     const initial = baseIssue();
-    const ops: ClaimOps = {
+    const ops: any = {
+      claimantLogin: "bot",
       fetchIssue: async () => ({ ...initial }),
       applyClaim: async () => { throw new Error("partial"); },
       verifyClaim: async () => ({ ...initial }),
@@ -133,7 +140,8 @@ describe("tracker-operations — implementation claim", () => {
 
   it("never runs while both implement and in-progress present", async () => {
     const initial = baseIssue({ labels: ["ready-for-agent", "agent:implement", "agent:in-progress"] });
-    const ops: ClaimOps = {
+    const ops: any = {
+      claimantLogin: "bot",
       fetchIssue: async () => ({ ...initial }),
       applyClaim: async () => {},
       verifyClaim: async () => ({ ...initial }),
@@ -146,8 +154,9 @@ describe("tracker-operations — implementation claim", () => {
   it("revalidation before mutation — fails if no longer eligible", async () => {
     const initial = baseIssue();
     const freshIneligible: IssueInput = { ...initial, assignees: ["someone"] }; // now assigned
-    const ops: ClaimOps = {
+    const ops: any = {
       fetchIssue: async () => ({ ...freshIneligible }),
+      claimantLogin: "bot",
       applyClaim: async () => { throw new Error("should not be called"); },
       verifyClaim: async () => ({ ...initial }),
       compensateClaim: async () => true,
@@ -155,6 +164,154 @@ describe("tracker-operations — implementation claim", () => {
     const r = await claimImplementation("100", initial, ops);
     expect(r.success).toBe(false);
     expect((r as any).code).toBeDefined();
+  });
+});
+
+
+  it("claim fails when only unrelated assignee appears (must compensate)", async () => {
+    const initial: any = { number: 100, title:"t", state:"open", labels:["ready-for-agent","agent:implement"], assignees:[], body: "## Question\n\nValid body with sufficient length for test and words and more", blockedByCount:0 };
+    // Use TRACER_BODY for impl
+    const TRACER = (await import("./fixtures.mts")).TRACER_BODY;
+    initial.body = TRACER;
+    const afterWrongAssignee: any = { ...initial, labels:["ready-for-agent","agent:in-progress"], assignees:["other-bot"] };
+    const ops: any = {
+      claimantLogin: "expected-bot",
+      fetchIssue: async () => ({...initial}),
+      applyClaim: async () => {},
+      verifyClaim: async () => ({...afterWrongAssignee}),
+      compensateClaim: async () => true,
+    };
+    const { claimImplementation } = await import("./tracker-operations.mts");
+    const r = await claimImplementation("100", initial, ops);
+    expect(r.success).toBe(false);
+    expect((r as any).compensated).toBe(true);
+  });
+
+  it("claimant resolution failure fail-closed", async () => {
+    const { claimImplementation } = await import("./tracker-operations.mts");
+    const initial: any = { number: 101, title:"t", state:"open", labels:["ready-for-agent","agent:implement"], assignees:[], body: (await import("./fixtures.mts")).TRACER_BODY, blockedByCount:0 };
+    const after: any = { ...initial, labels:["ready-for-agent","agent:in-progress"], assignees:["bot"] };
+    const ops: any = {
+      // No claimantLogin provided
+      fetchIssue: async () => ({...initial}),
+      applyClaim: async () => {},
+      verifyClaim: async () => ({...after}),
+      compensateClaim: async () => true,
+    };
+    const r = await claimImplementation("101", initial, ops);
+    expect(r.success).toBe(false);
+    expect((r as any).code).toBe("CLAIMANT_UNRESOLVED");
+  });
+
+describe("tracker-operations — reconciliation full state machine", () => {
+  it("open Batch PR is recognized without releasing claim", async () => {
+    const { reconcileStaleImplementation } = await import("./tracker-operations.mts");
+    const stale: any = { number:300, title:"s", state:"open", labels:["ready-for-agent","agent:in-progress"], assignees:["bot"], body:"body", blockedByCount:0 };
+    const ops: any = {
+      getBatchPrNumber: async () => ({ prNumber: "123", state:"found" }),
+      getPrState: async () => ({ state:"OPEN", mergedAt:null, found:true }),
+      checkBranchExists: async () => true,
+      releaseClaim: async () => { throw new Error("should not release open PR"); },
+      comment: async () => true,
+      fetchIssue: async () => stale,
+    };
+    const r = await reconcileStaleImplementation(stale, "sandcastle/issue-300", ops);
+    expect(r.reconciled).toBe(false);
+    expect(r.reason).toMatch(/OPEN/);
+  });
+
+  it("merged PR is finalized", async () => {
+    const { reconcileStaleImplementation } = await import("./tracker-operations.mts");
+    const stale: any = { number:301, title:"s", state:"open", labels:["ready-for-agent","agent:in-progress"], assignees:["bot"], body:"body", blockedByCount:0 };
+    let released=false;
+    const ops: any = {
+      getBatchPrNumber: async () => ({ prNumber: "124", state:"found" }),
+      getPrState: async () => ({ state:"MERGED", mergedAt:"2024-01-01", found:true }),
+      releaseClaim: async () => { released=true; return true; },
+      comment: async () => true,
+      fetchIssue: async () => stale,
+    };
+    const r = await reconcileStaleImplementation(stale, "sandcastle/issue-301", ops);
+    expect(r.reconciled).toBe(true);
+    expect(released).toBe(true);
+  });
+
+  it("unknown PR lookup results in no mutation", async () => {
+    const { reconcileStaleImplementation } = await import("./tracker-operations.mts");
+    const stale: any = { number:302, title:"s", state:"open", labels:["ready-for-agent","agent:in-progress"], assignees:["bot"], body:"body", blockedByCount:0 };
+    const ops: any = {
+      getBatchPrNumber: async () => ({ prNumber: null, state:"unknown" }),
+      releaseClaim: async () => { throw new Error("should not release on unknown"); },
+      comment: async () => true,
+      fetchIssue: async () => stale,
+    };
+    const r = await reconcileStaleImplementation(stale, "sandcastle/issue-302", ops);
+    expect(r.reconciled).toBe(false);
+  });
+
+  it("absent PR + empty branch is cleaned", async () => {
+    const { reconcileStaleImplementation } = await import("./tracker-operations.mts");
+    const stale: any = { number:303, title:"s", state:"open", labels:["ready-for-agent","agent:in-progress"], assignees:["bot"], body:"body", blockedByCount:0 };
+    let released=false;
+    const ops: any = {
+      getBatchPrNumber: async () => ({ prNumber: null, state:"absent" }),
+      checkBranchExists: async () => true,
+      checkProvenanceValid: async () => ({ valid:true }),
+      hasCommitsAhead: async () => false,
+      releaseClaim: async () => { released=true; return true; },
+      comment: async () => true,
+      fetchIssue: async () => stale,
+    };
+    const r = await reconcileStaleImplementation(stale, "sandcastle/issue-303", ops);
+    expect(r.reconciled).toBe(true);
+    expect(released).toBe(true);
+  });
+
+  it("absent PR + work branch is preserved", async () => {
+    const { reconcileStaleImplementation } = await import("./tracker-operations.mts");
+    const stale: any = { number:304, title:"s", state:"open", labels:["ready-for-agent","agent:in-progress"], assignees:["bot"], body:"body", blockedByCount:0 };
+    const ops: any = {
+      getBatchPrNumber: async () => ({ prNumber: null, state:"absent" }),
+      checkBranchExists: async () => true,
+      checkProvenanceValid: async () => ({ valid:true }),
+      hasCommitsAhead: async () => true,
+      releaseClaim: async () => true,
+      comment: async () => true,
+      fetchIssue: async () => stale,
+    };
+    const r = await reconcileStaleImplementation(stale, "sandcastle/issue-304", ops);
+    expect(r.reconciled).toBe(false);
+    expect(r.reason).toMatch(/preserving/);
+  });
+
+  it("invalid provenance is fail-closed", async () => {
+    const { reconcileStaleImplementation } = await import("./tracker-operations.mts");
+    const stale: any = { number:305, title:"s", state:"open", labels:["ready-for-agent","agent:in-progress"], assignees:["bot"], body:"body", blockedByCount:0 };
+    const ops: any = {
+      getBatchPrNumber: async () => ({ prNumber: null, state:"absent" }),
+      checkBranchExists: async () => true,
+      checkProvenanceValid: async () => ({ valid:false, reason:"contaminated", contaminated:true }),
+      releaseClaim: async () => true,
+      comment: async () => true,
+      fetchIssue: async () => stale,
+    };
+    const r = await reconcileStaleImplementation(stale, "sandcastle/issue-305", ops);
+    expect(r.reconciled).toBe(false);
+  });
+
+  it("no branch results in blocked", async () => {
+    const { reconcileStaleImplementation } = await import("./tracker-operations.mts");
+    const stale: any = { number:306, title:"s", state:"open", labels:["ready-for-agent","agent:in-progress"], assignees:["bot"], body:"body", blockedByCount:0 };
+    const ops: any = {
+      getBatchPrNumber: async () => ({ prNumber: null, state:"absent" }),
+      checkBranchExists: async () => false,
+      releaseClaim: async () => true,
+      comment: async () => true,
+      fetchIssue: async () => stale,
+    };
+    const r = await reconcileStaleImplementation(stale, "sandcastle/issue-306", ops);
+    expect(r.reconciled).toBe(false);
+    expect(r.reason).toMatch(/no branch/);
   });
 });
 

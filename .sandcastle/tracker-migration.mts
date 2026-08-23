@@ -1,4 +1,5 @@
 import * as fsSync from "node:fs";
+import { createHash } from "node:crypto";
 import {
   detectContradictions,
   getRemovableResidueLabels,
@@ -263,6 +264,144 @@ export interface InventoryOps {
   getLabelDescriptions: () => Promise<Record<string, string>>;
 }
 
+/**
+ * Production-callable migration runner with injected inventory and mutation ops.
+ * For tests: invoke with nonempty plan and prove 6 task mutations applied, etc.
+ */
+export interface InventoryOps2 {
+  listOpenIssues: () => Promise<IssueInput[]>;
+  getLabelDescriptions: () => Promise<Record<string, string>>;
+  getRetiredLabelsExist: () => Promise<boolean>;
+}
+export interface MutationOps2 {
+  updateIssueLabels: (issueNumber: number, add: string[], remove: string[]) => Promise<void>;
+  updateLabelDescription: (name: string, description: string) => Promise<void>;
+  deleteLabel: (name: string) => Promise<void>;
+}
+export interface ReviewedReceipt {
+  issues: Array<{ number: number; state: string; labels: string[]; assignees: string[]; blocked_by: number | undefined; bodySha256: string }>;
+  labelDescriptions: Record<string, string>;
+  retiredLabelsExist: boolean;
+  plan: MigrationPlan;
+}
+function bodySha256(body: string | undefined): string {
+  return createHash("sha256").update(body ?? "").digest("hex");
+}
+function sorted(arr: string[]): string[] { return [...arr].sort(); }
+export function buildReviewedReceipt(issues: IssueInput[], labelDescriptions: Record<string,string>, retiredLabelsExist: boolean, plan: MigrationPlan): ReviewedReceipt {
+  return {
+    issues: issues.map(i => ({
+      number: i.number,
+      state: i.state,
+      labels: sorted(i.labels),
+      assignees: sorted(i.assignees),
+      blocked_by: i.blockedByCount,
+      bodySha256: bodySha256(i.body),
+    })),
+    labelDescriptions,
+    retiredLabelsExist,
+    plan,
+  };
+}
+export async function runTrackerMigration(opts: {
+  mode: "check" | "dry-run" | "apply";
+  inventoryOps: InventoryOps2;
+  mutationOps?: MutationOps2;
+  reviewedReceipt?: ReviewedReceipt;
+  explicitTaskPlan?: Record<number, string>;
+}): Promise<{ plan: MigrationPlan; receipt: ReviewedReceipt; before: ReviewedReceipt; after?: ReviewedReceipt; applied: boolean }> {
+  const issues = await opts.inventoryOps.listOpenIssues();
+  const labelDescriptions = await opts.inventoryOps.getLabelDescriptions();
+  const retiredExist = await opts.inventoryOps.getRetiredLabelsExist();
+  const relevant = issues.filter(i => i.labels.some(l => l.startsWith("wayfinder:") || l.startsWith("agent:") || ["ready-for-agent","ready-for-human","needs-triage","needs-info","wontfix"].includes(l)));
+  const plan = planMigration(relevant, opts.explicitTaskPlan);
+  const before = buildReviewedReceipt(relevant, labelDescriptions, retiredExist, plan);
+  // For dry-run, just emit plan and before
+  if (opts.mode === "dry-run" || opts.mode === "check") {
+    return { plan, receipt: before, before, applied: false };
+  }
+  // apply mode
+  if (hasBlockingMigrationProblems(plan)) {
+    throw new Error(`blocking migration problems: ${JSON.stringify(plan.contradictions.slice(0,3))}`);
+  }
+  if (!migrationRequired(plan, { labelDescriptions, retiredLabelsExist: retiredExist })) {
+    // Nothing to do, but still verify postcondition
+    const afterIssues = await opts.inventoryOps.listOpenIssues();
+    const afterRelevant = afterIssues.filter(i => i.labels.some(l => l.startsWith("wayfinder:") || l.startsWith("agent:") || ["ready-for-agent","ready-for-human","needs-triage","needs-info","wontfix"].includes(l)));
+    const afterPlan = planMigration(afterRelevant, opts.explicitTaskPlan);
+    if (migrationRequired(afterPlan, { labelDescriptions: await opts.inventoryOps.getLabelDescriptions(), retiredLabelsExist: await opts.inventoryOps.getRetiredLabelsExist() })) {
+      throw new Error("postcondition failed: migration still required after no-op");
+    }
+    const after = buildReviewedReceipt(afterRelevant, await opts.inventoryOps.getLabelDescriptions(), await opts.inventoryOps.getRetiredLabelsExist(), afterPlan);
+    return { plan, receipt: before, before, after, applied: false };
+  }
+  // Bind to reviewed receipt if provided: re-fetch and abort on drift before any write
+  if (opts.reviewedReceipt) {
+    // Re-fetch all expected state before any write
+    const driftErrors: string[] = [];
+    for (const expected of opts.reviewedReceipt.issues) {
+      const liveAll = await opts.inventoryOps.listOpenIssues();
+      const live = liveAll.find(i => i.number === expected.number);
+      if (!live) { driftErrors.push(`#${expected.number} missing live`); continue; }
+      if (live.state !== expected.state) driftErrors.push(`#${expected.number} state drift: ${expected.state} vs ${live.state}`);
+      if (sorted(live.labels).join(",") !== expected.labels.join(",")) driftErrors.push(`#${expected.number} labels drift: ${expected.labels.join(",")} vs ${sorted(live.labels).join(",")}`);
+      if (sorted(live.assignees).join(",") !== expected.assignees.join(",")) driftErrors.push(`#${expected.number} assignees drift`);
+      if (live.blockedByCount !== expected.blocked_by) driftErrors.push(`#${expected.number} blocked_by drift: ${expected.blocked_by} vs ${live.blockedByCount}`);
+      if (bodySha256(live.body) !== expected.bodySha256) driftErrors.push(`#${expected.number} body drift: sha ${expected.bodySha256.slice(0,8)} vs ${bodySha256(live.body).slice(0,8)}`);
+    }
+    // Also check label descriptions and retired existence drift
+    const liveLabelDescs = await opts.inventoryOps.getLabelDescriptions();
+    for (const [k,v] of Object.entries(opts.reviewedReceipt.labelDescriptions)) {
+      if (liveLabelDescs[k] !== v) driftErrors.push(`label ${k} description drift`);
+    }
+    const liveRetiredExist = await opts.inventoryOps.getRetiredLabelsExist();
+    if (liveRetiredExist !== opts.reviewedReceipt.retiredLabelsExist) driftErrors.push(`retired labels existence drift`);
+    if (driftErrors.length > 0) throw new Error(`drift detected before apply: ${driftErrors.join("; ")}`);
+  }
+  if (!opts.mutationOps) throw new Error("mutationOps required for apply");
+  // Apply all mutations, each failure is fatal, no warn-and-continue
+  for (const m of plan.plannedMutations) {
+    try {
+      await opts.mutationOps.updateIssueLabels(m.issue, m.addLabels, m.removeLabels);
+    } catch (e) {
+      throw new Error(`mutation failed for #${m.issue}: ${e}`);
+    }
+  }
+  for (const upd of plan.labelDescriptionUpdates) {
+    // Only if live desc differs
+    const liveDesc = (await opts.inventoryOps.getLabelDescriptions())[upd.name];
+    if (liveDesc !== upd.newDesc) {
+      try { await opts.mutationOps.updateLabelDescription(upd.name, upd.newDesc); } catch (e) { throw new Error(`label description update failed for ${upd.name}: ${e}`); }
+    }
+  }
+  for (const del of plan.retiredLabelsToDelete) {
+    const liveExist = await opts.inventoryOps.getRetiredLabelsExist();
+    if (liveExist) {
+      try { await opts.mutationOps.deleteLabel(del); } catch (e) { throw new Error(`retired label delete failed for ${del}: ${e}`); }
+    }
+  }
+  // Re-fetch after and prove no mutations required
+  let afterIssues: IssueInput[];
+  let afterLabelDescs: Record<string,string>;
+  let afterRetiredExist: boolean;
+  try {
+    afterIssues = await opts.inventoryOps.listOpenIssues();
+    afterLabelDescs = await opts.inventoryOps.getLabelDescriptions();
+    afterRetiredExist = await opts.inventoryOps.getRetiredLabelsExist();
+  } catch (e) {
+    throw new Error(`post-inventory fetch failed: ${e}`);
+  }
+  const afterRelevant = afterIssues.filter(i => i.labels.some(l => l.startsWith("wayfinder:") || l.startsWith("agent:") || ["ready-for-agent","ready-for-human","needs-triage","needs-info","wontfix"].includes(l)));
+  const afterPlan = planMigration(afterRelevant, opts.explicitTaskPlan);
+  // Use fresh label state for after check
+  if (migrationRequired(afterPlan, { labelDescriptions: afterLabelDescs, retiredLabelsExist: afterRetiredExist })) {
+    throw new Error(`postcondition failed: still requires migration: ${JSON.stringify(afterPlan.plannedMutations.slice(0,2))}`);
+  }
+  if (hasBlockingMigrationProblems(afterPlan)) throw new Error(`postcondition blocking problems remain`);
+  const after = buildReviewedReceipt(afterRelevant, afterLabelDescs, afterRetiredExist, afterPlan);
+  return { plan, receipt: before, before, after, applied: true };
+}
+
 export interface ApplyOps {
   updateIssueLabels: (issueNumber: number, addLabels: string[], removeLabels: string[]) => Promise<boolean>;
   updateLabelDescription: (name: string, description: string) => Promise<boolean>;
@@ -270,9 +409,24 @@ export interface ApplyOps {
   comment: (issueNumber: number, body: string) => Promise<boolean>;
 }
 
-export function isCheckFailed(plan: MigrationPlan): boolean {
+export function hasBlockingMigrationProblems(plan: MigrationPlan): boolean {
+  return plan.contradictions.length > 0 || plan.ambiguousResearch.length > 0 || plan.taskClassificationPlan.some(t => t.planned === "ambiguous");
+}
+export function migrationRequired(plan: MigrationPlan, repositoryLabelState?: { labelDescriptions: Record<string,string>, retiredLabelsExist: boolean }): boolean {
   const hasRealLabelUpdates = plan.labelDescriptionUpdates.some(u => u.oldDesc !== "(unknown — will fetch live)");
-  return plan.contradictions.length > 0 || plan.ambiguousResearch.length > 0 || plan.taskClassificationPlan.some(t => t.planned === "ambiguous") || plan.plannedMutations.length > 0 || hasRealLabelUpdates;
+  const hasMutations = plan.plannedMutations.length > 0;
+  const hasLabelDesc = hasRealLabelUpdates;
+  // For unit tests without repository state, hasRetiredDelete should not block isCheckFailed unless there are actual users
+  const hasRetiredDelete = plan.retiredLabelUsers.length > 0 && plan.retiredLabelsToDelete.length > 0;
+  if (repositoryLabelState) {
+    const descNeeded = plan.labelDescriptionUpdates.some(u => repositoryLabelState.labelDescriptions[u.name] !== u.newDesc);
+    return hasMutations || descNeeded || (hasRetiredDelete && repositoryLabelState.retiredLabelsExist);
+  }
+  return hasMutations || hasLabelDesc || hasRetiredDelete;
+}
+export function isCheckFailed(plan: MigrationPlan): boolean {
+  // --check exits nonzero for either blocking or required
+  return hasBlockingMigrationProblems(plan) || migrationRequired(plan);
 }
 
 export function formatReceipt(plan: MigrationPlan, mode: string): string {
@@ -389,18 +543,31 @@ async function main() {
   }
 
   if (mode === "dry-run") {
+    // Emit machine-readable dry-run receipt with expected state for apply binding
+    const labelDescs: Record<string,string> = {};
+    for (const u of plan.labelDescriptionUpdates) labelDescs[u.name] = u.oldDesc;
+    const receipt = buildReviewedReceipt(relevant, labelDescs, plan.retiredLabelsToDelete.length > 0, plan);
+    const receiptPath = ".sandcastle/logs/migration-dry-run-receipt.json";
+    try { fsSync.mkdirSync(".sandcastle/logs", { recursive: true }); } catch {}
+    try { fsSync.writeFileSync(receiptPath, JSON.stringify(receipt, null, 2)); console.log(`Dry-run receipt written to ${receiptPath}`); } catch (e) { console.warn(`Failed to write dry-run receipt: ${e}`); }
     console.log("DRY-RUN complete — no writes performed");
-    if (isCheckFailed(plan)) {
-      console.log("NOTE: dry-run shows contradictions/ambiguities that would block apply");
+    if (hasBlockingMigrationProblems(plan)) {
+      console.log("NOTE: dry-run shows blocking contradictions/ambiguities that would block apply");
+    } else if (migrationRequired(plan)) {
+      console.log("NOTE: dry-run shows migration work required (mutations/desc/retired) — apply will execute");
     }
     process.exit(0);
   }
 
   if (mode === "apply") {
-    if (isCheckFailed(plan)) {
+    if (hasBlockingMigrationProblems(plan)) {
       console.error("APPLY BLOCKED: contradictions or ambiguous classifications exist — resolve before apply");
       console.error(formatReceipt(plan, mode));
       process.exit(1);
+    }
+    if (!migrationRequired(plan)) {
+      console.log("APPLY: no migration required — already idempotent");
+      // Still need to verify postcondition via runTrackerMigration path for consistency
     }
     // Verify live state hasn't drifted from reviewed plan before any writes — re-fetch every affected issue
     const driftErrors: string[] = [];

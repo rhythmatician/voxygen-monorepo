@@ -43,7 +43,7 @@ function researchIssue(overrides: Partial<IssueInput> = {}): IssueInput {
     state: "open",
     labels: ["wayfinder:research"],
     assignees: [],
-    body: "Part of #22\nResearch the terrain signal",
+    body: "## Question\n\nWhat is the terrain signal generation process and what evidence would distinguish noise from signal for part #22 with substantive investigation details and bounded evidence request?",
     blockedByCount: 0,
     ...overrides,
   };
@@ -120,7 +120,7 @@ describe("Research eligibility", () => {
   });
 
   it("research does not require tracer contract", () => {
-    const r = researchIssue({ body: "Part of #22\nsimple research without tracer keywords" });
+    const r = researchIssue({ body: "## Question\n\nWhat is the terrain signal without tracer keywords but with substantive question details for validation and evidence collection for #22?" });
     expect(isResearchEligible(r).eligible).toBe(true);
   });
 });

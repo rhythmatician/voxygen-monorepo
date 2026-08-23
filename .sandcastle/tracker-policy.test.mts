@@ -46,7 +46,7 @@ describe("tracker-policy — canonical work-item table", () => {
   });
 
   it("Wayfinder Research — AFK via wayfinder:research alone", () => {
-    const r: IssueInput = { number: 2, title: "research", state: "open", labels: ["wayfinder:research"], assignees: [], blockedByCount: 0, body: "question Part of #1" };
+    const r: IssueInput = { number: 2, title: "research", state: "open", labels: ["wayfinder:research"], assignees: [], blockedByCount: 0, body: "## Question\n\nResearch question with sufficient length for validation, part of #1 with substantive details about the problem to be investigated and evidence needed." };
     expect(isResearchEligible(r).eligible).toBe(true);
     expect(isImplementationEligible(r).eligible).toBe(false);
     expect(classifyTicket(r).profile).toBe("research");
@@ -77,7 +77,7 @@ describe("tracker-policy — canonical work-item table", () => {
   });
 
   it("HITL Wayfinder Task — wayfinder:task + ready-for-human, no implement", () => {
-    const t: IssueInput = { number: 6, title: "hitl task", state: "open", labels: ["wayfinder:task", "ready-for-human"], assignees: [], blockedByCount: 0, body: "task" };
+    const t: IssueInput = { number: 6, title: "hitl task", state: "open", labels: ["wayfinder:task", "ready-for-human"], assignees: [], blockedByCount: 0, body: "Task body with scoped work" };
     expect(isImplementationEligible(t).eligible).toBe(false);
     expect(classifyTicket(t).profile).toBe("ineligible"); // not implementation eligible, not research
     // But task classification should be valid via getTaskReadiness
@@ -141,11 +141,11 @@ describe("tracker-policy — every contradiction", () => {
     expect(detectContradictions(i).contradictions.some(c => c.code === CONTRADICTION_CODES.IMPLEMENT_WITH_IN_PROGRESS)).toBe(true);
   });
   it("retired agent:research", () => {
-    const i: IssueInput = { number: 19, title: "x", state: "open", labels: ["wayfinder:research", "agent:research"], assignees: [], blockedByCount: 0, body: "Research question with sufficient length for validation, part of #190" };
+    const i: IssueInput = { number: 19, title: "x", state: "open", labels: ["wayfinder:research", "agent:research"], assignees: [], blockedByCount: 0, body: "## Question\n\nResearch question with sufficient length for validation, part of #190 with substantive details about the problem to be investigated and evidence needed." };
     expect(detectContradictions(i).contradictions.some(c => c.code === CONTRADICTION_CODES.RETIRED_AGENT_RESEARCH)).toBe(true);
   });
   it("retired wayfinder:preserve-futures", () => {
-    const i: IssueInput = { number: 20, title: "x", state: "open", labels: ["wayfinder:preserve-futures"], assignees: [], blockedByCount: 0, body: "Research question with sufficient length for validation, part of #190" };
+    const i: IssueInput = { number: 20, title: "x", state: "open", labels: ["wayfinder:preserve-futures"], assignees: [], blockedByCount: 0, body: "## Question\n\nResearch question with sufficient length for validation, part of #190 with substantive details about the problem to be investigated and evidence needed." };
     expect(detectContradictions(i).contradictions.some(c => c.code === CONTRADICTION_CODES.RETIRED_PRESERVE_FUTURES)).toBe(true);
   });
 });
@@ -162,17 +162,17 @@ describe("tracker-policy — irrelevant Wayfinder metadata", () => {
 
 describe("tracker-policy — Research from wayfinder:research alone", () => {
   it("research eligible from wayfinder:research alone, no agent:research needed", () => {
-    const r: IssueInput = { number: 30, title: "r", state: "open", labels: ["wayfinder:research"], assignees: [], blockedByCount: 0, body: "Research question with sufficient length for validation, part of #190" };
+    const r: IssueInput = { number: 30, title: "r", state: "open", labels: ["wayfinder:research"], assignees: [], blockedByCount: 0, body: "## Question\n\nResearch question with sufficient length for validation, part of #190 with substantive details about the problem to be investigated and evidence needed." };
     expect(isResearchEligible(r).eligible).toBe(true);
     expect(dispatchIsResearchEligible(r).eligible).toBe(true);
   });
   it("research with ready-for-agent residue still eligible but residue removable", () => {
-    const r: IssueInput = { number: 31, title: "r", state: "open", labels: ["wayfinder:research", "ready-for-agent"], assignees: [], blockedByCount: 0, body: "Research question with sufficient length for validation, part of #190" };
+    const r: IssueInput = { number: 31, title: "r", state: "open", labels: ["wayfinder:research", "ready-for-agent"], assignees: [], blockedByCount: 0, body: "## Question\n\nResearch question with sufficient length for validation, part of #190 with substantive details about the problem to be investigated and evidence needed." };
     expect(isResearchEligible(r).eligible).toBe(true);
     expect(getRemovableResidueLabels(r)).toContain("ready-for-agent");
   });
   it("research must be open, unassigned, no in-progress/blocked, blocked_by 0", () => {
-    const base: IssueInput = { number: 32, title: "r", state: "open", labels: ["wayfinder:research"], assignees: [], blockedByCount: 0, body: "Research question with sufficient length for validation, part of #190" };
+    const base: IssueInput = { number: 32, title: "r", state: "open", labels: ["wayfinder:research"], assignees: [], blockedByCount: 0, body: "## Question\n\nResearch question with sufficient length for validation, part of #190 with substantive details about the problem to be investigated and evidence needed." };
     expect(isResearchEligible({ ...base, state: "closed" }).eligible).toBe(false);
     expect(isResearchEligible({ ...base, assignees: ["someone"] }).eligible).toBe(false);
     expect(isResearchEligible({ ...base, labels: ["wayfinder:research", "agent:in-progress"] }).eligible).toBe(false);
@@ -187,7 +187,7 @@ describe("tracker-policy — production dispatch uses same classifier", () => {
     const impl = issue({ labels: ["ready-for-agent", "agent:implement"], body: TRACER_BODY });
     expect(isEligible(impl).eligible).toBe(true);
     expect(isImplementationEligible(impl).eligible).toBe(true);
-    const research: IssueInput = { number: 40, title: "r", state: "open", labels: ["wayfinder:research"], assignees: [], blockedByCount: 0, body: "Research question with sufficient length for validation, part of #190" };
+    const research: IssueInput = { number: 40, title: "r", state: "open", labels: ["wayfinder:research"], assignees: [], blockedByCount: 0, body: "## Question\n\nResearch question with sufficient length for validation, part of #190 with substantive details about the problem to be investigated and evidence needed." };
     expect(dispatchIsResearchEligible(research).eligible).toBe(true);
     expect(isResearchEligible(research).eligible).toBe(true);
     // Contradiction case

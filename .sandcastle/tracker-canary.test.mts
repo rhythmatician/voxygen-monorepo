@@ -66,6 +66,7 @@ function makeMockOps() {
           st.assignees=[];
           return true;
         },
+        claimantLogin: "bot",
       };
       const stored = store.get(issue.number);
       if (!stored) return { success: false, reason: "not found" };
