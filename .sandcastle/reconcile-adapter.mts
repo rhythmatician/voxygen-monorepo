@@ -185,6 +185,10 @@ export function createProductionReconcileOps(deps: ReconcileAdapterDeps): FullRe
         }
       }
       if (exactWtPath) {
+        // Defensive recheck: dirty worktree must never be force-removed (close inspection/removal race)
+        const dirtyRes = runGit(["-C", exactWtPath, "status", "--porcelain=v1", "--untracked-files=all"]);
+        if (dirtyRes.exitCode !== 0) return false;
+        if (dirtyRes.stdout.trim()) return false;
         const rmRes = runGit(["worktree", "remove", "--force", exactWtPath]);
         if (rmRes.exitCode !== 0) return false;
         // Re-run inventory and prove no worktree still references the branch

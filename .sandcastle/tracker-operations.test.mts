@@ -575,21 +575,22 @@ describe("tracker-operations — authoritative reconciliation effects (item 4) a
         checkCalls++;
         // First call is pre-delete existence check: branch is present with empty work
         if (checkCalls===1) return "present" as const;
-        // After delete, branch is absent (idempotent success)
+        // After delete, branch is absent (idempotent success) - but deleteBranch false now always FACTORY_ERROR per patch 9
         return "absent" as const;
       },
       checkProvenanceValid: async () => ({ state: "valid" as const, reason: "valid" }),
       hasCommitsAhead: async () => "empty" as const,
-      deleteBranch: async () => false, // delete says nothing to delete, but branch is already absent after second check
+      deleteBranch: async () => false,
       releaseClaim: async () => { released=true; return true; },
       comment: async () => { commented=true; return true; },
       addBlocked: async () => true,
       markIntegrated: async () => true,
     };
     const r = await reconcileStaleImplementation(stale, "sandcastle/issue-408", ops);
-    expect(r.reconciled).toBe(true);
-    expect(released).toBe(true);
-    expect(commented).toBe(true);
+    expect(r.reconciled).toBe(false);
+    expect(r.factoryError).toBe(true);
+    expect(released).toBe(false);
+    expect(commented).toBe(false);
   });
 
   it("empty-branch unknown remote is FACTORY_ERROR and does not release claim", async () => {
@@ -1337,7 +1338,7 @@ describe("tracker-operations — patch 8 worktree/provenance and empty-branch ve
       const { reconcileStaleImplementation } = await import("./tracker-operations.mts");
       const r = await reconcileStaleImplementation(stale, "sandcastle/issue-920", ops3);
       expect(r.reconciled).toBe(false);
-      expect(r.factoryError).toBe(true);
+      expect(r.reason.toLowerCase()).toMatch(/unknown|fail closed/);
       expect(ghWrites2).toBe(0);
     } finally { cleanup(); }
   });
@@ -1507,6 +1508,321 @@ describe("tracker-operations — patch 8 worktree/provenance and empty-branch ve
       expect(fsSync.existsSync(provPath)).toBe(true);
       const brAfter = baseRunner(["branch","--list","sandcastle/issue-924"]);
       expect(brAfter.stdout.trim()).not.toBe("");
+    } finally { cleanup(); }
+  });
+});
+
+describe("tracker-operations — patch 9 dirty worktree preservation and deleteBranch false always FACTORY_ERROR (no method replacement)", () => {
+  async function createTempRepoWithRunner() {
+    const os = await import("node:os");
+    const fsSync = await import("node:fs");
+    const path = await import("node:path");
+    const cp = await import("node:child_process");
+    const tmp = fsSync.mkdtempSync(path.join(os.tmpdir(), "voxygen-patch9-"));
+    cp.execFileSync("git", ["init", "-b", "main"], { cwd: tmp });
+    cp.execFileSync("git", ["config", "user.email", "test@test.test"], { cwd: tmp });
+    cp.execFileSync("git", ["config", "user.name", "test"], { cwd: tmp });
+    cp.execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: tmp });
+    try { cp.execFileSync("git", ["remote", "add", "origin", "https://github.com/rhythmatician/voxygen-monorepo.git"], { cwd: tmp }); } catch {}
+    const baseRunner: import("./branch-helpers.mts").GitRunner = (args:string[]) => {
+      try {
+        const out = cp.execFileSync("git", args, { encoding:"utf8", cwd: tmp } as any);
+        const stdout = typeof out === "string" ? out : (out as Buffer).toString();
+        return { exitCode:0, stdout, stderr:"" };
+      } catch(e:any){
+        return { exitCode:(e as any).status??1, stdout:e.stdout?.toString()??"", stderr:e.stderr?.toString()??(e as any).message??"" };
+      }
+    };
+    return { repoRoot: tmp, baseRunner, cp, fsSync, path, cleanup: ()=>{ try{ fsSync.rmSync(tmp,{recursive:true,force:true}); }catch{} } };
+  }
+
+  it("clean branch + tracked uncommitted edit: decision absent_with_work; worktree/branch/provenance retained; claim released; agent:blocked verified", async () => {
+    const { createProductionReconcileOps } = await import("./reconcile-adapter.mts");
+    const { reconcileStaleImplementation } = await import("./tracker-operations.mts");
+    const { repoRoot, baseRunner, cp, fsSync, path, cleanup } = await createTempRepoWithRunner();
+    try {
+      const baseSha = cp.execFileSync("git", ["rev-parse","main"], {encoding:"utf8", cwd: repoRoot}).toString().trim();
+      // create tracked file on main
+      fsSync.writeFileSync(path.join(repoRoot, "tracked.txt"), "initial");
+      cp.execFileSync("git", ["add", "tracked.txt"], { cwd: repoRoot });
+      cp.execFileSync("git", ["commit", "-m", "add tracked"], { cwd: repoRoot });
+      const newBaseSha = cp.execFileSync("git", ["rev-parse","main"], {encoding:"utf8", cwd: repoRoot}).toString().trim();
+      cp.execFileSync("git", ["branch","sandcastle/issue-930", newBaseSha], { cwd: repoRoot });
+      const wtPath = path.join(repoRoot,"wt-930");
+      cp.execFileSync("git", ["worktree","add", wtPath, "sandcastle/issue-930"], { cwd: repoRoot });
+      // modify tracked file inside worktree without committing
+      fsSync.writeFileSync(path.join(wtPath, "tracked.txt"), "dirty edit");
+      const provDir = path.join(repoRoot,".sandcastle","provenance");
+      fsSync.mkdirSync(provDir,{recursive:true});
+      fsSync.writeFileSync(path.join(provDir,"sandcastle-issue-930.json"), JSON.stringify({issueId:"930",branch:"sandcastle/issue-930",factoryBaseSha:newBaseSha,callerBranch:"main",callerSha:newBaseSha,at:new Date().toISOString()}));
+      const store:any={ labels:["ready-for-agent","agent:in-progress"], assignees:["bot"] };
+      const mockGh = async (args:string[])=>{
+        if(args[0]==="issue" && args[1]==="view" && args.includes("comments")) return "";
+        if(args[0]==="pr" && args[1]==="list") return "[]";
+        if(args[0]==="issue" && args[1]==="view"){
+          return JSON.stringify({number:930,title:"t",body:"",state:"open",labels:store.labels.map((n:string)=>({name:n})),assignees:store.assignees.map((l:string)=>({login:l}))});
+        }
+        if(args[0]==="issue" && args[1]==="edit" && args.includes("agent:in-progress")){ store.labels=store.labels.filter((l:string)=>l!=="agent:in-progress"); store.assignees=[]; return ""; }
+        if(args[0]==="issue" && args[1]==="edit" && args.includes("agent:blocked")){ if(!store.labels.includes("agent:blocked")) store.labels.push("agent:blocked"); return ""; }
+        if(args[0]==="issue" && args[1]==="comment") return "";
+        if(args[0]==="api" && args[1].includes("git/refs")) throw new Error("404 Not Found");
+        if(args[0]==="api" && args[1].includes("/issues/")) return "0";
+        return "";
+      };
+      const ops = createProductionReconcileOps({ runGh: mockGh, runGit: baseRunner, repoRoot, claimantLogin:"bot" });
+      const ahead = await ops.hasCommitsAhead("sandcastle/issue-930");
+      expect(ahead).toBe("has-work");
+      const stale:any={number:930,title:"t",state:"open",labels:["ready-for-agent","agent:in-progress"],assignees:["bot"],body:"",blockedByCount:0};
+      const r = await reconcileStaleImplementation(stale, "sandcastle/issue-930", ops);
+      expect(r.decision?.type).toBe("absent_with_work");
+      expect(r.reconciled).toBe(false);
+      // worktree/branch/provenance retained
+      const wtVerify = baseRunner(["worktree","list","--porcelain"]);
+      expect(wtVerify.stdout.includes("sandcastle/issue-930")).toBe(true);
+      const br = baseRunner(["branch","--list","sandcastle/issue-930"]);
+      expect(br.stdout.trim()).not.toBe("");
+      expect(fsSync.existsSync(path.join(provDir,"sandcastle-issue-930.json"))).toBe(true);
+      expect(store.labels.includes("agent:blocked")).toBe(true);
+      expect(store.labels.includes("agent:in-progress")).toBe(false);
+      expect(store.assignees.includes("bot")).toBe(false);
+    } finally {
+      try { cp.execFileSync("git", ["worktree","remove","--force", path.join(repoRoot,"wt-930")], { cwd: repoRoot }); } catch {}
+      cleanup();
+    }
+  });
+
+  it("clean branch + untracked file: same preserved-work result", async () => {
+    const { createProductionReconcileOps } = await import("./reconcile-adapter.mts");
+    const { reconcileStaleImplementation } = await import("./tracker-operations.mts");
+    const { repoRoot, baseRunner, cp, fsSync, path, cleanup } = await createTempRepoWithRunner();
+    try {
+      const baseSha = cp.execFileSync("git", ["rev-parse","main"], {encoding:"utf8", cwd: repoRoot}).toString().trim();
+      cp.execFileSync("git", ["branch","sandcastle/issue-931", baseSha], { cwd: repoRoot });
+      const wtPath = path.join(repoRoot,"wt-931");
+      cp.execFileSync("git", ["worktree","add", wtPath, "sandcastle/issue-931"], { cwd: repoRoot });
+      // create untracked file inside worktree
+      fsSync.writeFileSync(path.join(wtPath, "untracked.txt"), "new file");
+      const provDir = path.join(repoRoot,".sandcastle","provenance");
+      fsSync.mkdirSync(provDir,{recursive:true});
+      fsSync.writeFileSync(path.join(provDir,"sandcastle-issue-931.json"), JSON.stringify({issueId:"931",branch:"sandcastle/issue-931",factoryBaseSha:baseSha,callerBranch:"main",callerSha:baseSha,at:new Date().toISOString()}));
+      const store:any={ labels:["ready-for-agent","agent:in-progress"], assignees:["bot"] };
+      const mockGh = async (args:string[])=>{
+        if(args[0]==="issue" && args[1]==="view" && args.includes("comments")) return "";
+        if(args[0]==="pr" && args[1]==="list") return "[]";
+        if(args[0]==="issue" && args[1]==="view"){
+          return JSON.stringify({number:931,title:"t",body:"",state:"open",labels:store.labels.map((n:string)=>({name:n})),assignees:store.assignees.map((l:string)=>({login:l}))});
+        }
+        if(args[0]==="issue" && args[1]==="edit" && args.includes("agent:in-progress")){ store.labels=store.labels.filter((l:string)=>l!=="agent:in-progress"); store.assignees=[]; return ""; }
+        if(args[0]==="issue" && args[1]==="edit" && args.includes("agent:blocked")){ if(!store.labels.includes("agent:blocked")) store.labels.push("agent:blocked"); return ""; }
+        if(args[0]==="issue" && args[1]==="comment") return "";
+        if(args[0]==="api" && args[1].includes("git/refs")) throw new Error("404 Not Found");
+        if(args[0]==="api" && args[1].includes("/issues/")) return "0";
+        return "";
+      };
+      const ops = createProductionReconcileOps({ runGh: mockGh, runGit: baseRunner, repoRoot, claimantLogin:"bot" });
+      const ahead = await ops.hasCommitsAhead("sandcastle/issue-931");
+      expect(ahead).toBe("has-work");
+      const stale:any={number:931,title:"t",state:"open",labels:["ready-for-agent","agent:in-progress"],assignees:["bot"],body:"",blockedByCount:0};
+      const r = await reconcileStaleImplementation(stale, "sandcastle/issue-931", ops);
+      expect(r.decision?.type).toBe("absent_with_work");
+      const wtVerify = baseRunner(["worktree","list","--porcelain"]);
+      expect(wtVerify.stdout.includes("sandcastle/issue-931")).toBe(true);
+      const br = baseRunner(["branch","--list","sandcastle/issue-931"]);
+      expect(br.stdout.trim()).not.toBe("");
+      expect(fsSync.existsSync(path.join(provDir,"sandcastle-issue-931.json"))).toBe(true);
+    } finally {
+      try { cp.execFileSync("git", ["worktree","remove","--force", path.join(repoRoot,"wt-931")], { cwd: repoRoot }); } catch {}
+      cleanup();
+    }
+  });
+
+  it("worktree status command failure: unknown; zero GitHub, worktree, branch, or provenance mutation", async () => {
+    const { createProductionReconcileOps } = await import("./reconcile-adapter.mts");
+    const { reconcileStaleImplementation } = await import("./tracker-operations.mts");
+    const { repoRoot, baseRunner, cp, fsSync, path, cleanup } = await createTempRepoWithRunner();
+    try {
+      const baseSha = cp.execFileSync("git", ["rev-parse","main"], {encoding:"utf8", cwd: repoRoot}).toString().trim();
+      cp.execFileSync("git", ["branch","sandcastle/issue-932", baseSha], { cwd: repoRoot });
+      const wtPath = path.join(repoRoot,"wt-932");
+      cp.execFileSync("git", ["worktree","add", wtPath, "sandcastle/issue-932"], { cwd: repoRoot });
+      const provDir = path.join(repoRoot,".sandcastle","provenance");
+      fsSync.mkdirSync(provDir,{recursive:true});
+      fsSync.writeFileSync(path.join(provDir,"sandcastle-issue-932.json"), JSON.stringify({issueId:"932",branch:"sandcastle/issue-932",factoryBaseSha:baseSha,callerBranch:"main",callerSha:baseSha,at:new Date().toISOString()}));
+      const failingRunner: import("./branch-helpers.mts").GitRunner = (args:string[])=>{
+        if(args[0]==="-C" && args[2]==="status") return { exitCode:1, stdout:"", stderr:"status failed" };
+        return baseRunner(args);
+      };
+      let ghWrites=0;
+      const mockGh = async (args:string[])=>{
+        if(args[0]==="issue" && args[1]==="view" && args.includes("comments")) return "";
+        if(args[0]==="pr" && args[1]==="list") return "[]";
+        if(args[0]==="issue" && args[1]==="view") return JSON.stringify({number:932,title:"t",body:"",state:"open",labels:[{name:"ready-for-agent"},{name:"agent:in-progress"}],assignees:[{login:"bot"}]});
+        if(args[0]==="issue" && (args[1]==="edit"||args[1]==="comment")){ ghWrites++; return ""; }
+        if(args[0]==="api" && args[1].includes("git/refs")) throw new Error("404 Not Found");
+        if(args[0]==="api" && args[1].includes("/issues/")) return "0";
+        return "";
+      };
+      const ops = createProductionReconcileOps({ runGh: mockGh, runGit: failingRunner, repoRoot, claimantLogin:"bot" });
+      const ahead = await ops.hasCommitsAhead("sandcastle/issue-932");
+      expect(ahead).toBe("unknown");
+      const stale:any={number:932,title:"t",state:"open",labels:["ready-for-agent","agent:in-progress"],assignees:["bot"],body:"",blockedByCount:0};
+      const r = await reconcileStaleImplementation(stale, "sandcastle/issue-932", ops);
+      expect(r.reconciled).toBe(false);
+      expect(r.reason.toLowerCase()).toMatch(/unknown/);
+      expect(ghWrites).toBe(0);
+      // worktree/branch/provenance untouched
+      const wtVerify = baseRunner(["worktree","list","--porcelain"]);
+      expect(wtVerify.stdout.includes("sandcastle/issue-932")).toBe(true);
+      const br = baseRunner(["branch","--list","sandcastle/issue-932"]);
+      expect(br.stdout.trim()).not.toBe("");
+      expect(fsSync.existsSync(path.join(provDir,"sandcastle-issue-932.json"))).toBe(true);
+    } finally {
+      try { cp.execFileSync("git", ["worktree","remove","--force", path.join(repoRoot,"wt-932")], { cwd: repoRoot }); } catch {}
+      cleanup();
+    }
+  });
+
+  it("clean worktree: existing authoritative cleanup still succeeds", async () => {
+    const { createProductionReconcileOps } = await import("./reconcile-adapter.mts");
+    const { reconcileStaleImplementation } = await import("./tracker-operations.mts");
+    const { repoRoot, baseRunner, cp, fsSync, path, cleanup } = await createTempRepoWithRunner();
+    try {
+      const baseSha = cp.execFileSync("git", ["rev-parse","main"], {encoding:"utf8", cwd: repoRoot}).toString().trim();
+      cp.execFileSync("git", ["branch","sandcastle/issue-933", baseSha], { cwd: repoRoot });
+      const wtPath = path.join(repoRoot,"wt-933");
+      cp.execFileSync("git", ["worktree","add", wtPath, "sandcastle/issue-933"], { cwd: repoRoot });
+      // keep worktree clean (no edits)
+      const provDir = path.join(repoRoot,".sandcastle","provenance");
+      fsSync.mkdirSync(provDir,{recursive:true});
+      fsSync.writeFileSync(path.join(provDir,"sandcastle-issue-933.json"), JSON.stringify({issueId:"933",branch:"sandcastle/issue-933",factoryBaseSha:baseSha,callerBranch:"main",callerSha:baseSha,at:new Date().toISOString()}));
+      const store:any={ labels:["ready-for-agent","agent:in-progress"], assignees:["bot"] };
+      let commentCalled=false;
+      const mockGh = async (args:string[])=>{
+        if(args[0]==="issue" && args[1]==="view" && args.includes("comments")) return "";
+        if(args[0]==="pr" && args[1]==="list") return "[]";
+        if(args[0]==="issue" && args[1]==="view"){
+          const isAfter = store.labels.includes("agent:in-progress")===false && store.labels.includes("agent:blocked")===false;
+          // After release, return clean
+          if(!store.labels.includes("agent:in-progress") && !store.assignees.includes("bot")){
+            // fresh read after release should show no in-progress and no bot assignee
+            return JSON.stringify({number:933,title:"t",body:"",state:"open",labels:[{name:"ready-for-agent"}],assignees:[]});
+          }
+          return JSON.stringify({number:933,title:"t",body:"",state:"open",labels:store.labels.map((n:string)=>({name:n})),assignees:store.assignees.map((l:string)=>({login:l}))});
+        }
+        if(args[0]==="issue" && args[1]==="edit" && args.includes("agent:in-progress")){ store.labels=store.labels.filter((l:string)=>l!=="agent:in-progress"); store.assignees=[]; return ""; }
+        if(args[0]==="issue" && args[1]==="comment"){ commentCalled=true; return ""; }
+        if(args[0]==="api" && args[1].includes("git/refs")) throw new Error("404 Not Found");
+        if(args[0]==="api" && args[1].includes("/issues/")) return "0";
+        return "";
+      };
+      const ops = createProductionReconcileOps({ runGh: mockGh, runGit: baseRunner, repoRoot, claimantLogin:"bot" });
+      const ahead = await ops.hasCommitsAhead("sandcastle/issue-933");
+      expect(ahead).toBe("empty");
+      const stale:any={number:933,title:"t",state:"open",labels:["ready-for-agent","agent:in-progress"],assignees:["bot"],body:"",blockedByCount:0};
+      const r = await reconcileStaleImplementation(stale, "sandcastle/issue-933", ops);
+      expect(r.reconciled).toBe(true);
+      // worktree removed, branch deleted, provenance removed
+      const wtVerify = baseRunner(["worktree","list","--porcelain"]);
+      expect(wtVerify.stdout.includes("sandcastle/issue-933")).toBe(false);
+      const br = baseRunner(["branch","--list","sandcastle/issue-933"]);
+      expect(br.stdout.trim()).toBe("");
+      expect(fsSync.existsSync(path.join(provDir,"sandcastle-issue-933.json"))).toBe(false);
+    } finally {
+      try { cp.execFileSync("git", ["worktree","remove","--force", path.join(repoRoot,"wt-933")], { cwd: repoRoot }); } catch {}
+      cleanup();
+    }
+  });
+
+  it("worktree inventory fails while the local/remote branch is already absent: cleanup false; no claim release", async () => {
+    const { createProductionReconcileOps } = await import("./reconcile-adapter.mts");
+    const { repoRoot, baseRunner, cp, fsSync, path, cleanup } = await createTempRepoWithRunner();
+    try {
+      const baseSha = cp.execFileSync("git", ["rev-parse","main"], {encoding:"utf8", cwd: repoRoot}).toString().trim();
+      // No branch, only provenance orphan
+      const provDir = path.join(repoRoot,".sandcastle","provenance");
+      fsSync.mkdirSync(provDir,{recursive:true});
+      const provPath = path.join(provDir,"sandcastle-issue-934.json");
+      fsSync.writeFileSync(provPath, JSON.stringify({issueId:"934",branch:"sandcastle/issue-934",factoryBaseSha:baseSha,callerBranch:"main",callerSha:baseSha,at:new Date().toISOString()}));
+      const failingRunner: import("./branch-helpers.mts").GitRunner = (args:string[])=>{
+        if(args[0]==="worktree" && args[1]==="list") return { exitCode:1, stdout:"", stderr:"fail" };
+        return baseRunner(args);
+      };
+      let released=false;
+      const mockGh = async (args:string[])=>{
+        if(args[0]==="issue" && args[1]==="view" && args.includes("comments")) return "";
+        if(args[0]==="pr" && args[1]==="list") return "[]";
+        if(args[0]==="issue" && args[1]==="view") return JSON.stringify({number:934,title:"t",body:"",state:"open",labels:[{name:"ready-for-agent"},{name:"agent:in-progress"}],assignees:[{login:"bot"}]});
+        if(args[0]==="issue" && args[1]==="edit" && args.includes("agent:in-progress")){ released=true; return ""; }
+        if(args[0]==="api" && args[1].includes("git/refs")) throw new Error("404 Not Found");
+        if(args[0]==="api" && args[1].includes("/issues/")) return "0";
+        return "";
+      };
+      const ops = createProductionReconcileOps({ runGh: mockGh, runGit: failingRunner, repoRoot, claimantLogin:"bot" });
+      const deleted = await ops.deleteBranch("sandcastle/issue-934");
+      expect(deleted).toBe(false);
+      expect(fsSync.existsSync(provPath)).toBe(true);
+      expect(released).toBe(false);
+      // also via no_branch path
+      const stale:any={number:934,title:"t",state:"open",labels:["ready-for-agent","agent:in-progress"],assignees:["bot"],body:"",blockedByCount:0};
+      const { reconcileStaleImplementation } = await import("./tracker-operations.mts");
+      const r = await reconcileStaleImplementation(stale, "sandcastle/issue-934", ops);
+      expect(r.reconciled).toBe(false);
+      expect(r.factoryError).toBe(true);
+      expect(released).toBe(false);
+    } finally { cleanup(); }
+  });
+
+  it("provenance deletion fails after local/remote branch deletion: cleanup false; orphaned provenance remains; no claim release or success comment", async () => {
+    const { createProductionReconcileOps } = await import("./reconcile-adapter.mts");
+    const { reconcileStaleImplementation } = await import("./tracker-operations.mts");
+    const { repoRoot, baseRunner, cp, fsSync, path, cleanup } = await createTempRepoWithRunner();
+    try {
+      const baseSha = cp.execFileSync("git", ["rev-parse","main"], {encoding:"utf8", cwd: repoRoot}).toString().trim();
+      cp.execFileSync("git", ["branch","sandcastle/issue-935", baseSha], { cwd: repoRoot });
+      const provDir = path.join(repoRoot,".sandcastle","provenance");
+      fsSync.mkdirSync(provDir,{recursive:true});
+      const provPath = path.join(provDir,"sandcastle-issue-935.json");
+      const provPathDir = provPath; // will make this a directory
+      fsSync.writeFileSync(provPath, JSON.stringify({issueId:"935",branch:"sandcastle/issue-935",factoryBaseSha:baseSha,callerBranch:"main",callerSha:baseSha,at:new Date().toISOString()}));
+      // Make provenance path a directory to force unlink failure
+      fsSync.unlinkSync(provPath);
+      fsSync.mkdirSync(provPath);
+      // ensure branch exists before
+      const brBefore = baseRunner(["branch","--list","sandcastle/issue-935"]);
+      expect(brBefore.stdout.trim()).not.toBe("");
+      let released=false;
+      let commented=false;
+      const mockGh = async (args:string[])=>{
+        if(args[0]==="issue" && args[1]==="view" && args.includes("comments")) return "";
+        if(args[0]==="pr" && args[1]==="list") return "[]";
+        if(args[0]==="issue" && args[1]==="view") return JSON.stringify({number:935,title:"t",body:"",state:"open",labels:[{name:"ready-for-agent"},{name:"agent:in-progress"}],assignees:[{login:"bot"}]});
+        if(args[0]==="issue" && args[1]==="edit" && args.includes("agent:in-progress")){ released=true; return ""; }
+        if(args[0]==="issue" && args[1]==="comment"){ commented=true; return ""; }
+        if(args[0]==="api" && args[1].includes("git/refs")) throw new Error("404 Not Found");
+        if(args[0]==="api" && args[1].includes("/issues/")) return "0";
+        return "";
+      };
+      const ops = createProductionReconcileOps({ runGh: mockGh, runGit: baseRunner, repoRoot, claimantLogin:"bot" });
+      const deleted = await ops.deleteBranch("sandcastle/issue-935");
+      expect(deleted).toBe(false);
+      // branch should be deleted locally but provenance remains as directory
+      const brAfter = baseRunner(["branch","--list","sandcastle/issue-935"]);
+      expect(brAfter.stdout.trim()).toBe("");
+      // provenance path is directory, so existsSync true but is directory
+      expect(fsSync.existsSync(provPath)).toBe(true);
+      expect(fsSync.statSync(provPath).isDirectory()).toBe(true);
+      expect(released).toBe(false);
+      expect(commented).toBe(false);
+      // via empty_branch path also
+      const stale:any={number:935,title:"t",state:"open",labels:["ready-for-agent","agent:in-progress"],assignees:["bot"],body:"",blockedByCount:0};
+      // For empty_branch, hasCommitsAhead will be empty (no work), but deleteBranch will still fail due to provenance dir
+      const r = await reconcileStaleImplementation(stale, "sandcastle/issue-935", ops);
+      expect(r.reconciled).toBe(false);
+      expect(r.factoryError).toBe(true);
+      expect(released).toBe(false);
+      expect(commented).toBe(false);
+      // cleanup directory for next
+      try { fsSync.rmdirSync(provPath); } catch {}
     } finally { cleanup(); }
   });
 });

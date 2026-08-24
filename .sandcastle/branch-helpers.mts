@@ -130,8 +130,46 @@ export function inspectBranchPresence(repoRoot: string, branch: string, runGit?:
   return "absent";
 }
 
+function getWorktreePathForBranch(repoRoot: string, branch: string, runner: GitRunner): string | null {
+  const wtRes = runner(["worktree", "list", "--porcelain"]);
+  if (wtRes.exitCode !== 0) return null;
+  const blocks = wtRes.stdout.split("\n\n");
+  for (const block of blocks) {
+    const lines = block.split("\n");
+    let branchLine: string | null = null;
+    let worktreeLine: string | null = null;
+    for (const line of lines) {
+      if (line.startsWith("branch ")) branchLine = line.slice("branch ".length).trim();
+      if (line.startsWith("worktree ")) worktreeLine = line.slice("worktree ".length).trim();
+    }
+    if (branchLine === `refs/heads/${branch}` && worktreeLine) return worktreeLine;
+  }
+  return null;
+}
+
+function isWorktreeDirty(repoRoot: string, branch: string, runner: GitRunner): "has-work" | "empty" | "unknown" {
+  const wtPath = getWorktreePathForBranch(repoRoot, branch, runner);
+  if (wtPath === null) {
+    // No worktree for this branch or worktree list failed (null already handled), treat as empty (no dirty)
+    // If worktree list failed, getWorktreePath returns null, but we need to distinguish failure vs no worktree
+    // Check if worktree list itself failed: re-run and check exitCode
+    const check = runner(["worktree", "list", "--porcelain"]);
+    if (check.exitCode !== 0) return "unknown";
+    return "empty";
+  }
+  let res: GitResult;
+  try {
+    res = runner(["-C", wtPath, "status", "--porcelain=v1", "--untracked-files=all"]);
+  } catch {
+    return "unknown";
+  }
+  if (res.exitCode !== 0) return "unknown";
+  return res.stdout.trim() ? "has-work" : "empty";
+}
+
 /**
  * Read-only commits-ahead inspection — preserves unknown on Git failure.
+ * Classifies committed work OR dirty worktree as has-work.
  * Uses the injected GitRunner with argument arrays.
  */
 export function inspectCommitsAhead(repoRoot: string, base: string, branch: string, runGit?: GitRunner): CommitsAhead {
@@ -143,7 +181,18 @@ export function inspectCommitsAhead(repoRoot: string, base: string, branch: stri
     return "unknown";
   }
   if (res.exitCode !== 0) return "unknown";
-  return res.stdout.trim() ? "has-work" : "empty";
+  const hasCommittedWork = !!res.stdout.trim();
+  if (hasCommittedWork) return "has-work";
+  // No committed work, check dirty worktree via exact path
+  const dirty = isWorktreeDirty(repoRoot, branch, runner);
+  if (dirty === "has-work") return "has-work";
+  if (dirty === "unknown") return "unknown";
+  return "empty";
+}
+
+export function inspectWorktreeDirty(repoRoot: string, branch: string, runGit?: GitRunner): "has-work" | "empty" | "unknown" {
+  const runner = runGit ?? defaultGitRunner(repoRoot);
+  return isWorktreeDirty(repoRoot, branch, runner);
 }
 
 /**

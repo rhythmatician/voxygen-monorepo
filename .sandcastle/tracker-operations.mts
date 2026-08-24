@@ -111,7 +111,7 @@ export async function claimImplementation(
   const hasImplement = after.labels.includes(AGENT_IMPLEMENT);
   const hasInProgress = after.labels.includes(AGENT_IN_PROGRESS);
   const hasAssignee = after.assignees.length > 0;
-  const claimantLogin = (ops as any).claimantLogin as string | undefined;
+  const claimantLogin = ops.claimantLogin;
   if (!claimantLogin) {
     let compensated = true;
     let factoryError = true;
@@ -188,7 +188,7 @@ export async function claimResearch(
   const hasInProgress = after.labels.includes(AGENT_IN_PROGRESS);
   const hasAssignee = after.assignees.length > 0;
   const hasResearch = after.labels.includes("wayfinder:research");
-  const claimantLogin = (ops as any).claimantLogin as string | undefined;
+  const claimantLogin = ops.claimantLogin;
   if (!claimantLogin) {
     let compensated = true;
     let factoryError = true;
@@ -237,7 +237,7 @@ export interface FullReconcileOps extends ReconcileOps {
   deleteBranch: (branch: string) => Promise<boolean>;
   addBlocked: (issueId: string) => Promise<boolean>;
   markIntegrated: (issueId: string, branch: string) => Promise<boolean>;
-  claimantLogin?: string;
+  claimantLogin: string;
 }
 
 export function decideReconciliation(
@@ -327,7 +327,7 @@ export async function executeReconciliation(
       // Verify claim release with fresh read — failure is FACTORY_ERROR
       try {
         const afterRelease = await ops.fetchIssue(String(issue.number));
-        if (afterRelease.labels.includes(AGENT_IN_PROGRESS) || afterRelease.assignees.length > 0) {
+        if (afterRelease.labels.includes(AGENT_IN_PROGRESS) || afterRelease.assignees.includes(ops.claimantLogin)) {
           return { reconciled: false, reason: `failed to verify claim release for #${issue.number} — still has in-progress or assignee`, factoryError: true, decision };
         }
       } catch (e) { return { reconciled: false, reason: `failed to verify claim release for #${issue.number}: ${e}`, factoryError: true, decision }; }
@@ -393,8 +393,8 @@ export async function executeReconciliation(
       try {
         const afterRelease = await ops.fetchIssue(String(issue.number));
         const hasInProgress = afterRelease.labels.includes(AGENT_IN_PROGRESS);
-        const claimant = (ops as any).claimantLogin as string | undefined;
-        const stillAssigned = claimant ? afterRelease.assignees.includes(claimant) : afterRelease.assignees.length > 0;
+        const claimant = ops.claimantLogin;
+        const stillAssigned = afterRelease.assignees.includes(claimant);
         if (hasInProgress || stillAssigned) return { reconciled: false, reason: `failed to verify claim release for #${issue.number}`, factoryError: true, decision };
       } catch (e) { return { reconciled: false, reason: `failed to verify claim release for #${issue.number}: ${e}`, factoryError: true, decision }; }
       let blocked = false;
@@ -418,7 +418,7 @@ export async function executeReconciliation(
       if (!released) return { reconciled: false, reason: `failed to release claim for #${issue.number}`, factoryError: true, decision };
       try {
         const afterRelease = await ops.fetchIssue(String(issue.number));
-        if (afterRelease.labels.includes(AGENT_IN_PROGRESS) || afterRelease.assignees.length > 0) return { reconciled: false, reason: `failed to verify claim release for #${issue.number}`, factoryError: true, decision };
+        if (afterRelease.labels.includes(AGENT_IN_PROGRESS) || afterRelease.assignees.includes(ops.claimantLogin)) return { reconciled: false, reason: `failed to verify claim release for #${issue.number}`, factoryError: true, decision };
       } catch (e) { return { reconciled: false, reason: `failed to verify claim release for #${issue.number}: ${e}`, factoryError: true, decision }; }
       let blocked = false;
       try { blocked = await ops.addBlocked(String(issue.number)); } catch (e) { return { reconciled: false, reason: `failed to add blocked for #${issue.number}: ${e}`, factoryError: true, decision }; }
@@ -433,25 +433,7 @@ export async function executeReconciliation(
       let deleted = false;
       try { deleted = await ops.deleteBranch(branch); } catch (e) { return { reconciled: false, reason: `failed to delete branch ${branch}: ${e}`, factoryError: true, decision }; }
       if (!deleted) {
-        // deleteBranch should be idempotent: authoritative remote absence is success, unknown is FACTORY_ERROR
-        // If deleteBranch returns false, treat as factory error unless we can prove absence via re-check
-        if (ops.checkBranchExists) {
-          try {
-            const state = await ops.checkBranchExists(branch);
-            if (state === "absent") {
-              // Already absent, consider success but still need to prove cleanup
-              deleted = true;
-            } else if (state === "unknown") {
-              return { reconciled: false, reason: `branch ${branch} state unknown — fail closed`, factoryError: true, decision };
-            } else {
-              return { reconciled: false, reason: `failed to delete branch ${branch} — still present`, factoryError: true, decision };
-            }
-          } catch {
-            return { reconciled: false, reason: `failed to delete branch ${branch}`, factoryError: true, decision };
-          }
-        } else {
-          return { reconciled: false, reason: `failed to delete branch ${branch}`, factoryError: true, decision };
-        }
+        return { reconciled: false, reason: `failed to delete branch ${branch} — cleanup not proved`, factoryError: true, decision };
       }
       // Verify branch truly absent after delete (both local and remote)
       if (ops.checkBranchExists) {
@@ -469,8 +451,8 @@ export async function executeReconciliation(
       try {
         const afterRelease = await ops.fetchIssue(String(issue.number));
         const hasInProgress = afterRelease.labels.includes(AGENT_IN_PROGRESS);
-        const claimant = (ops as any).claimantLogin as string | undefined;
-        const stillAssigned = claimant ? afterRelease.assignees.includes(claimant) : afterRelease.assignees.length > 0;
+        const claimant = ops.claimantLogin;
+        const stillAssigned = afterRelease.assignees.includes(claimant);
         if (hasInProgress || stillAssigned) {
           return { reconciled: false, reason: `failed to verify claim release for #${issue.number} — still has in-progress or claimant assigned`, factoryError: true, decision };
         }
@@ -489,7 +471,7 @@ export async function executeReconciliation(
       if (!released) return { reconciled: false, reason: `failed to release claim for #${issue.number}`, factoryError: true, decision };
       try {
         const afterRelease = await ops.fetchIssue(String(issue.number));
-        if (afterRelease.labels.includes(AGENT_IN_PROGRESS) || afterRelease.assignees.length > 0) return { reconciled: false, reason: `failed to verify claim release for #${issue.number}`, factoryError: true, decision };
+        if (afterRelease.labels.includes(AGENT_IN_PROGRESS) || afterRelease.assignees.includes(ops.claimantLogin)) return { reconciled: false, reason: `failed to verify claim release for #${issue.number}`, factoryError: true, decision };
       } catch (e) { return { reconciled: false, reason: `failed to verify claim release for #${issue.number}: ${e}`, factoryError: true, decision }; }
       let blocked = false;
       try { blocked = await ops.addBlocked(String(issue.number)); } catch (e) { return { reconciled: false, reason: `failed to add blocked for #${issue.number}: ${e}`, factoryError: true, decision }; }
