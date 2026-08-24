@@ -237,6 +237,7 @@ export interface FullReconcileOps extends ReconcileOps {
   deleteBranch: (branch: string) => Promise<boolean>;
   addBlocked: (issueId: string) => Promise<boolean>;
   markIntegrated: (issueId: string, branch: string) => Promise<boolean>;
+  claimantLogin?: string;
 }
 
 export function decideReconciliation(
@@ -343,6 +344,46 @@ export async function executeReconciliation(
       return { reconciled: false, reason: decision.reason, decision };
     }
     case "no_branch": {
+      // Recovery: authoritative absent-branch cleanup for orphaned provenance crash window
+      // Prove no worktree, local, remote before deleting orphaned provenance
+      try {
+        const cleaned = await ops.deleteBranch(branch);
+        // deleteBranch proves worktree/local/remote absence before provenance deletion.
+        // If branch was truly absent and no orphan, cleaned should be true (provenance already absent or deleted).
+        // If cleaned false, check why: if branch still present or unknown, fail closed.
+        if (!cleaned) {
+          // If deleteBranch failed, verify if it's because branch still exists or worktree issue
+          if (ops.checkBranchExists) {
+            try {
+              const state = await ops.checkBranchExists(branch);
+              if (state === "present") return { reconciled: false, reason: `branch ${branch} still present after cleanup — fail closed`, factoryError: true, decision };
+              if (state === "unknown") return { reconciled: false, reason: `branch ${branch} state unknown after cleanup — fail closed`, factoryError: true, decision };
+              // absent but delete failed due to worktree or provenance -> still factory error, but check provenance
+            } catch {}
+          }
+          // For orphaned provenance case where branch absent but provenance existed, deleteBranch should have succeeded.
+          // If it returned false, treat as factory error unless we can prove provenance absent.
+          // We will still attempt to proceed only if we can prove worktree/local/remote absent and provenance absent.
+          // For now, if deleteBranch false and branch is absent, we need to verify provenance deletion separately.
+          // Try to check if provenance still exists via checkProvenanceValid: if it returns valid/invalid, it still exists; unknown may mean file missing or error.
+          // If provenance still present, we cannot leave orphan.
+          try {
+            const prov = await ops.checkProvenanceValid(branch);
+            // If provenance still reports valid/invalid (file exists), then cleanup failed
+            if (prov.state === "valid" || prov.state === "invalid") {
+              return { reconciled: false, reason: `failed to clean up orphaned provenance for ${branch}: ${prov.reason} — fail closed`, factoryError: true, decision };
+            }
+            // unknown could be malformed or missing; if missing, it would be valid with reason clean if branch empty -> but for orphan case branch absent and empty, valid means provenance already absent, so we can proceed
+            // If unknown due to read failure, fail closed
+            if (prov.state === "unknown" && prov.reason.includes("failed")) {
+              return { reconciled: false, reason: `provenance cleanup verification failed for ${branch}: ${prov.reason}`, factoryError: true, decision };
+            }
+          } catch {}
+          // If we cannot prove provenance absent, fail closed
+          // But if branch is absent and provenance is valid with clean (empty branch no provenance), then cleaned should have been true; so false here is unexpected -> factory error
+          return { reconciled: false, reason: `failed to clean up orphaned provenance for ${branch} — fail closed`, factoryError: true, decision };
+        }
+      } catch (e) { return { reconciled: false, reason: `absent-branch cleanup failed for ${branch}: ${e}`, factoryError: true, decision }; }
       let commented = false;
       try { commented = await ops.comment(String(issue.number), `Sandcastle reconciliation: no branch \`${branch}\` or batch PR for #${issue.number} — stale claim after crash. To retry, remove \`agent:blocked\` and re-add \`agent:implement\`.`); } catch (e) { return { reconciled: false, reason: `failed to comment for #${issue.number}: ${e}`, factoryError: true, decision }; }
       if (!commented) return { reconciled: false, reason: `failed to comment for #${issue.number}`, factoryError: true, decision };
@@ -351,7 +392,10 @@ export async function executeReconciliation(
       if (!released) return { reconciled: false, reason: `failed to release claim for #${issue.number}`, factoryError: true, decision };
       try {
         const afterRelease = await ops.fetchIssue(String(issue.number));
-        if (afterRelease.labels.includes(AGENT_IN_PROGRESS) || afterRelease.assignees.length > 0) return { reconciled: false, reason: `failed to verify claim release for #${issue.number}`, factoryError: true, decision };
+        const hasInProgress = afterRelease.labels.includes(AGENT_IN_PROGRESS);
+        const claimant = (ops as any).claimantLogin as string | undefined;
+        const stillAssigned = claimant ? afterRelease.assignees.includes(claimant) : afterRelease.assignees.length > 0;
+        if (hasInProgress || stillAssigned) return { reconciled: false, reason: `failed to verify claim release for #${issue.number}`, factoryError: true, decision };
       } catch (e) { return { reconciled: false, reason: `failed to verify claim release for #${issue.number}: ${e}`, factoryError: true, decision }; }
       let blocked = false;
       try { blocked = await ops.addBlocked(String(issue.number)); } catch (e) { return { reconciled: false, reason: `failed to add blocked for #${issue.number}: ${e}`, factoryError: true, decision }; }
@@ -417,11 +461,20 @@ export async function executeReconciliation(
           if (afterState === "unknown") return { reconciled: false, reason: `branch ${branch} state unknown after delete — fail closed`, factoryError: true, decision };
         } catch (e) { return { reconciled: false, reason: `failed to verify branch deletion for ${branch}: ${e}`, factoryError: true, decision }; }
       }
-      // Verify provenance cleanup if applicable — local worktree/provenance should be proved via check
-      // Release claim only after required cleanup succeeds
+      // Release claim only after required cleanup succeeds, then verify via fresh read
       let released = false;
       try { released = await ops.releaseClaim(String(issue.number)); } catch (e) { return { reconciled: false, reason: `failed to release claim for #${issue.number}: ${e}`, factoryError: true, decision }; }
       if (!released) return { reconciled: false, reason: `failed to release stale claim for #${issue.number}`, factoryError: true, decision };
+      // Fresh verification of claim release before publishing success comment
+      try {
+        const afterRelease = await ops.fetchIssue(String(issue.number));
+        const hasInProgress = afterRelease.labels.includes(AGENT_IN_PROGRESS);
+        const claimant = (ops as any).claimantLogin as string | undefined;
+        const stillAssigned = claimant ? afterRelease.assignees.includes(claimant) : afterRelease.assignees.length > 0;
+        if (hasInProgress || stillAssigned) {
+          return { reconciled: false, reason: `failed to verify claim release for #${issue.number} — still has in-progress or claimant assigned`, factoryError: true, decision };
+        }
+      } catch (e) { return { reconciled: false, reason: `failed to verify claim release for #${issue.number}: ${e}`, factoryError: true, decision }; }
       let commented = false;
       try { commented = await ops.comment(String(issue.number), `Sandcastle reconciliation: stale implementation claim for \`${branch}\` was interrupted (empty branch). Released assignee and \`${AGENT_IN_PROGRESS}\` without restoring \`${AGENT_IMPLEMENT}\`. Branch \`${branch}\` cleaned. To retry, re-add \`${AGENT_IMPLEMENT}\` explicitly.`); } catch (e) { return { reconciled: false, reason: `failed to comment for #${issue.number}: ${e}`, factoryError: true, decision }; }
       if (!commented) return { reconciled: false, reason: `failed to comment for #${issue.number}`, factoryError: true, decision };

@@ -71,6 +71,7 @@ export function createProductionReconcileOps(deps: ReconcileAdapterDeps): FullRe
   }
 
   return {
+    claimantLogin,
     fetchIssue: async (id:string) => fetchIssueFresh(id),
 
     releaseClaim: async (issueId:string) => {
@@ -164,18 +165,36 @@ export function createProductionReconcileOps(deps: ReconcileAdapterDeps): FullRe
     deleteBranch: async (branchName:string): Promise<boolean> => {
       // If owner/repo cannot be resolved, remote state is unknown — do not delete anything
       if (!ownerRepo) return false;
-      // Ordered: worktree -> local -> remote -> verify -> provenance
-      // worktree inspection/removal via GitRunner
-      const wtRes = runGit(["worktree", "list", "--porcelain"]);
-      if (wtRes.exitCode === 0 && wtRes.stdout.includes(branchName)) {
-        const wtPath = path.join(repoRoot, ".sandcastle","worktrees",branchName.replace(/\//g,"-"));
-        // Try removal by path
-        let r = runGit(["worktree", "remove", "--force", wtPath]);
-        // Fallback removal by branch name if path removal failed
-        if (r.exitCode !== 0) {
-          const r2 = runGit(["worktree", "remove", "--force", branchName]);
-          // ignore failure, best effort
-          void r2;
+      // Worktree cleanup fail closed: nonzero worktree inventory before any mutation
+      const wtListRes = runGit(["worktree", "list", "--porcelain"]);
+      if (wtListRes.exitCode !== 0) return false;
+      // Parse porcelain blocks to locate exact worktree path for this branch
+      const wtBlocks = wtListRes.stdout.split("\n\n");
+      let exactWtPath: string | null = null;
+      for (const block of wtBlocks) {
+        const lines = block.split("\n");
+        let branchLine: string | null = null;
+        let worktreeLine: string | null = null;
+        for (const line of lines) {
+          if (line.startsWith("branch ")) branchLine = line.slice("branch ".length).trim();
+          if (line.startsWith("worktree ")) worktreeLine = line.slice("worktree ".length).trim();
+        }
+        if (branchLine === `refs/heads/${branchName}` && worktreeLine) {
+          exactWtPath = worktreeLine;
+          break;
+        }
+      }
+      if (exactWtPath) {
+        const rmRes = runGit(["worktree", "remove", "--force", exactWtPath]);
+        if (rmRes.exitCode !== 0) return false;
+        // Re-run inventory and prove no worktree still references the branch
+        const wtVerify = runGit(["worktree", "list", "--porcelain"]);
+        if (wtVerify.exitCode !== 0) return false;
+        const verifyBlocks = wtVerify.stdout.split("\n\n");
+        for (const block of verifyBlocks) {
+          for (const line of block.split("\n")) {
+            if (line.trim() === `branch refs/heads/${branchName}`) return false;
+          }
         }
       }
       // local
