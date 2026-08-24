@@ -70,7 +70,7 @@ export async function addParentMapPointer(
 
 /**
  * Releases transient claim (agent:in-progress + assignee) while retaining
- * agent:research and never adding agent:blocked. Used for FACTORY_ERROR
+ * wayfinder:research and never adding agent:blocked. Used for FACTORY_ERROR
  * and as part of close.
  */
 export async function releaseResearchTransientClaim(

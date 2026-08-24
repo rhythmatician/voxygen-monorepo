@@ -56,6 +56,7 @@ import {
   partitionMergerInfrastructureFailure,
 } from "./factory-verdict-gate.mts";
 import * as branchHelpers from "./branch-helpers.mts";
+import type { GitRunner, GitResult } from "./branch-helpers.mts";
 import { createProductionReconcileOps } from "./reconcile-adapter.mts";
 import { publishBatchBranch } from "./batch-publication.mts";
 import { mayAutonomouslyMerge } from "./ci-policy.mts";
@@ -293,6 +294,22 @@ async function runGh(args: string[]): Promise<string> {
     console.error(`[runGh] args=${args.join(" ")} code=${String(code)} signal=${String(signal)} msg=${msg} details=${details.slice(0,500)} stderr=${stderrStr} stdout=${stdoutStr}`);
     throw new Error(`gh ${args.join(" ")} failed: ${details}`);
   }
+}
+
+
+function createGitRunner(): GitRunner {
+  return (args: string[]): GitResult => {
+    try {
+      const out = execFileSync("git", args, { encoding: "utf8", cwd: REPO_ROOT } as any);
+      const stdout = typeof out === "string" ? out : (out as Buffer).toString();
+      return { exitCode: 0, stdout, stderr: "" };
+    } catch (e: any) {
+      const stdout = e.stdout ? e.stdout.toString() : "";
+      const stderr = e.stderr ? e.stderr.toString() : (e.message ?? "");
+      const code = typeof e.status === "number" ? e.status : 1;
+      return { exitCode: code, stdout, stderr };
+    }
+  };
 }
 
 function parseOwnerRepo(): { owner: string; repo: string } | null {
@@ -788,7 +805,7 @@ async function reconcileInProgressIssues(): Promise<void> {
     if (hasReady && hasInProgress && hasAssignee && !hasImplement) {
       console.log(`  #${id} (${branch}) → stale implementation claim (consumed ${AGENT_IMPLEMENT}) — full seam`);
       const claimantLogin = await resolveClaimantLogin();
-    const fullOps = createProductionReconcileOps({ runGh, repoRoot: REPO_ROOT, claimantLogin });
+    const fullOps = createProductionReconcileOps({ runGh, runGit: createGitRunner(), repoRoot: REPO_ROOT, claimantLogin });
       const result = await reconcileStaleImplementation(issue, branch, fullOps);
       if (!result.reconciled) {
         console.warn(`  #${id} → ${result.reason} — decision=${result.decision?.type} factoryError=${result.factoryError}`);

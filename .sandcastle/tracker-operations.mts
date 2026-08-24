@@ -1,4 +1,5 @@
 import type { IssueInput } from "./tracker-policy.mts";
+import type { ProvenanceInspection } from "./branch-helpers.mts";
 import {
   READY_FOR_AGENT,
   AGENT_IMPLEMENT,
@@ -231,7 +232,7 @@ export interface FullReconcileOps extends ReconcileOps {
   getBatchPrNumber: (issueNumber: string) => Promise<{ prNumber: string | null; state: "found" | "absent" | "unknown"; error?: string }>;
   getPrState: (prNumber: string) => Promise<{ state: string; mergedAt: string | null; found: boolean; unknown?: boolean }>;
   checkBranchExists: (branch: string) => Promise<"present" | "absent" | "unknown">;
-  checkProvenanceValid: (branch: string) => Promise<{ valid: boolean; reason?: string; contaminated?: boolean }>;
+  checkProvenanceValid: (branch: string) => Promise<ProvenanceInspection>;
   hasCommitsAhead: (branch: string) => Promise<"has-work" | "empty" | "unknown">;
   deleteBranch: (branch: string) => Promise<boolean>;
   addBlocked: (issueId: string) => Promise<boolean>;
@@ -244,7 +245,7 @@ export function decideReconciliation(
   batch: { prNumber: string | null; state: "found" | "absent" | "unknown"; error?: string } | null,
   prState: { state: string; mergedAt: string | null; found: boolean; unknown?: boolean } | null,
   branchExists: boolean | "present" | "absent" | "unknown" | null,
-  provenanceValid: { valid: boolean; reason?: string; contaminated?: boolean } | null,
+  provenanceValid: ProvenanceInspection | null,
   hasWork: boolean | "has-work" | "empty" | "unknown" | null,
 ): ReconcileDecision {
   const hasInProgress = issue.labels.includes(AGENT_IN_PROGRESS);
@@ -269,7 +270,8 @@ export function decideReconciliation(
   if (branchState === null || branchState === "unknown") return { type: "unknown", reason: "branch existence unknown — fail closed" };
   if (branchState === "absent") return { type: "no_branch", reason: `no branch or PR for #${issue.number} — stale, marking blocked` };
   if (!provenanceValid) return { type: "unknown", reason: `provenance check missing — fail closed for ${branch}` };
-  if (!provenanceValid.valid) return { type: "invalid_provenance", reason: provenanceValid.reason || `invalid provenance for ${branch}`, contaminated: provenanceValid.contaminated };
+  if (provenanceValid.state === "unknown") return { type: "unknown", reason: provenanceValid.reason || `provenance unknown for ${branch} — fail closed` };
+  if (provenanceValid.state === "invalid") return { type: "invalid_provenance", reason: provenanceValid.reason || `invalid provenance for ${branch}`, contaminated: provenanceValid.contaminated };
   const workState = hasWork === true ? "has-work" : hasWork === false ? "empty" : hasWork;
   if (workState === null || workState === "unknown") return { type: "unknown", reason: "hasCommitsAhead unknown — fail closed" };
   if (workState === "empty") return { type: "absent_empty_branch", reason: `empty branch ${branch} — cleaned` };
@@ -471,7 +473,7 @@ export async function reconcileStaleImplementation(
   let batch: { prNumber: string | null; state: "found" | "absent" | "unknown"; error?: string } | null = null;
   let prState: { state: string; mergedAt: string | null; found: boolean; unknown?: boolean } | null = null;
   let branchExists: "present" | "absent" | "unknown" | null = null;
-  let provenanceValid: { valid: boolean; reason?: string; contaminated?: boolean } | null = null;
+  let provenanceValid: ProvenanceInspection | null = null;
   let hasWork: "has-work" | "empty" | "unknown" | null = null;
 
   // Batch lookup — required
@@ -516,12 +518,15 @@ export async function reconcileStaleImplementation(
     return executeReconciliation(decision, issue, branch, ops);
   }
 
-  // Branch exists — check provenance (read-only verifier required)
+  // Branch exists — check provenance (genuinely tri-state, unknown => no mutation)
   try { provenanceValid = await ops.checkProvenanceValid(branch); } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);
     return { reconciled: false, reason: `provenance check failed for ${branch}: ${reason} — fail closed` };
   }
-  if (!provenanceValid.valid) {
+  if (provenanceValid.state === "unknown") {
+    return { reconciled: false, reason: provenanceValid.reason || `provenance unknown for ${branch} — fail closed` };
+  }
+  if (provenanceValid.state === "invalid") {
     const decision: ReconcileDecision = { type: "invalid_provenance", reason: provenanceValid.reason || `invalid provenance for ${branch}`, contaminated: provenanceValid.contaminated };
     return executeReconciliation(decision, issue, branch, ops);
   }

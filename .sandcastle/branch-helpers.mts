@@ -90,64 +90,146 @@ export type BranchPresence = "present" | "absent" | "unknown";
 export type CommitsAhead = "has-work" | "empty" | "unknown";
 export type ProvenanceStatus = "valid" | "invalid" | "unknown";
 
+export type GitResult = { exitCode: number; stdout: string; stderr: string };
+export type GitRunner = (args: string[]) => GitResult;
+
+export type ProvenanceInspection =
+  | { state: "valid"; reason?: string }
+  | { state: "invalid"; reason: string; contaminated?: boolean }
+  | { state: "unknown"; reason: string };
+
+function defaultGitRunner(repoRoot: string): GitRunner {
+  return (args: string[]) => {
+    try {
+      const out = execFileSync("git", args, { encoding: "utf8", cwd: repoRoot } as any);
+      const stdout = typeof out === "string" ? out : (out as Buffer).toString();
+      return { exitCode: 0, stdout, stderr: "" };
+    } catch (e: any) {
+      const stdout = e.stdout ? e.stdout.toString() : "";
+      const stderr = e.stderr ? e.stderr.toString() : (e.message ?? "");
+      const code = typeof e.status === "number" ? e.status : 1;
+      return { exitCode: code, stdout, stderr };
+    }
+  };
+}
+
 /**
- * Read-only inspection of branch presence — preserves unknown on Git/API errors.
- * Does not create, delete, or fetch branches.
+ * Read-only inspection of branch presence — preserves unknown on Git errors.
+ * Uses argument arrays, not shell interpolation, and the injected GitRunner.
  */
-export function inspectBranchPresence(repoRoot: string, branch: string, deps: { execSync?: (cmd:string)=>string, runGh?: (args:string[])=>Promise<string> } = {}): BranchPresence {
-  const execSyncFn = deps.execSync ?? ((cmd:string)=> require('node:child_process').execSync(cmd, {encoding:'utf8', cwd: repoRoot}).trim());
-  const runGh = deps.runGh;
+export function inspectBranchPresence(repoRoot: string, branch: string, runGit?: GitRunner): BranchPresence {
+  const runner = runGit ?? defaultGitRunner(repoRoot);
+  let res: GitResult;
   try {
-    const out = execSyncFn(`git branch --list "${branch}"`);
-    if (out) return "present";
-  } catch { return "unknown"; }
-  // Try remote if local absent — but treat remote lookup failure as unknown if origin exists
-  let originExists=false;
-  try { execSyncFn("git remote get-url origin"); originExists=true; } catch {}
-  if (runGh) {
-    // Caller will handle remote via runGh — this helper is local-only, return absent if local not present
-    // For full presence, caller should combine local+remote via adapter
-    return "absent";
-  }
-  try {
-    const out = require('node:child_process').execFileSync("git", ["ls-remote","--heads","origin",branch], {encoding:'utf8', cwd: repoRoot}).toString().trim();
-    if (out) return "present";
-    return "absent";
+    res = runner(["branch", "--list", branch]);
   } catch {
-    if (originExists) return "unknown";
-    return "absent";
+    return "unknown";
   }
+  if (res.exitCode !== 0) return "unknown";
+  if (res.stdout.trim()) return "present";
+  return "absent";
 }
 
 /**
  * Read-only commits-ahead inspection — preserves unknown on Git failure.
- * Does not wrap hasCommitsAhead which swallows errors.
+ * Uses the injected GitRunner with argument arrays.
  */
-export function inspectCommitsAhead(repoRoot: string, base: string, branch: string): CommitsAhead {
+export function inspectCommitsAhead(repoRoot: string, base: string, branch: string, runGit?: GitRunner): CommitsAhead {
+  const runner = runGit ?? defaultGitRunner(repoRoot);
+  let res: GitResult;
   try {
-    const log = require('node:child_process').execFileSync("git", ["log", `${base}..${branch}`, "--oneline"], {encoding:'utf8', cwd: repoRoot}).toString().trim();
-    return log ? "has-work" : "empty";
+    res = runner(["log", `${base}..${branch}`, "--oneline"]);
   } catch {
     return "unknown";
   }
+  if (res.exitCode !== 0) return "unknown";
+  return res.stdout.trim() ? "has-work" : "empty";
 }
 
 /**
- * Read-only provenance inspection — preserves unknown on parse/Git errors.
- * Valid means branch descendant of recorded base; invalid means legacy/contaminated; unknown means check failed.
+ * Read-only provenance inspection — genuinely tri-state.
+ * - valid provenance JSON + recorded base is ancestor => valid;
+ * - proven non-ancestry => invalid;
+ * - missing provenance + proved branch work => invalid/legacy;
+ * - malformed JSON, filesystem read failure, missing Git objects, or Git command failure => unknown;
+ * - ancestry exit 1 => invalid, other non-zero or exception => unknown.
  */
-export function inspectProvenance(repoRoot: string, branch: string): ProvenanceStatus {
+export function inspectProvenance(repoRoot: string, branch: string, runGit?: GitRunner): ProvenanceInspection {
+  const runner = runGit ?? defaultGitRunner(repoRoot);
+  const provPath = path.join(repoRoot, ".sandcastle", "provenance", `${branch.replace(/[^a-zA-Z0-9-]/g, "-")}.json`);
+  let exists = false;
   try {
-    const result = verifyProvenance(repoRoot, branch);
-    if (result.ok) return "valid";
-    // If verifyProvenance returns not ok due to missing file but empty branch, it returns ok true with reason clean — handled above
-    // Otherwise, it's invalid (legacy with commits, or bad ancestry)
-    return "invalid";
-  } catch {
-    return "unknown";
+    exists = fs.existsSync(provPath);
+  } catch (e: any) {
+    return { state: "unknown", reason: `provenance filesystem check failed: ${e?.message ?? String(e)}` };
   }
+  if (!exists) {
+    let hasWork: CommitsAhead | null = null;
+    const basesToTry = ["origin/main", "main", "master"];
+    for (const base of basesToTry) {
+      let baseRes: GitResult;
+      try { baseRes = runner(["rev-parse", "--verify", base]); } catch { baseRes = { exitCode: 1, stdout:"", stderr:"" }; }
+      if (baseRes.exitCode !== 0) continue;
+      const ahead = inspectCommitsAhead(repoRoot, base, branch, runner);
+      if (ahead === "unknown") continue;
+      hasWork = ahead;
+      break;
+    }
+    if (hasWork === null) {
+      let res: GitResult;
+      try { res = runner(["rev-list", "--count", branch]); } catch { return { state: "unknown", reason: `provenance missing and branch work check failed for ${branch} — Git failure` }; }
+      if (res.exitCode !== 0) {
+        return { state: "unknown", reason: `provenance missing and branch work check failed for ${branch}: ${res.stderr}` };
+      }
+      const count = parseInt(res.stdout.trim(), 10);
+      if (isNaN(count)) return { state: "unknown", reason: `provenance missing and branch work count parse failed` };
+      if (count > 0) {
+        let logRes: GitResult;
+        try { logRes = runner(["log", "--oneline", branch, "-1"]); } catch { return { state: "unknown", reason: `provenance missing and log check failed` }; }
+        if (logRes.exitCode !== 0) return { state: "unknown", reason: `provenance missing and log check failed` };
+        hasWork = logRes.stdout.trim() ? "has-work" : "empty";
+      } else {
+        hasWork = "empty";
+      }
+    }
+    if (hasWork === "has-work") {
+      return { state: "invalid", reason: `no provenance file at ${provPath} but branch has commits — legacy, fail closed`, contaminated: true };
+    }
+    if (hasWork === "empty") {
+      return { state: "valid", reason: "empty branch no provenance — clean" };
+    }
+    return { state: "unknown", reason: `provenance missing and branch work check unknown for ${branch}` };
+  }
+  let raw: string;
+  try {
+    raw = fs.readFileSync(provPath, "utf8");
+  } catch (e: any) {
+    return { state: "unknown", reason: `provenance read failed: ${e?.message ?? String(e)}` };
+  }
+  let prov: any;
+  try {
+    prov = JSON.parse(raw);
+  } catch (e: any) {
+    return { state: "unknown", reason: `provenance JSON malformed: ${e?.message ?? String(e)}` };
+  }
+  const recordedBase = prov.factoryBaseSha;
+  if (typeof recordedBase !== "string" || !recordedBase) {
+    return { state: "unknown", reason: `provenance missing factoryBaseSha` };
+  }
+  let res: GitResult;
+  try {
+    res = runner(["merge-base", "--is-ancestor", recordedBase, branch]);
+  } catch (e: any) {
+    return { state: "unknown", reason: `ancestry check execution failed: ${e?.message ?? String(e)}` };
+  }
+  if (res.exitCode === 0) {
+    return { state: "valid", reason: `provenance OK: branch descendant of recorded base ${recordedBase.slice(0,7)}` };
+  }
+  if (res.exitCode === 1) {
+    return { state: "invalid", reason: `branch is not descendant of recorded base ${recordedBase.slice(0,7)}` };
+  }
+  return { state: "unknown", reason: `ancestry check failed with exit ${res.exitCode}: ${res.stderr || res.stdout}` };
 }
-
 
 export function createBatchWorktree(repoRoot: string, batchBranch: string, factoryBaseSha: string): string {
   const worktreePath = path.join(repoRoot, ".sandcastle", "worktrees", batchBranch.replace(/\//g, "-"));

@@ -1,6 +1,18 @@
 import { describe, it, expect, vi } from "vitest";
 import { claimImplementation, reconcileStaleImplementation, type ClaimOps } from "./tracker-operations.mts";
 import type { IssueInput } from "./tracker-policy.mts";
+import type { GitRunner } from "./branch-helpers.mts";
+
+function fakeGit(args: string[]): { exitCode:number, stdout:string, stderr:string } {
+  if (args[0]==="remote" && args[1]==="get-url") return { exitCode:0, stdout:"https://github.com/rhythmatician/voxygen-monorepo.git", stderr:"" };
+  if (args[0]==="branch" && args[1]==="--list") return { exitCode:0, stdout:"", stderr:"" };
+  if (args[0]==="worktree" && args[1]==="list") return { exitCode:0, stdout:"", stderr:"" };
+  if (args[0]==="rev-parse") return { exitCode:0, stdout:"abc123def456", stderr:"" };
+  if (args[0]==="log") return { exitCode:0, stdout:"", stderr:"" };
+  if (args[0]==="merge-base") return { exitCode:0, stdout:"", stderr:"" };
+  if (args[0]==="rev-list") return { exitCode:0, stdout:"0", stderr:"" };
+  return { exitCode:0, stdout:"", stderr:"" };
+}
 import { TRACER_BODY } from "./fixtures.mts";
 
 function baseIssue(overrides: Partial<IssueInput> = {}): IssueInput {
@@ -232,7 +244,7 @@ describe("tracker-operations — reconciliation full state machine", () => {
       comment: async () => true,
       fetchIssue: async () => afterIntegrated,
       checkBranchExists: async () => "absent" as const,
-      checkProvenanceValid: async () => ({ valid: true }),
+      checkProvenanceValid: async () => ({ state: "valid" as const, reason: "valid" }),
       hasCommitsAhead: async () => "empty" as const,
       deleteBranch: async () => true,
       addBlocked: async () => true,
@@ -263,7 +275,7 @@ describe("tracker-operations — reconciliation full state machine", () => {
     const ops: any = {
       getBatchPrNumber: async () => ({ prNumber: null, state:"absent" }),
       checkBranchExists: async () => true,
-      checkProvenanceValid: async () => ({ valid:true }),
+      checkProvenanceValid: async () => ({ state: "valid" as const, reason: "valid" }),
       hasCommitsAhead: async () => false,
       releaseClaim: async () => { released=true; return true; },
       comment: async () => true,
@@ -282,7 +294,7 @@ describe("tracker-operations — reconciliation full state machine", () => {
     const ops: any = {
       getBatchPrNumber: async () => ({ prNumber: null, state:"absent" }),
       checkBranchExists: async () => "present" as const,
-      checkProvenanceValid: async () => ({ valid:true }),
+      checkProvenanceValid: async () => ({ state: "valid" as const, reason: "valid" }),
       hasCommitsAhead: async () => "has-work" as const,
       releaseClaim: async () => true,
       comment: async () => true,
@@ -302,7 +314,7 @@ describe("tracker-operations — reconciliation full state machine", () => {
     const ops: any = {
       getBatchPrNumber: async () => ({ prNumber: null, state:"absent" }),
       checkBranchExists: async () => true,
-      checkProvenanceValid: async () => ({ valid:false, reason:"contaminated", contaminated:true }),
+      checkProvenanceValid: async () => ({ state: "invalid" as const, reason: "contaminated", contaminated: true }),
       releaseClaim: async () => true,
       comment: async () => true,
       fetchIssue: async () => stale,
@@ -317,7 +329,7 @@ describe("tracker-operations — reconciliation full state machine", () => {
     const ops: any = {
       getBatchPrNumber: async () => ({ prNumber: null, state:"absent" }),
       checkBranchExists: async () => "absent" as const,
-      checkProvenanceValid: async () => ({ valid:true }),
+      checkProvenanceValid: async () => ({ state: "valid" as const, reason: "valid" }),
       hasCommitsAhead: async () => "empty" as const,
       releaseClaim: async () => true,
       comment: async () => true,
@@ -361,7 +373,7 @@ describe("tracker-operations — stale reconciliation without command restoratio
         if (branchChecks===1) return "present" as const;
         return "absent" as const;
       },
-      checkProvenanceValid: async () => ({ valid: true, reason: "valid" }),
+      checkProvenanceValid: async () => ({ state: "valid" as const, reason: "valid" }),
       hasCommitsAhead: async () => "empty" as const,
       deleteBranch: async () => true,
       addBlocked: async () => true,
@@ -390,7 +402,7 @@ describe("tracker-operations — authoritative reconciliation effects (item 4) a
       getBatchPrNumber: async () => ({ prNumber: null, state: "absent" as const }),
       getPrState: async () => ({ state:"CLOSED", mergedAt:null, found:false }),
       checkBranchExists: async () => "absent" as const,
-      checkProvenanceValid: async () => ({ valid:true }),
+      checkProvenanceValid: async () => ({ state: "valid" as const, reason: "valid" }),
       hasCommitsAhead: async () => "empty" as const,
       deleteBranch: async (b:string) => { store.deleted.push(b); if (overrides.deleteBranch) return overrides.deleteBranch(b); return true; },
       addBlocked: async (id:string) => { store.blocked.push(id); if (overrides.addBlocked) return overrides.addBlocked(id); return true; },
@@ -410,7 +422,7 @@ describe("tracker-operations — authoritative reconciliation effects (item 4) a
       getBatchPrNumber: async () => ({ prNumber: null, state:"absent" }),
       getPrState: async () => ({ state:"CLOSED", mergedAt:null, found:false }),
       checkBranchExists: async () => "unknown" as const,
-      checkProvenanceValid: async () => ({ valid:true }),
+      checkProvenanceValid: async () => ({ state: "valid" as const, reason: "valid" }),
       hasCommitsAhead: async () => "empty" as const,
       deleteBranch: async () => { mutated=true; return true; },
       addBlocked: async () => { mutated=true; return true; },
@@ -433,7 +445,7 @@ describe("tracker-operations — authoritative reconciliation effects (item 4) a
       getBatchPrNumber: async () => ({ prNumber: null, state:"absent" }),
       getPrState: async () => ({ state:"CLOSED", mergedAt:null, found:false }),
       checkBranchExists: async () => "present" as const,
-      checkProvenanceValid: async () => ({ valid:true }),
+      checkProvenanceValid: async () => ({ state: "valid" as const, reason: "valid" }),
       hasCommitsAhead: async () => "unknown" as const,
       deleteBranch: async () => { mutated=true; return true; },
       addBlocked: async () => { mutated=true; return true; },
@@ -455,7 +467,7 @@ describe("tracker-operations — authoritative reconciliation effects (item 4) a
       releaseClaim: async () => true,
       comment: async () => false,
       checkBranchExists: async () => "present" as const,
-      checkProvenanceValid: async () => ({ valid:true }),
+      checkProvenanceValid: async () => ({ state: "valid" as const, reason: "valid" }),
       hasCommitsAhead: async () => "empty" as const,
       deleteBranch: async () => true,
       addBlocked: async () => true,
@@ -477,7 +489,7 @@ describe("tracker-operations — authoritative reconciliation effects (item 4) a
       releaseClaim: async () => false,
       comment: async () => true,
       checkBranchExists: async () => "present" as const,
-      checkProvenanceValid: async () => ({ valid:true }),
+      checkProvenanceValid: async () => ({ state: "valid" as const, reason: "valid" }),
       hasCommitsAhead: async () => "empty" as const,
       deleteBranch: async () => true,
       addBlocked: async () => { blockedCalled=true; return true; },
@@ -505,7 +517,7 @@ describe("tracker-operations — authoritative reconciliation effects (item 4) a
       releaseClaim: async () => true,
       comment: async () => true,
       checkBranchExists: async () => "present" as const,
-      checkProvenanceValid: async () => ({ valid:true }),
+      checkProvenanceValid: async () => ({ state: "valid" as const, reason: "valid" }),
       hasCommitsAhead: async () => "empty" as const,
       deleteBranch: async () => true,
       addBlocked: async () => false,
@@ -526,7 +538,7 @@ describe("tracker-operations — authoritative reconciliation effects (item 4) a
       releaseClaim: async () => true,
       comment: async () => true,
       checkBranchExists: async () => "absent" as const,
-      checkProvenanceValid: async () => ({ valid:true }),
+      checkProvenanceValid: async () => ({ state: "valid" as const, reason: "valid" }),
       hasCommitsAhead: async () => "empty" as const,
       deleteBranch: async () => true,
       addBlocked: async () => true,
@@ -554,7 +566,7 @@ describe("tracker-operations — authoritative reconciliation effects (item 4) a
         // After delete, branch is absent (idempotent success)
         return "absent" as const;
       },
-      checkProvenanceValid: async () => ({ valid:true }),
+      checkProvenanceValid: async () => ({ state: "valid" as const, reason: "valid" }),
       hasCommitsAhead: async () => "empty" as const,
       deleteBranch: async () => false, // delete says nothing to delete, but branch is already absent after second check
       releaseClaim: async () => { released=true; return true; },
@@ -577,7 +589,7 @@ describe("tracker-operations — authoritative reconciliation effects (item 4) a
       getBatchPrNumber: async () => ({ prNumber: null, state:"absent" }),
       getPrState: async () => ({ state:"CLOSED", mergedAt:null, found:false }),
       checkBranchExists: async () => "unknown" as const,
-      checkProvenanceValid: async () => ({ valid:true }),
+      checkProvenanceValid: async () => ({ state: "valid" as const, reason: "valid" }),
       hasCommitsAhead: async () => "empty" as const,
       deleteBranch: async () => true,
       releaseClaim: async () => { released=true; return true; },
@@ -599,7 +611,7 @@ describe("tracker-operations — authoritative reconciliation effects (item 4) a
       getBatchPrNumber: async () => ({ prNumber: null, state:"absent" }),
       getPrState: async () => ({ state:"CLOSED", mergedAt:null, found:false }),
       checkBranchExists: async () => "absent" as const,
-      checkProvenanceValid: async () => ({ valid:true }),
+      checkProvenanceValid: async () => ({ state: "valid" as const, reason: "valid" }),
       hasCommitsAhead: async () => "empty" as const,
       deleteBranch: async () => true,
       addBlocked: async () => false,
@@ -620,7 +632,7 @@ describe("tracker-operations — authoritative reconciliation effects (item 4) a
       getBatchPrNumber: async () => ({ prNumber: null, state:"absent" }),
       getPrState: async () => ({ state:"CLOSED", mergedAt:null, found:false }),
       checkBranchExists: async () => "present" as const,
-      checkProvenanceValid: async () => ({ valid:false, reason:"contaminated", contaminated:true }),
+      checkProvenanceValid: async () => ({ state: "invalid" as const, reason: "contaminated", contaminated: true }),
       hasCommitsAhead: async () => "empty" as const,
       deleteBranch: async () => true,
       releaseClaim: async () => true,
@@ -652,7 +664,7 @@ describe("tracker-operations — authoritative reconciliation effects (item 4) a
       fetchIssue: async () => stale,
       getBatchPrNumber: async () => ({ prNumber: null, state: "absent" }),
       checkBranchExists: async () => true,
-      checkProvenanceValid: async () => ({ valid: true, reason: "valid" }),
+      checkProvenanceValid: async () => ({ state: "valid" as const, reason: "valid" }),
       hasCommitsAhead: async () => false,
       deleteBranch: async () => true,
     };
@@ -674,7 +686,7 @@ describe("tracker-operations — production adapter behavioral (item 8)", () => 
       if (args[0]==="api" && args[1].includes("git/refs")) throw new Error("404 Not Found");
       return "";
     };
-    const ops = createProductionReconcileOps({ runGh: mockRunGh, repoRoot: process.cwd(), claimantLogin: "bot" });
+    const ops = createProductionReconcileOps({ runGh: mockRunGh, runGit: fakeGit, repoRoot: process.cwd(), claimantLogin: "bot" });
     const fresh = await ops.fetchIssue("501");
     expect(fresh.labels).not.toContain("agent:in-progress");
     expect(fresh.assignees.length).toBe(0);
@@ -709,7 +721,7 @@ describe("tracker-operations — production adapter behavioral (item 8)", () => 
       return "";
     };
     // Override getBatchPrNumber and getPrState via manual ops that use mockRunGh but simulate pr_not_found
-    const baseOps = createProductionReconcileOps({ runGh: mockRunGh, repoRoot: process.cwd(), claimantLogin: "bot" });
+    const baseOps = createProductionReconcileOps({ runGh: mockRunGh, runGit: fakeGit, repoRoot: process.cwd(), claimantLogin: "bot" });
     // Replace getBatchPrNumber to return found, and getPrState to return not found
     const ops:any = {
       ...baseOps,
@@ -747,7 +759,7 @@ describe("tracker-operations — production adapter behavioral (item 8)", () => 
       if (args[0]==="api" && args[1].includes("git/refs")) throw new Error("404 Not Found");
       return "";
     };
-    const baseOps = createProductionReconcileOps({ runGh: mockRunGh, repoRoot: process.cwd(), claimantLogin: "bot" });
+    const baseOps = createProductionReconcileOps({ runGh: mockRunGh, runGit: fakeGit, repoRoot: process.cwd(), claimantLogin: "bot" });
     const ops:any = {
       ...baseOps,
       getBatchPrNumber: async () => ({ prNumber:"123", state:"found" as const }),
@@ -773,14 +785,14 @@ describe("tracker-operations — production adapter behavioral (item 8)", () => 
       if (args[0]==="api" && args[1].includes("git/refs")) throw new Error("404 Not Found");
       return "";
     };
-    const ops = createProductionReconcileOps({ runGh: mockRunGh, repoRoot: "/nonexistent/path/that/will/fail/git", claimantLogin: "bot" });
+    const ops = createProductionReconcileOps({ runGh: mockRunGh, runGit: fakeGit, repoRoot: "/nonexistent/path/that/will/fail/git", claimantLogin: "bot" });
     // Force hasCommitsAhead to be unknown by making repoRoot invalid
     // The adapter's hasCommitsAhead will try git rev-parse origin/main and fail -> unknown
     // But we need to ensure checkBranchExists also doesn't mask it: make it present so we reach hasCommitsAhead
     const ops2:any = {
       ...ops,
       checkBranchExists: async () => "present" as const,
-      checkProvenanceValid: async () => ({ valid:true }),
+      checkProvenanceValid: async () => ({ state: "valid" as const, reason: "valid" }),
       hasCommitsAhead: async () => "unknown" as const,
       deleteBranch: async () => { deleteCalled=true; return true; },
       releaseClaim: async () => { releaseCalled=true; return true; },
@@ -831,7 +843,7 @@ describe("tracker-operations — production adapter behavioral (item 8)", () => 
       getBatchPrNumber: async () => ({ prNumber:"123", state:"found" as const }),
       getPrState: async () => ({ state:"MERGED", mergedAt:"2024-01-01", found:true }),
       checkBranchExists: async () => "present" as const,
-      checkProvenanceValid: async () => ({ valid:true }),
+      checkProvenanceValid: async () => ({ state: "valid" as const, reason: "valid" }),
       hasCommitsAhead: async () => "empty" as const,
       deleteBranch: async () => true,
       releaseClaim: async () => true,
@@ -857,7 +869,7 @@ describe("tracker-operations — production adapter behavioral (item 8)", () => 
       getBatchPrNumber: async () => ({ prNumber:null, state:"absent" as const }),
       getPrState: async () => ({ state:"CLOSED", mergedAt:null, found:false }),
       checkBranchExists: async () => "absent" as const,
-      checkProvenanceValid: async () => ({ valid:true }),
+      checkProvenanceValid: async () => ({ state: "valid" as const, reason: "valid" }),
       hasCommitsAhead: async () => "empty" as const,
       deleteBranch: async () => true,
       releaseClaim: async () => true,
@@ -868,5 +880,365 @@ describe("tracker-operations — production adapter behavioral (item 8)", () => 
     const r = await reconcileStaleImplementation(stale, "sandcastle/issue-507", ops);
     expect(r.factoryError).toBe(true);
     expect(r.reason).toMatch(/failed to verify/);
+  });
+});
+
+describe("tracker-operations — production adapter without method replacement (patch 7)", () => {
+  // Helper to create a real temp git repo with a GitRunner
+  async function createTempRepo(): Promise<{ repoRoot:string, runner: import("./branch-helpers.mts").GitRunner, cleanup: ()=>void }> {
+    const os = await import("node:os");
+    const fsSync = await import("node:fs");
+    const path = await import("node:path");
+    const cp = await import("node:child_process");
+    const tmp = fsSync.mkdtempSync(path.join(os.tmpdir(), "voxygen-adapter-test-"));
+    // init git
+    cp.execFileSync("git", ["init", "-b", "main"], { cwd: tmp });
+    cp.execFileSync("git", ["config", "user.email", "test@test.test"], { cwd: tmp });
+    cp.execFileSync("git", ["config", "user.name", "test"], { cwd: tmp });
+    cp.execFileSync("git", ["commit", "--allow-empty", "-m", "init"], { cwd: tmp });
+    // create origin remote to satisfy ownerRepo resolution if needed — use fake github url
+    try { cp.execFileSync("git", ["remote", "add", "origin", "https://github.com/rhythmatician/voxygen-monorepo.git"], { cwd: tmp }); } catch {}
+    const runner: import("./branch-helpers.mts").GitRunner = (args: string[]) => {
+      try {
+        const out = cp.execFileSync("git", args, { encoding: "utf8", cwd: tmp } as any);
+        const stdout = typeof out === "string" ? out : (out as Buffer).toString();
+        return { exitCode: 0, stdout, stderr: "" };
+      } catch (e:any) {
+        return { exitCode: e.status ?? 1, stdout: e.stdout?.toString() ?? "", stderr: e.stderr?.toString() ?? e.message ?? "" };
+      }
+    };
+    return { repoRoot: tmp, runner, cleanup: ()=>{ try{ fsSync.rmSync(tmp, {recursive:true, force:true}); }catch{} } };
+  }
+
+  it("hasCommitsAhead tri-state via real Git: has-work / empty / unknown", async () => {
+    const { createProductionReconcileOps } = await import("./reconcile-adapter.mts");
+    const { repoRoot, runner, cleanup } = await createTempRepo();
+    try {
+      const cp = await import("node:child_process");
+      // Ensure origin/main exists for base resolution — create origin/main ref by pushing? Instead create local main and set origin/main via fetch mock? Simpler: ensure main exists and origin/main resolves via rev-parse origin/main failing then falling back to main
+      // Create a branch with work
+      cp.execFileSync("git", ["branch", "sandcastle/issue-901", "main"], { cwd: repoRoot });
+      cp.execFileSync("git", ["checkout", "sandcastle/issue-901"], { cwd: repoRoot });
+      const fsSync = await import("node:fs");
+      const path = await import("node:path");
+      fsSync.writeFileSync(path.join(repoRoot, "file.txt"), "hello");
+      cp.execFileSync("git", ["add", "."], { cwd: repoRoot });
+      cp.execFileSync("git", ["commit", "-m", "work"], { cwd: repoRoot });
+      cp.execFileSync("git", ["checkout", "main"], { cwd: repoRoot });
+      // Now create adapter with real runner
+      const mockGh = async (args:string[])=>{
+        if(args[0]==="issue" && args[1]==="view") return JSON.stringify({number:901,title:"t",body:"",state:"open",labels:[{name:"ready-for-agent"}],assignees:[]});
+        if(args[0]==="api" && args[1].includes("/issues/")) return "0";
+        return "";
+      };
+      const ops = createProductionReconcileOps({ runGh: mockGh, runGit: runner, repoRoot, claimantLogin: "bot" });
+      const hasWork = await ops.hasCommitsAhead("sandcastle/issue-901");
+      expect(hasWork).toBe("has-work");
+      // Empty branch
+      cp.execFileSync("git", ["branch", "sandcastle/issue-902", "main"], { cwd: repoRoot });
+      const empty = await ops.hasCommitsAhead("sandcastle/issue-902");
+      expect(empty).toBe("empty");
+      // Unknown via failing runner
+      const failingRunner: import("./branch-helpers.mts").GitRunner = (args:string[])=>{
+        if(args[0]==="log") return { exitCode: 1, stdout:"", stderr:"fatal" };
+        return runner(args);
+      };
+      const ops2 = createProductionReconcileOps({ runGh: mockGh, runGit: failingRunner, repoRoot, claimantLogin: "bot" });
+      const unknown = await ops2.hasCommitsAhead("sandcastle/issue-901");
+      expect(unknown).toBe("unknown");
+    } finally { cleanup(); }
+  });
+
+  it("valid provenance + empty branch: cleanup completes, claim released only after cleanup", async () => {
+    const { createProductionReconcileOps } = await import("./reconcile-adapter.mts");
+    const { reconcileStaleImplementation } = await import("./tracker-operations.mts");
+    const { repoRoot, runner, cleanup } = await createTempRepo();
+    try {
+      const cp = await import("node:child_process");
+      const fsSync = await import("node:fs");
+      const path = await import("node:path");
+      const baseSha = cp.execFileSync("git", ["rev-parse", "main"], { encoding:"utf8", cwd: repoRoot }).toString().trim();
+      // create empty branch with valid provenance
+      cp.execFileSync("git", ["branch", "sandcastle/issue-910", baseSha], { cwd: repoRoot });
+      const provDir = path.join(repoRoot, ".sandcastle","provenance");
+      fsSync.mkdirSync(provDir,{recursive:true});
+      fsSync.writeFileSync(path.join(provDir, "sandcastle-issue-910.json"), JSON.stringify({issueId:"910",branch:"sandcastle/issue-910",factoryBaseSha:baseSha,callerBranch:"main",callerSha:baseSha,at:new Date().toISOString()}));
+      const order: string[] = [];
+      const mockGh = async (args:string[])=>{
+        if(args[0]==="issue" && args[1]==="view" && args.includes("comments")) return "";
+        if(args[0]==="pr" && args[1]==="list") return "[]";
+        if(args[0]==="issue" && args[1]==="view"){
+          // fresh read after release should show released
+          const isAfter = order.includes("release");
+          if(isAfter) return JSON.stringify({number:910,title:"t",body:"",state:"open",labels:[{name:"ready-for-agent"}],assignees:[]});
+          return JSON.stringify({number:910,title:"t",body:"",state:"open",labels:[{name:"ready-for-agent"},{name:"agent:in-progress"}],assignees:[{login:"bot"}]});
+        }
+        if(args[0]==="issue" && args[1]==="edit" && args.includes("agent:in-progress")){ order.push("release"); return ""; }
+        if(args[0]==="issue" && args[1]==="comment"){ order.push("comment"); return ""; }
+        if(args[0]==="api" && args[1].includes("git/refs")) throw new Error("404 Not Found");
+        if(args[0]==="api" && args[1].includes("/issues/") && args.includes("--jq")) return "0";
+        return "";
+      };
+      const ops = createProductionReconcileOps({ runGh: mockGh, runGit: runner, repoRoot, claimantLogin: "bot" });
+      const stale:any = { number:910, title:"t", state:"open", labels:["ready-for-agent","agent:in-progress"], assignees:["bot"], body:"", blockedByCount:0 };
+      // Verify hasCommitsAhead is empty via real adapter
+      const ahead = await ops.hasCommitsAhead("sandcastle/issue-910");
+      expect(ahead).toBe("empty");
+      const prov = await ops.checkProvenanceValid("sandcastle/issue-910");
+      expect(prov.state).toBe("valid");
+      const r = await reconcileStaleImplementation(stale, "sandcastle/issue-910", ops);
+      expect(r.reconciled).toBe(true);
+      // branch should be deleted, provenance removed
+      const branchExists = runner(["branch","--list","sandcastle/issue-910"]);
+      expect(branchExists.stdout.trim()).toBe("");
+      expect(fsSync.existsSync(path.join(provDir, "sandcastle-issue-910.json"))).toBe(false);
+      // order: delete happens before release? Our deleteBranch is called before releaseClaim in absent_empty_branch
+      // Ensure release happened
+      expect(order.includes("release")).toBe(true);
+    } finally { cleanup(); }
+  });
+
+  it("valid provenance + commits: branch preserved, claim released, blocked verified", async () => {
+    const { createProductionReconcileOps } = await import("./reconcile-adapter.mts");
+    const { reconcileStaleImplementation } = await import("./tracker-operations.mts");
+    const { repoRoot, runner, cleanup } = await createTempRepo();
+    try {
+      const cp = await import("node:child_process");
+      const fsSync = await import("node:fs");
+      const path = await import("node:path");
+      const baseSha = cp.execFileSync("git", ["rev-parse", "main"], { encoding:"utf8", cwd: repoRoot }).toString().trim();
+      cp.execFileSync("git", ["branch", "sandcastle/issue-911", baseSha], { cwd: repoRoot });
+      cp.execFileSync("git", ["checkout", "sandcastle/issue-911"], { cwd: repoRoot });
+      fsSync.writeFileSync(path.join(repoRoot, "work.txt"), "work");
+      cp.execFileSync("git", ["add", "."], { cwd: repoRoot });
+      cp.execFileSync("git", ["commit", "-m", "work"], { cwd: repoRoot });
+      cp.execFileSync("git", ["checkout", "main"], { cwd: repoRoot });
+      const provDir = path.join(repoRoot, ".sandcastle","provenance");
+      fsSync.mkdirSync(provDir,{recursive:true});
+      fsSync.writeFileSync(path.join(provDir, "sandcastle-issue-911.json"), JSON.stringify({issueId:"911",branch:"sandcastle/issue-911",factoryBaseSha:baseSha,callerBranch:"main",callerSha:baseSha,at:new Date().toISOString()}));
+      const store:any = { labels:["ready-for-agent","agent:in-progress"], assignees:["bot"] };
+      const mockGh = async (args:string[])=>{
+        if(args[0]==="issue" && args[1]==="view" && args.includes("comments")) return "";
+        if(args[0]==="pr" && args[1]==="list") return "[]";
+        if(args[0]==="issue" && args[1]==="view"){
+          return JSON.stringify({number:911,title:"t",body:"",state:"open",labels:store.labels.map((n:string)=>({name:n})),assignees:store.assignees.map((l:string)=>({login:l}))});
+        }
+        if(args[0]==="issue" && args[1]==="edit" && args.includes("agent:in-progress")){ store.labels=store.labels.filter((l:string)=>l!=="agent:in-progress"); store.assignees=[]; return ""; }
+        if(args[0]==="issue" && args[1]==="edit" && args.includes("agent:blocked")){ if(!store.labels.includes("agent:blocked")) store.labels.push("agent:blocked"); return ""; }
+        if(args[0]==="issue" && args[1]==="comment") return "";
+        if(args[0]==="api" && args[1].includes("git/refs")) throw new Error("404 Not Found");
+        if(args[0]==="api" && args[1].includes("/issues/") && args.includes("--jq")) return "0";
+        return "";
+      };
+      const ops = createProductionReconcileOps({ runGh: mockGh, runGit: runner, repoRoot, claimantLogin: "bot" });
+      const stale:any = { number:911, title:"t", state:"open", labels:["ready-for-agent","agent:in-progress"], assignees:["bot"], body:"", blockedByCount:0 };
+      const ahead = await ops.hasCommitsAhead("sandcastle/issue-911");
+      expect(ahead).toBe("has-work");
+      const prov = await ops.checkProvenanceValid("sandcastle/issue-911");
+      expect(prov.state).toBe("valid");
+      const r = await reconcileStaleImplementation(stale, "sandcastle/issue-911", ops);
+      expect(r.decision?.type).toBe("absent_with_work");
+      // branch preserved
+      const br = runner(["branch","--list","sandcastle/issue-911"]);
+      expect(br.stdout.trim()).not.toBe("");
+      expect(store.labels.includes("agent:blocked")).toBe(true);
+      expect(store.labels.includes("agent:in-progress")).toBe(false);
+    } finally { cleanup(); }
+  });
+
+  it("git log failure => unknown and zero writes", async () => {
+    const { createProductionReconcileOps } = await import("./reconcile-adapter.mts");
+    const { reconcileStaleImplementation } = await import("./tracker-operations.mts");
+    const { repoRoot, runner, cleanup } = await createTempRepo();
+    try {
+      const cp = await import("node:child_process");
+      const fsSync = await import("node:fs");
+      const path = await import("node:path");
+      const baseSha = cp.execFileSync("git", ["rev-parse", "main"], { encoding:"utf8", cwd: repoRoot }).toString().trim();
+      cp.execFileSync("git", ["branch", "sandcastle/issue-912", baseSha], { cwd: repoRoot });
+      const provDir = path.join(repoRoot, ".sandcastle","provenance");
+      fsSync.mkdirSync(provDir,{recursive:true});
+      fsSync.writeFileSync(path.join(provDir, "sandcastle-issue-912.json"), JSON.stringify({issueId:"912",branch:"sandcastle/issue-912",factoryBaseSha:baseSha,callerBranch:"main",callerSha:baseSha,at:new Date().toISOString()}));
+      const failingRunner: import("./branch-helpers.mts").GitRunner = (args:string[])=>{
+        if(args[0]==="log") return { exitCode:1, stdout:"", stderr:"fatal" };
+        return runner(args);
+      };
+      let writes=0;
+      const mockGh = async (args:string[])=>{
+        if(args[0]==="issue" && args[1]==="view" && args.includes("comments")) return "";
+        if(args[0]==="pr" && args[1]==="list") return "[]";
+        if(args[0]==="issue" && args[1]==="view") return JSON.stringify({number:912,title:"t",body:"",state:"open",labels:[{name:"ready-for-agent"},{name:"agent:in-progress"}],assignees:[{login:"bot"}]});
+        if(args[0]==="issue" && (args[1]==="edit" || args[1]==="comment" || args[1]==="close")){ writes++; return ""; }
+        if(args[0]==="api") { if(args.includes("--method")) writes++; return "0"; }
+        if(args[0]==="api" && args[1].includes("git/refs")) throw new Error("404 Not Found");
+        return "";
+      };
+      const ops = createProductionReconcileOps({ runGh: mockGh, runGit: failingRunner, repoRoot, claimantLogin: "bot" });
+      const stale:any = { number:912, title:"t", state:"open", labels:["ready-for-agent","agent:in-progress"], assignees:["bot"], body:"", blockedByCount:0 };
+      const ahead = await ops.hasCommitsAhead("sandcastle/issue-912");
+      expect(ahead).toBe("unknown");
+      const r = await reconcileStaleImplementation(stale, "sandcastle/issue-912", ops);
+      expect(r.reconciled).toBe(false);
+      expect(r.reason.toLowerCase()).toMatch(/unknown/);
+      expect(writes).toBe(0);
+    } finally { cleanup(); }
+  });
+
+  it("malformed provenance JSON => unknown and zero mutation", async () => {
+    const { createProductionReconcileOps } = await import("./reconcile-adapter.mts");
+    const { reconcileStaleImplementation } = await import("./tracker-operations.mts");
+    const { repoRoot, runner, cleanup } = await createTempRepo();
+    try {
+      const cp = await import("node:child_process");
+      const fsSync = await import("node:fs");
+      const path = await import("node:path");
+      const baseSha = cp.execFileSync("git", ["rev-parse", "main"], { encoding:"utf8", cwd: repoRoot }).toString().trim();
+      cp.execFileSync("git", ["branch", "sandcastle/issue-913", baseSha], { cwd: repoRoot });
+      const provDir = path.join(repoRoot, ".sandcastle","provenance");
+      fsSync.mkdirSync(provDir,{recursive:true});
+      fsSync.writeFileSync(path.join(provDir, "sandcastle-issue-913.json"), "{ malformed json");
+      let writes=0;
+      const mockGh = async (args:string[])=>{
+        if(args[0]==="issue" && args[1]==="view" && args.includes("comments")) return "";
+        if(args[0]==="pr" && args[1]==="list") return "[]";
+        if(args[0]==="issue" && args[1]==="view") return JSON.stringify({number:913,title:"t",body:"",state:"open",labels:[{name:"ready-for-agent"},{name:"agent:in-progress"}],assignees:[{login:"bot"}]});
+        if(args[0]==="issue" && (args[1]==="edit" || args[1]==="comment")){ writes++; return ""; }
+        if(args[0]==="api" && args[1].includes("git/refs")) throw new Error("404 Not Found");
+        if(args[0]==="api" && args[1].includes("/issues/") ) return "0";
+        return "";
+      };
+      const ops = createProductionReconcileOps({ runGh: mockGh, runGit: runner, repoRoot, claimantLogin: "bot" });
+      const prov = await ops.checkProvenanceValid("sandcastle/issue-913");
+      expect(prov.state).toBe("unknown");
+      const stale:any = { number:913, title:"t", state:"open", labels:["ready-for-agent","agent:in-progress"], assignees:["bot"], body:"", blockedByCount:0 };
+      const r = await reconcileStaleImplementation(stale, "sandcastle/issue-913", ops);
+      expect(r.reconciled).toBe(false);
+      expect(writes).toBe(0);
+    } finally { cleanup(); }
+  });
+
+  it("ancestry command unavailable => unknown and zero mutation", async () => {
+    const { createProductionReconcileOps } = await import("./reconcile-adapter.mts");
+    const { reconcileStaleImplementation } = await import("./tracker-operations.mts");
+    const { repoRoot, runner, cleanup } = await createTempRepo();
+    try {
+      const cp = await import("node:child_process");
+      const fsSync = await import("node:fs");
+      const path = await import("node:path");
+      const baseSha = cp.execFileSync("git", ["rev-parse", "main"], { encoding:"utf8", cwd: repoRoot }).toString().trim();
+      cp.execFileSync("git", ["branch", "sandcastle/issue-914", baseSha], { cwd: repoRoot });
+      const provDir = path.join(repoRoot, ".sandcastle","provenance");
+      fsSync.mkdirSync(provDir,{recursive:true});
+      fsSync.writeFileSync(path.join(provDir, "sandcastle-issue-914.json"), JSON.stringify({issueId:"914",branch:"sandcastle/issue-914",factoryBaseSha:baseSha,callerBranch:"main",callerSha:baseSha,at:new Date().toISOString()}));
+      const failingRunner: import("./branch-helpers.mts").GitRunner = (args:string[])=>{
+        if(args[0]==="merge-base") return { exitCode: 128, stdout:"", stderr:"fatal: not a git repository" };
+        return runner(args);
+      };
+      let writes=0;
+      const mockGh = async (args:string[])=>{
+        if(args[0]==="issue" && args[1]==="view" && args.includes("comments")) return "";
+        if(args[0]==="pr" && args[1]==="list") return "[]";
+        if(args[0]==="issue" && args[1]==="view") return JSON.stringify({number:914,title:"t",body:"",state:"open",labels:[{name:"ready-for-agent"},{name:"agent:in-progress"}],assignees:[{login:"bot"}]});
+        if(args[0]==="issue" && (args[1]==="edit" || args[1]==="comment")){ writes++; return ""; }
+        if(args[0]==="api" && args[1].includes("git/refs")) throw new Error("404 Not Found");
+        if(args[0]==="api") return "0";
+        return "";
+      };
+      const ops = createProductionReconcileOps({ runGh: mockGh, runGit: failingRunner, repoRoot, claimantLogin: "bot" });
+      const prov = await ops.checkProvenanceValid("sandcastle/issue-914");
+      expect(prov.state).toBe("unknown");
+      const stale:any = { number:914, title:"t", state:"open", labels:["ready-for-agent","agent:in-progress"], assignees:["bot"], body:"", blockedByCount:0 };
+      const r = await reconcileStaleImplementation(stale, "sandcastle/issue-914", ops);
+      expect(r.reconciled).toBe(false);
+      expect(writes).toBe(0);
+    } finally { cleanup(); }
+  });
+
+  it("proven non-ancestor => invalid, branch preserved, release+blocked verified", async () => {
+    const { createProductionReconcileOps } = await import("./reconcile-adapter.mts");
+    const { reconcileStaleImplementation } = await import("./tracker-operations.mts");
+    const { repoRoot, runner, cleanup } = await createTempRepo();
+    try {
+      const cp = await import("node:child_process");
+      const fsSync = await import("node:fs");
+      const path = await import("node:path");
+      const baseSha = cp.execFileSync("git", ["rev-parse", "main"], { encoding:"utf8", cwd: repoRoot }).toString().trim();
+      // Create a new commit on main to be the "other" base
+      cp.execFileSync("git", ["checkout", "main"], { cwd: repoRoot });
+      fsSync.writeFileSync(path.join(repoRoot, "other.txt"), "other");
+      cp.execFileSync("git", ["add", "."], { cwd: repoRoot });
+      cp.execFileSync("git", ["commit", "-m", "other"], { cwd: repoRoot });
+      const otherSha = cp.execFileSync("git", ["rev-parse", "HEAD"], { encoding:"utf8", cwd: repoRoot }).toString().trim();
+      // For orphan, directly create orphan branch without pre-creating sandcastle/issue-915
+      const provDir = path.join(repoRoot, ".sandcastle","provenance");
+      fsSync.mkdirSync(provDir,{recursive:true});
+      cp.execFileSync("git", ["checkout", "--orphan", "sandcastle/issue-915-orphan"], { cwd: repoRoot });
+      cp.execFileSync("git", ["rm", "-rf", "."], { cwd: repoRoot });
+      fsSync.writeFileSync(path.join(repoRoot, "orphan.txt"), "orphan");
+      cp.execFileSync("git", ["add", "."], { cwd: repoRoot });
+      cp.execFileSync("git", ["commit", "-m", "orphan"], { cwd: repoRoot });
+      const orphanSha = cp.execFileSync("git", ["rev-parse", "HEAD"], { encoding:"utf8", cwd: repoRoot }).toString().trim();
+      // Rename orphan to our issue branch name? Let's just use orphan branch as issue branch with provenance pointing to baseSha (main init) which orphan is not descendant of
+      // Move branch
+      cp.execFileSync("git", ["branch", "-m", "sandcastle/issue-915-orphan", "sandcastle/issue-915"], { cwd: repoRoot });
+      cp.execFileSync("git", ["checkout", "main"], { cwd: repoRoot });
+      // Now branch sandcastle/issue-915 is orphan, not descendant of baseSha
+      fsSync.mkdirSync(provDir,{recursive:true});
+      fsSync.writeFileSync(path.join(provDir, "sandcastle-issue-915.json"), JSON.stringify({issueId:"915",branch:"sandcastle/issue-915",factoryBaseSha: baseSha,callerBranch:"main",callerSha:baseSha,at:new Date().toISOString()}));
+      const store:any = { labels:["ready-for-agent","agent:in-progress"], assignees:["bot"] };
+      const mockGh = async (args:string[])=>{
+        if(args[0]==="issue" && args[1]==="view" && args.includes("comments")) return "";
+        if(args[0]==="pr" && args[1]==="list") return "[]";
+        if(args[0]==="issue" && args[1]==="view"){
+          return JSON.stringify({number:915,title:"t",body:"",state:"open",labels:store.labels.map((n:string)=>({name:n})),assignees:store.assignees.map((l:string)=>({login:l}))});
+        }
+        if(args[0]==="issue" && args[1]==="edit" && args.includes("agent:in-progress")){ store.labels=store.labels.filter((l:string)=>l!=="agent:in-progress"); store.assignees=[]; return ""; }
+        if(args[0]==="issue" && args[1]==="edit" && args.includes("agent:blocked")){ if(!store.labels.includes("agent:blocked")) store.labels.push("agent:blocked"); return ""; }
+        if(args[0]==="issue" && args[1]==="comment") return "";
+        if(args[0]==="api" && args[1].includes("git/refs")) throw new Error("404 Not Found");
+        if(args[0]==="api" && args[1].includes("/issues/")) return "0";
+        return "";
+      };
+      const ops = createProductionReconcileOps({ runGh: mockGh, runGit: runner, repoRoot, claimantLogin: "bot" });
+      const prov = await ops.checkProvenanceValid("sandcastle/issue-915");
+      expect(prov.state).toBe("invalid");
+      const stale:any = { number:915, title:"t", state:"open", labels:["ready-for-agent","agent:in-progress"], assignees:["bot"], body:"", blockedByCount:0 };
+      const r = await reconcileStaleImplementation(stale, "sandcastle/issue-915", ops);
+      expect(r.decision?.type).toBe("invalid_provenance");
+      const br = runner(["branch","--list","sandcastle/issue-915"]);
+      expect(br.stdout.trim()).not.toBe("");
+      expect(store.labels.includes("agent:blocked")).toBe(true);
+    } finally { cleanup(); }
+  });
+
+  it("owner/repo resolution unavailable => remote unknown, no deletion", async () => {
+    const { createProductionReconcileOps } = await import("./reconcile-adapter.mts");
+    const { repoRoot, runner, cleanup } = await createTempRepo();
+    try {
+      const cp = await import("node:child_process");
+      const fsSync = await import("node:fs");
+      const path = await import("node:path");
+      // Remove origin to make ownerRepo unresolvable
+      try { cp.execFileSync("git", ["remote", "remove", "origin"], { cwd: repoRoot }); }catch{}
+      const baseSha = cp.execFileSync("git", ["rev-parse", "main"], { encoding:"utf8", cwd: repoRoot }).toString().trim();
+      cp.execFileSync("git", ["branch", "sandcastle/issue-916", baseSha], { cwd: repoRoot });
+      const provDir = path.join(repoRoot, ".sandcastle","provenance");
+      fsSync.mkdirSync(provDir,{recursive:true});
+      fsSync.writeFileSync(path.join(provDir, "sandcastle-issue-916.json"), JSON.stringify({issueId:"916",branch:"sandcastle/issue-916",factoryBaseSha:baseSha,callerBranch:"main",callerSha:baseSha,at:new Date().toISOString()}));
+      const failingRunner: import("./branch-helpers.mts").GitRunner = (args:string[])=>{
+        if(args[0]==="remote" && args[1]==="get-url") return { exitCode:1, stdout:"", stderr:"no remote" };
+        return runner(args);
+      };
+      const mockGh = async (args:string[])=>{ throw new Error("should not call gh remote"); };
+      const ops = createProductionReconcileOps({ runGh: mockGh, runGit: failingRunner, repoRoot, claimantLogin: "bot" });
+      const branchState = await ops.checkBranchExists("sandcastle/issue-916");
+      expect(branchState).toBe("present");
+      const del = await ops.deleteBranch("sandcastle/issue-916");
+      expect(del).toBe(false);
+      // provenance should remain
+      expect(fsSync.existsSync(path.join(provDir, "sandcastle-issue-916.json"))).toBe(true);
+      const br = runner(["branch","--list","sandcastle/issue-916"]);
+      expect(br.stdout.trim()).not.toBe("");
+    } finally { cleanup(); }
   });
 });

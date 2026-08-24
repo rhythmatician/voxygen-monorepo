@@ -1,8 +1,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { execSync, execFileSync } from "node:child_process";
 import { getErrorMessage } from "./gh-errors.mts";
 import * as branchHelpers from "./branch-helpers.mts";
+import type { GitResult, GitRunner } from "./branch-helpers.mts";
 import type { IssueInput } from "./tracker-policy.mts";
 import type { FullReconcileOps } from "./tracker-operations.mts";
 
@@ -10,39 +10,31 @@ import type { FullReconcileOps } from "./tracker-operations.mts";
  * Production reconciliation adapter — single callable owned by production.
  * Used by main.mts and by behavioral tests (same adapter, not duplicate).
  * Provides fresh GitHub reads and genuinely tri-state inspections.
+ * All local Git operations use the injected GitRunner with argument arrays.
  */
 
 export interface ReconcileAdapterDeps {
   runGh: (args: string[]) => Promise<string>;
-  runGit?: (args: string[]) => string; // for local git, defaults to execSync
+  runGit: GitRunner;
   repoRoot: string;
   claimantLogin: string;
 }
 
-function parseOwnerRepo(repoRoot: string, runGit: (args:string[])=>string): { owner:string, repo:string } | null {
-  try {
-    const out = runGit(["remote","get-url","origin"]);
-    const m = out.match(/github\.com[:\/]([^\/]+)\/([^\/\.]+)/);
-    if (m) return { owner: m[1], repo: m[2] };
-  } catch {}
-  try {
-    const out = execSync("git remote get-url origin", { encoding:"utf8", cwd: repoRoot }).trim();
-    const m = out.match(/github\.com[:\/]([^\/]+)\/([^\/\.]+)/);
-    if (m) return { owner: m[1], repo: m[2] };
-  } catch {}
+function parseOwnerRepo(runGit: GitRunner): { owner:string, repo:string } | null {
+  const res = runGit(["remote", "get-url", "origin"]);
+  if (res.exitCode !== 0) return null;
+  const out = res.stdout.trim();
+  const m = out.match(/github\.com[:\/]([^\/]+)\/([^\/\.]+)/);
+  if (m) return { owner: m[1], repo: m[2].replace(/\.git$/, "") };
   return null;
 }
 
 export function createProductionReconcileOps(deps: ReconcileAdapterDeps): FullReconcileOps {
-  const { runGh, repoRoot, claimantLogin } = deps;
-  const runGit = deps.runGit ?? ((args:string[]) => execSync(args.join(" "), { encoding:"utf8", cwd: repoRoot }).trim());
-
-  const ownerRepo = parseOwnerRepo(repoRoot, (args:string[]) => {
-    try { return execSync(args.join(" "), { encoding:"utf8", cwd: repoRoot }).trim(); } catch { return ""; }
-  });
+  const { runGh, repoRoot, claimantLogin, runGit } = deps;
+  if (!runGit) throw new Error("runGit is required for production adapter");
+  const ownerRepo = parseOwnerRepo(runGit);
 
   async function fetchIssueFresh(issueId: string): Promise<IssueInput> {
-    // Fresh GitHub read — never return captured inventory object
     const rawJson = await runGh(["issue","view",issueId,"--json","number,title,body,labels,assignees,state"]);
     const raw = JSON.parse(rawJson);
     let blockedByCount: number | undefined = undefined;
@@ -52,11 +44,9 @@ export function createProductionReconcileOps(deps: ReconcileAdapterDeps): FullRe
         const n = parseInt(summary.trim(), 10);
         if (!isNaN(n)) blockedByCount = n;
       } catch {
-        // leave undefined — caller will treat as unknown (fail-closed)
         blockedByCount = undefined;
       }
     } else {
-      // If we cannot resolve owner/repo, treat blocked_by as unknown to fail closed
       blockedByCount = undefined;
     }
     return {
@@ -131,114 +121,105 @@ export function createProductionReconcileOps(deps: ReconcileAdapterDeps): FullRe
     },
 
     checkBranchExists: async (branchName:string): Promise<"present"|"absent"|"unknown"> => {
-      // Use genuinely tri-state inspections, preserve unknown on Git/API errors, do not wrap hasCommitsAhead
-      // Local presence
+      // Local presence via GitRunner
+      const localRes = runGit(["branch", "--list", branchName]);
+      if (localRes.exitCode !== 0) return "unknown";
+      if (localRes.stdout.trim()) return "present";
+      // Local absent — check remote via gh api if ownerRepo known
+      if (!ownerRepo) return "unknown";
       try {
-        const out = execSync(`git branch --list "${branchName}"`, { encoding:"utf8", cwd: repoRoot }).trim();
-        if (out) return "present";
-      } catch { return "unknown"; }
-      // Remote presence via gh api (authoritative 404 vs unknown)
-      if (ownerRepo) {
-        try {
-          const ref = await runGh(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/git/refs/heads/${branchName}`, "--jq", ".ref"]);
-          if (ref && ref.includes(branchName)) return "present";
-          return "absent";
-        } catch (e) {
-          const msg=String(e).toLowerCase();
-          if (msg.includes("404")||msg.includes("not found")) return "absent";
-          // Check if origin exists — if so, unknown, else absent
-          let originExists=false;
-          try { execSync("git remote get-url origin", { stdio:"ignore", cwd: repoRoot }); originExists=true; } catch {}
-          if (originExists) return "unknown";
-          return "absent";
-        }
-      }
-      return "absent";
-    },
-
-    checkProvenanceValid: async (branchName:string) => {
-      // Read-only inspectProvenance — never call prepareIssueBranch
-      try {
-        const prov = branchHelpers.verifyProvenance(repoRoot, branchName);
-        if (prov.ok) return { valid:true, reason: prov.reason };
-        const isContaminated = prov.reason?.toLowerCase().includes("legacy") || prov.reason?.toLowerCase().includes("contaminated") || prov.reason?.toLowerCase().includes("fail closed");
-        return { valid:false, reason: prov.reason, contaminated: !!isContaminated };
-      } catch {
-        return { valid:false, reason:"provenance inspection failed — unknown", contaminated:false };
-      }
-    },
-
-    hasCommitsAhead: async (branchName:string): Promise<"has-work"|"empty"|"unknown"> => {
-      // Use read-only inspectCommitsAhead that preserves unknown, do not wrap hasCommitsAhead
-      try {
-        const base = execSync("git rev-parse origin/main", { encoding:"utf8", cwd: repoRoot }).trim();
-        const status = branchHelpers.inspectCommitsAhead(repoRoot, base, branchName);
-        return status;
-      } catch {
+        const ref = await runGh(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/git/refs/heads/${branchName}`, "--jq", ".ref"]);
+        if (ref && ref.includes(branchName)) return "present";
+        return "absent";
+      } catch (e) {
+        const msg=String(e).toLowerCase();
+        if (msg.includes("404")||msg.includes("not found")) return "absent";
         return "unknown";
       }
     },
 
+    checkProvenanceValid: async (branchName:string) => {
+      // Delegates to single canonical implementation in branch-helpers
+      return branchHelpers.inspectProvenance(repoRoot, branchName, runGit);
+    },
+
+    hasCommitsAhead: async (branchName:string): Promise<"has-work"|"empty"|"unknown"> => {
+      // Resolve base via GitRunner, then delegate to canonical helper
+      let base: string | null = null;
+      for (const candidate of ["origin/main", "main", "master"]) {
+        const res = runGit(["rev-parse", "--verify", candidate]);
+        if (res.exitCode === 0) { base = candidate; break; }
+        // Also try rev-parse without --verify? but we use same
+      }
+      if (!base) {
+        // Try to get origin/main via rev-parse origin/main direct
+        const res = runGit(["rev-parse", "origin/main"]);
+        if (res.exitCode === 0) base = "origin/main";
+        else return "unknown";
+      }
+      // Use canonical helper for commits-ahead
+      return branchHelpers.inspectCommitsAhead(repoRoot, base, branchName, runGit);
+    },
+
     deleteBranch: async (branchName:string): Promise<boolean> => {
-      // Ordered and authoritative: worktree -> local -> remote -> provenance
-      // worktree
-      try {
-        const wtList = execSync("git worktree list --porcelain", { encoding:"utf8", cwd: repoRoot });
-        if (wtList.includes(branchName)) {
-          try { execSync(`git worktree remove --force ${path.join(repoRoot, ".sandcastle","worktrees",branchName.replace(/\//g,"-"))}`, { encoding:"utf8", cwd: repoRoot }); } catch {}
-          // Also try generic worktree remove by branch
-          try { execSync(`git worktree remove --force "${branchName}"`, { encoding:"utf8", cwd: repoRoot }); } catch {}
+      // If owner/repo cannot be resolved, remote state is unknown — do not delete anything
+      if (!ownerRepo) return false;
+      // Ordered: worktree -> local -> remote -> verify -> provenance
+      // worktree inspection/removal via GitRunner
+      const wtRes = runGit(["worktree", "list", "--porcelain"]);
+      if (wtRes.exitCode === 0 && wtRes.stdout.includes(branchName)) {
+        const wtPath = path.join(repoRoot, ".sandcastle","worktrees",branchName.replace(/\//g,"-"));
+        // Try removal by path
+        let r = runGit(["worktree", "remove", "--force", wtPath]);
+        // Fallback removal by branch name if path removal failed
+        if (r.exitCode !== 0) {
+          const r2 = runGit(["worktree", "remove", "--force", branchName]);
+          // ignore failure, best effort
+          void r2;
         }
-      } catch {}
+      }
       // local
-      let localPresent=false;
-      try {
-        const out = execSync(`git branch --list "${branchName}"`, { encoding:"utf8", cwd: repoRoot }).trim();
-        localPresent=!!out;
-      } catch {}
+      const localList = runGit(["branch", "--list", branchName]);
+      if (localList.exitCode !== 0) return false;
+      const localPresent = !!localList.stdout.trim();
       if (localPresent) {
-        try { execSync(`git branch -D ${branchName}`, { encoding:"utf8", cwd: repoRoot }); } catch { return false; }
+        const del = runGit(["branch", "-D", branchName]);
+        if (del.exitCode !== 0) return false;
       }
-      // remote
-      if (ownerRepo) {
-        let remotePresent: "present"|"absent"|"unknown"="unknown";
-        try {
-          const ref = await runGh(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/git/refs/heads/${branchName}`, "--jq", ".ref"]);
-          remotePresent = (ref && ref.includes(branchName)) ? "present" : "absent";
-        } catch (e) {
-          const msg=String(e).toLowerCase();
-          if (msg.includes("404")||msg.includes("not found")) remotePresent="absent";
-          else remotePresent="unknown";
-        }
-        if (remotePresent==="unknown") return false;
-        if (remotePresent==="present") {
-          try { await runGh(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/git/refs/heads/${branchName}`, "--method","DELETE"]); } catch (e) {
-            const msg=String(e).toLowerCase();
-            if (msg.includes("404")||msg.includes("not found")) { /* already absent */ } else return false;
-          }
-          // Verify remote now absent
-          try {
-            await runGh(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/git/refs/heads/${branchName}`, "--jq",".ref"]);
-            return false; // still present
-          } catch (e) {
-            const msg=String(e).toLowerCase();
-            if (!(msg.includes("404")||msg.includes("not found"))) return false;
-          }
-        }
-      }
-      // Verify local and remote both absent before deleting provenance
+      // remote — ownerRepo already verified, now check remote presence
+      let remotePresent: "present"|"absent"|"unknown" = "unknown";
       try {
-        const out = execSync(`git branch --list "${branchName}"`, { encoding:"utf8", cwd: repoRoot }).trim();
-        if (out) return false;
-      } catch {}
-      if (ownerRepo) {
+        const ref = await runGh(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/git/refs/heads/${branchName}`, "--jq", ".ref"]);
+        remotePresent = (ref && ref.includes(branchName)) ? "present" : "absent";
+      } catch (e) {
+        const msg=String(e).toLowerCase();
+        if (msg.includes("404")||msg.includes("not found")) remotePresent="absent";
+        else remotePresent="unknown";
+      }
+      if (remotePresent==="unknown") return false;
+      if (remotePresent==="present") {
+        try { await runGh(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/git/refs/heads/${branchName}`, "--method","DELETE"]); } catch (e) {
+          const msg=String(e).toLowerCase();
+          if (!(msg.includes("404")||msg.includes("not found"))) return false;
+        }
         try {
-          const ref = await runGh(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/git/refs/heads/${branchName}`, "--jq",".ref"]);
-          if (ref && ref.includes(branchName)) return false;
+          await runGh(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/git/refs/heads/${branchName}`, "--jq",".ref"]);
+          return false;
         } catch (e) {
           const msg=String(e).toLowerCase();
           if (!(msg.includes("404")||msg.includes("not found"))) return false;
         }
+      }
+      // Verify local and remote both absent before deleting provenance
+      const verifyLocal = runGit(["branch", "--list", branchName]);
+      if (verifyLocal.exitCode !== 0) return false;
+      if (verifyLocal.stdout.trim()) return false;
+      try {
+        const ref = await runGh(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/git/refs/heads/${branchName}`, "--jq",".ref"]);
+        if (ref && ref.includes(branchName)) return false;
+      } catch (e) {
+        const msg=String(e).toLowerCase();
+        if (!(msg.includes("404")||msg.includes("not found"))) return false;
       }
       // provenance — only after branch absence proved
       try {
@@ -253,7 +234,6 @@ export function createProductionReconcileOps(deps: ReconcileAdapterDeps): FullRe
     },
 
     markIntegrated: async (issueId:string, branchName:string): Promise<boolean> => {
-      // Authoritative: remove labels, assignee, close, and verify each step
       const steps: Array<{args:string[], context:string}> = [
         { args:["issue","edit",issueId,"--remove-label","agent:in-progress"], context:`Failed to remove agent:in-progress from #${issueId}` },
         { args:["issue","edit",issueId,"--remove-label","agent:implement"], context:`Failed to remove agent:implement from #${issueId}` },
@@ -264,7 +244,6 @@ export function createProductionReconcileOps(deps: ReconcileAdapterDeps): FullRe
         const ok = await safeGh(s.args, s.context);
         if (!ok) return false;
       }
-      // Close
       let closed=false;
       try {
         await runGh(["issue","close",issueId,"--comment",`Completed by Sandcastle -- branch \`${branchName}\` merged and integrated. Auto-merged to main after verification.`]);
@@ -277,7 +256,6 @@ export function createProductionReconcileOps(deps: ReconcileAdapterDeps): FullRe
         } catch { return false; }
       }
       if (!closed) return false;
-      // Fresh read-back verification — every read failure is FACTORY_ERROR (return false)
       let after: IssueInput;
       try { after = await fetchIssueFresh(issueId); } catch { return false; }
       if (after.state!=="closed") return false;
