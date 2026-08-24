@@ -5,8 +5,7 @@
 import * as sandcastle from "@ai-hero/sandcastle";
 import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
 import { z } from "zod";
-import { execFile, execSync, execFileSync } from "node:child_process";
-import { promisify } from "node:util";
+import { execSync, execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { runStructuredOnce, runUnstructuredOnce, runUntilCompletion } from "./agent-run-contracts.mts";
@@ -67,6 +66,8 @@ import {
   type ReviewVerdict,
 } from "./review-verdict.mts";
 import { formatGhFailure, getErrorMessage, getGhErrorDetails } from "./gh-errors.mts";
+import { createGhTransport, type GhTransport } from "./gh-transport.mts";
+import { createTrackerAdapter, type TrackerAdapter, type TrackerTransitionResult } from "./tracker-adapter.mts";
 import { parsePlannerOutput, fallbackToSingle } from "./planner-helpers.mts";
 import {
   makeIterationControl,
@@ -83,9 +84,9 @@ import {
   verifySandcastleRuntimeExports,
 } from "./sandcastle-runtime-provenance.mts";
 import {
-  makeGitHubCapability,
   GitHubWriteForbiddenError,
 } from "./github-capability.mts";
+import { GhCapabilityError } from "./gh-transport.mts";
 import {
   resolveFactoryMetaApiKey,
   resolveWorkerSandboxEnv,
@@ -106,32 +107,14 @@ import {
 import { mergerDockerOptions } from "./merger-control.mts";
 import { runFactoryIteration, type PreparedImplIssue, type PreparedResearchIssue, type FactoryIterationDependencies } from "./factory-iteration.mts";
 
-const execFileAsync = promisify(execFile);
-
 // ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
 const MAX_ITERATIONS = 10;
 // Resolve current GitHub login once for claim ownership verification (fail-closed if unavailable)
-let cachedClaimantLogin: string | null = null;
+// Delegates to the single transport — no local candidate composition.
 async function resolveClaimantLogin(): Promise<string> {
-  if (cachedClaimantLogin) return cachedClaimantLogin;
-  // Try gh api user
-  const candidates = [
-    ["api", "user", "--jq", ".login"],
-    ["api", "/user", "--jq", ".login"],
-  ];
-  for (const args of candidates) {
-    try {
-      const out = await runGh(args);
-      const login = out.trim();
-      if (login && login !== "null" && !login.includes(" ")) {
-        cachedClaimantLogin = login;
-        return login;
-      }
-    } catch {}
-  }
-  throw new Error("failed to resolve claimant login via gh api user");
+  return ghTransport.resolveClaimantLogin();
 }
 
 const REASON_TRUNCATE = 800;
@@ -161,26 +144,68 @@ if (ITERATION_CONTROL.qualification.kind === "invalid") {
 const GH_CAPABILITY_MODE: "read-only" | "read-write" = QUALIFICATION_LIFECYCLE.claimExternalState || QUALIFICATION_LIFECYCLE.mutateOutcomeState || QUALIFICATION_LIFECYCLE.integrate
   ? "read-write"
   : "read-only";
+
+// Single GitHub transport — sole owner of binary resolution, token, CWD,
+// spawn, structured errors, capability enforcement, claimant identity, and
+// owner/repo resolution. No local ghBinary/ghToken/parseOwnerRepo duplicates.
+const ghTransport: GhTransport = createGhTransport({
+  repoRoot: REPO_ROOT,
+  capabilityMode: GH_CAPABILITY_MODE,
+});
+
 const WORKER_SANDBOX_ENV = resolveWorkerSandboxEnv(
   GH_CAPABILITY_MODE,
-  ghToken(),
+  ghTransport.run === undefined ? "" : readTokenForSandbox(),
   resolveFactoryMetaApiKey(REPO_ROOT),
 );
 
-const gitHubCapability = makeGitHubCapability({
-  mode: GH_CAPABILITY_MODE,
-  exec: async (args: string[]) => {
-    const token = ghToken();
-    const env = { ...process.env, GH_TOKEN: token };
-    const bin = ghBinary();
-    const { stdout } = await execFileAsync(bin, args, {
-      env,
-      cwd: REPO_ROOT,
-      maxBuffer: 10 * 1024 * 1024,
-    });
-    return stdout.trim();
-  },
-});
+// Token for sandbox env only — transport owns the canonical lookup; this thin
+// helper reuses the same rules without duplicating spawn behavior.
+function readTokenForSandbox(): string {
+  if (process.env.GH_TOKEN) return process.env.GH_TOKEN;
+  try {
+    const envPath = path.join(REPO_ROOT, ".sandcastle", ".env");
+    const content = fs.readFileSync(envPath, "utf8");
+    const m = content.match(/^GH_TOKEN=(.*)$/m);
+    if (m) return m[1].trim();
+  } catch {}
+  return "";
+}
+
+async function runGh(args: string[]): Promise<string> {
+  try {
+    return await ghTransport.run(args);
+  } catch (error: unknown) {
+    if (error instanceof GitHubWriteForbiddenError) {
+      throw error;
+    }
+    if (error instanceof GhCapabilityError) {
+      throw error;
+    }
+    const details = getGhErrorDetails(error);
+    console.error(`[runGh] args=${args.join(" ")} details=${details.slice(0,500)}`);
+    throw new Error(`gh ${args.join(" ")} failed: ${details}`);
+  }
+}
+
+// Single tracker adapter — all production tracker mutations flow through its
+// verified-saga transitions with typed receipts. main.mts no longer composes
+// `gh issue edit` calls or knows machine-state label strings inline.
+const fileReceiptSink = makeFileReceiptSink(REPO_ROOT);
+const tracker: TrackerAdapter = createTrackerAdapter({ gh: ghTransport, receiptSink: fileReceiptSink });
+
+function makeFileReceiptSink(repoRoot: string) {
+  const receiptsDir = path.join(repoRoot, ".sandcastle", "logs", "tracker-transitions");
+  return {
+    persist(receipt: unknown): void {
+      try {
+        fs.mkdirSync(receiptsDir, { recursive: true });
+        const name = `${Date.now()}-${(receipt as { transition?: string }).transition ?? "transition"}-${(receipt as { issueNumber?: number }).issueNumber ?? "x"}.json`;
+        fs.writeFileSync(path.join(receiptsDir, name), JSON.stringify(receipt, null, 2));
+      } catch {}
+    },
+  };
+}
 
 // Worker result after implement + review -- commits plus machine-readable verdict.
 type WorkerResult = { commits: string[]; verdict: ReviewVerdict | null; reviewText?: string };
@@ -225,23 +250,9 @@ type PlannedIssue = z.infer<typeof planSchema>["issues"][number];
 // ---------------------------------------------------------------------------
 // GH helpers -- host-side only
 // ---------------------------------------------------------------------------
-// runGh() executes on the host, so ghBinary() resolves the host `gh`.
-// Inside the Docker sandbox (node:22-bookworm via .sandcastle/Dockerfile),
-// `gh` is at /usr/bin/gh on PATH. Prompts and docker() commands must use
-// bare `gh` and never call ghBinary() -- otherwise a host Windows path
-// (C:\Program Files\...) would leak into the container where only
-// /usr/bin/gh exists.
-
-function ghBinary(): string {
-  // Probe Linux gh first (host WSL: ~/.local/bin/gh, container: /usr/bin/gh)
-  // so a Windows path never leaks into Linux/WSL where auth differs.
-  const home = process.env.HOME || "";
-  const linuxPaths = ["/usr/bin/gh", home ? `${home}/.local/bin/gh` : "", "/home/jeff/.local/bin/gh"];
-  for(const p of linuxPaths){ if(p && fs.existsSync(p)) return p; }
-  // Fallback to gh on PATH (resolves to Linux gh in WSL with correct auth)
-  // Avoid Windows gh.exe which has different keyring/config in WSL.
-  return "gh";
-}
+// runGh() executes on the host via ghTransport (created above with stable
+// REPO_ROOT). Inside the Docker sandbox, prompts and docker() commands must
+// use bare `gh` — never a host-resolved binary path.
 
 // muse binary: intentionally not hardcoded -- host and sandbox both expose
 // `muse` on PATH (host via ~/.local/bin, sandbox via Dockerfile
@@ -253,7 +264,7 @@ async function safeRunGh(args: string[], failureContext?: string): Promise<boole
     await runGh(args);
     return true;
   } catch (error: unknown) {
-    if (error instanceof GitHubWriteForbiddenError) {
+    if (error instanceof GitHubWriteForbiddenError || error instanceof GhCapabilityError) {
       if (failureContext) {
         console.warn(formatGhFailure(failureContext, error));
       }
@@ -261,38 +272,6 @@ async function safeRunGh(args: string[], failureContext?: string): Promise<boole
     }
     if (failureContext) console.warn(formatGhFailure(failureContext, error));
     return false;
-  }
-}
-
-function ghToken(): string {
-  if (process.env.GH_TOKEN) return process.env.GH_TOKEN;
-  // fallback: read .sandcastle/.env from stable REPO_ROOT, never ambient cwd
-  try {
-    const envPath = path.join(REPO_ROOT, ".sandcastle", ".env");
-    const content = fs.readFileSync(envPath, "utf8");
-    const m = content.match(/^GH_TOKEN=(.*)$/m);
-    if (m) return m[1].trim();
-  } catch {}
-  return "";
-}
-
-async function runGh(args: string[]): Promise<string> {
-  try {
-    return await gitHubCapability.run(args);
-  } catch (error: unknown) {
-    if (error instanceof GitHubWriteForbiddenError) {
-      throw error;
-    }
-    const details = getGhErrorDetails(error);
-    const msg = error instanceof Error ? error.message : String(error);
-    const code = (error as unknown as { code?: unknown })?.code;
-    const signal = (error as unknown as { signal?: unknown })?.signal;
-    const stderr = (error as unknown as { stderr?: unknown })?.stderr;
-    const stdout = (error as unknown as { stdout?: unknown })?.stdout;
-    const stderrStr = stderr ? String(stderr).slice(0,1000) : "<no stderr>";
-    const stdoutStr = stdout ? String(stdout).slice(0,500) : "<no stdout>";
-    console.error(`[runGh] args=${args.join(" ")} code=${String(code)} signal=${String(signal)} msg=${msg} details=${details.slice(0,500)} stderr=${stderrStr} stdout=${stdoutStr}`);
-    throw new Error(`gh ${args.join(" ")} failed: ${details}`);
   }
 }
 
@@ -313,13 +292,7 @@ function createGitRunner(): GitRunner {
 }
 
 function parseOwnerRepo(): { owner: string; repo: string } | null {
-  try {
-    const out = execSync("git remote get-url origin", { encoding: "utf8", cwd: REPO_ROOT }).trim();
-    // https://github.com/rhythmatician/voxygen-monorepo.git
-    const m = out.match(/github\.com[:/]([^/]+)\/([^/.]+)/);
-    if (m) return { owner: m[1], repo: m[2] };
-  } catch {}
-  return null;
+  return ghTransport.resolveOwnerRepo();
 }
 
 interface RawIssue {
@@ -589,21 +562,14 @@ async function claimResearchIssue(issue: IssueInput): Promise<boolean> {
 }
 
 async function transitionToBlocked(issueId: string): Promise<boolean> {
-  // Per ADR 0010: remove agent:in-progress, remove claimant assignee, retain ready-for-agent, add agent:blocked, do not restore implement, preserve branch/provenance
-  const removedProgress = await safeRunGh(
-    ["issue", "edit", issueId, "--remove-label", "agent:in-progress"],
-    `Failed to remove agent:in-progress from #${issueId}`,
-  );
-  const removedAssignee = await safeRunGh(
-    ["issue", "edit", issueId, "--remove-assignee", "@me"],
-    `Failed to remove claimant assignee from #${issueId}`,
-  );
-  const addedBlocked = await safeRunGh(
-    ["issue", "edit", issueId, "--add-label", "agent:blocked"],
-    `Failed to add agent:blocked to #${issueId}`,
-  );
-  // Also ensure implement not restored — verify not present (do not add)
-  return removedProgress && removedAssignee && addedBlocked;
+  // Per ADR 0010: release claim, retain ready-for-agent, add agent:blocked,
+  // never restore implement. Verified saga with typed receipt; unsafe-to-restore
+  // asymmetry handled inside the adapter.
+  const result = await tracker.transitionToBlocked(Number(issueId));
+  if (result.kind === "indeterminate") {
+    console.error(`  FACTORY_ERROR transitionToBlocked #${issueId}: ${result.receipt.reason} — recovery evidence preserved in receipt`);
+  }
+  return result.kind === "committed";
 }
 
 async function markBlocked(issueId: string, branch: string, reason: string): Promise<boolean> {
@@ -635,10 +601,13 @@ async function markBlocked(issueId: string, branch: string, reason: string): Pro
 
 async function markFactoryError(issueId: string, branch: string, reason: string): Promise<boolean> {
   const shortReason = reason.slice(0, REASON_TRUNCATE);
-  const removed = await safeRunGh(
-    ["issue", "edit", issueId, "--remove-label", "agent:in-progress", "--remove-assignee", "@me"],
-    `Failed to release factory claim from #${issueId}`,
-  );
+  // Verified saga release — never restores agent:implement; indeterminate on
+  // unsafe-to-restore failure with recovery evidence in the typed receipt.
+  const released = await tracker.releaseAfterFactoryError(Number(issueId));
+  const transitionOk = released.kind === "committed";
+  if (released.kind === "indeterminate") {
+    console.error(`  FACTORY_ERROR releasing claim for #${issueId}: ${released.receipt.reason}`);
+  }
   const commentOk = await safeRunGh([
     "issue",
     "comment",
@@ -646,33 +615,17 @@ async function markFactoryError(issueId: string, branch: string, reason: string)
     "--body",
     `Sandcastle factory infrastructure failed on \`${branch}\` — preserved branch for inspection.\n\n**Reason:** ${shortReason}\n\nBranch: \`${branch}\`\n\nThe issue was released — remove \`agent:blocked\` if present and explicitly re-add \`agent:implement\` to retry. Branch preserved, ready-for-agent retained, agent:in-progress and claimant assignee removed, agent:implement not restored.`,
   ]);
-  return removed && commentOk;
+  return transitionOk && commentOk;
 }
 
 async function markIntegrated(issueId: string, branch: string): Promise<void> {
   // TODO(factory-v1): Wayfinder close ownership -- host closes ordinary impl
   // only; Wayfinder skill will own Wayfinder ticket close. See plan-prompt.
-  for (const label of ["agent:in-progress", "agent:implement", "agent:blocked"]) {
-    await safeRunGh(
-      ["issue", "edit", issueId, "--remove-label", label],
-      `Failed to remove ${label} from integrated issue #${issueId}`,
-    );
-  }
-  // Close with audit comment
-  try {
-    await runGh([
-      "issue",
-      "close",
-      issueId,
-      "--comment",
-      `Completed by Sandcastle -- branch \`${branch}\` merged and integrated. Auto-merged to main after verification.`,
-    ]);
-  } catch {
-    // fallback: comment then close
-    try {
-      await runGh(["issue", "comment", issueId, "--body", `Completed by Sandcastle -- branch \`${branch}\` integrated.`]);
-      await runGh(["issue", "close", issueId]);
-    } catch {}
+  // Verified saga: strip transient labels, close with audit comment, verify
+  // closed-and-clean postcondition, persist typed receipt.
+  const result = await tracker.finalizeIntegrated(Number(issueId), branch);
+  if (result.kind === "indeterminate") {
+    console.error(`  FACTORY_ERROR finalizing integrated #${issueId}: ${result.receipt.reason}`);
   }
 }
 

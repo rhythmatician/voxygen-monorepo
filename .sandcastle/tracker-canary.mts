@@ -10,11 +10,13 @@ import {
   type IssueInput,
 } from "./tracker-policy.mts";
 import { claimImplementation, reconcileStaleImplementation, type ClaimOps } from "./tracker-operations.mts";
+import { createGhTransport, type GhTransport } from "./gh-transport.mts";
 import * as fs2 from "node:fs";
 import * as path2 from "node:path";
 import { pathToFileURL } from "node:url";
-import { execSync, execFile } from "node:child_process";
-import { promisify } from "node:util";
+
+// REPO_ROOT for canary: stable repo root two levels above this module's directory.
+const CANARY_REPO_ROOT = path2.resolve(path2.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1")), "..");
 
 export interface CanaryResult {
   implementationDiscoverableOnlyWithReadyAndImplement: boolean;
@@ -44,30 +46,13 @@ function uniqueTitle(prefix: string): string {
   return `${prefix} — canary ${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function ghBinary(): string {
-  const home = process.env.HOME || "";
-  const candidates = ["/usr/bin/gh", home ? `${home}/.local/bin/gh` : "", "/home/jeff/.local/bin/gh"];
-  for (const p of candidates) if (p && fs2.existsSync(p)) return p;
-  return "gh";
-}
-function ghToken(): string {
-  if (process.env.GH_TOKEN) return process.env.GH_TOKEN;
-  try { const c=fs2.readFileSync(".sandcastle/.env","utf8"); const m=c.match(/^GH_TOKEN=(.*)$/m); if(m) return m[1].trim(); } catch {}
-  return "";
-}
-async function runGh(args: string[]): Promise<string> {
-  const execFileAsync = promisify(execFile);
-  const bin = ghBinary();
-  const token = ghToken();
-  const env = { ...process.env, GH_TOKEN: token };
-  const { stdout } = await execFileAsync(bin, args, { env, cwd: process.cwd(), maxBuffer: 10*1024*1024 }) as any;
-  return (stdout as string).trim();
-}
-function parseOwnerRepo(): { owner: string; repo: string } | null {
-  try { const out = execSync("git remote get-url origin", { encoding: "utf8" }).trim(); const m = out.match(/github\.com[:\/]([^\/]+)\/([^\/\.]+)/); if (m) return { owner: m[1], repo: m[2] }; } catch {}
-  return null;
-}
-export async function resolveClaimantLogin(runGhFn: (args: string[]) => Promise<string> = runGh): Promise<string> {
+// Single transport — no local ghBinary/ghToken/runGh/parseOwnerRepo duplicates.
+const canaryTransport: GhTransport = createGhTransport({
+  repoRoot: CANARY_REPO_ROOT,
+  capabilityMode: "read-write", // canary --live is the only mode that reaches here
+});
+
+export async function resolveClaimantLogin(runGhFn: (args: string[]) => Promise<string> = (args) => canaryTransport.run(args)): Promise<string> {
   const candidates = [
     ["api", "user", "--jq", ".login"],
     ["api", "/user", "--jq", ".login"],
@@ -81,10 +66,10 @@ export async function resolveClaimantLogin(runGhFn: (args: string[]) => Promise<
   }
   throw new Error("failed to resolve claimant login via gh api user");
 }
-async function fetchIssueReal(id: number, runGhFn: (args:string[])=>Promise<string> = runGh): Promise<IssueInput> {
+async function fetchIssueReal(id: number, runGhFn: (args:string[])=>Promise<string> = (args)=>canaryTransport.run(args)): Promise<IssueInput> {
   const rawJson = await runGhFn(["issue", "view", String(id), "--json", "number,title,body,labels,assignees,state"]);
   const raw = JSON.parse(rawJson);
-  const ownerRepo = parseOwnerRepo();
+  const ownerRepo = canaryTransport.resolveOwnerRepo();
   let blockedByCount: number | undefined = undefined;
   if (ownerRepo) {
     try { const summary = await runGhFn(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/issues/${id}`, "--jq", ".issue_dependencies_summary.blocked_by"]); const n=parseInt(summary.trim(),10); if(!isNaN(n)) blockedByCount=n; } catch {}
@@ -285,9 +270,9 @@ export async function runCanaryCli(args: string[], deps: CanaryCliDeps = {}): Pr
   const live = args.includes("--live") || args.includes("--canary");
   if (!live) { console.error("Canary requires explicit --live flag"); return { exitCode: 1 }; }
   console.log("Live tracker canary — requires live GitHub access");
-  const ownerRepo = parseOwnerRepo();
+  const ownerRepo = canaryTransport.resolveOwnerRepo();
   if (!ownerRepo) throw new Error("cannot resolve owner/repo for canary");
-  const runGhFn = deps.runGh ?? runGh;
+  const runGhFn = deps.runGh ?? ((ghArgs: string[]) => canaryTransport.run(ghArgs));
   const claimantLogin = deps.resolveClaimantLoginFn ? await deps.resolveClaimantLoginFn() : await resolveClaimantLogin(runGhFn);
   const ops = createLiveCanaryOps({ owner: ownerRepo.owner, repo: ownerRepo.repo, runGh: runGhFn, claimantLogin });
   let result: CanaryResult | null = null;

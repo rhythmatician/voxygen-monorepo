@@ -2,6 +2,7 @@ import * as fsSync from "node:fs";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
+import { createGhTransport, type GhTransport } from "./gh-transport.mts";
 import {
   detectContradictions,
   getRemovableResidueLabels,
@@ -612,19 +613,14 @@ export async function runTrackerMigrationCli(args: string[], deps: CliDeps = {})
 
   // Resolve helpers with defaults
   const execSyncFn = deps.execSync ?? ((await import("node:child_process")).execSync as any);
-  const runGhFn = deps.runGh ?? (async (ghArgs: string[]) => {
-    const { promisify } = await import("node:util");
-    const { execFile } = await import("node:child_process");
-    const execFileAsync = promisify(execFile);
-    const home = process.env.HOME || "";
-    const candidates = ["/usr/bin/gh", home ? `${home}/.local/bin/gh` : "", "/home/jeff/.local/bin/gh"];
-    let bin = "gh";
-    for (const p of candidates) if (p && fsSync.existsSync(p)) { bin = p; break; }
-    const token = process.env.GH_TOKEN || "";
-    const env = { ...process.env, GH_TOKEN: token };
-    const { stdout } = await execFileAsync(bin, ghArgs, { env, cwd: process.cwd(), maxBuffer: 10*1024*1024 }) as any;
-    return (stdout as string).trim();
+  // Single transport — capability mode follows the operation: check/dry-run are
+  // read-only; apply is read-write. No local binary/token/CWD duplicates.
+  const MIGRATION_REPO_ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1")), "..");
+  const migrationTransport: GhTransport = createGhTransport({
+    repoRoot: MIGRATION_REPO_ROOT,
+    capabilityMode: mode === "apply" ? "read-write" : "read-only",
   });
+  const runGhFn = deps.runGh ?? ((ghArgs: string[]) => migrationTransport.run(ghArgs));
 
   const readFile = deps.readFileSync ?? fsSync.readFileSync;
   const writeFile = deps.writeFileSync ?? fsSync.writeFileSync;
