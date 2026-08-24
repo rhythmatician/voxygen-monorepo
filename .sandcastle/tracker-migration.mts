@@ -1,6 +1,6 @@
 import * as fsSync from "node:fs";
 import * as path from "node:path";
-import { pathToFileURL } from "node:url";
+import { pathToFileURL, fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { createGhTransport, type GhTransport } from "./gh-transport.mts";
 import {
@@ -615,7 +615,7 @@ export async function runTrackerMigrationCli(args: string[], deps: CliDeps = {})
   const execSyncFn = deps.execSync ?? ((await import("node:child_process")).execSync as any);
   // Single transport — capability mode follows the operation: check/dry-run are
   // read-only; apply is read-write. No local binary/token/CWD duplicates.
-  const MIGRATION_REPO_ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1")), "..");
+  const MIGRATION_REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const migrationTransport: GhTransport = createGhTransport({
     repoRoot: MIGRATION_REPO_ROOT,
     capabilityMode: mode === "apply" ? "read-write" : "read-only",

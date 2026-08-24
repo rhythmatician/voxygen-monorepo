@@ -67,8 +67,9 @@ export async function withTemporaryIssueFixtures<T>(
       try {
         await ops.cleanup(id);
       } catch (e) {
+        // Cleanup threw — postcondition cannot be trusted for this fixture.
         cleanupFailures.push(`cleanup #${id} failed: ${getErrorMessage(e)}`);
-        continue; // postcondition cannot hold if cleanup threw — but still attempt verify below? No: uncertain.
+        continue;
       }
       if (ops.verify) {
         try {

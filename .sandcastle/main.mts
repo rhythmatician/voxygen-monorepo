@@ -44,12 +44,8 @@ import {
   WAYFINDER_RESEARCH as TRACKER_WAYFINDER_RESEARCH,
 } from "./tracker-policy.mts";
 import {
-  claimImplementation as trackerClaimImplementation,
-  claimResearch as trackerClaimResearch,
   reconcileStaleImplementation,
   reconcileStaleResearch,
-  type ClaimOps,
-  type ResearchClaimOps,
 } from "./tracker-operations.mts";
 import {
   partitionMergerInfrastructureFailure,
@@ -66,7 +62,7 @@ import {
   type ReviewVerdict,
 } from "./review-verdict.mts";
 import { formatGhFailure, getErrorMessage, getGhErrorDetails } from "./gh-errors.mts";
-import { createGhTransport, type GhTransport } from "./gh-transport.mts";
+import { createGhTransport, resolveGhToken, GhCapabilityError, type GhTransport } from "./gh-transport.mts";
 import { createTrackerAdapter, type TrackerAdapter, type TrackerTransitionResult } from "./tracker-adapter.mts";
 import { parsePlannerOutput, fallbackToSingle } from "./planner-helpers.mts";
 import {
@@ -86,7 +82,6 @@ import {
 import {
   GitHubWriteForbiddenError,
 } from "./github-capability.mts";
-import { GhCapabilityError } from "./gh-transport.mts";
 import {
   resolveFactoryMetaApiKey,
   resolveWorkerSandboxEnv,
@@ -155,22 +150,9 @@ const ghTransport: GhTransport = createGhTransport({
 
 const WORKER_SANDBOX_ENV = resolveWorkerSandboxEnv(
   GH_CAPABILITY_MODE,
-  ghTransport.run === undefined ? "" : readTokenForSandbox(),
+  resolveGhToken(REPO_ROOT),
   resolveFactoryMetaApiKey(REPO_ROOT),
 );
-
-// Token for sandbox env only — transport owns the canonical lookup; this thin
-// helper reuses the same rules without duplicating spawn behavior.
-function readTokenForSandbox(): string {
-  if (process.env.GH_TOKEN) return process.env.GH_TOKEN;
-  try {
-    const envPath = path.join(REPO_ROOT, ".sandcastle", ".env");
-    const content = fs.readFileSync(envPath, "utf8");
-    const m = content.match(/^GH_TOKEN=(.*)$/m);
-    if (m) return m[1].trim();
-  } catch {}
-  return "";
-}
 
 async function runGh(args: string[]): Promise<string> {
   try {
@@ -202,7 +184,11 @@ function makeFileReceiptSink(repoRoot: string) {
         fs.mkdirSync(receiptsDir, { recursive: true });
         const name = `${Date.now()}-${(receipt as { transition?: string }).transition ?? "transition"}-${(receipt as { issueNumber?: number }).issueNumber ?? "x"}.json`;
         fs.writeFileSync(path.join(receiptsDir, name), JSON.stringify(receipt, null, 2));
-      } catch {}
+      } catch (e) {
+        // Receipt persistence failure must be visible — the saga contract
+        // promises recovery evidence; silent loss would undermine it.
+        console.warn(`[tracker-receipt] failed to persist receipt: ${getErrorMessage(e)}`);
+      }
     },
   };
 }
@@ -367,198 +353,64 @@ async function fetchOpenResearchIssues(): Promise<IssueInput[]> {
 
 // Phase 0.5 claim — transactional one-shot command consumption per ADR 0010.
 // Logical transaction: ready-for-agent + agent:implement → ready-for-agent + agent:in-progress + assignee, no implement
-// Do not assume gh edit is atomic; verify postcondition and compensate fail-closed.
+// Runs through the tracker-adapter verified saga: fresh read, validate
+// before-state, mutate, fresh read, verify postcondition, compensate when
+// defined, persist typed receipt. No inline label composition here.
 async function claimIssue(issue: IssueInput): Promise<boolean> {
   const id = String(issue.number);
   const branch = branchForIssue(issue.number);
-  // Resolve claimant once per claim attempt
-  let claimantLogin: string;
+  let result: TrackerTransitionResult;
   try {
-    claimantLogin = await resolveClaimantLogin();
+    result = await tracker.claimImplementation(issue);
   } catch (e) {
+    // Claimant resolution failure inside the adapter — fail closed.
     const reason = e instanceof Error ? e.message : String(e);
     console.error(`  FACTORY_ERROR resolving claimant for #${id}: ${reason} — fail closed`);
-    throw new Error(`FACTORY_ERROR resolving claimant for #${id}: ${reason}`);
+    throw new Error(`FACTORY_ERROR claiming #${id}: ${reason}`);
   }
-  const ops: ClaimOps & { claimantLogin: string } = {
-    claimantLogin,
-    fetchIssue: async (fetchId: string) => {
-      const rawJson = await runGh(["issue", "view", fetchId, "--json", "number,title,body,labels,assignees,state"]);
-      let raw: any;
-      try { raw = JSON.parse(rawJson); } catch { throw new Error(`failed to parse issue view for #${fetchId}`); }
-      const ownerRepo = parseOwnerRepo();
-      let blockedByCount: number | undefined = undefined;
-      if (ownerRepo) {
-        try {
-          const summary = await runGh(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/issues/${fetchId}`, "--jq", ".issue_dependencies_summary.blocked_by"]);
-          const n = parseInt(summary.trim(), 10);
-          if (!isNaN(n)) blockedByCount = n;
-        } catch {}
-      }
-      return {
-        number: raw.number,
-        title: raw.title,
-        state: (raw.state?.toLowerCase() ?? "open") as "open" | "closed",
-        labels: (raw.labels ?? []).map((l: any) => l.name),
-        assignees: (raw.assignees ?? []).map((a: any) => a.login),
-        blockedByCount,
-        body: raw.body,
-      };
-    },
-    applyClaim: async (applyId: string) => {
-      await runGh(["issue", "edit", applyId, "--add-assignee", "@me", "--add-label", "agent:in-progress", "--remove-label", "agent:implement"]);
-    },
-    verifyClaim: async (verifyId: string) => {
-      const rawJson = await runGh(["issue", "view", verifyId, "--json", "number,title,body,labels,assignees,state"]);
-      let raw: any;
-      try { raw = JSON.parse(rawJson); } catch { throw new Error(`failed to parse verify for #${verifyId}`); }
-      const ownerRepo = parseOwnerRepo();
-      let blockedByCount: number | undefined = undefined;
-      if (ownerRepo) {
-        try {
-          const summary = await runGh(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/issues/${verifyId}`, "--jq", ".issue_dependencies_summary.blocked_by"]);
-          const n = parseInt(summary.trim(), 10);
-          if (!isNaN(n)) blockedByCount = n;
-        } catch {}
-      }
-      return {
-        number: raw.number,
-        title: raw.title,
-        state: (raw.state?.toLowerCase() ?? "open") as "open" | "closed",
-        labels: (raw.labels ?? []).map((l: any) => l.name),
-        assignees: (raw.assignees ?? []).map((a: any) => a.login),
-        blockedByCount,
-        body: raw.body,
-      };
-    },
-    compensateClaim: async (compId: string) => {
-      try {
-        await runGh(["issue", "edit", compId, "--remove-label", "agent:in-progress", "--remove-assignee", "@me"]);
-        return true;
-      } catch {
-        return false;
-      }
-    },
-  };
-  try {
-    const result = await trackerClaimImplementation(id, issue, ops);
-    if (result.success) {
-      try {
-        await runGh(["issue", "comment", id, "--body", `Sandcastle claiming #${id} for AFK implementation on \`${branch}\` — \`${issue.title}\` (consumed ${AGENT_IMPLEMENT})`]);
-      } catch {}
-      console.log(`  Claimed #${id} → ${branch} (consumed ${AGENT_IMPLEMENT})`);
-      return true;
-    } else {
-      console.warn(`  Claim failed for #${id}: ${result.reason} (code=${result.code} compensated=${result.compensated})`);
-      if ((result as any).factoryError) {
-        console.error(`  FACTORY_ERROR for #${id}: compensation failed — preserved branch/provenance, stopping before worker launch. Reason: ${result.reason}`);
-        try {
-          await runGh(["issue", "comment", id, "--body", `Sandcastle FACTORY_ERROR claiming #${id} on \`${branch}\`: ${result.reason.slice(0,800)}\n\nBranch: \`${branch}\` preserved. Compensation failed — requires manual cleanup.`]);
-        } catch {}
-        throw new Error(`FACTORY_ERROR claiming #${id}: ${result.reason}`);
-      }
-      return false;
-    }
-  } catch (error: unknown) {
-    const msg = error instanceof Error ? error.message : String(error);
-    if (msg.includes("FACTORY_ERROR")) throw error;
-    console.warn(`  Claim failed for #${id}: ${msg}`);
-    return false;
+  if (result.kind === "committed") {
+    try {
+      await runGh(["issue", "comment", id, "--body", `Sandcastle claiming #${id} for AFK implementation on \`${branch}\` — \`${issue.title}\` (consumed ${AGENT_IMPLEMENT})`]);
+    } catch {}
+    console.log(`  Claimed #${id} → ${branch} (consumed ${AGENT_IMPLEMENT})`);
+    return true;
   }
+  if (result.kind === "indeterminate") {
+    const reason = result.receipt.reason ?? result.receipt.code ?? "unknown failure";
+    console.error(`  FACTORY_ERROR for #${id}: compensation failed — preserved branch/provenance, stopping before worker launch. Reason: ${reason}`);
+    try {
+      await runGh(["issue", "comment", id, "--body", `Sandcastle FACTORY_ERROR claiming #${id} on \`${branch}\`: ${reason.slice(0,800)}\n\nBranch: \`${branch}\` preserved. Compensation failed — requires manual cleanup.`]);
+    } catch {}
+    throw new Error(`FACTORY_ERROR claiming #${id}: ${reason}`);
+  }
+  console.warn(`  Claim failed for #${id}: ${result.receipt.reason ?? result.receipt.code} (code=${result.receipt.code})`);
+  return false;
 }
 
 async function claimResearchIssue(issue: IssueInput): Promise<boolean> {
   const id = String(issue.number);
   const branch = branchForIssue(issue.number);
-  let claimantLogin: string;
+  let result: TrackerTransitionResult;
   try {
-    claimantLogin = await resolveClaimantLogin();
+    result = await tracker.claimResearch(issue);
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);
     console.error(`  FACTORY_ERROR resolving claimant for research #${id}: ${reason} — fail closed`);
-    throw new Error(`FACTORY_ERROR resolving claimant for research #${id}: ${reason}`);
+    throw new Error(`FACTORY_ERROR research #${id}: ${reason}`);
   }
-  const ops: ResearchClaimOps & { claimantLogin: string } = {
-    claimantLogin,
-
-    fetchIssue: async (fetchId: string) => {
-      const rawJson = await runGh(["issue", "view", fetchId, "--json", "number,title,body,labels,assignees,state"]);
-      let raw: any;
-      try { raw = JSON.parse(rawJson); } catch { throw new Error(`failed to parse issue view for #${fetchId}`); }
-      const ownerRepo = parseOwnerRepo();
-      let blockedByCount: number | undefined = undefined;
-      if (ownerRepo) {
-        try {
-          const summary = await runGh(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/issues/${fetchId}`, "--jq", ".issue_dependencies_summary.blocked_by"]);
-          const n = parseInt(summary.trim(), 10);
-          if (!isNaN(n)) blockedByCount = n;
-        } catch {}
-      }
-      return {
-        number: raw.number,
-        title: raw.title,
-        state: (raw.state?.toLowerCase() ?? "open") as "open" | "closed",
-        labels: (raw.labels ?? []).map((l: any) => l.name),
-        assignees: (raw.assignees ?? []).map((a: any) => a.login),
-        blockedByCount,
-        body: raw.body,
-      };
-    },
-    applyClaim: async (applyId: string) => {
-      await runGh(["issue", "edit", applyId, "--add-assignee", "@me", "--add-label", "agent:in-progress"]);
-    },
-    verifyClaim: async (verifyId: string) => {
-      const rawJson = await runGh(["issue", "view", verifyId, "--json", "number,title,body,labels,assignees,state"]);
-      let raw: any;
-      try { raw = JSON.parse(rawJson); } catch { throw new Error(`failed to parse verify for #${verifyId}`); }
-      const ownerRepo = parseOwnerRepo();
-      let blockedByCount: number | undefined = undefined;
-      if (ownerRepo) {
-        try {
-          const summary = await runGh(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/issues/${verifyId}`, "--jq", ".issue_dependencies_summary.blocked_by"]);
-          const n = parseInt(summary.trim(), 10);
-          if (!isNaN(n)) blockedByCount = n;
-        } catch {}
-      }
-      return {
-        number: raw.number,
-        title: raw.title,
-        state: (raw.state?.toLowerCase() ?? "open") as "open" | "closed",
-        labels: (raw.labels ?? []).map((l: any) => l.name),
-        assignees: (raw.assignees ?? []).map((a: any) => a.login),
-        blockedByCount,
-        body: raw.body,
-      };
-    },
-    compensateClaim: async (compId: string) => {
-      try {
-        await runGh(["issue", "edit", compId, "--remove-label", "agent:in-progress", "--remove-assignee", "@me"]);
-        return true;
-      } catch { return false; }
-    },
-  };
-  try {
-    const result = await trackerClaimResearch(id, ops);
-    if (result.success) {
-      try {
-        await runGh(["issue", "comment", id, "--body", `Sandcastle claiming #${id} for AFK research on \`${branch}\` -- \`${issue.title}\``]);
-      } catch {}
-      console.log(`  Claimed research #${id} → ${branch}`);
-      return true;
-    } else {
-      console.warn(`  Research claim failed for #${id}: ${result.reason} (code=${result.code})`);
-      if ((result as any).factoryError) {
-        console.error(`  FACTORY_ERROR research #${id}: compensation failed — ${result.reason}`);
-        throw new Error(`FACTORY_ERROR research #${id}: ${result.reason}`);
-      }
-      return false;
-    }
-  } catch (error: unknown) {
-    const msg = error instanceof Error ? error.message : String(error);
-    if (msg.includes("FACTORY_ERROR")) throw error;
-    console.warn(`  Research claim failed for #${id}: ${msg}`);
-    return false;
+  if (result.kind === "committed") {
+    try {
+      await runGh(["issue", "comment", id, "--body", `Sandcastle claiming #${id} for AFK research on \`${branch}\` -- \`${issue.title}\``]);
+    } catch {}
+    console.log(`  Claimed research #${id} → ${branch}`);
+    return true;
   }
+  if (result.kind === "indeterminate") {
+    console.error(`  FACTORY_ERROR research #${id}: compensation failed — ${result.receipt.reason}`);
+    throw new Error(`FACTORY_ERROR research #${id}: ${result.receipt.reason}`);
+  }
+  console.warn(`  Research claim failed for #${id}: ${result.receipt.reason ?? result.receipt.code} (code=${result.receipt.code})`);
+  return false;
 }
 
 async function transitionToBlocked(issueId: string): Promise<boolean> {

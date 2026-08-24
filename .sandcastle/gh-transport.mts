@@ -41,13 +41,14 @@ export interface GhRunResult {
   stdout: string;
 }
 
-export class GhCapabilityError extends Error {
-  readonly command: string[];
+/**
+ * Single capability error type. Extends GitHubWriteForbiddenError so existing
+ * instanceof checks in consumers keep working — one taxonomy, not two.
+ */
+export class GhCapabilityError extends GitHubWriteForbiddenError {
   constructor(command: string[]) {
-    const cmd = command.join(" ");
-    super(`gh write operation forbidden for transport capability mode: ${cmd}`);
+    super(command);
     this.name = "GhCapabilityError";
-    this.command = [...command];
   }
 }
 

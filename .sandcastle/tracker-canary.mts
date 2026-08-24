@@ -13,10 +13,10 @@ import { claimImplementation, reconcileStaleImplementation, type ClaimOps } from
 import { createGhTransport, type GhTransport } from "./gh-transport.mts";
 import * as fs2 from "node:fs";
 import * as path2 from "node:path";
-import { pathToFileURL } from "node:url";
+import { pathToFileURL, fileURLToPath } from "node:url";
 
 // REPO_ROOT for canary: stable repo root two levels above this module's directory.
-const CANARY_REPO_ROOT = path2.resolve(path2.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1")), "..");
+const CANARY_REPO_ROOT = path2.resolve(path2.dirname(fileURLToPath(import.meta.url)), "..");
 
 export interface CanaryResult {
   implementationDiscoverableOnlyWithReadyAndImplement: boolean;
