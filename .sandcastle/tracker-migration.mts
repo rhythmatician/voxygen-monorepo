@@ -132,19 +132,35 @@ export function planMigration(issues: IssueInput[], explicitTaskPlan: Record<num
     }
 
     if (isResearch) {
-      // Historical Research carrying retired agent:research is cleanup work, not ambiguous
+      // Historical Research carrying retired agent:research — classify truthfully after removal
       if (validation.retired.length > 0 && validation.retired.some(r => r.labels?.includes(AGENT_RESEARCH_RETIRED))) {
-        // Already planned removal of retired label at top; treat as cleanup, not ambiguous
         const residue = getRemovableResidueLabels(issue);
         if (residue.length > 0 && !plan.plannedMutations.some(m => m.issue === issue.number)) {
           plan.plannedMutations.push({ issue: issue.number, addLabels: [], removeLabels: residue, reason: "remove historical redundancy residue" });
         }
-        // Consider as newly eligible after cleanup if body valid, otherwise still cleanup
-        if (isResearchEligible({ ...issue, labels: issue.labels.filter(l => l !== AGENT_RESEARCH_RETIRED) }).eligible) {
+        const normalized = { ...issue, labels: issue.labels.filter(l => l !== AGENT_RESEARCH_RETIRED) };
+        const normalizedEligibility = isResearchEligible(normalized as any);
+        if (normalizedEligibility.eligible) {
           plan.newlyEligibleResearch.push(issue.number);
         } else {
-          // Still counts as cleanup, not ambiguous
-          plan.newlyEligibleResearch.push(issue.number);
+          const ncode = (normalizedEligibility as any).code as string | undefined;
+          const nreason = (normalizedEligibility as any).reason as string | undefined ?? "";
+          const isBlocked = ncode === "BLOCKED" || ncode === "ALREADY_ASSIGNED" || ncode === "ALREADY_IN_PROGRESS" || ncode === "ALREADY_BLOCKED"
+            || nreason.includes("already assigned") || nreason.includes("already has") || nreason.includes("blocked by");
+          const isUnknownOrInvalid = ncode === "BLOCKED_UNKNOWN" || nreason.includes("blocked state unknown") || nreason.includes("invalid") || nreason.includes("Question") || nreason.toLowerCase().includes("contradiction") || nreason.includes("multiple wayfinder");
+          if (isBlocked) {
+            plan.blockedResearch.push(issue.number);
+          } else if (isUnknownOrInvalid || ncode) {
+            plan.ambiguousResearch.push(issue.number);
+            // Surface blocking problem for historical research that is ambiguous after cleanup
+            if (ncode && !plan.contradictions.some(c => c.issue === issue.number && c.code === ncode)) {
+              plan.contradictions.push({ issue: issue.number, code: ncode, reason: nreason });
+            } else if (!ncode) {
+              plan.contradictions.push({ issue: issue.number, code: "HISTORICAL_RESEARCH_AMBIGUOUS", reason: nreason });
+            }
+          } else {
+            plan.ambiguousResearch.push(issue.number);
+          }
         }
         continue;
       }
@@ -335,7 +351,7 @@ export async function runTrackerMigration(opts: {
   reviewedReceipt?: ReviewedReceipt;
   explicitTaskPlan?: Record<number, string>;
   candidateHeadSha?: string;
-}): Promise<{ plan: MigrationPlan; receipt: ReviewedReceipt; before: ReviewedReceipt; after?: ReviewedReceipt; applied: boolean }> {
+}): Promise<{ plan: MigrationPlan; receipt: ReviewedReceipt; before: ReviewedReceipt; after?: ReviewedReceipt; afterPlan?: MigrationPlan; applied: boolean; blockingProblems: boolean; migrationRequired: boolean; checkPassed: boolean }> {
   const issues = await opts.inventoryOps.listOpenIssues();
   const labelDescriptions = await opts.inventoryOps.getLabelDescriptions();
   const retiredRaw = await opts.inventoryOps.getRetiredLabelsExist();
@@ -353,7 +369,10 @@ export async function runTrackerMigration(opts: {
   const plan = planMigration(relevant, opts.explicitTaskPlan);
   const before = buildReviewedReceipt(relevant, labelDescriptions, retiredExist, plan, headSha);
   if (opts.mode === "dry-run" || opts.mode === "check") {
-    return { plan, receipt: before, before, applied: false };
+    const blockingProblems = hasBlockingMigrationProblems(plan);
+    const migrationNeeded = migrationRequired(plan, { labelDescriptions, retiredLabelsExist: retiredExist });
+    const checkPassed = !blockingProblems && !migrationNeeded;
+    return { plan, receipt: before, before, applied: false, blockingProblems, migrationRequired: migrationNeeded, checkPassed };
   }
   // apply mode — reviewedReceipt is required
   if (!opts.reviewedReceipt) {
@@ -422,7 +441,10 @@ export async function runTrackerMigration(opts: {
       throw new Error("postcondition failed: migration still required after no-op");
     }
     const after = buildReviewedReceipt(afterRelevant, afterLabelDescs, afterRetired, afterPlan, afterHead);
-    return { plan, receipt: before, before, after, applied: false };
+    const blockingProblems = hasBlockingMigrationProblems(afterPlan);
+    const migrationNeeded = migrationRequired(afterPlan, { labelDescriptions: afterLabelDescs, retiredLabelsExist: afterRetired });
+    const checkPassed = !blockingProblems && !migrationNeeded;
+    return { plan, receipt: before, before, after, afterPlan, applied: false, blockingProblems, migrationRequired: migrationNeeded, checkPassed };
   }
   if (!opts.mutationOps) throw new Error("mutationOps required for apply");
   // Phase 1: normalize issue labels
@@ -485,7 +507,10 @@ export async function runTrackerMigration(opts: {
   let afterHead = headSha;
   if (opts.inventoryOps.getHeadSha) { try { afterHead = await opts.inventoryOps.getHeadSha(); } catch {} }
   const after = buildReviewedReceipt(afterRelevant, afterLabelDescs, afterRetired, afterPlan, afterHead);
-  return { plan, receipt: before, before, after, applied: true };
+  const blockingProblems = hasBlockingMigrationProblems(afterPlan);
+  const migrationNeeded = migrationRequired(afterPlan, { labelDescriptions: afterLabelDescs, retiredLabelsExist: afterRetired });
+  const checkPassed = !blockingProblems && !migrationNeeded;
+  return { plan, receipt: before, before, after, afterPlan, applied: true, blockingProblems, migrationRequired: migrationNeeded, checkPassed };
 }
 
 export interface ApplyOps {
@@ -519,7 +544,8 @@ export function isCheckFailed(plan: MigrationPlan): boolean {
   return hasBlockingMigrationProblems(plan) || migrationRequired(plan);
 }
 
-export function formatReceipt(plan: MigrationPlan, mode: string): string {
+export function formatReceipt(plan: MigrationPlan, mode: string, verdict?: { checkPassed: boolean; blockingProblems?: boolean; migrationRequired?: boolean }): string {
+  const checkPassed = verdict ? verdict.checkPassed : !isCheckFailed(plan);
   return JSON.stringify({
     mode,
     newlyEligibleResearch: plan.newlyEligibleResearch,
@@ -532,8 +558,13 @@ export function formatReceipt(plan: MigrationPlan, mode: string): string {
     unchangedIssues: plan.unchangedIssues,
     labelDescriptionUpdates: plan.labelDescriptionUpdates,
     retiredLabelsToDelete: plan.retiredLabelsToDelete,
-    checkPassed: !isCheckFailed(plan),
+    checkPassed,
+    blockingProblems: verdict?.blockingProblems,
+    migrationRequired: verdict?.migrationRequired,
   }, null, 2);
+}
+export function formatReceiptFromResult(result: { plan: MigrationPlan; checkPassed: boolean; blockingProblems: boolean; migrationRequired: boolean }, mode: string): string {
+  return formatReceipt(result.plan, mode, { checkPassed: result.checkPassed, blockingProblems: result.blockingProblems, migrationRequired: result.migrationRequired });
 }
 
 // CLI adapter — testable entry point that constructs real ops then delegates to runTrackerMigration only
@@ -633,10 +664,8 @@ export async function runTrackerMigrationCli(args: string[], deps: CliDeps = {})
         return map;
       } catch (e) {
         const msg = String(e).toLowerCase();
-        // Distinguish 404 (label absent) vs unknown failure
         if (msg.includes("404") || msg.includes("not found")) {
-          // For bulk, 404 means no labels? Treat as empty but not unknown
-          return {};
+          throw new Error(`failed to fetch repository labels (bulk): ${e}`);
         }
         // For bulk failure, try per-label with 404 vs unknown
         const map: Record<string,string> = {};
@@ -710,11 +739,8 @@ export async function runTrackerMigrationCli(args: string[], deps: CliDeps = {})
   if (mode === "check") {
     let result;
     try { result = await runTrackerMigration({ mode: "check", inventoryOps }); } catch (e) { console.error(`CHECK inventory failed: ${e}`); return { exitCode: 1 }; }
-    // Use live state for authoritative check
-    const liveCheckFailed = hasBlockingMigrationProblems(result.plan) || migrationRequired(result.plan, { labelDescriptions: result.receipt.labelDescriptions, retiredLabelsExist: result.receipt.retiredLabelsExist });
-    console.log(formatReceipt(result.plan, mode));
-    // Also update formatReceipt to use live state? formatReceipt currently uses isCheckFailed without repo, but we ensure check uses live
-    if (liveCheckFailed) {
+    console.log(formatReceipt(result.plan, mode, { checkPassed: result.checkPassed, blockingProblems: result.blockingProblems, migrationRequired: result.migrationRequired }));
+    if (!result.checkPassed) {
       console.error("CHECK FAILED: migration required or contradictions exist (live state)");
       return { exitCode: 1, plan: result.plan };
     } else {
@@ -729,7 +755,7 @@ export async function runTrackerMigrationCli(args: string[], deps: CliDeps = {})
     if (!headSha || headSha === "unknown") { console.error("Failed to resolve exact HEAD SHA"); return { exitCode: 1 }; }
     let result;
     try { result = await runTrackerMigration({ mode: "dry-run", inventoryOps, candidateHeadSha: headSha }); } catch (e) { console.error(`Dry-run inventory failed: ${e}`); return { exitCode: 1 }; }
-    console.log(formatReceipt(result.plan, mode));
+    console.log(formatReceipt(result.plan, mode, { checkPassed: result.checkPassed, blockingProblems: result.blockingProblems, migrationRequired: result.migrationRequired }));
     const receiptPath = ".sandcastle/logs/migration-dry-run-receipt.json";
     try { mkdir(".sandcastle/logs", { recursive: true }); } catch (e) { console.error(`Failed to create logs dir: ${e}`); return { exitCode: 1 }; }
     try { writeFile(receiptPath, JSON.stringify(result.receipt, null, 2)); console.log(`Dry-run receipt written to ${receiptPath}`); } catch (e) { console.error(`Failed to write dry-run receipt: ${e}`); return { exitCode: 1 }; }
@@ -762,8 +788,11 @@ export async function runTrackerMigrationCli(args: string[], deps: CliDeps = {})
       const persisted = {
         before: result.before,
         after: result.after,
+        afterPlan: result.afterPlan,
         applied: result.applied,
-        checkPassed: !hasBlockingMigrationProblems(result.plan) && !migrationRequired(result.plan, { labelDescriptions: result.after ? result.after.labelDescriptions : result.before.labelDescriptions, retiredLabelsExist: result.after ? result.after.retiredLabelsExist : result.before.retiredLabelsExist }),
+        checkPassed: result.checkPassed,
+        blockingProblems: result.blockingProblems,
+        migrationRequired: result.migrationRequired,
         receipt: result.receipt,
         beforeReceipt: result.before,
         afterReceipt: result.after,

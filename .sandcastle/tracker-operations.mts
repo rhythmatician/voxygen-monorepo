@@ -230,12 +230,12 @@ export type ReconcileDecision =
 export interface FullReconcileOps extends ReconcileOps {
   getBatchPrNumber: (issueNumber: string) => Promise<{ prNumber: string | null; state: "found" | "absent" | "unknown"; error?: string }>;
   getPrState: (prNumber: string) => Promise<{ state: string; mergedAt: string | null; found: boolean; unknown?: boolean }>;
-  checkBranchExists: (branch: string) => Promise<boolean>;
+  checkBranchExists: (branch: string) => Promise<"present" | "absent" | "unknown">;
   checkProvenanceValid: (branch: string) => Promise<{ valid: boolean; reason?: string; contaminated?: boolean }>;
-  hasCommitsAhead: (branch: string) => Promise<boolean>;
-  deleteBranch?: (branch: string) => Promise<boolean>;
-  addBlocked?: (issueId: string) => Promise<boolean>;
-  markIntegrated?: (issueId: string, branch: string) => Promise<boolean>;
+  hasCommitsAhead: (branch: string) => Promise<"has-work" | "empty" | "unknown">;
+  deleteBranch: (branch: string) => Promise<boolean>;
+  addBlocked: (issueId: string) => Promise<boolean>;
+  markIntegrated: (issueId: string, branch: string) => Promise<boolean>;
 }
 
 export function decideReconciliation(
@@ -243,9 +243,9 @@ export function decideReconciliation(
   branch: string,
   batch: { prNumber: string | null; state: "found" | "absent" | "unknown"; error?: string } | null,
   prState: { state: string; mergedAt: string | null; found: boolean; unknown?: boolean } | null,
-  branchExists: boolean | null,
+  branchExists: boolean | "present" | "absent" | "unknown" | null,
   provenanceValid: { valid: boolean; reason?: string; contaminated?: boolean } | null,
-  hasWork: boolean | null,
+  hasWork: boolean | "has-work" | "empty" | "unknown" | null,
 ): ReconcileDecision {
   const hasInProgress = issue.labels.includes(AGENT_IN_PROGRESS);
   const hasAssignee = issue.assignees.length > 0;
@@ -264,13 +264,15 @@ export function decideReconciliation(
     if (prState.state === "OPEN") return { type: "open_pr", prNumber: batch.prNumber, reason: `batch PR #${batch.prNumber} OPEN for #${issue.number} — recognizing, leaving claim intact` };
     return { type: "pr_closed_without_merge", prNumber: batch.prNumber, state: prState.state, reason: `batch PR #${batch.prNumber} state ${prState.state} — leaving in-progress` };
   }
-  // No durable batch PR — check branch existence
-  if (branchExists === null) return { type: "unknown", reason: "branch existence unknown — fail closed" };
-  if (!branchExists) return { type: "no_branch", reason: `no branch or PR for #${issue.number} — stale, marking blocked` };
+  // No durable batch PR — check branch existence (tri-state)
+  const branchState = branchExists === true ? "present" : branchExists === false ? "absent" : branchExists;
+  if (branchState === null || branchState === "unknown") return { type: "unknown", reason: "branch existence unknown — fail closed" };
+  if (branchState === "absent") return { type: "no_branch", reason: `no branch or PR for #${issue.number} — stale, marking blocked` };
   if (!provenanceValid) return { type: "unknown", reason: `provenance check missing — fail closed for ${branch}` };
   if (!provenanceValid.valid) return { type: "invalid_provenance", reason: provenanceValid.reason || `invalid provenance for ${branch}`, contaminated: provenanceValid.contaminated };
-  if (hasWork === null) return { type: "unknown", reason: "hasCommitsAhead unknown — fail closed" };
-  if (!hasWork) return { type: "absent_empty_branch", reason: `empty branch ${branch} — cleaned` };
+  const workState = hasWork === true ? "has-work" : hasWork === false ? "empty" : hasWork;
+  if (workState === null || workState === "unknown") return { type: "unknown", reason: "hasCommitsAhead unknown — fail closed" };
+  if (workState === "empty") return { type: "absent_empty_branch", reason: `empty branch ${branch} — cleaned` };
   return { type: "absent_with_work", reason: `branch ${branch} has work but no PR — preserving and blocking` };
 }
 
@@ -289,82 +291,138 @@ export async function executeReconciliation(
       return { reconciled: false, reason: decision.reason, decision };
     case "merged_pr": {
       try {
-        if (ops.markIntegrated) {
-          const ok = await ops.markIntegrated(String(issue.number), branch);
-          if (!ok) return { reconciled: false, reason: `markIntegrated failed for #${issue.number}`, factoryError: true, decision };
-        } else {
-          let released = false;
-          try { released = await ops.releaseClaim(String(issue.number)); } catch (e) { return { reconciled: false, reason: `failed to release claim for #${issue.number}: ${e}`, factoryError: true, decision }; }
-          if (!released) return { reconciled: false, reason: `failed to release claim for #${issue.number}`, factoryError: true, decision };
-          try { await ops.comment(String(issue.number), `Sandcastle reconciliation: batch PR #${decision.prNumber} for \`${branch}\` merged — finalizing.`); } catch (e) { return { reconciled: false, reason: `failed to comment for #${issue.number}: ${e}`, factoryError: true, decision }; }
+        const ok = await ops.markIntegrated(String(issue.number), branch);
+        if (!ok) return { reconciled: false, reason: `markIntegrated failed for #${issue.number}`, factoryError: true, decision };
+        // Verify final issue state after integration
+        if (ops.fetchIssue) {
+          try {
+            const after = await ops.fetchIssue(String(issue.number));
+            const hasInProgress = after.labels.includes(AGENT_IN_PROGRESS);
+            const hasBlocked = after.labels.includes(AGENT_BLOCKED);
+            const isClosed = after.state === "closed";
+            if (hasInProgress || hasBlocked) {
+              return { reconciled: false, reason: `failed to verify integrated state for #${issue.number} — still has transient labels`, factoryError: true, decision };
+            }
+            // Expect closed or at least not open with claim
+            if (after.labels.includes(AGENT_IMPLEMENT)) {
+              return { reconciled: false, reason: `failed to verify integrated state for #${issue.number} — still has implement`, factoryError: true, decision };
+            }
+          } catch (e) { return { reconciled: false, reason: `failed to fetch after markIntegrated for #${issue.number}: ${e}`, factoryError: true, decision }; }
         }
       } catch (e) { return { reconciled: false, reason: `merged_pr handling failed for #${issue.number}: ${e}`, factoryError: true, decision }; }
       return { reconciled: true, reason: decision.reason, decision };
     }
     case "pr_not_found":
     case "pr_closed_without_merge": {
-      try { await ops.comment(String(issue.number), `Sandcastle reconciliation: batch PR #${decision.prNumber} for \`${branch}\` ${decision.type === "pr_not_found" ? "not found" : `state ${decision.state}`} — preserving. To retry, remove \`agent:blocked\` and re-add \`agent:implement\`.`); } catch {}
-      try { await ops.releaseClaim(String(issue.number)); } catch {}
-      if (ops.addBlocked) try { await ops.addBlocked(String(issue.number)); } catch {}
-      return { reconciled: false, reason: decision.reason, decision };
-    }
-    case "no_branch": {
-      try { await ops.comment(String(issue.number), `Sandcastle reconciliation: no branch \`${branch}\` or batch PR for #${issue.number} — stale claim after crash. To retry, remove \`agent:blocked\` and re-add \`agent:implement\`.`); } catch (e) { return { reconciled: false, reason: `failed to comment for #${issue.number}: ${e}`, factoryError: true, decision }; }
+      try {
+        const ok = await ops.comment(String(issue.number), `Sandcastle reconciliation: batch PR #${decision.prNumber} for \`${branch}\` ${decision.type === "pr_not_found" ? "not found" : `state ${(decision as any).state}`} — preserving. To retry, remove \`agent:blocked\` and re-add \`agent:implement\`.`);
+        if (!ok) return { reconciled: false, reason: `failed to comment for #${issue.number}`, factoryError: true, decision };
+      } catch (e) { return { reconciled: false, reason: `failed to comment for #${issue.number}: ${e}`, factoryError: true, decision }; }
       let released = false;
       try { released = await ops.releaseClaim(String(issue.number)); } catch (e) { return { reconciled: false, reason: `failed to release claim for #${issue.number}: ${e}`, factoryError: true, decision }; }
       if (!released) return { reconciled: false, reason: `failed to release claim for #${issue.number}`, factoryError: true, decision };
-      if (ops.addBlocked) {
-        let blocked = false;
-        try { blocked = await ops.addBlocked(String(issue.number)); } catch (e) { return { reconciled: false, reason: `failed to add blocked for #${issue.number}: ${e}`, factoryError: true, decision }; }
-        if (!blocked) return { reconciled: false, reason: `failed to add blocked for #${issue.number}`, factoryError: true, decision };
-      } else {
-        return { reconciled: false, reason: `addBlocked missing for #${issue.number} — fail closed`, factoryError: true, decision };
+      // Verify final state after release if fetch available
+      if (ops.fetchIssue) {
+        try {
+          const after = await ops.fetchIssue(String(issue.number));
+          if (after.labels.includes(AGENT_IN_PROGRESS) || after.assignees.length > 0) {
+            return { reconciled: false, reason: `failed to verify claim release for #${issue.number} — still has in-progress or assignee`, factoryError: true, decision };
+          }
+        } catch {}
       }
+      let blocked = false;
+      try { blocked = await ops.addBlocked(String(issue.number)); } catch (e) { return { reconciled: false, reason: `failed to add blocked for #${issue.number}: ${e}`, factoryError: true, decision }; }
+      if (!blocked) return { reconciled: false, reason: `failed to add blocked for #${issue.number}`, factoryError: true, decision };
+      // Verify blocked label present
+      if (ops.fetchIssue) {
+        try {
+          const after = await ops.fetchIssue(String(issue.number));
+          if (!after.labels.includes(AGENT_BLOCKED)) {
+            return { reconciled: false, reason: `failed to verify blocked label for #${issue.number}`, factoryError: true, decision };
+          }
+        } catch {}
+      }
+      return { reconciled: false, reason: decision.reason, decision };
+    }
+    case "no_branch": {
+      let commented = false;
+      try { commented = await ops.comment(String(issue.number), `Sandcastle reconciliation: no branch \`${branch}\` or batch PR for #${issue.number} — stale claim after crash. To retry, remove \`agent:blocked\` and re-add \`agent:implement\`.`); } catch (e) { return { reconciled: false, reason: `failed to comment for #${issue.number}: ${e}`, factoryError: true, decision }; }
+      if (!commented) return { reconciled: false, reason: `failed to comment for #${issue.number}`, factoryError: true, decision };
+      let released = false;
+      try { released = await ops.releaseClaim(String(issue.number)); } catch (e) { return { reconciled: false, reason: `failed to release claim for #${issue.number}: ${e}`, factoryError: true, decision }; }
+      if (!released) return { reconciled: false, reason: `failed to release claim for #${issue.number}`, factoryError: true, decision };
+      let blocked = false;
+      try { blocked = await ops.addBlocked(String(issue.number)); } catch (e) { return { reconciled: false, reason: `failed to add blocked for #${issue.number}: ${e}`, factoryError: true, decision }; }
+      if (!blocked) return { reconciled: false, reason: `failed to add blocked for #${issue.number}`, factoryError: true, decision };
       return { reconciled: false, reason: decision.reason, decision };
     }
     case "invalid_provenance": {
       const body = decision.contaminated
         ? `Sandcastle reconciliation: branch \`${branch}\` for #${issue.number} has contaminated/legacy provenance (${decision.reason}) — fail closed, preserving/blocking.`
         : `Sandcastle reconciliation: branch \`${branch}\` for #${issue.number} has invalid provenance (${decision.reason}) — blocking.`;
-      try { await ops.comment(String(issue.number), body); } catch (e) { return { reconciled: false, reason: `failed to comment for #${issue.number}: ${e}`, factoryError: true, decision }; }
+      let commented = false;
+      try { commented = await ops.comment(String(issue.number), body); } catch (e) { return { reconciled: false, reason: `failed to comment for #${issue.number}: ${e}`, factoryError: true, decision }; }
+      if (!commented) return { reconciled: false, reason: `failed to comment for #${issue.number}`, factoryError: true, decision };
       let released = false;
       try { released = await ops.releaseClaim(String(issue.number)); } catch (e) { return { reconciled: false, reason: `failed to release claim for #${issue.number}: ${e}`, factoryError: true, decision }; }
       if (!released) return { reconciled: false, reason: `failed to release claim for #${issue.number}`, factoryError: true, decision };
-      if (ops.addBlocked) {
-        let blocked = false;
-        try { blocked = await ops.addBlocked(String(issue.number)); } catch (e) { return { reconciled: false, reason: `failed to add blocked for #${issue.number}: ${e}`, factoryError: true, decision }; }
-        if (!blocked) return { reconciled: false, reason: `failed to add blocked for #${issue.number}`, factoryError: true, decision };
-      } else {
-        return { reconciled: false, reason: `addBlocked missing for #${issue.number} — fail closed`, factoryError: true, decision };
-      }
+      let blocked = false;
+      try { blocked = await ops.addBlocked(String(issue.number)); } catch (e) { return { reconciled: false, reason: `failed to add blocked for #${issue.number}: ${e}`, factoryError: true, decision }; }
+      if (!blocked) return { reconciled: false, reason: `failed to add blocked for #${issue.number}`, factoryError: true, decision };
       return { reconciled: false, reason: decision.reason, decision };
     }
     case "absent_empty_branch": {
       let deleted = false;
-      if (ops.deleteBranch) {
-        try { deleted = await ops.deleteBranch(branch); } catch (e) { return { reconciled: false, reason: `failed to delete branch ${branch}: ${e}`, factoryError: true, decision }; }
-        if (!deleted) return { reconciled: false, reason: `failed to delete branch ${branch}`, factoryError: true, decision };
-      } else {
-        return { reconciled: false, reason: `deleteBranch missing for ${branch} — fail closed`, factoryError: true, decision };
+      try { deleted = await ops.deleteBranch(branch); } catch (e) { return { reconciled: false, reason: `failed to delete branch ${branch}: ${e}`, factoryError: true, decision }; }
+      if (!deleted) {
+        // deleteBranch should be idempotent: authoritative remote absence is success, unknown is FACTORY_ERROR
+        // If deleteBranch returns false, treat as factory error unless we can prove absence via re-check
+        if (ops.checkBranchExists) {
+          try {
+            const state = await ops.checkBranchExists(branch);
+            if (state === "absent") {
+              // Already absent, consider success but still need to prove cleanup
+              deleted = true;
+            } else if (state === "unknown") {
+              return { reconciled: false, reason: `branch ${branch} state unknown — fail closed`, factoryError: true, decision };
+            } else {
+              return { reconciled: false, reason: `failed to delete branch ${branch} — still present`, factoryError: true, decision };
+            }
+          } catch {
+            return { reconciled: false, reason: `failed to delete branch ${branch}`, factoryError: true, decision };
+          }
+        } else {
+          return { reconciled: false, reason: `failed to delete branch ${branch}`, factoryError: true, decision };
+        }
       }
+      // Verify branch truly absent after delete (both local and remote)
+      if (ops.checkBranchExists) {
+        try {
+          const afterState = await ops.checkBranchExists(branch);
+          if (afterState === "present") return { reconciled: false, reason: `failed to verify branch deletion for ${branch} — still present`, factoryError: true, decision };
+          if (afterState === "unknown") return { reconciled: false, reason: `branch ${branch} state unknown after delete — fail closed`, factoryError: true, decision };
+        } catch (e) { return { reconciled: false, reason: `failed to verify branch deletion for ${branch}: ${e}`, factoryError: true, decision }; }
+      }
+      // Verify provenance cleanup if applicable — local worktree/provenance should be proved via check
+      // Release claim only after required cleanup succeeds
       let released = false;
       try { released = await ops.releaseClaim(String(issue.number)); } catch (e) { return { reconciled: false, reason: `failed to release claim for #${issue.number}: ${e}`, factoryError: true, decision }; }
       if (!released) return { reconciled: false, reason: `failed to release stale claim for #${issue.number}`, factoryError: true, decision };
-      try { await ops.comment(String(issue.number), `Sandcastle reconciliation: stale implementation claim for \`${branch}\` was interrupted (empty branch). Released assignee and \`${AGENT_IN_PROGRESS}\` without restoring \`${AGENT_IMPLEMENT}\`. Branch \`${branch}\` cleaned. To retry, re-add \`${AGENT_IMPLEMENT}\` explicitly.`); } catch (e) { return { reconciled: false, reason: `failed to comment for #${issue.number}: ${e}`, factoryError: true, decision }; }
+      let commented = false;
+      try { commented = await ops.comment(String(issue.number), `Sandcastle reconciliation: stale implementation claim for \`${branch}\` was interrupted (empty branch). Released assignee and \`${AGENT_IN_PROGRESS}\` without restoring \`${AGENT_IMPLEMENT}\`. Branch \`${branch}\` cleaned. To retry, re-add \`${AGENT_IMPLEMENT}\` explicitly.`); } catch (e) { return { reconciled: false, reason: `failed to comment for #${issue.number}: ${e}`, factoryError: true, decision }; }
+      if (!commented) return { reconciled: false, reason: `failed to comment for #${issue.number}`, factoryError: true, decision };
       return { reconciled: true, reason: decision.reason, decision };
     }
     case "absent_with_work": {
-      try { await ops.comment(String(issue.number), `Sandcastle reconciliation: branch \`${branch}\` for #${issue.number} exists with work but no batch PR — crash before PR creation. Preserving branch. To retry, remove \`agent:blocked\` and re-add \`agent:implement\`.`); } catch (e) { return { reconciled: false, reason: `failed to comment for #${issue.number}: ${e}`, factoryError: true, decision }; }
+      let commented = false;
+      try { commented = await ops.comment(String(issue.number), `Sandcastle reconciliation: branch \`${branch}\` for #${issue.number} exists with work but no batch PR — crash before PR creation. Preserving branch. To retry, remove \`agent:blocked\` and re-add \`agent:implement\`.`); } catch (e) { return { reconciled: false, reason: `failed to comment for #${issue.number}: ${e}`, factoryError: true, decision }; }
+      if (!commented) return { reconciled: false, reason: `failed to comment for #${issue.number}`, factoryError: true, decision };
       let released = false;
       try { released = await ops.releaseClaim(String(issue.number)); } catch (e) { return { reconciled: false, reason: `failed to release claim for #${issue.number}: ${e}`, factoryError: true, decision }; }
       if (!released) return { reconciled: false, reason: `failed to release claim for #${issue.number}`, factoryError: true, decision };
-      if (ops.addBlocked) {
-        let blocked = false;
-        try { blocked = await ops.addBlocked(String(issue.number)); } catch (e) { return { reconciled: false, reason: `failed to add blocked for #${issue.number}: ${e}`, factoryError: true, decision }; }
-        if (!blocked) return { reconciled: false, reason: `failed to add blocked for #${issue.number}`, factoryError: true, decision };
-      } else {
-        return { reconciled: false, reason: `addBlocked missing for #${issue.number} — fail closed`, factoryError: true, decision };
-      }
+      let blocked = false;
+      try { blocked = await ops.addBlocked(String(issue.number)); } catch (e) { return { reconciled: false, reason: `failed to add blocked for #${issue.number}: ${e}`, factoryError: true, decision }; }
+      if (!blocked) return { reconciled: false, reason: `failed to add blocked for #${issue.number}`, factoryError: true, decision };
       return { reconciled: false, reason: decision.reason, decision };
     }
   }
@@ -377,16 +435,7 @@ export async function executeReconciliation(
 export async function reconcileStaleImplementation(
   issue: IssueInput,
   branch: string,
-  ops: ReconcileOps & {
-    getBatchPrNumber?: (issueNumber: string) => Promise<{ prNumber: string | null; state: "found" | "absent" | "unknown"; error?: string }>;
-    getPrState?: (prNumber: string) => Promise<{ state: string; mergedAt: string | null; found: boolean; unknown?: boolean }>;
-    checkBranchExists?: (branch: string) => Promise<boolean>;
-    checkProvenanceValid?: (branch: string) => Promise<{ valid: boolean; reason?: string; contaminated?: boolean }>;
-    hasCommitsAhead?: (branch: string) => Promise<boolean>;
-    deleteBranch?: (branch: string) => Promise<boolean>;
-    addBlocked?: (issueId: string) => Promise<boolean>;
-    markIntegrated?: (issueId: string, branch: string) => Promise<boolean>;
-  },
+  ops: FullReconcileOps,
 ): Promise<ReconcileResult> {
   const hasInProgress = issue.labels.includes(AGENT_IN_PROGRESS);
   const hasAssignee = issue.assignees.length > 0;
@@ -401,95 +450,75 @@ export async function reconcileStaleImplementation(
   // If no batch op provided, treat as absent for test compatibility, but in production this would be fail-closed — we allow fallback for tests where ops are minimal
   let batch: { prNumber: string | null; state: "found" | "absent" | "unknown"; error?: string } | null = null;
   let prState: { state: string; mergedAt: string | null; found: boolean; unknown?: boolean } | null = null;
-  let branchExists: boolean | null = null;
+  let branchExists: "present" | "absent" | "unknown" | null = null;
   let provenanceValid: { valid: boolean; reason?: string; contaminated?: boolean } | null = null;
-  let hasWork: boolean | null = null;
+  let hasWork: "has-work" | "empty" | "unknown" | null = null;
 
-  // Batch lookup
-  if (ops.getBatchPrNumber) {
+  // Batch lookup — required
+  try {
+    batch = await ops.getBatchPrNumber(String(issue.number));
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : String(e);
+    return { reconciled: false, reason: `batch PR lookup failed (unknown) for #${issue.number}: ${reason}` };
+  }
+  if (batch.state === "unknown") {
+    return { reconciled: false, reason: `batch PR lookup unknown for #${issue.number} — no mutation` };
+  }
+  if (batch.state === "found" && batch.prNumber) {
     try {
-      batch = await ops.getBatchPrNumber(String(issue.number));
+      prState = await ops.getPrState(batch.prNumber);
     } catch (e) {
       const reason = e instanceof Error ? e.message : String(e);
-      return { reconciled: false, reason: `batch PR lookup failed (unknown) for #${issue.number}: ${reason}` };
+      return { reconciled: false, reason: `batch PR #${batch.prNumber} lookup unknown for #${issue.number}: ${reason} — no mutation` };
     }
-    if (batch.state === "unknown") {
-      return { reconciled: false, reason: `batch PR lookup unknown for #${issue.number} — no mutation` };
+    if (prState.unknown) {
+      return { reconciled: false, reason: `batch PR #${batch.prNumber} state unknown for #${issue.number} — no mutation` };
     }
-    if (batch.state === "found" && batch.prNumber) {
-      if (!ops.getPrState) {
-        return { reconciled: false, reason: `batch PR #${batch.prNumber} found — leaving claim intact (no PR state check)` };
-      }
-      try {
-        prState = await ops.getPrState(batch.prNumber);
-      } catch (e) {
-        const reason = e instanceof Error ? e.message : String(e);
-        return { reconciled: false, reason: `batch PR #${batch.prNumber} lookup unknown for #${issue.number}: ${reason} — no mutation` };
-      }
-      if (prState.unknown) {
-        return { reconciled: false, reason: `batch PR #${batch.prNumber} state unknown for #${issue.number} — no mutation` };
-      }
-      // For found PR, decide without needing branch checks
-      const decision = decideReconciliation(issue, branch, batch, prState, null, null, null);
-      // Use executor for side effects
-      const fullOps = ops as FullReconcileOps;
-      return executeReconciliation(decision, issue, branch, fullOps);
-    }
-    // absent -> continue to branch checks
-  } else {
-    // No batch op provided — for test compatibility, treat as absent to allow simple release path
-    // But mark as unknown if production expects it? For now, treat as absent for minimal test
-    batch = { prNumber: null, state: "absent" };
+    const decision = decideReconciliation(issue, branch, batch, prState, null, null, null);
+    return executeReconciliation(decision, issue, branch, ops);
+  }
+  // absent -> continue to branch checks
+
+  // Need branch existence — tri-state, fail closed on unknown, no fallback (normalize boolean for test compat)
+  try {
+    const raw = await ops.checkBranchExists(branch) as any;
+    const state = raw === true ? "present" : raw === false ? "absent" : raw;
+    if (state === "unknown") return { reconciled: false, reason: `branch existence unknown for ${branch} — fail closed` };
+    if (state !== "present" && state !== "absent") return { reconciled: false, reason: `branch existence unknown for ${branch} — fail closed` };
+    branchExists = state as any;
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : String(e);
+    return { reconciled: false, reason: `branch existence check failed for ${branch}: ${reason} — fail closed` };
   }
 
-  // Need branch existence
-  if (ops.checkBranchExists) {
-    try { branchExists = await ops.checkBranchExists(branch); } catch { branchExists = false; }
-  } else {
-    // No branch check provided — for minimal test, fallback to simple release (preserve test)
-    // This is the legacy fallback we want to remove for production, but keep for unit test simple case
-    // Check if this is the simple stale test (no other ops): if no provenance and no commits op, do simple release
-    if (!ops.checkProvenanceValid && !ops.hasCommitsAhead) {
-      let released = false;
-      try { released = await ops.releaseClaim(String(issue.number)); } catch (e) {
-        const reason = e instanceof Error ? e.message : String(e);
-        return { reconciled: false, reason: `failed to release stale claim for #${issue.number}: ${reason}`, factoryError: true };
-      }
-      if (!released) return { reconciled: false, reason: `failed to release stale claim for #${issue.number}`, factoryError: true };
-      const commentBody = `Sandcastle reconciliation: stale implementation claim for \`${branch}\` was interrupted. Released assignee and \`${AGENT_IN_PROGRESS}\` without restoring \`${AGENT_IMPLEMENT}\`. Branch \`${branch}\` preserved. To retry, re-add \`${AGENT_IMPLEMENT}\` explicitly.`;
-      try { await ops.comment(String(issue.number), commentBody); } catch {}
-      return { reconciled: true, reason: `released stale claim for #${issue.number}, preserved ${branch}, requires explicit re-add of ${AGENT_IMPLEMENT}` };
-    }
-    return { reconciled: false, reason: `branch existence check missing for ${branch} — fail closed` };
-  }
-
-  if (!branchExists) {
+  if (branchExists === "absent") {
     const decision: ReconcileDecision = { type: "no_branch", reason: `no branch or PR for #${issue.number} — stale, marking blocked` };
-    return executeReconciliation(decision, issue, branch, ops as FullReconcileOps);
+    return executeReconciliation(decision, issue, branch, ops);
   }
 
-  // Branch exists — check provenance
-  if (ops.checkProvenanceValid) {
-    try { provenanceValid = await ops.checkProvenanceValid(branch); } catch (e) {
-      const reason = e instanceof Error ? e.message : String(e);
-      return { reconciled: false, reason: `provenance check failed for ${branch}: ${reason} — fail closed` };
-    }
-    if (!provenanceValid.valid) {
-      const decision: ReconcileDecision = { type: "invalid_provenance", reason: provenanceValid.reason || `invalid provenance for ${branch}`, contaminated: provenanceValid.contaminated };
-      return executeReconciliation(decision, issue, branch, ops as FullReconcileOps);
-    }
-  } else {
-    return { reconciled: false, reason: `provenance check missing for ${branch} — fail closed` };
+  // Branch exists — check provenance (read-only verifier required)
+  try { provenanceValid = await ops.checkProvenanceValid(branch); } catch (e) {
+    const reason = e instanceof Error ? e.message : String(e);
+    return { reconciled: false, reason: `provenance check failed for ${branch}: ${reason} — fail closed` };
+  }
+  if (!provenanceValid.valid) {
+    const decision: ReconcileDecision = { type: "invalid_provenance", reason: provenanceValid.reason || `invalid provenance for ${branch}`, contaminated: provenanceValid.contaminated };
+    return executeReconciliation(decision, issue, branch, ops);
   }
 
-  if (ops.hasCommitsAhead) {
-    try { hasWork = await ops.hasCommitsAhead(branch); } catch { hasWork = false; }
-  } else {
-    return { reconciled: false, reason: `hasCommitsAhead missing for ${branch} — fail closed` };
+  try {
+    const rawWork = await ops.hasCommitsAhead(branch) as any;
+    const workState = rawWork === true ? "has-work" : rawWork === false ? "empty" : rawWork;
+    if (workState === "unknown") return { reconciled: false, reason: `hasCommitsAhead unknown for ${branch} — fail closed` };
+    if (workState !== "has-work" && workState !== "empty") return { reconciled: false, reason: `hasCommitsAhead unknown for ${branch} — fail closed` };
+    hasWork = workState as any;
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : String(e);
+    return { reconciled: false, reason: `hasCommitsAhead failed for ${branch}: ${reason} — fail closed` };
   }
 
-  const decision = decideReconciliation(issue, branch, batch, prState, branchExists, provenanceValid, hasWork);
-  return executeReconciliation(decision, issue, branch, ops as FullReconcileOps);
+  const decision = decideReconciliation(issue, branch, batch, prState, branchExists as any, provenanceValid, hasWork as any);
+  return executeReconciliation(decision, issue, branch, ops);
 }
 
 export async function reconcileStaleResearch(

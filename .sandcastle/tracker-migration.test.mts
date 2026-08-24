@@ -228,6 +228,257 @@ describe("tracker-migration — runTrackerMigration production seam", () => {
   });
 });
 
+
+describe("tracker-migration — authoritative verdicts via CLI (item 1)", () => {
+  // Helper to create CliDeps that simulate live GH state without hitting real API
+  function makeCliDeps(opts: { issues: any[], labelDescriptions: Record<string,string>, retired: Record<string,boolean>, headSha?: string, store?: any }) {
+    const headSha = opts.headSha ?? "test-head-sha-cli-001";
+    const store = opts.store ?? { writes: [] as any[], labelWrites: [] as any[], deleteWrites: [] as any[] };
+    const runGh = async (args: string[]) => {
+      const cmd = args.join(" ");
+      if (args[0] === "issue" && args[1] === "list") {
+        // issue list
+        return JSON.stringify(opts.issues.map((i:any) => ({
+          number: i.number,
+          title: i.title,
+          body: i.body,
+          state: i.state,
+          labels: i.labels.map((n:string)=>({name:n})),
+          assignees: i.assignees.map((l:string)=>({login:l}))
+        })));
+      }
+      if (args[0] === "api" && args[1].includes("repos/") && args[1].includes("/labels") && args.includes("--paginate")) {
+        // bulk labels fetch — return canonical with provided descriptions, or throw 404 if flagged
+        if ((opts as any).bulk404) throw new Error("404 Not Found");
+        const labels = Object.entries(opts.labelDescriptions).map(([name, description])=>({name, description}));
+        // ensure at least canonical keys are present in map; if opts.labelDescriptions empty, return empty array to simulate no labels
+        return JSON.stringify(labels);
+      }
+      if (args[0] === "api" && args[1].includes("/labels/")) {
+        const encoded = args[1].split("/labels/")[1];
+        const name = decodeURIComponent(encoded);
+        if (opts.retired[name] !== undefined) {
+          // retired label existence check — 404 if false, success if true
+          if (opts.retired[name]) return JSON.stringify({ name, description: "" });
+          throw new Error("404 Not Found");
+        }
+        if (opts.labelDescriptions[name] !== undefined) {
+          return opts.labelDescriptions[name];
+        }
+        // For label description per-label fetch fallback
+        throw new Error("404 Not Found");
+      }
+      if (args[0] === "api" && args[1].includes("/issues/") && args.includes("--jq")) {
+        // blocked_by fetch — return 0
+        return "0";
+      }
+      if (args[0] === "issue" && args[1] === "edit") {
+        store.writes.push(args);
+        return "";
+      }
+      if (args[0] === "api" && args[1].includes("--method") && args[1].includes("PATCH")) {
+        store.labelWrites.push(args);
+        return "";
+      }
+      if (args[0] === "api" && args[1].includes("--method") && args[1].includes("DELETE")) {
+        store.deleteWrites.push(args);
+        return "";
+      }
+      if (args[0] === "api" && args.includes("user")) return "test-bot";
+      return "";
+    };
+    const execSync = (cmd: string) => {
+      if (cmd.includes("rev-parse HEAD")) return headSha;
+      if (cmd.includes("remote get-url origin")) return "https://github.com/rhythmatician/voxygen-monorepo.git";
+      return "";
+    };
+    const deps: any = {
+      runGh,
+      execSync,
+      getHeadSha: () => headSha,
+      readFileSync: (()=>{ throw new Error("not needed"); }) as any,
+      writeFileSync: (path:string, data:string) => { store.writes.push({path, data}); },
+      mkdirSync: () => {},
+    };
+    return { deps, store, runGh, headSha };
+  }
+
+  it("six real planned issue mutations can apply via CLI and persisted checkPassed is true", async () => {
+    const { runTrackerMigrationCli } = await import("./tracker-migration.mts");
+    const { CANONICAL_LABEL_DESCRIPTIONS } = await import("./tracker-migration.mts");
+    const tasks: any[] = [166,127,114,64,61,25].map(n => ({
+      number: n, title: "task "+n, state: "open", labels: ["wayfinder:task"], assignees: [], body: "Task body", blockedByCount: 0
+    }));
+    const explicit: Record<number,string> = {166:"ready-for-human",127:"ready-for-human",114:"ready-for-human",64:"ready-for-human",61:"ready-for-human",25:"ready-for-human"};
+    const headSha = "test-head-sha-cli-apply-001";
+    // First, create a dry-run receipt via runTrackerMigration directly to simulate reviewed receipt
+    const { planMigration, buildReviewedReceipt } = await import("./tracker-migration.mts");
+    const initialPlan = planMigration(tasks, explicit);
+    const receipt = buildReviewedReceipt(tasks, CANONICAL_LABEL_DESCRIPTIONS, { "agent:research": false, "wayfinder:preserve-futures": false } as any, initialPlan, headSha);
+    // Now CLI apply with mocked inventory that simulates post-apply state
+    const labelDescs = { ...CANONICAL_LABEL_DESCRIPTIONS };
+    let call=0;
+    const mutated: number[] = [];
+    const store:any = { writes:[], labelWrites:[], deleteWrites:[] };
+    // Create a custom inventory via CliDeps runGh that will simulate issue list changing after mutations
+    // For CLI, we cannot directly control listOpenIssues call count, but we can make runGh return pre-apply then post-apply based on mutated flag
+    let mutatedFlag=false;
+    const issuesPre = tasks;
+    const issuesPost = tasks.map((t:any)=> ({...t, labels:["wayfinder:task","ready-for-human"]}));
+    const { deps } = makeCliDeps({ issues: issuesPre, labelDescriptions: labelDescs, retired: { "agent:research": false, "wayfinder:preserve-futures": false }, headSha, store });
+    // Override runGh for issue list to toggle
+    const origRunGh = deps.runGh;
+    let listCalls=0;
+    deps.runGh = async (args:string[]) => {
+      if (args[0]==="issue" && args[1]==="list") {
+        listCalls++;
+        // First call is pre-apply inventory, second call inside runTrackerMigration after mutations is post-apply
+        // For CLI apply, runTrackerMigration will call listOpenIssues multiple times; we need to return post after first mutation
+        // Simplest: always return pre for first, post thereafter if mutatedFlag set
+        if (listCalls===1) return JSON.stringify(issuesPre.map((i:any)=>({ number:i.number, title:i.title, body:i.body, state:i.state, labels:i.labels.map((n:string)=>({name:n})), assignees:i.assignees.map((l:string)=>({login:l})) })));
+        return JSON.stringify(issuesPost.map((i:any)=>({ number:i.number, title:i.title, body:i.body, state:i.state, labels:i.labels.map((n:string)=>({name:n})), assignees:i.assignees.map((l:string)=>({login:l})) })));
+      }
+      if (args[0]==="issue" && args[1]==="edit") {
+        const num = parseInt(args[2],10);
+        mutated.push(num);
+        mutatedFlag=true;
+        return "";
+      }
+      return origRunGh(args);
+    };
+    // Write receipt to temp file and use it for --apply
+    const tmpReceiptPath = "/tmp/test-cli-receipt.json";
+    const fsSync = await import("node:fs");
+    fsSync.writeFileSync(tmpReceiptPath, JSON.stringify(receipt, null, 2));
+    deps.readFileSync = fsSync.readFileSync as any;
+    deps.writeFileSync = (path:string, data:string) => { fsSync.mkdirSync(".sandcastle/logs", {recursive:true}); fsSync.writeFileSync(path, data); store.writes.push({path, data}); };
+    deps.mkdirSync = fsSync.mkdirSync as any;
+    const result = await runTrackerMigrationCli(["--apply","--receipt",tmpReceiptPath], deps);
+    expect(result.exitCode).toBe(0);
+    // Check that persisted receipt exists and has truthful fields
+    const persistedRaw = fsSync.readFileSync(".sandcastle/logs/migration-apply-receipt.json","utf8");
+    const persisted = JSON.parse(persistedRaw);
+    expect(persisted.before).toBeDefined();
+    expect(persisted.after).toBeDefined();
+    expect(persisted.applied).toBe(true);
+    expect(persisted.checkPassed).toBe(true);
+    expect(persisted.blockingProblems).toBe(false);
+    expect(persisted.migrationRequired).toBe(false);
+    // Six mutations
+    expect(mutated.length).toBe(6);
+  });
+
+  it("--check with only one stale canonical description exits 1 and JSON says false", async () => {
+    const { runTrackerMigrationCli, CANONICAL_LABEL_DESCRIPTIONS } = await import("./tracker-migration.mts");
+    const staleDescs = { ...CANONICAL_LABEL_DESCRIPTIONS, "wayfinder:research": "stale description" };
+    const issue: any = { number: 10, title:"r", state:"open", labels:["wayfinder:research"], assignees:[], body:"## Question\n\nResearch question with sufficient length for validation, part of #190 with substantive details about the problem to be investigated and evidence needed.", blockedByCount:0 };
+    const { deps } = makeCliDeps({ issues:[issue], labelDescriptions: staleDescs, retired: { "agent:research": false, "wayfinder:preserve-futures": false } });
+    let logged=""
+    const origLog = console.log;
+    console.log = (msg:any)=>{ logged+=String(msg)+"\n"; };
+    const result = await runTrackerMigrationCli(["--check"], deps);
+    console.log = origLog;
+    expect(result.exitCode).toBe(1);
+    // Find JSON logged
+    const jsonMatch = logged.match(/\{[\s\S]*"checkPassed"[\s\S]*\}/);
+    expect(jsonMatch).not.toBeNull();
+    const parsed = JSON.parse(jsonMatch![0]);
+    expect(parsed.checkPassed).toBe(false);
+  });
+
+  it("--check with only agent:research repository label present exits 1 and JSON says false", async () => {
+    const { runTrackerMigrationCli, CANONICAL_LABEL_DESCRIPTIONS } = await import("./tracker-migration.mts");
+    const issue: any = { number: 11, title:"t", state:"open", labels:["wayfinder:task","ready-for-agent"], assignees:[], body:"Task body", blockedByCount:0 };
+    const { deps } = makeCliDeps({ issues:[issue], labelDescriptions: CANONICAL_LABEL_DESCRIPTIONS, retired: { "agent:research": true, "wayfinder:preserve-futures": false } });
+    let logged="";
+    const origLog = console.log;
+    console.log = (msg:any)=>{ logged+=String(msg)+"\n"; };
+    const result = await runTrackerMigrationCli(["--check"], deps);
+    console.log = origLog;
+    expect(result.exitCode).toBe(1);
+    const jsonMatch = logged.match(/\{[\s\S]*"checkPassed"[\s\S]*\}/);
+    expect(jsonMatch).not.toBeNull();
+    const parsed = JSON.parse(jsonMatch![0]);
+    expect(parsed.checkPassed).toBe(false);
+  });
+
+  it("after a fully normalized state, --check exits 0 and JSON says true", async () => {
+    const { runTrackerMigrationCli, CANONICAL_LABEL_DESCRIPTIONS } = await import("./tracker-migration.mts");
+    const issue: any = { number: 12, title:"t", state:"open", labels:["wayfinder:task","ready-for-agent"], assignees:[], body:"Task body", blockedByCount:0 };
+    const { deps } = makeCliDeps({ issues:[issue], labelDescriptions: CANONICAL_LABEL_DESCRIPTIONS, retired: { "agent:research": false, "wayfinder:preserve-futures": false } });
+    let logged="";
+    const origLog = console.log;
+    console.log = (msg:any)=>{ logged+=String(msg)+"\n"; };
+    const result = await runTrackerMigrationCli(["--check"], deps);
+    console.log = origLog;
+    expect(result.exitCode).toBe(0);
+    const jsonMatch = logged.match(/\{[\s\S]*"checkPassed"[\s\S]*\}/);
+    expect(jsonMatch).not.toBeNull();
+    const parsed = JSON.parse(jsonMatch![0]);
+    expect(parsed.checkPassed).toBe(true);
+  });
+
+  it("persisted apply receipt contains truthful before, after, applied, and checkPassed", async () => {
+    const { runTrackerMigration, buildReviewedReceipt, planMigration, CANONICAL_LABEL_DESCRIPTIONS } = await import("./tracker-migration.mts");
+    const task: any = { number: 99, title:"task", state:"open", labels:["wayfinder:task"], assignees:[], body:"Task body", blockedByCount:0 };
+    const explicit={99:"ready-for-human"};
+    const headSha="test-head-sha-apply-receipt-001";
+    const plan = planMigration([task], explicit);
+    const receipt = buildReviewedReceipt([task], CANONICAL_LABEL_DESCRIPTIONS, { "agent:research": false, "wayfinder:preserve-futures": false } as any, plan, headSha);
+    let call=0;
+    const inventoryOps:any = {
+      listOpenIssues: async () => { call++; if(call===1) return [task]; return [{...task, labels:["wayfinder:task","ready-for-human"]}] },
+      getLabelDescriptions: async () => ({...CANONICAL_LABEL_DESCRIPTIONS}),
+      getRetiredLabelsExist: async () => ({ "agent:research": false, "wayfinder:preserve-futures": false }),
+      getHeadSha: async () => headSha,
+    };
+    const mutationOps:any = {
+      updateIssueLabels: async () => {},
+      updateLabelDescription: async () => {},
+      deleteLabel: async () => {},
+    };
+    const result = await runTrackerMigration({ mode:"apply", inventoryOps, mutationOps, explicitTaskPlan: explicit, reviewedReceipt: receipt });
+    expect(result.before).toBeDefined();
+    expect(result.after).toBeDefined();
+    expect(result.applied).toBe(true);
+    expect(result.checkPassed).toBe(true);
+    expect(result.blockingProblems).toBe(false);
+    expect(result.migrationRequired).toBe(false);
+    // Verify afterPlan is not requiring migration
+    expect(result.afterPlan).toBeDefined();
+    const { migrationRequired, hasBlockingMigrationProblems } = await import("./tracker-migration.mts");
+    expect(migrationRequired(result.afterPlan!, { labelDescriptions: result.after!.labelDescriptions, retiredLabelsExist: result.after!.retiredLabelsExist })).toBe(false);
+    expect(hasBlockingMigrationProblems(result.afterPlan!)).toBe(false);
+  });
+});
+
+describe("tracker-migration — historical Research truthful classification (item 2)", () => {
+  it("historical agent:research + open blocker => blockedResearch", async () => {
+    const { planMigration } = await import("./tracker-migration.mts");
+    const issue:any = { number: 101, title:"r", state:"open", labels:["wayfinder:research","agent:research"], assignees:[], body:"## Question\n\nResearch question with sufficient length for validation, part of #190 with substantive details about the problem to be investigated and evidence needed.", blockedByCount:1 };
+    const plan = planMigration([issue]);
+    expect(plan.blockedResearch).toContain(101);
+    expect(plan.newlyEligibleResearch).not.toContain(101);
+    expect(plan.ambiguousResearch).not.toContain(101);
+  });
+  it("historical agent:research + invalid body => ambiguousResearch/blocking", async () => {
+    const { planMigration, hasBlockingMigrationProblems } = await import("./tracker-migration.mts");
+    const issue:any = { number: 102, title:"r", state:"open", labels:["wayfinder:research","agent:research"], assignees:[], body:"invalid", blockedByCount:0 };
+    const plan = planMigration([issue]);
+    expect(plan.ambiguousResearch).toContain(102);
+    expect(hasBlockingMigrationProblems(plan)).toBe(true);
+    expect(plan.blockedResearch).not.toContain(102);
+  });
+  it("historical agent:research + unassigned/unblocked valid body => newlyEligibleResearch", async () => {
+    const { planMigration } = await import("./tracker-migration.mts");
+    const issue:any = { number: 103, title:"r", state:"open", labels:["wayfinder:research","agent:research"], assignees:[], body:"## Question\n\nResearch question with sufficient length for validation, part of #190 with substantive details about the problem to be investigated and evidence needed.", blockedByCount:0 };
+    const plan = planMigration([issue]);
+    expect(plan.newlyEligibleResearch).toContain(103);
+    expect(plan.blockedResearch).not.toContain(103);
+    expect(plan.ambiguousResearch).not.toContain(103);
+  });
+});
+
   it("never adds agent:implement", () => {
     const issues: IssueInput[] = [
       issue({ number: 60, labels: ["wayfinder:task"], body: "Task body with scoped work" }),

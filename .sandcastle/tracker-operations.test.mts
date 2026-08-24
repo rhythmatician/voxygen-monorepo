@@ -223,17 +223,24 @@ describe("tracker-operations — reconciliation full state machine", () => {
   it("merged PR is finalized", async () => {
     const { reconcileStaleImplementation } = await import("./tracker-operations.mts");
     const stale: any = { number:301, title:"s", state:"open", labels:["ready-for-agent","agent:in-progress"], assignees:["bot"], body:"body", blockedByCount:0 };
-    let released=false;
+    let integrated=false;
+    const afterIntegrated: any = { number:301, title:"s", state:"closed", labels:["ready-for-agent"], assignees:[], body:"body", blockedByCount:0 };
     const ops: any = {
       getBatchPrNumber: async () => ({ prNumber: "124", state:"found" }),
       getPrState: async () => ({ state:"MERGED", mergedAt:"2024-01-01", found:true }),
-      releaseClaim: async () => { released=true; return true; },
+      releaseClaim: async () => true,
       comment: async () => true,
-      fetchIssue: async () => stale,
+      fetchIssue: async () => afterIntegrated,
+      checkBranchExists: async () => "absent" as const,
+      checkProvenanceValid: async () => ({ valid: true }),
+      hasCommitsAhead: async () => "empty" as const,
+      deleteBranch: async () => true,
+      addBlocked: async () => true,
+      markIntegrated: async () => { integrated=true; return true; },
     };
     const r = await reconcileStaleImplementation(stale, "sandcastle/issue-301", ops);
     expect(r.reconciled).toBe(true);
-    expect(released).toBe(true);
+    expect(integrated).toBe(true);
   });
 
   it("unknown PR lookup results in no mutation", async () => {
@@ -348,6 +355,266 @@ describe("tracker-operations — stale reconciliation without command restoratio
     expect(commented).toBe(true);
     expect(result.reason).toMatch(/empty branch|requires explicit re-add/);
   });
+
+
+describe("tracker-operations — authoritative reconciliation effects (item 4) and tri-state inspections (item 3)", () => {
+  const staleBase: any = { number: 401, title:"s", state:"open", labels:["ready-for-agent","agent:in-progress"], assignees:["bot"], body:"body", blockedByCount:0 };
+
+  function makeFullOps(overrides: any = {}) {
+    const store:any = { commented: [] as string[], released: [] as string[], blocked: [] as string[], deleted: [] as string[], fetched: 0 };
+    const stale = { ...staleBase };
+    const afterRelease:any = { ...stale, labels: ["ready-for-agent","agent:blocked"], assignees: [] };
+    const afterNoBranch:any = { ...stale, labels: ["ready-for-agent","agent:blocked"], assignees: [] };
+    const defaults:any = {
+      fetchIssue: async (id:string) => { store.fetched++; if (overrides.fetchIssue) return overrides.fetchIssue(id); return afterRelease; },
+      releaseClaim: async (id:string) => { store.released.push(id); if (overrides.releaseClaim) return overrides.releaseClaim(id); return true; },
+      comment: async (id:string, body:string) => { store.commented.push(body); if (overrides.comment) return overrides.comment(id, body); return true; },
+      getBatchPrNumber: async () => ({ prNumber: null, state: "absent" as const }),
+      getPrState: async () => ({ state:"CLOSED", mergedAt:null, found:false }),
+      checkBranchExists: async () => "absent" as const,
+      checkProvenanceValid: async () => ({ valid:true }),
+      hasCommitsAhead: async () => "empty" as const,
+      deleteBranch: async (b:string) => { store.deleted.push(b); if (overrides.deleteBranch) return overrides.deleteBranch(b); return true; },
+      addBlocked: async (id:string) => { store.blocked.push(id); if (overrides.addBlocked) return overrides.addBlocked(id); return true; },
+      markIntegrated: async () => { if (overrides.markIntegrated) return overrides.markIntegrated(); return true; },
+    };
+    return { ops: { ...defaults, ...overrides } as any, store, afterRelease };
+  }
+
+  it("tri-state branch unknown produces no mutation — fail closed", async () => {
+    const { reconcileStaleImplementation } = await import("./tracker-operations.mts");
+    const stale:any = { ...staleBase, number:402 };
+    let mutated=false;
+    const ops:any = {
+      fetchIssue: async () => stale,
+      releaseClaim: async () => { mutated=true; return true; },
+      comment: async () => { mutated=true; return true; },
+      getBatchPrNumber: async () => ({ prNumber: null, state:"absent" }),
+      getPrState: async () => ({ state:"CLOSED", mergedAt:null, found:false }),
+      checkBranchExists: async () => "unknown" as const,
+      checkProvenanceValid: async () => ({ valid:true }),
+      hasCommitsAhead: async () => "empty" as const,
+      deleteBranch: async () => { mutated=true; return true; },
+      addBlocked: async () => { mutated=true; return true; },
+      markIntegrated: async () => true,
+    };
+    const r = await reconcileStaleImplementation(stale, "sandcastle/issue-402", ops);
+    expect(r.reconciled).toBe(false);
+    expect(r.reason).toMatch(/unknown/);
+    expect(mutated).toBe(false);
+  });
+
+  it("tri-state hasWork unknown produces no mutation", async () => {
+    const { reconcileStaleImplementation } = await import("./tracker-operations.mts");
+    const stale:any = { ...staleBase, number:403 };
+    let mutated=false;
+    const ops:any = {
+      fetchIssue: async () => stale,
+      releaseClaim: async () => { mutated=true; return true; },
+      comment: async () => { mutated=true; return true; },
+      getBatchPrNumber: async () => ({ prNumber: null, state:"absent" }),
+      getPrState: async () => ({ state:"CLOSED", mergedAt:null, found:false }),
+      checkBranchExists: async () => "present" as const,
+      checkProvenanceValid: async () => ({ valid:true }),
+      hasCommitsAhead: async () => "unknown" as const,
+      deleteBranch: async () => { mutated=true; return true; },
+      addBlocked: async () => { mutated=true; return true; },
+      markIntegrated: async () => true,
+    };
+    const r = await reconcileStaleImplementation(stale, "sandcastle/issue-403", ops);
+    expect(r.reconciled).toBe(false);
+    expect(r.reason).toMatch(/unknown/);
+    expect(mutated).toBe(false);
+  });
+
+  it("pr_not_found requires comment, release, and blocked — comment failure is FACTORY_ERROR", async () => {
+    const { reconcileStaleImplementation } = await import("./tracker-operations.mts");
+    const stale:any = { ...staleBase, number:404 };
+    const ops:any = {
+      fetchIssue: async () => ({ ...stale, labels:["ready-for-agent","agent:in-progress"], assignees:["bot"] }),
+      getBatchPrNumber: async () => ({ prNumber:"999", state:"found" }),
+      getPrState: async () => ({ state:"CLOSED", mergedAt:null, found:false }),
+      releaseClaim: async () => true,
+      comment: async () => false,
+      checkBranchExists: async () => "present" as const,
+      checkProvenanceValid: async () => ({ valid:true }),
+      hasCommitsAhead: async () => "empty" as const,
+      deleteBranch: async () => true,
+      addBlocked: async () => true,
+      markIntegrated: async () => true,
+    };
+    const r = await reconcileStaleImplementation(stale, "sandcastle/issue-404", ops);
+    expect(r.factoryError).toBe(true);
+    expect(r.reason).toMatch(/failed to comment/);
+  });
+
+  it("pr_not_found release failure is FACTORY_ERROR and blocked not attempted", async () => {
+    const { reconcileStaleImplementation } = await import("./tracker-operations.mts");
+    const stale:any = { ...staleBase, number:405 };
+    let blockedCalled=false;
+    const ops:any = {
+      fetchIssue: async () => ({ ...stale, labels:["ready-for-agent","agent:in-progress"], assignees:["bot"] }),
+      getBatchPrNumber: async () => ({ prNumber:"999", state:"found" }),
+      getPrState: async () => ({ state:"CLOSED", mergedAt:null, found:false }),
+      releaseClaim: async () => false,
+      comment: async () => true,
+      checkBranchExists: async () => "present" as const,
+      checkProvenanceValid: async () => ({ valid:true }),
+      hasCommitsAhead: async () => "empty" as const,
+      deleteBranch: async () => true,
+      addBlocked: async () => { blockedCalled=true; return true; },
+      markIntegrated: async () => true,
+    };
+    const r = await reconcileStaleImplementation(stale, "sandcastle/issue-405", ops);
+    expect(r.factoryError).toBe(true);
+    expect(r.reason).toMatch(/failed to release/);
+    // addBlocked should not have been called because release failed first? In our code it won't be called
+    // But we verify that blocked not verified
+    expect(blockedCalled).toBe(false);
+  });
+
+  it("pr_not_found blocked failure is FACTORY_ERROR", async () => {
+    const { reconcileStaleImplementation } = await import("./tracker-operations.mts");
+    const stale:any = { ...staleBase, number:406 };
+    const ops:any = {
+      fetchIssue: async (id:string) => {
+        // First fetch after release would be without in-progress, second after blocked would have blocked
+        // For this test, simulate that after release, issue still without blocked, so addBlocked failure should be caught
+        return { ...stale, labels:["ready-for-agent"], assignees:[] };
+      },
+      getBatchPrNumber: async () => ({ prNumber:"999", state:"found" }),
+      getPrState: async () => ({ state:"CLOSED", mergedAt:null, found:false }),
+      releaseClaim: async () => true,
+      comment: async () => true,
+      checkBranchExists: async () => "present" as const,
+      checkProvenanceValid: async () => ({ valid:true }),
+      hasCommitsAhead: async () => "empty" as const,
+      deleteBranch: async () => true,
+      addBlocked: async () => false,
+      markIntegrated: async () => true,
+    };
+    const r = await reconcileStaleImplementation(stale, "sandcastle/issue-406", ops);
+    expect(r.factoryError).toBe(true);
+    expect(r.reason).toMatch(/failed to add blocked/);
+  });
+
+  it("merged_pr verify fails if still has transient labels — FACTORY_ERROR", async () => {
+    const { reconcileStaleImplementation } = await import("./tracker-operations.mts");
+    const stale:any = { ...staleBase, number:407 };
+    const ops:any = {
+      fetchIssue: async () => ({ ...stale, labels:["ready-for-agent","agent:in-progress"], assignees:["bot"], state:"open" }),
+      getBatchPrNumber: async () => ({ prNumber:"124", state:"found" }),
+      getPrState: async () => ({ state:"MERGED", mergedAt:"2024-01-01", found:true }),
+      releaseClaim: async () => true,
+      comment: async () => true,
+      checkBranchExists: async () => "absent" as const,
+      checkProvenanceValid: async () => ({ valid:true }),
+      hasCommitsAhead: async () => "empty" as const,
+      deleteBranch: async () => true,
+      addBlocked: async () => true,
+      markIntegrated: async () => true,
+    };
+    const r = await reconcileStaleImplementation(stale, "sandcastle/issue-407", ops);
+    expect(r.factoryError).toBe(true);
+    expect(r.reason).toMatch(/still has transient/);
+  });
+
+  it("empty-branch cleanup idempotent: delete returns false but branch already absent is success", async () => {
+    const { reconcileStaleImplementation } = await import("./tracker-operations.mts");
+    const stale:any = { ...staleBase, number:408 };
+    let released=false;
+    let commented=false;
+    let checkCalls=0;
+    const ops:any = {
+      fetchIssue: async () => ({ number:408, title:"s", state:"open", labels:["ready-for-agent","agent:in-progress"], assignees:["bot"], body:"b", blockedByCount:0 }),
+      getBatchPrNumber: async () => ({ prNumber: null, state:"absent" }),
+      getPrState: async () => ({ state:"CLOSED", mergedAt:null, found:false }),
+      checkBranchExists: async (b:string) => {
+        checkCalls++;
+        // First call is pre-delete existence check: branch is present with empty work
+        if (checkCalls===1) return "present" as const;
+        // After delete, branch is absent (idempotent success)
+        return "absent" as const;
+      },
+      checkProvenanceValid: async () => ({ valid:true }),
+      hasCommitsAhead: async () => "empty" as const,
+      deleteBranch: async () => false, // delete says nothing to delete, but branch is already absent after second check
+      releaseClaim: async () => { released=true; return true; },
+      comment: async () => { commented=true; return true; },
+      addBlocked: async () => true,
+      markIntegrated: async () => true,
+    };
+    const r = await reconcileStaleImplementation(stale, "sandcastle/issue-408", ops);
+    expect(r.reconciled).toBe(true);
+    expect(released).toBe(true);
+    expect(commented).toBe(true);
+  });
+
+  it("empty-branch unknown remote is FACTORY_ERROR and does not release claim", async () => {
+    const { reconcileStaleImplementation } = await import("./tracker-operations.mts");
+    const stale:any = { ...staleBase, number:409 };
+    let released=false;
+    const ops:any = {
+      fetchIssue: async () => stale,
+      getBatchPrNumber: async () => ({ prNumber: null, state:"absent" }),
+      getPrState: async () => ({ state:"CLOSED", mergedAt:null, found:false }),
+      checkBranchExists: async () => "unknown" as const,
+      checkProvenanceValid: async () => ({ valid:true }),
+      hasCommitsAhead: async () => "empty" as const,
+      deleteBranch: async () => true,
+      releaseClaim: async () => { released=true; return true; },
+      comment: async () => true,
+      addBlocked: async () => true,
+      markIntegrated: async () => true,
+    };
+    const r = await reconcileStaleImplementation(stale, "sandcastle/issue-409", ops);
+    expect(r.reconciled).toBe(false);
+    expect(r.reason).toMatch(/unknown/);
+    expect(released).toBe(false);
+  });
+
+  it("no_branch requires comment, release, blocked — each failure is FACTORY_ERROR", async () => {
+    const { reconcileStaleImplementation } = await import("./tracker-operations.mts");
+    const stale:any = { ...staleBase, number:410 };
+    const baseOps:any = {
+      fetchIssue: async () => stale,
+      getBatchPrNumber: async () => ({ prNumber: null, state:"absent" }),
+      getPrState: async () => ({ state:"CLOSED", mergedAt:null, found:false }),
+      checkBranchExists: async () => "absent" as const,
+      checkProvenanceValid: async () => ({ valid:true }),
+      hasCommitsAhead: async () => "empty" as const,
+      deleteBranch: async () => true,
+      addBlocked: async () => false,
+      markIntegrated: async () => true,
+      releaseClaim: async () => true,
+      comment: async () => true,
+    };
+    const r = await reconcileStaleImplementation(stale, "sandcastle/issue-410", baseOps);
+    expect(r.factoryError).toBe(true);
+    expect(r.reason).toMatch(/failed to add blocked/);
+  });
+
+  it("invalid_provenance with contaminated still requires all effects", async () => {
+    const { reconcileStaleImplementation } = await import("./tracker-operations.mts");
+    const stale:any = { ...staleBase, number:411 };
+    const ops:any = {
+      fetchIssue: async () => stale,
+      getBatchPrNumber: async () => ({ prNumber: null, state:"absent" }),
+      getPrState: async () => ({ state:"CLOSED", mergedAt:null, found:false }),
+      checkBranchExists: async () => "present" as const,
+      checkProvenanceValid: async () => ({ valid:false, reason:"contaminated", contaminated:true }),
+      hasCommitsAhead: async () => "empty" as const,
+      deleteBranch: async () => true,
+      releaseClaim: async () => true,
+      comment: async () => true,
+      addBlocked: async () => true,
+      markIntegrated: async () => true,
+    };
+    const r = await reconcileStaleImplementation(stale, "sandcastle/issue-411", ops);
+    expect(r.reconciled).toBe(false);
+    expect(r.decision?.type).toBe("invalid_provenance");
+  });
+});
 
   it("does not restore agent:implement automatically", async () => {
     const stale: IssueInput = {

@@ -149,11 +149,12 @@ export function createLiveCanaryOps(opts: {
         fetchIssue: async (fid: string) => fetchReal(parseInt(fid,10)),
         getBatchPrNumber: async () => ({ prNumber: null, state: "absent" as const }),
         getPrState: async () => ({ state: "CLOSED", mergedAt: null, found: false }),
-        checkBranchExists: async () => false,
+        checkBranchExists: async () => "absent" as const,
         checkProvenanceValid: async () => ({ valid: true }),
-        hasCommitsAhead: async () => false,
+        hasCommitsAhead: async () => "empty" as const,
         deleteBranch: async () => true,
         addBlocked: async (iid:string) => { try { await runGhFn(["issue", "edit", iid, "--add-label", AGENT_BLOCKED]); return true; } catch { return false; } },
+        markIntegrated: async () => true,
       };
       const res = await reconcileStaleImplementation(issue, branch, ops2);
       // For canary, consider reconciled if postcondition holds regardless of blocked

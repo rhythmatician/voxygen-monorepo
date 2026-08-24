@@ -839,46 +839,48 @@ async function reconcileInProgressIssues(): Promise<void> {
             return { state: "UNKNOWN", mergedAt: null, found: false, unknown: true };
           }
         },
-        checkBranchExists: async (branchName: string) => {
+        checkBranchExists: async (branchName: string): Promise<"present" | "absent" | "unknown"> => {
+          // Do not convert exceptions to false — return unknown for remote lookup failures when origin exists
+          let originExists = false;
+          try { execSync("git remote get-url origin", { stdio: "ignore", cwd: REPO_ROOT }); originExists = true; } catch {}
           try {
             const out = execSync(`git branch --list "${branchName}"`, { encoding: "utf8" }).trim();
-            if (out) return true;
+            if (out) return "present";
+            // Check remote
             const ownerRepo = (() => {
               try { const o = execSync("git remote get-url origin", { encoding: "utf8" }).trim(); const m=o.match(/github\.com[:\/]([^\/]+)\/([^\/\.]+)/); if(m) return {owner:m[1],repo:m[2]}; } catch {} return null;
             })();
             if (ownerRepo) {
               try {
                 const ref = await runGh(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/git/refs/heads/${branchName}`, "--jq", ".ref"]);
-                if (ref && ref.includes(branchName)) return true;
-              } catch {}
+                if (ref && ref.includes(branchName)) return "present";
+                return "absent";
+              } catch (e) {
+                const msg = String(e).toLowerCase();
+                if (msg.includes("404") || msg.includes("not found")) return "absent";
+                if (originExists) return "unknown";
+                return "absent";
+              }
             }
-            return false;
-          } catch { return false; }
+            return "absent";
+          } catch (e) {
+            return "unknown";
+          }
         },
         checkProvenanceValid: async (branchName: string) => {
-          let base = "";
-          let callerBranch = "";
-          let callerSha = "";
-          try {
-            base = execSync('git rev-parse origin/main', {encoding:'utf8', cwd: REPO_ROOT}).trim();
-            callerBranch = execSync('git branch --show-current', {encoding:'utf8', cwd: REPO_ROOT}).trim();
-            callerSha = execSync('git rev-parse HEAD', {encoding:'utf8', cwd: REPO_ROOT}).trim();
-          } catch {
-            try { base = execSync('git rev-parse HEAD', {encoding:'utf8', cwd: REPO_ROOT}).trim(); } catch { base = "HEAD"; }
-            callerBranch = "reconcile";
-            callerSha = base;
-          }
-          const prep = branchHelpers.prepareIssueBranch(REPO_ROOT, branchName, base, callerBranch, callerSha, id);
-          if (!prep.ok) {
-            return { valid: false, reason: prep.reason, contaminated: prep.action === 'blocked' };
-          }
-          if (prep.action === 'recreated') {
-            return { valid: true, reason: prep.reason };
-          }
-          return { valid: true, reason: prep.reason };
+          // Read-only verifier — do not call prepareIssueBranch which can fetch/recreate/delete/write provenance
+          const prov = branchHelpers.verifyProvenance(REPO_ROOT, branchName);
+          if (prov.ok) return { valid: true, reason: prov.reason };
+          const isContaminated = prov.reason?.toLowerCase().includes("legacy") || prov.reason?.toLowerCase().includes("contaminated") || prov.reason?.toLowerCase().includes("fail closed");
+          return { valid: false, reason: prov.reason, contaminated: !!isContaminated };
         },
-        hasCommitsAhead: async (branchName: string) => {
-          try { return branchHelpers.hasCommitsAhead(REPO_ROOT, "origin/main", branchName); } catch { return false; }
+        hasCommitsAhead: async (branchName: string): Promise<"has-work" | "empty" | "unknown"> => {
+          try {
+            const has = branchHelpers.hasCommitsAhead(REPO_ROOT, "origin/main", branchName);
+            return has ? "has-work" : "empty";
+          } catch (e) {
+            return "unknown";
+          }
         },
         deleteBranch: async (branchName: string) => {
           let ok = true;
