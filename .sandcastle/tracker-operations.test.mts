@@ -1421,7 +1421,7 @@ describe("tracker-operations — patch 8 worktree/provenance and empty-branch ve
       const ops = createProductionReconcileOps({ runGh: mockGh, runGit: trackingRunner, repoRoot, claimantLogin:"bot" });
       const deleted = await ops.deleteBranch("sandcastle/issue-922");
       expect(deleted).toBe(true);
-      expect(wtRemovePath).toBe(wtPath);
+      expect(wtRemovePath && path.normalize(wtRemovePath)).toBe(path.normalize(wtPath));
       expect(wtListAfterRemoveChecked).toBe(true);
       const br = baseRunner(["branch","--list","sandcastle/issue-922"]);
       expect(br.stdout.trim()).toBe("");
