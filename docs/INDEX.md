@@ -30,6 +30,9 @@
 * `docs/adr/0005-factory-authority-and-worker-skills.md`
 * `docs/adr/0006-wayfinder-sandcastle-lifecycle-boundary.md` (superseded by 0007)
 * `docs/adr/0007-sandcastle-common-afk-substrate.md`
+* `docs/adr/0008-factory-iteration-is-one-tested-production-state-machine.md`
+* `docs/adr/0009-factory-review-is-an-independent-evidence-gate.md`
+* `docs/adr/0010-preserve-upstream-wayfinder-triage-and-sandcastle-label-semantics.md`
 
 ### Implementation
 

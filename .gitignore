@@ -43,6 +43,9 @@ node_modules/
 .vscode/prompt-diagnostics.json
 tree_output.txt
 
+# Sandcastle generated caches
+.sandcastle/.doctor-cache.json
+
 # Research scratch (uncommitted exploration, not docs/external)
 research-scratch.md
 research-vanilla-seams.md
