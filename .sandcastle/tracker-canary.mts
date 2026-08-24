@@ -11,6 +11,8 @@ import {
 } from "./tracker-policy.mts";
 import { claimImplementation, reconcileStaleImplementation, type ClaimOps } from "./tracker-operations.mts";
 import * as fs2 from "node:fs";
+import * as path2 from "node:path";
+import { pathToFileURL } from "node:url";
 import { execSync, execFile } from "node:child_process";
 import { promisify } from "node:util";
 
@@ -317,4 +319,6 @@ async function main() {
   const result = await runCanaryCli(args, {});
   process.exit(result.exitCode);
 }
-if (import.meta.url === "file://"+process.argv[1]) { main().catch(e => { console.error(e); process.exit(1); }); }
+const isMainModule = process.argv[1] !== undefined
+  && import.meta.url === pathToFileURL(path2.resolve(process.argv[1])).href;
+if (isMainModule) { main().catch(e => { console.error(e); process.exit(1); }); }

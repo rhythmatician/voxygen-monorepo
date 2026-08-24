@@ -1,4 +1,6 @@
 import * as fsSync from "node:fs";
+import * as path from "node:path";
+import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
 import {
   detectContradictions,
@@ -834,7 +836,9 @@ async function main() {
   process.exit(result.exitCode);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+const isMainModule = process.argv[1] !== undefined
+  && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
+if (isMainModule) {
   main().catch(e => {
     console.error(e);
     process.exit(1);
