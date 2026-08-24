@@ -86,6 +86,69 @@ export function hasCommitsAhead(repoRoot: string, base: string, branch: string):
   }
 }
 
+export type BranchPresence = "present" | "absent" | "unknown";
+export type CommitsAhead = "has-work" | "empty" | "unknown";
+export type ProvenanceStatus = "valid" | "invalid" | "unknown";
+
+/**
+ * Read-only inspection of branch presence — preserves unknown on Git/API errors.
+ * Does not create, delete, or fetch branches.
+ */
+export function inspectBranchPresence(repoRoot: string, branch: string, deps: { execSync?: (cmd:string)=>string, runGh?: (args:string[])=>Promise<string> } = {}): BranchPresence {
+  const execSyncFn = deps.execSync ?? ((cmd:string)=> require('node:child_process').execSync(cmd, {encoding:'utf8', cwd: repoRoot}).trim());
+  const runGh = deps.runGh;
+  try {
+    const out = execSyncFn(`git branch --list "${branch}"`);
+    if (out) return "present";
+  } catch { return "unknown"; }
+  // Try remote if local absent — but treat remote lookup failure as unknown if origin exists
+  let originExists=false;
+  try { execSyncFn("git remote get-url origin"); originExists=true; } catch {}
+  if (runGh) {
+    // Caller will handle remote via runGh — this helper is local-only, return absent if local not present
+    // For full presence, caller should combine local+remote via adapter
+    return "absent";
+  }
+  try {
+    const out = require('node:child_process').execFileSync("git", ["ls-remote","--heads","origin",branch], {encoding:'utf8', cwd: repoRoot}).toString().trim();
+    if (out) return "present";
+    return "absent";
+  } catch {
+    if (originExists) return "unknown";
+    return "absent";
+  }
+}
+
+/**
+ * Read-only commits-ahead inspection — preserves unknown on Git failure.
+ * Does not wrap hasCommitsAhead which swallows errors.
+ */
+export function inspectCommitsAhead(repoRoot: string, base: string, branch: string): CommitsAhead {
+  try {
+    const log = require('node:child_process').execFileSync("git", ["log", `${base}..${branch}`, "--oneline"], {encoding:'utf8', cwd: repoRoot}).toString().trim();
+    return log ? "has-work" : "empty";
+  } catch {
+    return "unknown";
+  }
+}
+
+/**
+ * Read-only provenance inspection — preserves unknown on parse/Git errors.
+ * Valid means branch descendant of recorded base; invalid means legacy/contaminated; unknown means check failed.
+ */
+export function inspectProvenance(repoRoot: string, branch: string): ProvenanceStatus {
+  try {
+    const result = verifyProvenance(repoRoot, branch);
+    if (result.ok) return "valid";
+    // If verifyProvenance returns not ok due to missing file but empty branch, it returns ok true with reason clean — handled above
+    // Otherwise, it's invalid (legacy with commits, or bad ancestry)
+    return "invalid";
+  } catch {
+    return "unknown";
+  }
+}
+
+
 export function createBatchWorktree(repoRoot: string, batchBranch: string, factoryBaseSha: string): string {
   const worktreePath = path.join(repoRoot, ".sandcastle", "worktrees", batchBranch.replace(/\//g, "-"));
   execFileSync("git", ["worktree", "add", "-b", batchBranch, worktreePath, factoryBaseSha], { stdio: "ignore", cwd: repoRoot });

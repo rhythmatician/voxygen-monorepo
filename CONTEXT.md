@@ -82,7 +82,7 @@ Voxygen generates distant Minecraft terrain via learned octree diffusion and wri
 
 **Wayfinder Map**: Single issue labelled `wayfinder:map` that indexes a destination, decisions-so-far, and fog. _Avoid_: roadmap, backlog.
 
-**Wayfinder Ticket**: Child issue of the Wayfinder Map labelled `wayfinder:<type>` where `<type>` is one of `research`, `prototype`, `grilling`, `task`. Purpose describes frontier; `agent:*` authorizes execution via Sandcastle. _Avoid_: purpose as executor.
+**Wayfinder Ticket**: Child issue of the Wayfinder Map labelled `wayfinder:<type>` where `<type>` is one of `research`, `prototype`, `grilling`, `task`. Purpose describes frontier; `agent:implement` authorizes AFK Task via Sandcastle, while `wayfinder:research` alone authorizes research dispatch. _Avoid_: purpose as executor, agent:* authorizes every execution.
 
 **Research Ticket**: Wayfinder ticket of type `research` — AFK evidence-backed research to surface a fact a decision waits on. Eligible for Sandcastle research profile when open, exactly one Wayfinder type `wayfinder:research`, unassigned, no `agent:in-progress` or `agent:blocked`, known `blocked_by === 0`, and body satisfies research input contract. No `agent:research` or `ready-for-agent` required; historical `ready-for-agent` residue is removable but not authoritative. Executed via Sandcastle parallel research profile (isolated worktree/sandbox, strict structured result, host publication, required parent-map pointer when `Part of #N` present, close; no implementation review, merger, PR, or auto-merge). Research retains distinct lifecycle: one result, one publication, one parent pointer, one close. _Avoid_: HITL research, research without wayfinder:research, agent:research, research should not commit.
 

@@ -321,27 +321,23 @@ export async function executeReconciliation(
       let released = false;
       try { released = await ops.releaseClaim(String(issue.number)); } catch (e) { return { reconciled: false, reason: `failed to release claim for #${issue.number}: ${e}`, factoryError: true, decision }; }
       if (!released) return { reconciled: false, reason: `failed to release claim for #${issue.number}`, factoryError: true, decision };
-      // Verify final state after release if fetch available
-      if (ops.fetchIssue) {
-        try {
-          const after = await ops.fetchIssue(String(issue.number));
-          if (after.labels.includes(AGENT_IN_PROGRESS) || after.assignees.length > 0) {
-            return { reconciled: false, reason: `failed to verify claim release for #${issue.number} — still has in-progress or assignee`, factoryError: true, decision };
-          }
-        } catch {}
-      }
+      // Verify claim release with fresh read — failure is FACTORY_ERROR
+      try {
+        const afterRelease = await ops.fetchIssue(String(issue.number));
+        if (afterRelease.labels.includes(AGENT_IN_PROGRESS) || afterRelease.assignees.length > 0) {
+          return { reconciled: false, reason: `failed to verify claim release for #${issue.number} — still has in-progress or assignee`, factoryError: true, decision };
+        }
+      } catch (e) { return { reconciled: false, reason: `failed to verify claim release for #${issue.number}: ${e}`, factoryError: true, decision }; }
       let blocked = false;
       try { blocked = await ops.addBlocked(String(issue.number)); } catch (e) { return { reconciled: false, reason: `failed to add blocked for #${issue.number}: ${e}`, factoryError: true, decision }; }
       if (!blocked) return { reconciled: false, reason: `failed to add blocked for #${issue.number}`, factoryError: true, decision };
-      // Verify blocked label present
-      if (ops.fetchIssue) {
-        try {
-          const after = await ops.fetchIssue(String(issue.number));
-          if (!after.labels.includes(AGENT_BLOCKED)) {
-            return { reconciled: false, reason: `failed to verify blocked label for #${issue.number}`, factoryError: true, decision };
-          }
-        } catch {}
-      }
+      // Verify blocked present with fresh read — failure is FACTORY_ERROR
+      try {
+        const afterBlocked = await ops.fetchIssue(String(issue.number));
+        if (!afterBlocked.labels.includes(AGENT_BLOCKED)) {
+          return { reconciled: false, reason: `failed to verify blocked label for #${issue.number}`, factoryError: true, decision };
+        }
+      } catch (e) { return { reconciled: false, reason: `failed to verify blocked label for #${issue.number}: ${e}`, factoryError: true, decision }; }
       return { reconciled: false, reason: decision.reason, decision };
     }
     case "no_branch": {
@@ -351,9 +347,17 @@ export async function executeReconciliation(
       let released = false;
       try { released = await ops.releaseClaim(String(issue.number)); } catch (e) { return { reconciled: false, reason: `failed to release claim for #${issue.number}: ${e}`, factoryError: true, decision }; }
       if (!released) return { reconciled: false, reason: `failed to release claim for #${issue.number}`, factoryError: true, decision };
+      try {
+        const afterRelease = await ops.fetchIssue(String(issue.number));
+        if (afterRelease.labels.includes(AGENT_IN_PROGRESS) || afterRelease.assignees.length > 0) return { reconciled: false, reason: `failed to verify claim release for #${issue.number}`, factoryError: true, decision };
+      } catch (e) { return { reconciled: false, reason: `failed to verify claim release for #${issue.number}: ${e}`, factoryError: true, decision }; }
       let blocked = false;
       try { blocked = await ops.addBlocked(String(issue.number)); } catch (e) { return { reconciled: false, reason: `failed to add blocked for #${issue.number}: ${e}`, factoryError: true, decision }; }
       if (!blocked) return { reconciled: false, reason: `failed to add blocked for #${issue.number}`, factoryError: true, decision };
+      try {
+        const afterBlocked = await ops.fetchIssue(String(issue.number));
+        if (!afterBlocked.labels.includes(AGENT_BLOCKED)) return { reconciled: false, reason: `failed to verify blocked label for #${issue.number}`, factoryError: true, decision };
+      } catch (e) { return { reconciled: false, reason: `failed to verify blocked label for #${issue.number}: ${e}`, factoryError: true, decision }; }
       return { reconciled: false, reason: decision.reason, decision };
     }
     case "invalid_provenance": {
@@ -366,9 +370,17 @@ export async function executeReconciliation(
       let released = false;
       try { released = await ops.releaseClaim(String(issue.number)); } catch (e) { return { reconciled: false, reason: `failed to release claim for #${issue.number}: ${e}`, factoryError: true, decision }; }
       if (!released) return { reconciled: false, reason: `failed to release claim for #${issue.number}`, factoryError: true, decision };
+      try {
+        const afterRelease = await ops.fetchIssue(String(issue.number));
+        if (afterRelease.labels.includes(AGENT_IN_PROGRESS) || afterRelease.assignees.length > 0) return { reconciled: false, reason: `failed to verify claim release for #${issue.number}`, factoryError: true, decision };
+      } catch (e) { return { reconciled: false, reason: `failed to verify claim release for #${issue.number}: ${e}`, factoryError: true, decision }; }
       let blocked = false;
       try { blocked = await ops.addBlocked(String(issue.number)); } catch (e) { return { reconciled: false, reason: `failed to add blocked for #${issue.number}: ${e}`, factoryError: true, decision }; }
       if (!blocked) return { reconciled: false, reason: `failed to add blocked for #${issue.number}`, factoryError: true, decision };
+      try {
+        const afterBlocked = await ops.fetchIssue(String(issue.number));
+        if (!afterBlocked.labels.includes(AGENT_BLOCKED)) return { reconciled: false, reason: `failed to verify blocked label for #${issue.number}`, factoryError: true, decision };
+      } catch (e) { return { reconciled: false, reason: `failed to verify blocked label for #${issue.number}: ${e}`, factoryError: true, decision }; }
       return { reconciled: false, reason: decision.reason, decision };
     }
     case "absent_empty_branch": {
@@ -420,9 +432,17 @@ export async function executeReconciliation(
       let released = false;
       try { released = await ops.releaseClaim(String(issue.number)); } catch (e) { return { reconciled: false, reason: `failed to release claim for #${issue.number}: ${e}`, factoryError: true, decision }; }
       if (!released) return { reconciled: false, reason: `failed to release claim for #${issue.number}`, factoryError: true, decision };
+      try {
+        const afterRelease = await ops.fetchIssue(String(issue.number));
+        if (afterRelease.labels.includes(AGENT_IN_PROGRESS) || afterRelease.assignees.length > 0) return { reconciled: false, reason: `failed to verify claim release for #${issue.number}`, factoryError: true, decision };
+      } catch (e) { return { reconciled: false, reason: `failed to verify claim release for #${issue.number}: ${e}`, factoryError: true, decision }; }
       let blocked = false;
       try { blocked = await ops.addBlocked(String(issue.number)); } catch (e) { return { reconciled: false, reason: `failed to add blocked for #${issue.number}: ${e}`, factoryError: true, decision }; }
       if (!blocked) return { reconciled: false, reason: `failed to add blocked for #${issue.number}`, factoryError: true, decision };
+      try {
+        const afterBlocked = await ops.fetchIssue(String(issue.number));
+        if (!afterBlocked.labels.includes(AGENT_BLOCKED)) return { reconciled: false, reason: `failed to verify blocked label for #${issue.number}`, factoryError: true, decision };
+      } catch (e) { return { reconciled: false, reason: `failed to verify blocked label for #${issue.number}: ${e}`, factoryError: true, decision }; }
       return { reconciled: false, reason: decision.reason, decision };
     }
   }

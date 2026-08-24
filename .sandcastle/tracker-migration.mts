@@ -85,6 +85,19 @@ export function planMigration(issues: IssueInput[], explicitTaskPlan: Record<num
     labelDescriptionUpdates: [],
     retiredLabelsToDelete: [],
   };
+  // Global fail-closed: unknown blocked_by for any relevant open issue is blocking and prevents all writes
+  for (const issue of issues) {
+    if (issue.state === "open" && issue.blockedByCount === undefined) {
+      const already = plan.contradictions.some(c => c.issue === issue.number && c.code === "BLOCKED_UNKNOWN");
+      if (!already) {
+        plan.contradictions.push({ issue: issue.number, code: "BLOCKED_UNKNOWN", reason: `issue #${issue.number} blocked_by unknown — fail closed` });
+        // Also mark as ambiguous to ensure blocking
+        if (!plan.ambiguousResearch.includes(issue.number) && !issue.labels.includes("wayfinder:task")) {
+          // For task, ambiguousResearch is not the right bucket, but we ensure hasBlocking is true via contradictions
+        }
+      }
+    }
+  }
 
   const relevantLabels = [...(WAYFINDER_TYPES as unknown as string[]), AGENT_RESEARCH_RETIRED, WAYFINDER_PRESERVE_FUTURES_RETIRED, READY_FOR_AGENT, READY_FOR_HUMAN, AGENT_IMPLEMENT, AGENT_IN_PROGRESS, AGENT_BLOCKED, "needs-triage", "needs-info", "wontfix"];
 
@@ -427,6 +440,11 @@ export async function runTrackerMigration(opts: {
 
   if (hasBlockingMigrationProblems(plan)) {
     throw new Error(`blocking migration problems: ${JSON.stringify(plan.contradictions.slice(0,3))}`);
+  }
+  // Fail globally on unknown native dependency state — prevent all writes (Task or otherwise)
+  const hasUnknownBlockedBy = relevant.some(i => i.blockedByCount === undefined);
+  if (hasUnknownBlockedBy) {
+    throw new Error(`blocking migration problems: unknown blocked_by for relevant issues`);
   }
   if (!migrationRequired(plan, { labelDescriptions, retiredLabelsExist: retiredExist })) {
     const afterIssues = await opts.inventoryOps.listOpenIssues();

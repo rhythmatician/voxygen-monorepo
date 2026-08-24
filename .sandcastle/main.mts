@@ -56,6 +56,7 @@ import {
   partitionMergerInfrastructureFailure,
 } from "./factory-verdict-gate.mts";
 import * as branchHelpers from "./branch-helpers.mts";
+import { createProductionReconcileOps } from "./reconcile-adapter.mts";
 import { publishBatchBranch } from "./batch-publication.mts";
 import { mayAutonomouslyMerge } from "./ci-policy.mts";
 import { runReviewerPass } from "./review-pass.mts";
@@ -786,128 +787,8 @@ async function reconcileInProgressIssues(): Promise<void> {
     const hasAssignee = issue.assignees.length > 0;
     if (hasReady && hasInProgress && hasAssignee && !hasImplement) {
       console.log(`  #${id} (${branch}) → stale implementation claim (consumed ${AGENT_IMPLEMENT}) — full seam`);
-      const fullOps = {
-        fetchIssue: async (fid: string) => issue,
-        releaseClaim: async (rid: string) => {
-          return await safeRunGh(
-            ["issue", "edit", rid, "--remove-label", "agent:in-progress", "--remove-assignee", "@me"],
-            `Failed to release stale implementation claim for #${rid}`,
-          );
-        },
-        comment: async (cid: string, body: string) => {
-          return await safeRunGh(["issue", "comment", cid, "--body", body]);
-        },
-        getBatchPrNumber: async (issueNumber: string) => {
-          let batchPrNumber: string | null = null;
-          let commentsUnknown = false;
-          try {
-            const commentsJson = await runGh(["issue", "view", issueNumber, "--json", "comments", "--jq", ".comments[].body"]);
-            const match = commentsJson.match(/Batch PR #(\d+)/);
-            if (match) batchPrNumber = match[1];
-          } catch (e) {
-            const msg = getErrorMessage(e);
-            const lower = msg.toLowerCase();
-            const isNotFound = lower.includes("not found") || lower.includes("no pull") || lower.includes("404");
-            if (!isNotFound) commentsUnknown = true;
-          }
-          if (commentsUnknown) return { prNumber: null, state: "unknown" as const };
-          if (batchPrNumber) return { prNumber: batchPrNumber, state: "found" as const };
-          let prListUnknown = false;
-          try {
-            const prListJson = await runGh(["pr", "list", "--state", "open", "--limit", "100", "--json", "number,body"]);
-            const prs: any[] = JSON.parse(prListJson);
-            for (const pr of prs) {
-              if (pr.body && pr.body.includes(`Closes #${issueNumber}`)) {
-                return { prNumber: String(pr.number), state: "found" as const };
-              }
-            }
-          } catch (e) {
-            prListUnknown = true;
-          }
-          if (prListUnknown) return { prNumber: null, state: "unknown" as const };
-          return { prNumber: null, state: "absent" as const };
-        },
-        getPrState: async (prNumber: string) => {
-          try {
-            const prJson = await runGh(["pr", "view", prNumber, "--json", "state,mergedAt,number"]);
-            const pr = JSON.parse(prJson);
-            return { state: pr.state, mergedAt: pr.mergedAt ?? null, found: true };
-          } catch (e) {
-            const msg = getErrorMessage(e).toLowerCase();
-            const isNotFound = msg.includes("not found") || msg.includes("could not find") || msg.includes("404");
-            if (isNotFound) return { state: "CLOSED", mergedAt: null, found: false };
-            return { state: "UNKNOWN", mergedAt: null, found: false, unknown: true };
-          }
-        },
-        checkBranchExists: async (branchName: string): Promise<"present" | "absent" | "unknown"> => {
-          // Do not convert exceptions to false — return unknown for remote lookup failures when origin exists
-          let originExists = false;
-          try { execSync("git remote get-url origin", { stdio: "ignore", cwd: REPO_ROOT }); originExists = true; } catch {}
-          try {
-            const out = execSync(`git branch --list "${branchName}"`, { encoding: "utf8" }).trim();
-            if (out) return "present";
-            // Check remote
-            const ownerRepo = (() => {
-              try { const o = execSync("git remote get-url origin", { encoding: "utf8" }).trim(); const m=o.match(/github\.com[:\/]([^\/]+)\/([^\/\.]+)/); if(m) return {owner:m[1],repo:m[2]}; } catch {} return null;
-            })();
-            if (ownerRepo) {
-              try {
-                const ref = await runGh(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/git/refs/heads/${branchName}`, "--jq", ".ref"]);
-                if (ref && ref.includes(branchName)) return "present";
-                return "absent";
-              } catch (e) {
-                const msg = String(e).toLowerCase();
-                if (msg.includes("404") || msg.includes("not found")) return "absent";
-                if (originExists) return "unknown";
-                return "absent";
-              }
-            }
-            return "absent";
-          } catch (e) {
-            return "unknown";
-          }
-        },
-        checkProvenanceValid: async (branchName: string) => {
-          // Read-only verifier — do not call prepareIssueBranch which can fetch/recreate/delete/write provenance
-          const prov = branchHelpers.verifyProvenance(REPO_ROOT, branchName);
-          if (prov.ok) return { valid: true, reason: prov.reason };
-          const isContaminated = prov.reason?.toLowerCase().includes("legacy") || prov.reason?.toLowerCase().includes("contaminated") || prov.reason?.toLowerCase().includes("fail closed");
-          return { valid: false, reason: prov.reason, contaminated: !!isContaminated };
-        },
-        hasCommitsAhead: async (branchName: string): Promise<"has-work" | "empty" | "unknown"> => {
-          try {
-            const has = branchHelpers.hasCommitsAhead(REPO_ROOT, "origin/main", branchName);
-            return has ? "has-work" : "empty";
-          } catch (e) {
-            return "unknown";
-          }
-        },
-        deleteBranch: async (branchName: string) => {
-          let ok = true;
-          try { execSync(`git branch -D ${branchName}`, { encoding: "utf8", cwd: REPO_ROOT }); } catch { ok = false; }
-          try {
-            const ownerRepo = (() => { try { const o=execSync("git remote get-url origin",{encoding:"utf8"}).trim(); const m=o.match(/github\.com[:\/]([^\/]+)\/([^\/\.]+)/); if(m) return {owner:m[1],repo:m[2]}; } catch {} return null; })();
-            if (ownerRepo) {
-              try { await runGh(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/git/refs/heads/${branchName}`, "--method", "DELETE"]); } catch { ok = false; }
-            }
-          } catch { ok = false; }
-          try {
-            const provPath = path.join(REPO_ROOT, ".sandcastle", "provenance", `${branchName.replace(/[^a-zA-Z0-9-]/g, "-")}.json`);
-            // Only delete if exists, otherwise not failure
-            if (fs.existsSync(provPath)) fs.unlinkSync(provPath);
-          } catch { ok = false; }
-          return ok;
-        },
-        addBlocked: async (issueId: string) => {
-          return await safeRunGh(["issue", "edit", issueId, "--add-label", "agent:blocked"], `Failed to add agent:blocked to #${issueId}`);
-        },
-        markIntegrated: async (issueId: string, branchName: string) => {
-          try {
-            await markIntegrated(issueId, branchName);
-            return true;
-          } catch { return false; }
-        },
-      };
+      const claimantLogin = await resolveClaimantLogin();
+    const fullOps = createProductionReconcileOps({ runGh, repoRoot: REPO_ROOT, claimantLogin });
       const result = await reconcileStaleImplementation(issue, branch, fullOps);
       if (!result.reconciled) {
         console.warn(`  #${id} → ${result.reason} — decision=${result.decision?.type} factoryError=${result.factoryError}`);

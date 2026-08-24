@@ -25,16 +25,21 @@ describe("production-consumer guardrails", () => {
 
   it("main reconciliation calls full reconciliation adapter with required ops", () => {
     const main = readFile(".sandcastle/main.mts");
+    const adapter = readFile(".sandcastle/reconcile-adapter.mts");
     expect(main).toContain("reconcileStaleImplementation");
-    // Must provide all required ops
-    expect(main).toContain("getBatchPrNumber");
-    expect(main).toContain("getPrState");
-    expect(main).toContain("checkBranchExists");
-    expect(main).toContain("checkProvenanceValid");
-    expect(main).toContain("hasCommitsAhead");
-    expect(main).toContain("deleteBranch");
-    expect(main).toContain("addBlocked");
-    expect(main).toContain("markIntegrated");
+    // Production path must use the single extracted adapter
+    expect(main).toContain("createProductionReconcileOps");
+    expect(main).toContain("reconcile-adapter");
+    // Adapter must provide all required ops (authoritative safety)
+    expect(adapter).toContain("getBatchPrNumber");
+    expect(adapter).toContain("getPrState");
+    expect(adapter).toContain("checkBranchExists");
+    expect(adapter).toContain("checkProvenanceValid");
+    expect(adapter).toContain("hasCommitsAhead");
+    expect(adapter).toContain("deleteBranch");
+    expect(adapter).toContain("addBlocked");
+    expect(adapter).toContain("markIntegrated");
+    expect(adapter).toContain("fetchIssue");
     // No fallback comment about release anyway
     expect(main).not.toContain("No branch check provided");
     // Should use fullOps not minimal ops

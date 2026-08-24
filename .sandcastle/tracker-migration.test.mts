@@ -490,3 +490,57 @@ describe("tracker-migration — historical Research truthful classification (ite
     }
   });
 });
+
+describe("tracker-migration — blocked_by unknown fail-closed (item 6)", () => {
+  it("apply with wayfinder:task whose dependency API fails performs zero writes", async () => {
+    const { runTrackerMigrationCli } = await import("./tracker-migration.mts");
+    const { CANONICAL_LABEL_DESCRIPTIONS } = await import("./tracker-migration.mts");
+    const task:any = { number: 88, title:"task", state:"open", labels:["wayfinder:task"], assignees:[], body:"Task body", blockedByCount: undefined };
+    const headSha="test-head-sha-blocked-001";
+    // Build receipt with undefined blocked_by (simulating API failure)
+    const { planMigration, buildReviewedReceipt } = await import("./tracker-migration.mts");
+    const plan = planMigration([task], {88:"ready-for-human"});
+    // Receipt will have blocked_by undefined, but we need to simulate live inventory that returns undefined for blocked_by
+    const receipt = buildReviewedReceipt([task], CANONICAL_LABEL_DESCRIPTIONS, { "agent:research": false, "wayfinder:preserve-futures": false } as any, plan, headSha);
+    const mockRunGh = async (args:string[]) => {
+      if (args[0]==="issue" && args[1]==="list") {
+        return JSON.stringify([{ number:88, title:"task", body:"Task body", state:"open", labels:[{name:"wayfinder:task"}], assignees:[] }]);
+      }
+      if (args[0]==="api" && args[1].includes("repos/") && args[1].includes("/labels") && args.includes("--paginate")) {
+        return JSON.stringify(Object.entries(CANONICAL_LABEL_DESCRIPTIONS).map(([name,description])=>({name,description})));
+      }
+      if (args[0]==="api" && args[1].includes("/labels/")) {
+        const enc=args[1].split("/labels/")[1];
+        const name=decodeURIComponent(enc);
+        if (CANONICAL_LABEL_DESCRIPTIONS[name]!==undefined) return CANONICAL_LABEL_DESCRIPTIONS[name];
+        throw new Error("404 Not Found");
+      }
+      if (args[0]==="api" && args[1].includes("/issues/88") && args.includes("--jq")) {
+        // Simulate blocked_by API failure -> throw, which inventory will turn into undefined
+        throw new Error("API failure");
+      }
+      if (args[0]==="issue" && args[1]==="edit") throw new Error("should not be called - zero writes expected");
+      if (args[0]==="api" && args[1].includes("--method")) throw new Error("should not be called");
+      return "";
+    };
+    const execSync = (cmd:string) => {
+      if (cmd.includes("rev-parse HEAD")) return headSha;
+      if (cmd.includes("remote get-url")) return "https://github.com/rhythmatician/voxygen-monorepo.git";
+      return "";
+    };
+    const tmpPath="/tmp/test-blocked-receipt.json";
+    const fsSync=await import("node:fs");
+    fsSync.writeFileSync(tmpPath, JSON.stringify(receipt, null, 2));
+    const deps:any = {
+      runGh: mockRunGh,
+      execSync,
+      getHeadSha: () => headSha,
+      readFileSync: fsSync.readFileSync as any,
+      writeFileSync: () => { throw new Error("should not write"); },
+      mkdirSync: ()=>{},
+    };
+    const result = await runTrackerMigrationCli(["--apply","--receipt",tmpPath], deps);
+    expect(result.exitCode).toBe(1);
+    // Ensure no writes were attempted (mock would throw if they were)
+  });
+});

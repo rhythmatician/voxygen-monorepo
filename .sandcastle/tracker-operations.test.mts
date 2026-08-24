@@ -281,13 +281,15 @@ describe("tracker-operations — reconciliation full state machine", () => {
     const stale: any = { number:304, title:"s", state:"open", labels:["ready-for-agent","agent:in-progress"], assignees:["bot"], body:"body", blockedByCount:0 };
     const ops: any = {
       getBatchPrNumber: async () => ({ prNumber: null, state:"absent" }),
-      checkBranchExists: async () => true,
+      checkBranchExists: async () => "present" as const,
       checkProvenanceValid: async () => ({ valid:true }),
-      hasCommitsAhead: async () => true,
+      hasCommitsAhead: async () => "has-work" as const,
       releaseClaim: async () => true,
       comment: async () => true,
-      fetchIssue: async () => stale,
+      fetchIssue: async () => ({ number:304, title:"s", state:"open", labels:["ready-for-agent","agent:blocked"], assignees:[], body:"body", blockedByCount:0 }),
       addBlocked: async () => true,
+      deleteBranch: async () => true,
+      markIntegrated: async () => true,
     };
     const r = await reconcileStaleImplementation(stale, "sandcastle/issue-304", ops);
     expect(r.reconciled).toBe(false);
@@ -314,11 +316,15 @@ describe("tracker-operations — reconciliation full state machine", () => {
     const stale: any = { number:306, title:"s", state:"open", labels:["ready-for-agent","agent:in-progress"], assignees:["bot"], body:"body", blockedByCount:0 };
     const ops: any = {
       getBatchPrNumber: async () => ({ prNumber: null, state:"absent" }),
-      checkBranchExists: async () => false,
+      checkBranchExists: async () => "absent" as const,
+      checkProvenanceValid: async () => ({ valid:true }),
+      hasCommitsAhead: async () => "empty" as const,
       releaseClaim: async () => true,
       comment: async () => true,
-      fetchIssue: async () => stale,
+      fetchIssue: async () => ({ number:306, title:"s", state:"open", labels:["ready-for-agent","agent:blocked"], assignees:[], body:"body", blockedByCount:0 }),
       addBlocked: async () => true,
+      deleteBranch: async () => true,
+      markIntegrated: async () => true,
     };
     const r = await reconcileStaleImplementation(stale, "sandcastle/issue-306", ops);
     expect(r.reconciled).toBe(false);
@@ -339,15 +345,27 @@ describe("tracker-operations — stale reconciliation without command restoratio
     };
     let released = false;
     let commented = false;
+    let fetchCalls=0;
+    let branchChecks=0;
     const ops: any = {
       releaseClaim: async () => { released = true; return true; },
       comment: async () => { commented = true; return true; },
-      fetchIssue: async () => stale,
+      fetchIssue: async () => {
+        fetchCalls++;
+        return { number: 200, title: "stale", state: "open", labels: ["ready-for-agent"], assignees: [], body: TRACER_BODY, blockedByCount: 0 };
+      },
       getBatchPrNumber: async () => ({ prNumber: null, state: "absent" }),
-      checkBranchExists: async () => true,
+      checkBranchExists: async () => {
+        branchChecks++;
+        // First check is pre-delete (present), second is verification after delete (absent)
+        if (branchChecks===1) return "present" as const;
+        return "absent" as const;
+      },
       checkProvenanceValid: async () => ({ valid: true, reason: "valid" }),
-      hasCommitsAhead: async () => false,
+      hasCommitsAhead: async () => "empty" as const,
       deleteBranch: async () => true,
+      addBlocked: async () => true,
+      markIntegrated: async () => true,
     };
     const result = await reconcileStaleImplementation(stale, "sandcastle/issue-200", ops);
     expect(result.reconciled).toBe(true);
@@ -577,7 +595,7 @@ describe("tracker-operations — authoritative reconciliation effects (item 4) a
     const { reconcileStaleImplementation } = await import("./tracker-operations.mts");
     const stale:any = { ...staleBase, number:410 };
     const baseOps:any = {
-      fetchIssue: async () => stale,
+      fetchIssue: async () => ({ number:410, title:"s", state:"open", labels:["ready-for-agent"], assignees:[], body:"body", blockedByCount:0 }),
       getBatchPrNumber: async () => ({ prNumber: null, state:"absent" }),
       getPrState: async () => ({ state:"CLOSED", mergedAt:null, found:false }),
       checkBranchExists: async () => "absent" as const,
@@ -640,5 +658,215 @@ describe("tracker-operations — authoritative reconciliation effects (item 4) a
     };
     const result = await reconcileStaleImplementation(stale, "sandcastle/issue-201", ops);
     expect(result.reconciled).toBe(true);
+  });
+});
+
+describe("tracker-operations — production adapter behavioral (item 8)", () => {
+  it("stale captured issue regression: adapter fetchIssue does not return captured object", async () => {
+    const { createProductionReconcileOps } = await import("./reconcile-adapter.mts");
+    const staleCaptured:any = { number: 501, title:"s", state:"open", labels:["ready-for-agent","agent:in-progress"], assignees:["bot"], body:"body", blockedByCount:0 };
+    // Mock runGh to return different state than captured (released)
+    const mockRunGh = async (args:string[]) => {
+      if (args[0]==="issue" && args[1]==="view") {
+        return JSON.stringify({ number:501, title:"s", body:"body", state:"open", labels:[{name:"ready-for-agent"}], assignees:[], });
+      }
+      if (args[0]==="api" && args[1].includes("issues/")) return "0";
+      if (args[0]==="api" && args[1].includes("git/refs")) throw new Error("404 Not Found");
+      return "";
+    };
+    const ops = createProductionReconcileOps({ runGh: mockRunGh, repoRoot: process.cwd(), claimantLogin: "bot" });
+    const fresh = await ops.fetchIssue("501");
+    expect(fresh.labels).not.toContain("agent:in-progress");
+    expect(fresh.assignees.length).toBe(0);
+    // Ensure it's not the same object
+    expect(fresh).not.toBe(staleCaptured);
+    expect(fresh.labels.includes("ready-for-agent")).toBe(true);
+  });
+
+  it("pr_not_found successful end state via adapter", async () => {
+    const { createProductionReconcileOps } = await import("./reconcile-adapter.mts");
+    const { reconcileStaleImplementation } = await import("./tracker-operations.mts");
+    const stale:any = { number:502, title:"s", state:"open", labels:["ready-for-agent","agent:in-progress"], assignees:["bot"], body:"body", blockedByCount:0 };
+    const store:any = { labels: ["ready-for-agent","agent:in-progress"], assignees: ["bot"], state:"open" };
+    const mockRunGh = async (args:string[]) => {
+      if (args[0]==="issue" && args[1]==="view") {
+        return JSON.stringify({ number:502, title:"s", body:"body", state: store.state, labels: store.labels.map((n:string)=>({name:n})), assignees: store.assignees.map((l:string)=>({login:l})) });
+      }
+      if (args[0]==="issue" && args[1]==="edit") {
+        if (args.includes("--remove-label") && args.includes("agent:in-progress")) store.labels=store.labels.filter((l:string)=>l!=="agent:in-progress");
+        if (args.includes("--remove-assignee")) store.assignees=[];
+        if (args.includes("--add-label") && args.includes("agent:blocked") && !store.labels.includes("agent:blocked")) store.labels.push("agent:blocked");
+        return "";
+      }
+      if (args[0]==="issue" && args[1]==="comment") return "";
+      if (args[0]==="api" && args[1].includes("issues/") && args.includes("--jq")) return "0";
+      if (args[0]==="issue" && args[1]==="view" && args.includes("comments")) return "";
+      if (args[0]==="api" && args[1].includes("git/refs")) throw new Error("404 Not Found");
+      if (args[0]==="pr" && args[1]==="list") return "[]";
+      if (args[0]==="issue" && args[1]==="view" && args.includes("Batch PR")) return "";
+      // getBatchPrNumber will try issue view for comments and pr list — simulate found pr_not_found via getPrState
+      if (args[0]==="pr" && args[1]==="view") throw new Error("404 Not Found");
+      return "";
+    };
+    // Override getBatchPrNumber and getPrState via manual ops that use mockRunGh but simulate pr_not_found
+    const baseOps = createProductionReconcileOps({ runGh: mockRunGh, repoRoot: process.cwd(), claimantLogin: "bot" });
+    // Replace getBatchPrNumber to return found, and getPrState to return not found
+    const ops:any = {
+      ...baseOps,
+      getBatchPrNumber: async () => ({ prNumber:"999", state:"found" as const }),
+      getPrState: async () => ({ state:"CLOSED", mergedAt:null, found:false }),
+    };
+    const r = await reconcileStaleImplementation(stale, "sandcastle/issue-502", ops);
+    // Should have done comment, release, blocked and verified
+    expect(store.labels.includes("agent:blocked")).toBe(true);
+    expect(store.labels.includes("agent:in-progress")).toBe(false);
+    expect(store.assignees.length).toBe(0);
+  });
+
+  it("merged PR successful closed/unassigned end state via adapter", async () => {
+    const { createProductionReconcileOps } = await import("./reconcile-adapter.mts");
+    const { reconcileStaleImplementation } = await import("./tracker-operations.mts");
+    const stale:any = { number:503, title:"s", state:"open", labels:["ready-for-agent","agent:in-progress"], assignees:["bot"], body:"body", blockedByCount:0 };
+    const store:any = { labels: ["ready-for-agent","agent:in-progress"], assignees: ["bot"], state:"open" };
+    const mockRunGh = async (args:string[]) => {
+      if (args[0]==="issue" && args[1]==="view") {
+        return JSON.stringify({ number:503, title:"s", body:"body", state: store.state, labels: store.labels.map((n:string)=>({name:n})), assignees: store.assignees.map((l:string)=>({login:l})) });
+      }
+      if (args[0]==="issue" && args[1]==="edit") {
+        if (args.includes("--remove-label")) {
+          const idx=args.indexOf("--remove-label");
+          const lbl=args[idx+1];
+          store.labels=store.labels.filter((l:string)=>l!==lbl);
+        }
+        if (args.includes("--remove-assignee")) store.assignees=[];
+        return "";
+      }
+      if (args[0]==="issue" && args[1]==="close") { store.state="closed"; return ""; }
+      if (args[0]==="issue" && args[1]==="comment") return "";
+      if (args[0]==="api" && args[1].includes("issues/") && args.includes("--jq")) return "0";
+      if (args[0]==="api" && args[1].includes("git/refs")) throw new Error("404 Not Found");
+      return "";
+    };
+    const baseOps = createProductionReconcileOps({ runGh: mockRunGh, repoRoot: process.cwd(), claimantLogin: "bot" });
+    const ops:any = {
+      ...baseOps,
+      getBatchPrNumber: async () => ({ prNumber:"123", state:"found" as const }),
+      getPrState: async () => ({ state:"MERGED", mergedAt:"2024-01-01", found:true }),
+    };
+    const r = await reconcileStaleImplementation(stale, "sandcastle/issue-503", ops);
+    expect(r.reconciled).toBe(true);
+    expect(store.state).toBe("closed");
+    expect(store.assignees.includes("bot")).toBe(false);
+    expect(store.labels.includes("agent:in-progress")).toBe(false);
+    expect(store.labels.includes("agent:implement")).toBe(false);
+    expect(store.labels.includes("agent:blocked")).toBe(false);
+  });
+
+  it("Git commits-ahead inspection failure => unknown and zero mutations", async () => {
+    const { createProductionReconcileOps } = await import("./reconcile-adapter.mts");
+    const { reconcileStaleImplementation } = await import("./tracker-operations.mts");
+    const stale:any = { number:504, title:"s", state:"open", labels:["ready-for-agent","agent:in-progress"], assignees:["bot"], body:"body", blockedByCount:0 };
+    let deleteCalled=false, releaseCalled=false, blockedCalled=false;
+    const mockRunGh = async (args:string[]) => {
+      if (args[0]==="issue" && args[1]==="view") return JSON.stringify({ number:504, title:"s", body:"body", state:"open", labels:[{name:"ready-for-agent"},{name:"agent:in-progress"}], assignees:[{login:"bot"}] });
+      if (args[0]==="api" && args[1].includes("issues/") && args.includes("--jq")) return "0";
+      if (args[0]==="api" && args[1].includes("git/refs")) throw new Error("404 Not Found");
+      return "";
+    };
+    const ops = createProductionReconcileOps({ runGh: mockRunGh, repoRoot: "/nonexistent/path/that/will/fail/git", claimantLogin: "bot" });
+    // Force hasCommitsAhead to be unknown by making repoRoot invalid
+    // The adapter's hasCommitsAhead will try git rev-parse origin/main and fail -> unknown
+    // But we need to ensure checkBranchExists also doesn't mask it: make it present so we reach hasCommitsAhead
+    const ops2:any = {
+      ...ops,
+      checkBranchExists: async () => "present" as const,
+      checkProvenanceValid: async () => ({ valid:true }),
+      hasCommitsAhead: async () => "unknown" as const,
+      deleteBranch: async () => { deleteCalled=true; return true; },
+      releaseClaim: async () => { releaseCalled=true; return true; },
+      addBlocked: async () => { blockedCalled=true; return true; },
+      comment: async () => true,
+      fetchIssue: async () => stale,
+      getBatchPrNumber: async () => ({ prNumber:null, state:"absent" as const }),
+      getPrState: async () => ({ state:"CLOSED", mergedAt:null, found:false }),
+      markIntegrated: async () => true,
+    };
+    const r = await reconcileStaleImplementation(stale, "sandcastle/issue-504", ops2);
+    expect(r.reconciled).toBe(false);
+    expect(r.reason).toMatch(/unknown/);
+    expect(deleteCalled).toBe(false);
+    expect(releaseCalled).toBe(false);
+    expect(blockedCalled).toBe(false);
+  });
+
+  it("provenance inspection failure => unknown and zero mutations", async () => {
+    const { reconcileStaleImplementation } = await import("./tracker-operations.mts");
+    const stale:any = { number:505, title:"s", state:"open", labels:["ready-for-agent","agent:in-progress"], assignees:["bot"], body:"body", blockedByCount:0 };
+    let deleteCalled=false, releaseCalled=false;
+    const ops:any = {
+      fetchIssue: async () => stale,
+      getBatchPrNumber: async () => ({ prNumber:null, state:"absent" as const }),
+      getPrState: async () => ({ state:"CLOSED", mergedAt:null, found:false }),
+      checkBranchExists: async () => "present" as const,
+      checkProvenanceValid: async () => { throw new Error("provenance read failed"); },
+      hasCommitsAhead: async () => "empty" as const,
+      deleteBranch: async () => { deleteCalled=true; return true; },
+      releaseClaim: async () => { releaseCalled=true; return true; },
+      comment: async () => true,
+      addBlocked: async () => true,
+      markIntegrated: async () => true,
+    };
+    const r = await reconcileStaleImplementation(stale, "sandcastle/issue-505", ops);
+    expect(r.reconciled).toBe(false);
+    expect(r.reason).toMatch(/provenance/);
+    expect(deleteCalled).toBe(false);
+    expect(releaseCalled).toBe(false);
+  });
+
+  it("integration close failure => FACTORY_ERROR", async () => {
+    const { reconcileStaleImplementation } = await import("./tracker-operations.mts");
+    const stale:any = { number:506, title:"s", state:"open", labels:["ready-for-agent","agent:in-progress"], assignees:["bot"], body:"body", blockedByCount:0 };
+    const ops:any = {
+      fetchIssue: async () => ({ number:506, title:"s", state:"open", labels:["ready-for-agent","agent:in-progress"], assignees:["bot"], body:"body", blockedByCount:0 }),
+      getBatchPrNumber: async () => ({ prNumber:"123", state:"found" as const }),
+      getPrState: async () => ({ state:"MERGED", mergedAt:"2024-01-01", found:true }),
+      checkBranchExists: async () => "present" as const,
+      checkProvenanceValid: async () => ({ valid:true }),
+      hasCommitsAhead: async () => "empty" as const,
+      deleteBranch: async () => true,
+      releaseClaim: async () => true,
+      comment: async () => true,
+      addBlocked: async () => true,
+      markIntegrated: async () => false,
+    };
+    const r = await reconcileStaleImplementation(stale, "sandcastle/issue-506", ops);
+    expect(r.factoryError).toBe(true);
+    expect(r.reason).toMatch(/markIntegrated/);
+  });
+
+  it("blocked-label read-back failure => FACTORY_ERROR", async () => {
+    const { reconcileStaleImplementation } = await import("./tracker-operations.mts");
+    const stale:any = { number:507, title:"s", state:"open", labels:["ready-for-agent","agent:in-progress"], assignees:["bot"], body:"body", blockedByCount:0 };
+    let fetchCalls=0;
+    const ops:any = {
+      fetchIssue: async () => {
+        fetchCalls++;
+        if (fetchCalls===1) return { number:507, title:"s", state:"open", labels:["ready-for-agent"], assignees:[], body:"body", blockedByCount:0 };
+        throw new Error("fetch failed");
+      },
+      getBatchPrNumber: async () => ({ prNumber:null, state:"absent" as const }),
+      getPrState: async () => ({ state:"CLOSED", mergedAt:null, found:false }),
+      checkBranchExists: async () => "absent" as const,
+      checkProvenanceValid: async () => ({ valid:true }),
+      hasCommitsAhead: async () => "empty" as const,
+      deleteBranch: async () => true,
+      releaseClaim: async () => true,
+      comment: async () => true,
+      addBlocked: async () => true,
+      markIntegrated: async () => true,
+    };
+    const r = await reconcileStaleImplementation(stale, "sandcastle/issue-507", ops);
+    expect(r.factoryError).toBe(true);
+    expect(r.reason).toMatch(/failed to verify/);
   });
 });
