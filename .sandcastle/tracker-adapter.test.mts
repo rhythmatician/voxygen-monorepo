@@ -1,0 +1,283 @@
+import { describe, it, expect } from "vitest";
+import { createTrackerAdapter, makeMemoryReceiptSink, type TrackerAdapter } from "./tracker-adapter.mts";
+import type { GhTransport } from "./gh-transport.mts";
+import type { IssueInput } from "./tracker-policy.mts";
+
+// ---------------------------------------------------------------------------
+// Fake transport: in-memory issue store driven by gh command args. No spawns.
+// ---------------------------------------------------------------------------
+
+interface FakeIssue {
+  number: number;
+  state: "open" | "closed";
+  labels: Set<string>;
+  assignees: Set<string>;
+}
+
+function makeFakeGh(opts: {
+  issues: Map<number, FakeIssue>;
+  claimant?: string;
+  failEditsWithLabel?: string; // edits touching this label throw
+  failEditsAfterRelease?: boolean; // any edit after a successful release throws
+}): GhTransport & { editCalls: string[][] } {
+  const claimant = opts.claimant ?? "test-bot";
+  const editCalls: string[][] = [];
+  let released = false;
+  const gh = {
+    capabilityMode: "read-write" as const,
+    isWriteForbidden: () => false,
+    editCalls,
+    async run(args: string[]): Promise<string> {
+      if (args[0] === "api" && args[1] === "user") return claimant;
+      if (args[0] === "issue" && args[1] === "view") {
+        const issue = opts.issues.get(Number(args[2]));
+        if (!issue) throw new Error(`not found #${args[2]}`);
+        return JSON.stringify({
+          number: issue.number,
+          title: "t",
+          body: "b",
+          state: issue.state,
+          labels: [...issue.labels].map((name) => ({ name })),
+          assignees: [...issue.assignees].map((login) => ({ login })),
+        });
+      }
+      if (args[0] === "issue" && args[1] === "edit") {
+        editCalls.push([...args]);
+        const id = Number(args[2]);
+        const issue = opts.issues.get(id);
+        if (!issue) throw new Error(`not found #${id}`);
+        const flags = args.slice(3);
+        // Simulate targeted failure
+        if (opts.failEditsWithLabel && flags.some((f, i) => f === "--add-label" && flags[i + 1] === opts.failEditsWithLabel)) {
+          throw new Error("simulated add-label failure");
+        }
+        if (opts.failEditsAfterRelease && released) {
+          throw new Error("simulated post-release failure");
+        }
+        for (let i = 0; i < flags.length; i++) {
+          if (flags[i] === "--add-label") issue.labels.add(flags[++i]);
+          else if (flags[i] === "--remove-label") issue.labels.delete(flags[++i]);
+          else if (flags[i] === "--add-assignee") issue.assignees.add(flags[++i] === "@me" ? claimant : flags[i]);
+          else if (flags[i] === "--remove-assignee") issue.assignees.delete(flags[++i] === "@me" ? claimant : flags[i]);
+        }
+        if (flags.includes("--remove-label", 0) && flags.join(" ").includes("agent:in-progress")) released = true;
+        return "";
+      }
+      if (args[0] === "issue" && args[1] === "close") {
+        const issue = opts.issues.get(Number(args[2]));
+        if (issue) issue.state = "closed";
+        return "";
+      }
+      if (args[0] === "issue" && args[1] === "comment") return "";
+      throw new Error(`unexpected gh args: ${args.join(" ")}`);
+    },
+    async tryRun(args: string[]): Promise<boolean> {
+      try { await this.run(args); return true; } catch { return false; }
+    },
+    async resolveClaimantLogin(): Promise<string> { return claimant; },
+    resolveOwnerRepo() { return { owner: "rhythmatician", repo: "voxygen-monorepo" }; },
+  };
+  return gh as unknown as GhTransport & { editCalls: string[][] };
+}
+
+function implIssue(n: number): { issue: FakeIssue; input: IssueInput } {
+  const issue: FakeIssue = { number: n, state: "open", labels: new Set(["ready-for-agent", "agent:implement"]), assignees: new Set() };
+  const input: IssueInput = { number: n, title: "t", state: "open", labels: ["ready-for-agent", "agent:implement"], assignees: [], body: "b" };
+  return { issue, input };
+}
+
+describe("tracker-adapter — verified saga", () => {
+  it("claimImplementation commits: consumes agent:implement, adds in-progress + claimant", async () => {
+    const { issue, input } = implIssue(501);
+    const issues = new Map([[501, issue]]);
+    const gh = makeFakeGh({ issues });
+    const sink = makeMemoryReceiptSink();
+    const tracker: TrackerAdapter = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.claimImplementation(input);
+
+    expect(result.kind).toBe("committed");
+    if (result.kind !== "committed") return;
+    expect(result.before.labels).toContain("agent:implement");
+    expect(result.after.labels).toContain("ready-for-agent");
+    expect(result.after.labels).toContain("agent:in-progress");
+    expect(result.after.labels).not.toContain("agent:implement");
+    expect(result.after.assignees).toContain("test-bot");
+    expect(sink.receipts.length).toBe(1);
+    expect(sink.receipts[0].kind).toBe("committed");
+    expect(sink.receipts[0].transition).toBe("claimImplementation");
+  });
+
+  it("claimResearch commits and RETAINS wayfinder:research (explicit profile distinction)", async () => {
+    const issue: FakeIssue = { number: 502, state: "open", labels: new Set(["wayfinder:research"]), assignees: new Set() };
+    const input: IssueInput = { number: 502, title: "t", state: "open", labels: ["wayfinder:research"], assignees: [], body: "b" };
+    const gh = makeFakeGh({ issues: new Map([[502, issue]]) });
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.claimResearch(input);
+
+    expect(result.kind).toBe("committed");
+    if (result.kind !== "committed") return;
+    expect(result.after.labels).toContain("wayfinder:research"); // retained
+    expect(result.after.labels).toContain("agent:in-progress");
+    expect(result.after.assignees).toContain("test-bot");
+  });
+
+  it("invalid before-state compensates without mutating", async () => {
+    const issue: FakeIssue = { number: 503, state: "open", labels: new Set(["ready-for-agent"]), assignees: new Set() }; // no agent:implement
+    const input: IssueInput = { number: 503, title: "t", state: "open", labels: ["ready-for-agent"], assignees: [], body: "b" };
+    const gh = makeFakeGh({ issues: new Map([[503, issue]]) });
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.claimImplementation(input);
+
+    expect(result.kind).toBe("compensated");
+    if (result.kind !== "compensated") return;
+    expect(result.receipt.code).toBe("PRECONDITION_FAILED");
+    expect(gh.editCalls.length).toBe(0); // never mutated
+    expect(issue.labels.has("agent:in-progress")).toBe(false);
+  });
+
+  it("mutation failure with defined compensation rolls back to before-state (compensated)", async () => {
+    const { issue, input } = implIssue(504);
+    const issues = new Map([[504, issue]]);
+    // Fail the claim edit itself
+    const gh = makeFakeGh({ issues, failEditsWithLabel: "agent:in-progress" });
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.claimImplementation(input);
+
+    expect(result.kind).toBe("compensated");
+    if (result.kind !== "compensated") return;
+    expect(result.receipt.code).toBe("COMPENSATED");
+    // Rollback proved by fresh read: no claim residue
+    expect(issue.labels.has("agent:in-progress")).toBe(false);
+    expect(issue.assignees.size).toBe(0);
+  });
+
+  it("postcondition mismatch triggers compensation and reports compensated", async () => {
+    // Issue where the edit succeeds but verification would fail: pre-marked both implement+in-progress
+    // is caught by validateBefore, so instead simulate verify failure via a store that ignores edits.
+    const issue: FakeIssue = { number: 505, state: "open", labels: new Set(["ready-for-agent", "agent:implement"]), assignees: new Set() };
+    const input: IssueInput = { number: 505, title: "t", state: "open", labels: ["ready-for-agent", "agent:implement"], assignees: [], body: "b" };
+    const issues = new Map([[505, issue]]);
+    const gh = makeFakeGh({ issues });
+    // Sabotage: edits apply but drop the --remove-label of agent:implement (simulate partial GitHub effect)
+    const origRun = gh.run.bind(gh);
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "issue" && args[1] === "edit") {
+        const patched = args.filter((a, i) => !(a === "--remove-label" && args[i + 1] === "agent:implement"));
+        if (patched.length === args.length) return origRun(args);
+        return origRun(patched);
+      }
+      return origRun(args);
+    };
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.claimImplementation(input);
+
+    expect(result.kind).toBe("compensated");
+    if (result.kind !== "compensated") return;
+    // Compensation removed in-progress + assignee
+    expect(issue.labels.has("agent:in-progress")).toBe(false);
+    expect(issue.assignees.size).toBe(0);
+    expect(result.receipt.code).toBe("COMPENSATED");
+  });
+
+  it("UNSAFE TO RESTORE: release succeeds but adding agent:blocked fails → indeterminate FACTORY_ERROR, agent:implement NOT restored", async () => {
+    const issue: FakeIssue = {
+      number: 506,
+      state: "open",
+      labels: new Set(["ready-for-agent", "agent:in-progress"]),
+      assignees: new Set(["test-bot"]),
+    };
+    const gh = makeFakeGh({ issues: new Map([[506, issue]]), failEditsWithLabel: "agent:blocked" });
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.transitionToBlocked(506);
+
+    expect(result.kind).toBe("indeterminate");
+    if (result.kind !== "indeterminate") return;
+    expect(result.factoryError).toBe(true);
+    expect(result.receipt.code).toBe("UNSAFE_TO_RESTORE");
+    // Critical asymmetry: release stands, blocked absent, implement NOT restored
+    expect(issue.labels.has("agent:in-progress")).toBe(false);
+    expect(issue.labels.has("agent:blocked")).toBe(false);
+    expect(issue.labels.has("agent:implement")).toBe(false);
+    expect(result.lastObserved).not.toBeNull();
+  });
+
+  it("transitionToBlocked commits when both steps succeed", async () => {
+    const issue: FakeIssue = {
+      number: 507,
+      state: "open",
+      labels: new Set(["ready-for-agent", "agent:in-progress"]),
+      assignees: new Set(["test-bot"]),
+    };
+    const gh = makeFakeGh({ issues: new Map([[507, issue]]) });
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.transitionToBlocked(507);
+
+    expect(result.kind).toBe("committed");
+    expect(issue.labels.has("agent:blocked")).toBe(true);
+    expect(issue.labels.has("agent:in-progress")).toBe(false);
+    expect(issue.assignees.size).toBe(0);
+  });
+
+  it("releaseAfterFactoryError commits without restoring agent:implement", async () => {
+    const issue: FakeIssue = {
+      number: 508,
+      state: "open",
+      labels: new Set(["ready-for-agent", "agent:in-progress"]),
+      assignees: new Set(["test-bot"]),
+    };
+    const gh = makeFakeGh({ issues: new Map([[508, issue]]) });
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.releaseAfterFactoryError(508);
+
+    expect(result.kind).toBe("committed");
+    expect(issue.labels.has("agent:implement")).toBe(false);
+    expect(issue.labels.has("agent:in-progress")).toBe(false);
+  });
+
+  it("finalizeIntegrated strips transient labels and closes with postcondition proof", async () => {
+    const issue: FakeIssue = {
+      number: 509,
+      state: "open",
+      labels: new Set(["ready-for-agent", "agent:in-progress"]),
+      assignees: new Set(["test-bot"]),
+    };
+    const gh = makeFakeGh({ issues: new Map([[509, issue]]) });
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.finalizeIntegrated(509, "sandcastle/issue-509");
+
+    expect(result.kind).toBe("committed");
+    if (result.kind !== "committed") return;
+    expect(result.after.state).toBe("closed");
+    expect(issue.state).toBe("closed");
+    expect(issue.labels.has("agent:in-progress")).toBe(false);
+  });
+
+  it("every transition persists exactly one typed receipt", async () => {
+    const { issue, input } = implIssue(510);
+    const gh = makeFakeGh({ issues: new Map([[510, issue]]) });
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    await tracker.claimImplementation(input);
+    expect(sink.receipts.length).toBe(1);
+    expect(sink.receipts[0].at).toBeDefined();
+    expect(sink.receipts[0].issueNumber).toBe(510);
+  });
+});
