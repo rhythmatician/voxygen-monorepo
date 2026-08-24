@@ -38,7 +38,7 @@ function makeFakeIssue(overrides: Partial<FakeIssue> & { id: string }): FakeIssu
     branch: `sandcastle/issue-${overrides.id}`,
     title: `Research ${overrides.id}`,
     body: "Part of #22\nResearch the terrain signal",
-    labels: ["wayfinder:research", "agent:research", "agent:in-progress"],
+    labels: ["wayfinder:research", "agent:in-progress"],
     assignees: ["bot"],
     state: "open",
     comments: [],
@@ -200,7 +200,7 @@ describe("Research lifecycle — behavioral regressions", () => {
     expect(res.closeAttempted).toBe(true);
     const after = store.get("101")!;
     expect(after.state).toBe("closed");
-    expect(after.labels).toContain("agent:research"); // retained
+    expect(after.labels).toContain("wayfinder:research"); // retained
     expect(after.labels).not.toContain("agent:in-progress");
     expect(after.assignees).toEqual([]);
     expect(after.comments.some((c) => c.includes(researchResultMarker("101")))).toBe(true);
@@ -234,7 +234,7 @@ describe("Research lifecycle — behavioral regressions", () => {
     expect(res.outcome).toBe("SUCCESS");
     const after = store.get("102")!;
     expect(after.state).toBe("closed");
-    expect(after.labels).toContain("agent:research");
+    expect(after.labels).toContain("wayfinder:research");
     // Commits are preserved on branch — lifecycle does not delete them. We verify commits passed through are not treated as error.
     // The store does not model git branches, but we assert lifecycle succeeded despite commits.
     // Ensure no implementation paths were invoked
@@ -269,7 +269,7 @@ describe("Research lifecycle — behavioral regressions", () => {
     expect(after.labels).not.toContain("agent:in-progress");
     expect(after.assignees).toEqual([]);
     // Research retained
-    expect(after.labels).toContain("agent:research");
+    expect(after.labels).toContain("wayfinder:research");
     // No blocked
     expect(after.labels).not.toContain("agent:blocked");
     // Result and parent pointer were already published and preserved
@@ -304,7 +304,7 @@ describe("Research lifecycle — behavioral regressions", () => {
     expect(after.state).toBe("open");
     expect(after.labels).not.toContain("agent:in-progress");
     expect(after.assignees).toEqual([]);
-    expect(after.labels).toContain("agent:research");
+    expect(after.labels).toContain("wayfinder:research");
     expect(after.labels).not.toContain("agent:blocked");
     // Result was published and preserved
     expect(after.comments.some((c) => c.includes(researchResultMarker("104")))).toBe(true);
@@ -333,7 +333,7 @@ describe("Research lifecycle — behavioral regressions", () => {
     expect(res.outcome).toBe("SUCCESS");
     const after = store.get("105")!;
     expect(after.state).toBe("closed");
-    expect(after.labels).toContain("agent:research");
+    expect(after.labels).toContain("wayfinder:research");
     expect(after.labels).not.toContain("agent:in-progress");
     expect(after.assignees.length).toBe(0);
     expect(after.labels).not.toContain("agent:blocked");
@@ -377,7 +377,7 @@ describe("Research lifecycle — behavioral regressions", () => {
     // Failed sibling remains open, research retained, no blocked
     const failed = store.get("111")!;
     expect(failed.state).toBe("open");
-    expect(failed.labels).toContain("agent:research");
+    expect(failed.labels).toContain("wayfinder:research");
     expect(failed.labels).not.toContain("agent:blocked");
     expect(failed.labels).not.toContain("agent:in-progress");
   });
@@ -432,7 +432,7 @@ describe("Research lifecycle — behavioral regressions", () => {
       number: 500,
       title: "Impl",
       state: "open",
-      labels: ["agent:implement"],
+      labels: ["ready-for-agent", "agent:implement"],
       assignees: [],
       body: TRACER_BODY,
       blockedByCount: 0,
@@ -444,8 +444,8 @@ describe("Research lifecycle — behavioral regressions", () => {
     expect(res.eligible).toBe(false);
     expect((res as { reason: string }).reason).toContain("tracer contract");
     // Research vs implement classification unchanged
-    expect(classifyTicket({ ...impl(), labels: ["agent:implement"] }).profile).toBe("implementation");
-    const researchIssue: IssueInput = { number: 600, title: "R", state: "open", labels: ["wayfinder:research", "agent:research"], assignees: [], body: "Part of #22", blockedByCount: 0 };
+    expect(classifyTicket({ ...impl(), labels: ["ready-for-agent", "agent:implement"] }).profile).toBe("implementation");
+    const researchIssue: IssueInput = { number: 600, title: "R", state: "open", labels: ["wayfinder:research"], assignees: [], body: "Part of #22", blockedByCount: 0 };
     expect(classifyTicket(researchIssue).profile).toBe("research");
   });
 
@@ -516,7 +516,7 @@ describe("Research lifecycle — behavioral regressions", () => {
     // Transient release failed, so in-progress and assignee still present (factory will retry)
     expect(after.labels).toContain("agent:in-progress");
     expect(after.assignees).toEqual(["bot"]);
-    expect(after.labels).toContain("agent:research");
+    expect(after.labels).toContain("wayfinder:research");
     expect(after.labels).not.toContain("agent:blocked");
     // Close was not attempted
     expect(calls.some((c) => c.kind === "run" && c.args.includes("close") && c.args.includes("401"))).toBe(false);
@@ -547,7 +547,7 @@ describe("Research lifecycle — behavioral regressions", () => {
     expect(ok).toBe(true);
     const after = store.get("501")!;
     expect(after.state).toBe("open");
-    expect(after.labels).toContain("agent:research");
+    expect(after.labels).toContain("wayfinder:research");
     expect(after.labels).not.toContain("agent:in-progress");
     expect(after.labels).not.toContain("agent:blocked");
     expect(after.assignees).toEqual([]);
@@ -600,7 +600,7 @@ describe("Research lifecycle — behavioral regressions", () => {
 
     // Verify research issue remains FACTORY_ERROR state
     expect(researchStore.get("601")!.state).toBe("open");
-    expect(researchStore.get("601")!.labels).toContain("agent:research");
+    expect(researchStore.get("601")!.labels).toContain("wayfinder:research");
   });
 
   it("12. Research environment profile is resolved per issue and image is wired", async () => {
@@ -623,12 +623,12 @@ describe("Research lifecycle — behavioral regressions", () => {
     const { planResearchForIteration } = await import("./factory-iteration-control.mts");
     const { planIssuesForIteration } = await import("./factory-iteration-control.mts");
     const researchEligible: IssueInput[] = [
-      { number: 601, title: "R601", state: "open", labels: ["wayfinder:research", "agent:research"], assignees: [], body: "Part of #22", blockedByCount: 0 },
-      { number: 602, title: "R602", state: "open", labels: ["wayfinder:research", "agent:research"], assignees: [], body: "Part of #22", blockedByCount: 0 },
+      { number: 601, title: "R601", state: "open", labels: ["wayfinder:research"], assignees: [], body: "Part of #22", blockedByCount: 0 },
+      { number: 602, title: "R602", state: "open", labels: ["wayfinder:research"], assignees: [], body: "Part of #22", blockedByCount: 0 },
     ];
     const implementEligible: IssueInput[] = [
-      { number: 152, title: "Impl152", state: "open", labels: ["agent:implement"], assignees: [], body: TRACER_BODY, blockedByCount: 0 },
-      { number: 153, title: "Impl153", state: "open", labels: ["agent:implement"], assignees: [], body: TRACER_BODY, blockedByCount: 0 },
+      { number: 152, title: "Impl152", state: "open", labels: ["ready-for-agent", "agent:implement"], assignees: [], body: TRACER_BODY, blockedByCount: 0 },
+      { number: 153, title: "Impl153", state: "open", labels: ["ready-for-agent", "agent:implement"], assignees: [], body: TRACER_BODY, blockedByCount: 0 },
     ];
 
     // --issue 601 (research) → only research 601
@@ -688,7 +688,7 @@ describe("Research lifecycle — behavioral regressions", () => {
     expect(after.labels).not.toContain("agent:in-progress");
     expect(after.assignees).toEqual([]);
     // Research authorization retained
-    expect(after.labels).toContain("agent:research");
+    expect(after.labels).toContain("wayfinder:research");
     // No blocked added
     expect(after.labels).not.toContain("agent:blocked");
     // Leaves open for retry (not closed, not blocked)
@@ -730,7 +730,7 @@ describe("Research lifecycle — behavioral regressions", () => {
     // Leave external state untouched and retry next startup
     expect(after.labels).toContain("agent:in-progress");
     expect(after.assignees).toEqual(["bot"]);
-    expect(after.labels).toContain("agent:research");
+    expect(after.labels).toContain("wayfinder:research");
     expect(after.labels).not.toContain("agent:blocked");
     expect(after.state).toBe("open");
     expect(after.commits).toEqual(["def456"]);
@@ -752,7 +752,7 @@ describe("Research lifecycle — behavioral regressions", () => {
     // GH unavailable: leave state untouched, not claiming released
     expect(after.labels).toContain("agent:in-progress");
     expect(after.assignees).toEqual(["bot"]);
-    expect(after.labels).toContain("agent:research");
+    expect(after.labels).toContain("wayfinder:research");
     expect(after.labels).not.toContain("agent:blocked");
     expect(after.state).toBe("open");
     // Must NOT post comment claiming "released for retry" when release confirmation failed

@@ -12,12 +12,11 @@ import type { WorkerOutcome } from "./factory-verdict-gate.mts";
  *   merger, batch integration, push, PR creation, or auto-merge paths.
  * - Successful completion: result published, parent pointer published if required,
  *   ticket closed, transient claim (agent:in-progress + assignee) removed,
- *   agent:research retained as historical authorization, ticket not redispatched
- *   because it is closed.
+ *   ticket not redispatched because it is closed. Wayfinder:research lifecycle only.
  * - Factory failure during close/cleanup or parent-pointer publication:
- *   ticket remains open, transient claim removed, agent:research retained,
+ *   ticket remains open, transient claim removed,
  *   no agent:blocked, outcome FACTORY_ERROR, outer progression stops,
- *   retryable on next run, sibling successes preserved.
+ *   retryable on next run, sibling successes preserved. Wayfinder:research lifecycle only.
  * - Parent pointer (Part of #N) is required when present in body. Failure is
  *   FACTORY_ERROR, not non-blocking. Close is not attempted on parent failure.
  */
@@ -71,7 +70,7 @@ export async function addParentMapPointer(
 
 /**
  * Releases transient claim (agent:in-progress + assignee) while retaining
- * agent:research and never adding agent:blocked. Used for FACTORY_ERROR
+ * wayfinder:research and never adding agent:blocked. Used for FACTORY_ERROR
  * and as part of close.
  */
 export async function releaseResearchTransientClaim(
@@ -86,8 +85,8 @@ export async function releaseResearchTransientClaim(
 
 /**
  * Closes research ticket: releases transient claim then closes issue.
- * Retains agent:research as historical authorization. On close failure,
- * transient remains released and research label retained, leaving ticket
+ * Wayfinder:research lifecycle only — no agent:research retained.
+ * On close failure, transient remains released, leaving ticket
  * open and retryable (caller maps to FACTORY_ERROR).
  *
  * Returns true only if the issue is closed and transient was released.

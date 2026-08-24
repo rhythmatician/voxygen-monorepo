@@ -86,6 +86,200 @@ export function hasCommitsAhead(repoRoot: string, base: string, branch: string):
   }
 }
 
+export type BranchPresence = "present" | "absent" | "unknown";
+export type CommitsAhead = "has-work" | "empty" | "unknown";
+export type ProvenanceStatus = "valid" | "invalid" | "unknown";
+
+export type GitResult = { exitCode: number; stdout: string; stderr: string };
+export type GitRunner = (args: string[]) => GitResult;
+
+export type ProvenanceInspection =
+  | { state: "valid"; reason?: string }
+  | { state: "invalid"; reason: string; contaminated?: boolean }
+  | { state: "unknown"; reason: string };
+
+function defaultGitRunner(repoRoot: string): GitRunner {
+  return (args: string[]) => {
+    try {
+      const out = execFileSync("git", args, { encoding: "utf8", cwd: repoRoot } as any);
+      const stdout = typeof out === "string" ? out : (out as Buffer).toString();
+      return { exitCode: 0, stdout, stderr: "" };
+    } catch (e: any) {
+      const stdout = e.stdout ? e.stdout.toString() : "";
+      const stderr = e.stderr ? e.stderr.toString() : (e.message ?? "");
+      const code = typeof e.status === "number" ? e.status : 1;
+      return { exitCode: code, stdout, stderr };
+    }
+  };
+}
+
+/**
+ * Read-only inspection of branch presence — preserves unknown on Git errors.
+ * Uses argument arrays, not shell interpolation, and the injected GitRunner.
+ */
+export function inspectBranchPresence(repoRoot: string, branch: string, runGit?: GitRunner): BranchPresence {
+  const runner = runGit ?? defaultGitRunner(repoRoot);
+  let res: GitResult;
+  try {
+    res = runner(["branch", "--list", branch]);
+  } catch {
+    return "unknown";
+  }
+  if (res.exitCode !== 0) return "unknown";
+  if (res.stdout.trim()) return "present";
+  return "absent";
+}
+
+function getWorktreePathForBranch(repoRoot: string, branch: string, runner: GitRunner): string | null {
+  const wtRes = runner(["worktree", "list", "--porcelain"]);
+  if (wtRes.exitCode !== 0) return null;
+  const blocks = wtRes.stdout.split("\n\n");
+  for (const block of blocks) {
+    const lines = block.split("\n");
+    let branchLine: string | null = null;
+    let worktreeLine: string | null = null;
+    for (const line of lines) {
+      if (line.startsWith("branch ")) branchLine = line.slice("branch ".length).trim();
+      if (line.startsWith("worktree ")) worktreeLine = line.slice("worktree ".length).trim();
+    }
+    if (branchLine === `refs/heads/${branch}` && worktreeLine) return worktreeLine;
+  }
+  return null;
+}
+
+function isWorktreeDirty(repoRoot: string, branch: string, runner: GitRunner): "has-work" | "empty" | "unknown" {
+  const wtPath = getWorktreePathForBranch(repoRoot, branch, runner);
+  if (wtPath === null) {
+    // No worktree for this branch or worktree list failed (null already handled), treat as empty (no dirty)
+    // If worktree list failed, getWorktreePath returns null, but we need to distinguish failure vs no worktree
+    // Check if worktree list itself failed: re-run and check exitCode
+    const check = runner(["worktree", "list", "--porcelain"]);
+    if (check.exitCode !== 0) return "unknown";
+    return "empty";
+  }
+  let res: GitResult;
+  try {
+    res = runner(["-C", wtPath, "status", "--porcelain=v1", "--untracked-files=all"]);
+  } catch {
+    return "unknown";
+  }
+  if (res.exitCode !== 0) return "unknown";
+  return res.stdout.trim() ? "has-work" : "empty";
+}
+
+/**
+ * Read-only commits-ahead inspection — preserves unknown on Git failure.
+ * Classifies committed work OR dirty worktree as has-work.
+ * Uses the injected GitRunner with argument arrays.
+ */
+export function inspectCommitsAhead(repoRoot: string, base: string, branch: string, runGit?: GitRunner): CommitsAhead {
+  const runner = runGit ?? defaultGitRunner(repoRoot);
+  let res: GitResult;
+  try {
+    res = runner(["log", `${base}..${branch}`, "--oneline"]);
+  } catch {
+    return "unknown";
+  }
+  if (res.exitCode !== 0) return "unknown";
+  const hasCommittedWork = !!res.stdout.trim();
+  if (hasCommittedWork) return "has-work";
+  // No committed work, check dirty worktree via exact path
+  const dirty = isWorktreeDirty(repoRoot, branch, runner);
+  if (dirty === "has-work") return "has-work";
+  if (dirty === "unknown") return "unknown";
+  return "empty";
+}
+
+export function inspectWorktreeDirty(repoRoot: string, branch: string, runGit?: GitRunner): "has-work" | "empty" | "unknown" {
+  const runner = runGit ?? defaultGitRunner(repoRoot);
+  return isWorktreeDirty(repoRoot, branch, runner);
+}
+
+/**
+ * Read-only provenance inspection — genuinely tri-state.
+ * - valid provenance JSON + recorded base is ancestor => valid;
+ * - proven non-ancestry => invalid;
+ * - missing provenance + proved branch work => invalid/legacy;
+ * - malformed JSON, filesystem read failure, missing Git objects, or Git command failure => unknown;
+ * - ancestry exit 1 => invalid, other non-zero or exception => unknown.
+ */
+export function inspectProvenance(repoRoot: string, branch: string, runGit?: GitRunner): ProvenanceInspection {
+  const runner = runGit ?? defaultGitRunner(repoRoot);
+  const provPath = path.join(repoRoot, ".sandcastle", "provenance", `${branch.replace(/[^a-zA-Z0-9-]/g, "-")}.json`);
+  let exists = false;
+  try {
+    exists = fs.existsSync(provPath);
+  } catch (e: any) {
+    return { state: "unknown", reason: `provenance filesystem check failed: ${e?.message ?? String(e)}` };
+  }
+  if (!exists) {
+    let hasWork: CommitsAhead | null = null;
+    const basesToTry = ["origin/main", "main", "master"];
+    for (const base of basesToTry) {
+      let baseRes: GitResult;
+      try { baseRes = runner(["rev-parse", "--verify", base]); } catch { baseRes = { exitCode: 1, stdout:"", stderr:"" }; }
+      if (baseRes.exitCode !== 0) continue;
+      const ahead = inspectCommitsAhead(repoRoot, base, branch, runner);
+      if (ahead === "unknown") continue;
+      hasWork = ahead;
+      break;
+    }
+    if (hasWork === null) {
+      let res: GitResult;
+      try { res = runner(["rev-list", "--count", branch]); } catch { return { state: "unknown", reason: `provenance missing and branch work check failed for ${branch} — Git failure` }; }
+      if (res.exitCode !== 0) {
+        return { state: "unknown", reason: `provenance missing and branch work check failed for ${branch}: ${res.stderr}` };
+      }
+      const count = parseInt(res.stdout.trim(), 10);
+      if (isNaN(count)) return { state: "unknown", reason: `provenance missing and branch work count parse failed` };
+      if (count > 0) {
+        let logRes: GitResult;
+        try { logRes = runner(["log", "--oneline", branch, "-1"]); } catch { return { state: "unknown", reason: `provenance missing and log check failed` }; }
+        if (logRes.exitCode !== 0) return { state: "unknown", reason: `provenance missing and log check failed` };
+        hasWork = logRes.stdout.trim() ? "has-work" : "empty";
+      } else {
+        hasWork = "empty";
+      }
+    }
+    if (hasWork === "has-work") {
+      return { state: "invalid", reason: `no provenance file at ${provPath} but branch has commits — legacy, fail closed`, contaminated: true };
+    }
+    if (hasWork === "empty") {
+      return { state: "valid", reason: "empty branch no provenance — clean" };
+    }
+    return { state: "unknown", reason: `provenance missing and branch work check unknown for ${branch}` };
+  }
+  let raw: string;
+  try {
+    raw = fs.readFileSync(provPath, "utf8");
+  } catch (e: any) {
+    return { state: "unknown", reason: `provenance read failed: ${e?.message ?? String(e)}` };
+  }
+  let prov: any;
+  try {
+    prov = JSON.parse(raw);
+  } catch (e: any) {
+    return { state: "unknown", reason: `provenance JSON malformed: ${e?.message ?? String(e)}` };
+  }
+  const recordedBase = prov.factoryBaseSha;
+  if (typeof recordedBase !== "string" || !recordedBase) {
+    return { state: "unknown", reason: `provenance missing factoryBaseSha` };
+  }
+  let res: GitResult;
+  try {
+    res = runner(["merge-base", "--is-ancestor", recordedBase, branch]);
+  } catch (e: any) {
+    return { state: "unknown", reason: `ancestry check execution failed: ${e?.message ?? String(e)}` };
+  }
+  if (res.exitCode === 0) {
+    return { state: "valid", reason: `provenance OK: branch descendant of recorded base ${recordedBase.slice(0,7)}` };
+  }
+  if (res.exitCode === 1) {
+    return { state: "invalid", reason: `branch is not descendant of recorded base ${recordedBase.slice(0,7)}` };
+  }
+  return { state: "unknown", reason: `ancestry check failed with exit ${res.exitCode}: ${res.stderr || res.stdout}` };
+}
+
 export function createBatchWorktree(repoRoot: string, batchBranch: string, factoryBaseSha: string): string {
   const worktreePath = path.join(repoRoot, ".sandcastle", "worktrees", batchBranch.replace(/\//g, "-"));
   execFileSync("git", ["worktree", "add", "-b", batchBranch, worktreePath, factoryBaseSha], { stdio: "ignore", cwd: repoRoot });

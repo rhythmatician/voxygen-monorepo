@@ -227,15 +227,15 @@ small enough for one session
 });
 
 describe("dispatch fail-closed on agent:implement without tracer contract", () => {
-  it("agent:implement without contract is ineligible (tracer contract missing)", () => {
+  it("agent:implement without ready-for-agent is ineligible (requires readiness)", () => {
     const i = issue({ labels: ["agent:implement"], body: "just a one-liner with no concepts" });
     const res = isEligible(i);
     expect(res.eligible).toBe(false);
-    if (!res.eligible) expect(res.reason).toContain("tracer contract missing");
+    if (!res.eligible) expect(res.reason).toContain("agent:implement without ready-for-agent");
   });
 
-  it("agent:implement with full contract is eligible", () => {
-    const i = issue({ labels: ["agent:implement"], body: CANONICAL_BODY });
+  it("ready-for-agent + agent:implement with full contract is eligible", () => {
+    const i = issue({ labels: ["ready-for-agent", "agent:implement"], body: CANONICAL_BODY });
     expect(isEligible(i)).toEqual({ eligible: true });
   });
 
@@ -259,43 +259,44 @@ describe("dispatch fail-closed on agent:implement without tracer contract", () =
     expect(isEligible(i).eligible).toBe(true);
   });
 
-  it("undefined body fails closed for agent:implement", () => {
-    const i = issue({ labels: ["agent:implement"], body: undefined });
+  it("undefined body fails closed for ready-for-agent + agent:implement", () => {
+    const i = issue({ labels: ["ready-for-agent", "agent:implement"], body: undefined });
     const res = isEligible(i);
     expect(res.eligible).toBe(false);
     if (!res.eligible) expect(res.reason).toContain("tracer contract missing");
   });
 
   it("tracer is checked after Wayfinder gates (forbidden label wins); research is not forbidden — see ADR 0001", () => {
-    const forbidden = issue({ labels: ["agent:implement", "wayfinder:grilling"], body: CANONICAL_BODY });
+    const forbidden = issue({ labels: ["ready-for-agent", "agent:implement", "wayfinder:grilling"], body: CANONICAL_BODY });
     const resForbidden = isEligible(forbidden);
     expect(resForbidden.eligible).toBe(false);
-    if (!resForbidden.eligible) expect(resForbidden.reason).toContain("forbidden Wayfinder type");
-    const research = issue({ labels: ["agent:implement", "wayfinder:research"], body: CANONICAL_BODY });
-    expect(isEligible(research).eligible).toBe(true);
+    if (!resForbidden.eligible) expect(resForbidden.reason.toLowerCase()).toMatch(/hitl|forbidden|retired/);
+    const research = issue({ labels: ["ready-for-agent", "agent:implement", "wayfinder:research"], body: CANONICAL_BODY });
+    const resResearch = isEligible(research);
+    expect(resResearch.eligible).toBe(false);
+    if (!resResearch.eligible) expect(resResearch.reason).toContain("wayfinder:research with agent:implement");
   });
 
-  it("wayfinder:task + agent:implement without tracer still fails (triple-signal checked before tracer)", () => {
-    // no body => triple-signal fails first
-    const i = issue({ labels: ["agent:implement", "wayfinder:task"], body: "no map signal and no tracer" });
+  it("wayfinder:task without ready-for-agent fails", () => {
+    const i = issue({ labels: ["agent:implement", "wayfinder:task"], body: CANONICAL_BODY });
     const res = isEligible(i);
     expect(res.eligible).toBe(false);
-    if (!res.eligible) expect(res.reason).toContain("wayfinder:task: map Notes does not authorize");
+    if (!res.eligible) expect(res.reason).toContain("agent:implement without ready-for-agent");
   });
 
-  it("wayfinder:task with map signal but without tracer fails on tracer", () => {
+  it("wayfinder:task with ready-for-agent but without tracer fails on tracer", () => {
     const i = issue({
-      labels: ["agent:implement", "wayfinder:task"],
-      body: "Execution is carried into this map but no other concepts",
+      labels: ["ready-for-agent", "agent:implement", "wayfinder:task"],
+      body: "no tracer",
     });
     const res = isEligible(i);
     expect(res.eligible).toBe(false);
     if (!res.eligible) expect(res.reason).toContain("tracer contract missing");
   });
 
-  it("wayfinder:task with both map signal and tracer passes", () => {
-    const body = CANONICAL_BODY + "\nExecution is carried into this map\n";
-    const i = issue({ labels: ["agent:implement", "wayfinder:task"], body });
+  it("wayfinder:task with ready-for-agent and tracer passes", () => {
+    const body = CANONICAL_BODY;
+    const i = issue({ labels: ["ready-for-agent", "agent:implement", "wayfinder:task"], body });
     expect(isEligible(i).eligible).toBe(true);
   });
 });
