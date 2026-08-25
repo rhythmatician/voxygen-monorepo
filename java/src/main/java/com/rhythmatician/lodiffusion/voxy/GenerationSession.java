@@ -177,8 +177,13 @@ public final class GenerationSession {
     private final AtomicInteger tracerWritten = new AtomicInteger(0);
     private final AtomicInteger tracerSkipped = new AtomicInteger(0);
     private final AtomicInteger tracerFailed = new AtomicInteger(0);
+    /** Stage 2: L3..L1 refinement regions written this session. */
+    private final AtomicInteger refinementWritten = new AtomicInteger(0);
+    private final AtomicInteger refinementFailed = new AtomicInteger(0);
     private final AtomicBoolean tracerTerminalEmitted = new AtomicBoolean(false);
     private volatile TracerCompletion tracerCompletion = null;
+    /** Stage 2: last selection-pass time, throttles refinement demand passes. */
+    private volatile long lastSelectionPassMs = 0;
 
     boolean isEndL4TracerMode() {
         return endL4TracerMode;
@@ -230,6 +235,158 @@ public final class GenerationSession {
 
     static int endL4TracerTotalRequests() {
         return END_L4_TRACER_TOTAL;
+    }
+
+    // --- Stage 2: screen-space-error refinement demand (ADR 0011) ---
+
+    /** Default focal length (px) for CPU-side screen-space selection. */
+    static final int REFINEMENT_FOCAL_PX =
+            Config.getInt("endRefinementFocalPx", 1000);
+    /** Subdivision threshold (px): descend iff child projects larger. */
+    static final int REFINEMENT_SUB_DIV_PX =
+            Config.getInt("endRefinementSubDivPx", 64);
+    /** Max refinement requests emitted per selection pass (budget). */
+    static final int REFINEMENT_BUDGET_PER_PASS =
+            Config.getInt("endRefinementBudgetPerPass", 256);
+    /** XZ render distance (blocks) for refinement culling; matches Voxy's
+     *  cylindrical test scaled to our slice until fly-around evidence tunes it. */
+    static final double DEFAULT_REFINEMENT_RENDER_DISTANCE =
+            Config.getInt("endRefinementRenderDistanceBlocks", 8192);
+
+    /**
+     * Dedup key for already-emitted refinements: level + region coords.
+     * Cleared when coverage changes; keyed on node, not camera, so a moved
+     * camera inside covered regions re-emits only genuinely new nodes.
+     */
+    private final Set<Long> emittedRefinements = ConcurrentHashMap.newKeySet();
+
+    private static long refinementKey(int level, int x, int y, int z) {
+        long l = ((long) level) & 0x7L;
+        long xx = ((long) x) & 0x1FFFFFL;
+        long yy = ((long) y) & 0x1FFFFFL;
+        long zz = ((long) z) & 0x1FFFFFL;
+        // Disjoint-bit packing (NOT XOR): XOR aliases across levels when
+        // coordinates are small (e.g. L1(0,0,1) == L3(0,0,1) under XOR).
+        return (l << 61) | (xx << 42) | (yy << 21) | zz;
+    }
+
+    /**
+     * Run one screen-space-error selection pass over the given covered L4
+     * regions and enqueue L3..L1 refinement requests (nearest-first, budget-
+     * capped, deduplicated). Pure demand — production happens in the
+     * pipeline loop exactly as for ring requests.
+     *
+     * <p>Test-visible seam mirroring {@link #enqueueEndL4TracerRequests()};
+     * the worker calls this with live player-derived inputs.
+     *
+     * @param coveredL4Regions covered L4 regions in player-section coords
+     *                         ({@code SectionPos} components are section
+     *                         indices; region index = component &gt;&gt; 5)
+     * @param camX camY camZ   camera position in blocks
+     * @param finestLevelValue finest Level to refine down to (1..3 here)
+     * @param renderDistanceBlocks XZ-cylindrical cull distance in blocks
+     * @param budget max emissions this pass
+     * @return number of requests enqueued
+     */
+    int enqueueEndRefinementsForTest(List<SectionPos> coveredL4Regions,
+                                     double camX, double camY, double camZ,
+                                     int finestLevelValue,
+                                     double renderDistanceBlocks, int budget) {
+        var selections = RefinementDemandSelector.select(
+                new RefinementDemandSelector.Params(
+                        camX, camY, camZ,
+                        REFINEMENT_FOCAL_PX, REFINEMENT_SUB_DIV_PX,
+                        finestLevelValue, renderDistanceBlocks, budget,
+                        coveredL4Regions));
+        int enqueued = 0;
+        for (var e : selections) {
+            var nr = e.request();
+            if (!emittedRefinements.add(refinementKey(nr.level(), nr.wsX(), nr.wsY(), nr.wsZ()))) {
+                continue;
+            }
+            VoxyRequestDecoder.VoxyNodeRequest req = new VoxyRequestDecoder.VoxyNodeRequest();
+            req.lodLevel = nr.level();
+            req.worldX = nr.wsX();
+            req.worldY = nr.wsY();
+            req.worldZ = nr.wsZ();
+            ShadowRouterJobQueue.enqueue(req);
+            enqueued++;
+        }
+        if (enqueued > 0) {
+            HelloTerrainMod.LOGGER.info(
+                    "[LodGen][Refine] pass enqueued={} selected={} deduped={} queueDepth={}",
+                    enqueued, selections.size(), selections.size() - enqueued,
+                    ShadowRouterJobQueue.size());
+        }
+        return enqueued;
+    }
+
+    /**
+     * Run one selection pass with player-derived inputs: camera at the
+     * player's block position, covered regions = the 11×11 L4 ring in
+     * player-section coords (matching {@link #enqueueEndL4TracerRequests()}),
+     * finest level and budget from config defaults.
+     *
+     * @return number of refinement requests enqueued this pass
+     */
+    int runEndSelectionPassForTest(int finestLevelValue,
+                                   double renderDistanceBlocks, int budget) {
+        // Ring centres: same math as enqueueEndL4TracerRequests.
+        int centerWsX = WorldSectionCoord.sectionToWorldSection(playerSectionX, 4);
+        int centerWsZ = WorldSectionCoord.sectionToWorldSection(playerSectionZ, 4);
+        List<SectionPos> covered = new ArrayList<>(END_L4_TRACER_TOTAL);
+        for (int dz = -END_L4_TRACER_RADIUS; dz <= END_L4_TRACER_RADIUS; dz++) {
+            for (int dx = -END_L4_TRACER_RADIUS; dx <= END_L4_TRACER_RADIUS; dx++) {
+                // World-section-at-L4 coord -> player-section coord (<< (4+1)).
+                covered.add(new SectionPos(
+                        (centerWsX + dx) << 5,
+                        0,
+                        (centerWsZ + dz) << 5));
+            }
+        }
+        double camX = WorldSectionCoord.sectionToBlockMin(playerSectionX) + 8.0;
+        double camY = WorldSectionCoord.sectionToBlockMin(playerSectionY) + 8.0;
+        double camZ = WorldSectionCoord.sectionToBlockMin(playerSectionZ) + 8.0;
+        return enqueueEndRefinementsForTest(
+                covered, camX, camY, camZ, finestLevelValue, renderDistanceBlocks, budget);
+    }
+
+    /**
+     * Service one L3..L1 refinement request via the multi-level End scaffold
+     * and {@link VoxelVolumeWriter#writeRegion}. Package-private single-request
+     * seam mirroring {@link #processTracerRequestForTest}; the pipeline loop
+     * routes non-L4 tracer-mode requests here.
+     *
+     * @return write outcome, or null if the request is not a refinement
+     *         (level outside L1..L3)
+     */
+    WriteOutcome processRefinementRequestForTest(VoxyRequestDecoder.VoxyNodeRequest req,
+                                                 VoxelVolumeWriter writer) {
+        if (req == null || writer == null || noiseAccess == null) {
+            return null;
+        }
+        int lvl = req.lodLevel;
+        if (lvl < Level.L1.value() || lvl > Level.L3.value()) {
+            return null;
+        }
+        Level level = Level.values()[lvl];
+        if (isOutOfWorldY(lvl, req.worldY)) {
+            return WriteOutcome.skippedExists();
+        }
+        int sx0 = WorldSectionCoord.worldSectionToBlockMin(req.worldX, lvl) >> 4;
+        int sy0 = WorldSectionCoord.worldSectionToBlockMin(req.worldY, lvl) >> 4;
+        int sz0 = WorldSectionCoord.worldSectionToBlockMin(req.worldZ, lvl) >> 4;
+        SectionPos origin = new SectionPos(sx0, sy0, sz0);
+        try {
+            EndL4DeterministicCandidate candidate = new EndL4DeterministicCandidate(noiseAccess);
+            VoxelVolume vol = candidate.produceRegion(level, origin);
+            return writer.writeRegion(origin, level, vol);
+        } catch (Exception e) {
+            HelloTerrainMod.LOGGER.warn(
+                    "[LodGen][Refine] write failed lvl={} ws=({},{},{}): {}",
+                    lvl, req.worldX, req.worldY, req.worldZ, e.getMessage());
+            return null;
+        }
     }
 
     /**
@@ -1973,6 +2130,21 @@ public final class GenerationSession {
         while (!stopRequested.get()) {
             VoxyRequestDecoder.VoxyNodeRequest req = ShadowRouterJobQueue.dequeueAny();
             if (req == null) {
+                // Stage 2: idle time is selection-pass time. Throttled by
+                // NEAR_SEED_INTERVAL_MS; budget-capped inside the pass.
+                long nowIdle = System.currentTimeMillis();
+                if (nowIdle - lastSelectionPassMs >= NEAR_SEED_INTERVAL_MS
+                        && positionReady.get()) {
+                    lastSelectionPassMs = nowIdle;
+                    try {
+                        runEndSelectionPassForTest(
+                                Level.L1.value(), DEFAULT_REFINEMENT_RENDER_DISTANCE,
+                                REFINEMENT_BUDGET_PER_PASS);
+                    } catch (Exception e) {
+                        HelloTerrainMod.LOGGER.warn(
+                                "[LodGen][Refine] selection pass failed: {}", e.getMessage());
+                    }
+                }
                 try {
                     Thread.sleep(DEMAND_IDLE_SLEEP_MS);
                 } catch (InterruptedException ie) {
@@ -1984,8 +2156,36 @@ public final class GenerationSession {
                 continue;
             }
 
-            // Tracer enqueues only L4 Y=0; skip any stray levels (L3..L0 not seeded)
-            if (req.lodLevel != 4 || req.worldY != END_L4_TRACER_WS_Y) {
+            // Route by level: L4 ring requests vs L3..L1 refinements (Stage 2).
+            if (req.lodLevel == 4) {
+                if (req.worldY != END_L4_TRACER_WS_Y) {
+                    ShadowRouterJobQueue.markCompleted(req);
+                    tracerSkipped.incrementAndGet();
+                    maybeEmitTracerTerminal();
+                    continue;
+                }
+            } else if (req.lodLevel >= Level.L1.value() && req.lodLevel <= Level.L3.value()) {
+                // Stage 2 refinement demand (ADR 0011): produce at requested level.
+                WriteOutcome refOutcome = processRefinementRequestForTest(req, writer);
+                ShadowRouterJobQueue.markCompleted(req);
+                if (refOutcome != null && refOutcome.status() == WriteOutcome.Status.WRITTEN) {
+                    refinementWritten.incrementAndGet();
+                } else if (refOutcome == null) {
+                    refinementFailed.incrementAndGet();
+                } else {
+                    tracerSkipped.incrementAndGet();
+                }
+                long nowRef = System.currentTimeMillis();
+                if (nowRef - lastProgressLogMs >= DEMAND_PROGRESS_LOG_MS) {
+                    HelloTerrainMod.LOGGER.info(
+                            "[LodGen][Refine] progress written={} skipped={} failed={} inFlight={}",
+                            refinementWritten.get(), tracerSkipped.get(),
+                            refinementFailed.get(), ShadowRouterJobQueue.inFlightSize());
+                    lastProgressLogMs = nowRef;
+                }
+                continue;
+            } else {
+                // L0 or invalid: not ours in End slice.
                 ShadowRouterJobQueue.markCompleted(req);
                 tracerSkipped.incrementAndGet();
                 maybeEmitTracerTerminal();

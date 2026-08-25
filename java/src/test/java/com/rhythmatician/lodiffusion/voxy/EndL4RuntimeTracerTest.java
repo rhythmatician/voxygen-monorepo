@@ -138,7 +138,11 @@ class EndL4RuntimeTracerTest {
         // Not aligned to L4 (32): x=1 is not divisible by 32
         SectionPos bad = new SectionPos(1, 0, 0);
         assertThrows(IllegalArgumentException.class, () -> cand.produceRegion(Level.L4, bad));
-        assertThrows(IllegalArgumentException.class, () -> cand.produceRegion(Level.L3, new SectionPos(0, 0, 0)));
+        // Stage 2: L3 is now supported; origin (0,0,0) aligned to all levels.
+        assertDoesNotThrow(() -> cand.produceRegion(Level.L3, new SectionPos(0, 0, 0)));
+        // L0 remains rejected (vanilla owns the finest band).
+        assertThrows(IllegalArgumentException.class,
+                () -> cand.produceRegion(Level.L0, new SectionPos(0, 0, 0)));
     }
 
     @Test
