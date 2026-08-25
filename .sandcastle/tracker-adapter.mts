@@ -9,10 +9,13 @@ import {
   claimImplementation,
   claimResearch,
   cleanupClosedIssue,
+  reconcileStaleImplementation,
   type ClaimResult,
   type ClaimOps,
   type ResearchClaimOps,
+  type ReconcileResult,
 } from "./tracker-operations.mts";
+import { createProductionReconcileOps } from "./reconcile-adapter.mts";
 import type { GhTransport } from "./gh-transport.mts";
 
 /**
@@ -172,19 +175,23 @@ async function runSaga(
       fresh = await fetchFresh(gh, issueNumber);
     } catch (e) {
       const reason = `fresh read failed for #${issueNumber} (${step.name}): ${getMsg(e)}`;
-      const receipt = persistOrIndeterminate(sink, { transition, issueNumber, kind: "indeterminate", reason, code: "FETCH_FAILED" });
-      return { kind: "indeterminate", lastObserved: beforeSnap, receipt, factoryError: true };
+      const outcome = persistReceipt(sink, { transition, issueNumber, kind: "indeterminate", reason, code: "FETCH_FAILED" });
+      return { kind: "indeterminate", lastObserved: beforeSnap, receipt: outcome.receipt, factoryError: true };
     }
     if (!beforeSnap) beforeSnap = snapshot(fresh);
 
     if (step.validateBefore) {
       const problem = step.validateBefore(fresh);
       if (problem) {
-        const receipt = persistOrIndeterminate(sink, {
+        const afterSnap = snapshot(fresh);
+        const outcome = persistReceipt(sink, {
           transition, issueNumber, kind: "rejected", reason: problem, code: "PRECONDITION_FAILED",
-          before: beforeSnap, after: snapshot(fresh),
+          before: beforeSnap, after: afterSnap,
         });
-        return { kind: "rejected", before: beforeSnap, after: snapshot(fresh), receipt };
+        if (outcome.persistFailed) {
+          return { kind: "indeterminate", lastObserved: afterSnap, receipt: outcome.receipt, factoryError: true };
+        }
+        return { kind: "rejected", before: beforeSnap, after: afterSnap, receipt: outcome.receipt };
       }
     }
 
@@ -208,14 +215,18 @@ async function runSaga(
 
   try {
     const final = await fetchFresh(gh, issueNumber);
-    const receipt = persistOrIndeterminate(sink, {
-      transition, issueNumber, kind: "committed", before: beforeSnap!, after: snapshot(final),
+    const finalSnap = snapshot(final);
+    const outcome = persistReceipt(sink, {
+      transition, issueNumber, kind: "committed", before: beforeSnap!, after: finalSnap,
     });
-    return { kind: "committed", before: beforeSnap!, after: snapshot(final), receipt };
+    if (outcome.persistFailed) {
+      return { kind: "indeterminate", lastObserved: finalSnap, receipt: outcome.receipt, factoryError: true };
+    }
+    return { kind: "committed", before: beforeSnap!, after: finalSnap, receipt: outcome.receipt };
   } catch (e) {
     const reason = `final fresh read failed for #${issueNumber}: ${getMsg(e)}`;
-    const receipt = persistOrIndeterminate(sink, { transition, issueNumber, kind: "indeterminate", reason, code: "FETCH_FAILED" });
-    return { kind: "indeterminate", lastObserved: beforeSnap, receipt, factoryError: true };
+    const outcome = persistReceipt(sink, { transition, issueNumber, kind: "indeterminate", reason, code: "FETCH_FAILED" });
+    return { kind: "indeterminate", lastObserved: beforeSnap, receipt: outcome.receipt, factoryError: true };
   }
 }
 
@@ -239,8 +250,8 @@ async function finishFailure(
   sink: ReceiptSink,
 ): Promise<TrackerTransitionResult> {
   if (!step.compensate) {
-    const receipt = persistOrIndeterminate(sink, { transition, issueNumber, kind: "indeterminate", reason, code: "UNSAFE_TO_RESTORE" });
-    return { kind: "indeterminate", lastObserved, receipt, factoryError: true };
+    const outcome = persistReceipt(sink, { transition, issueNumber, kind: "indeterminate", reason, code: "UNSAFE_TO_RESTORE" });
+    return { kind: "indeterminate", lastObserved, receipt: outcome.receipt, factoryError: true };
   }
   let compensated: boolean;
   try {
@@ -249,8 +260,8 @@ async function finishFailure(
     compensated = false;
   }
   if (!compensated) {
-    const receipt = persistOrIndeterminate(sink, { transition, issueNumber, kind: "indeterminate", reason: `${reason}; compensation failed`, code: "COMPENSATION_FAILED" });
-    return { kind: "indeterminate", lastObserved, receipt, factoryError: true };
+    const outcome = persistReceipt(sink, { transition, issueNumber, kind: "indeterminate", reason: `${reason}; compensation failed`, code: "COMPENSATION_FAILED" });
+    return { kind: "indeterminate", lastObserved, receipt: outcome.receipt, factoryError: true };
   }
   // Prove the compensation reached its intended safe state on a fresh read.
   try {
@@ -260,18 +271,22 @@ async function finishFailure(
       : null;
     if (compViolation) {
       const r2 = `${reason}; compensation applied but safe state not proven: ${compViolation}`;
-      const receipt = persistOrIndeterminate(sink, { transition, issueNumber, kind: "indeterminate", reason: r2, code: "COMPENSATION_VERIFY_FAILED" });
-      return { kind: "indeterminate", lastObserved, receipt, factoryError: true };
+      const outcome = persistReceipt(sink, { transition, issueNumber, kind: "indeterminate", reason: r2, code: "COMPENSATION_VERIFY_FAILED" });
+      return { kind: "indeterminate", lastObserved, receipt: outcome.receipt, factoryError: true };
     }
-    const receipt = persistOrIndeterminate(sink, {
+    const afterCompSnap = snapshot(afterComp);
+    const outcome = persistReceipt(sink, {
       transition, issueNumber, kind: "compensated", reason, code: "COMPENSATED",
-      before, after: snapshot(afterComp),
+      before, after: afterCompSnap,
     });
-    return { kind: "compensated", before, after: snapshot(afterComp), receipt };
+    if (outcome.persistFailed) {
+      return { kind: "indeterminate", lastObserved: afterCompSnap, receipt: outcome.receipt, factoryError: true };
+    }
+    return { kind: "compensated", before, after: afterCompSnap, receipt: outcome.receipt };
   } catch (e) {
     const r2 = `${reason}; compensation applied but verification read failed: ${getMsg(e)}`;
-    const receipt = persistOrIndeterminate(sink, { transition, issueNumber, kind: "indeterminate", reason: r2, code: "COMPENSATION_VERIFY_FAILED" });
-    return { kind: "indeterminate", lastObserved, receipt, factoryError: true };
+    const outcome = persistReceipt(sink, { transition, issueNumber, kind: "indeterminate", reason: r2, code: "COMPENSATION_VERIFY_FAILED" });
+    return { kind: "indeterminate", lastObserved, receipt: outcome.receipt, factoryError: true };
   }
 }
 
@@ -280,14 +295,21 @@ function getMsg(e: unknown): string {
 }
 
 /**
- * Persist a receipt WITHOUT suppressing sink failures. If persistence throws,
- * wrap into an indeterminate FACTORY_ERROR receipt (persisted best-effort)
- * so a committed result can never lack durable evidence silently.
+ * Outcome of receipt persistence. When persistence fails, callers MUST return
+ * indeterminate FACTORY_ERROR regardless of what GitHub did — a committed
+ * result can never lack durable evidence.
  */
-function persistOrIndeterminate(sink: ReceiptSink, partial: Omit<TransitionReceipt, "at"> & { at?: string }): TransitionReceipt {
+interface PersistOutcome {
+  receipt: TransitionReceipt;
+  /** True when the sink threw — outer result must become indeterminate. */
+  persistFailed: boolean;
+}
+
+function persistReceipt(sink: ReceiptSink, partial: Omit<TransitionReceipt, "at"> & { at?: string }): PersistOutcome {
   const receipt: TransitionReceipt = { ...partial, at: partial.at ?? new Date().toISOString() } as TransitionReceipt;
   try {
     sink.persist(receipt);
+    return { receipt, persistFailed: false };
   } catch (e) {
     const sinkError = getMsg(e);
     const failureReceipt: TransitionReceipt = {
@@ -297,18 +319,55 @@ function persistOrIndeterminate(sink: ReceiptSink, partial: Omit<TransitionRecei
       reason: `${partial.reason ?? "transition completed"}; receipt persistence failed: ${sinkError}`,
     };
     try { sink.persist(failureReceipt); } catch {}
-    return failureReceipt;
+    return { receipt: failureReceipt, persistFailed: true };
   }
-  return receipt;
 }
 
-// ---------------------------------------------------------------------------
-// Adapter
-// ---------------------------------------------------------------------------
+/**
+ * Authoritative claim outcome — every field is observed fact, never inferred
+ * from labels or codes. The adapter captures the actual fresh before-state
+ * before mutation and the actual final observed state after compensation.
+ */
+interface AuthoritativeClaimOutcome {
+  phase: "rejected-before-mutation" | "committed" | "compensated" | "indeterminate";
+  reason?: string;
+  code?: string;
+  /** Actual fresh state read immediately before mutation. Null when never read. */
+  beforeState: IssueSnapshot | null;
+  /** Actual final observed state (post-claim or post-compensation). Null when unknown. */
+  finalState: IssueSnapshot | null;
+}
 
-export interface TrackerAdapterDeps {
-  gh: GhTransport;
-  receiptSink: ReceiptSink;
+/**
+ * Claim compensation proof: perform a fresh read and verify the FULL safe
+ * state — expected claimant absent, agent:in-progress absent,
+ * agent:implement not restored, plus profile-specific retention.
+ */
+async function proveClaimCompensation(
+  gh: GhTransport,
+  issueNumber: number,
+  claimantLogin: string,
+  profile: "implementation" | "research",
+  beforeState: IssueSnapshot | null,
+): Promise<{ proven: boolean; finalState: IssueSnapshot | null; violation?: string }> {
+  let afterComp: IssueInput;
+  try {
+    afterComp = await fetchFresh(gh, issueNumber);
+  } catch {
+    return { proven: false, finalState: null };
+  }
+  const violations: string[] = [];
+  if (afterComp.assignees.includes(claimantLogin)) violations.push(`claimant ${claimantLogin} still assigned`);
+  if (afterComp.labels.includes(AGENT_IN_PROGRESS)) violations.push(`${AGENT_IN_PROGRESS} still present`);
+  // implement is only "unexpectedly restored" if the claim had actually
+  // consumed it (it was absent before the claim attempt). If the mutation
+  // never applied, implement legitimately remains from the pre-claim state.
+  const implementWasConsumed = beforeState !== null && !beforeState.labels.includes(AGENT_IMPLEMENT);
+  if (implementWasConsumed && afterComp.labels.includes(AGENT_IMPLEMENT)) violations.push(`${AGENT_IMPLEMENT} unexpectedly restored`);
+  if (profile === "implementation" && !afterComp.labels.includes(READY_FOR_AGENT)) violations.push(`${READY_FOR_AGENT} not retained`);
+  if (profile === "research" && !afterComp.labels.includes("wayfinder:research")) violations.push(`wayfinder:research not retained`);
+  if (violations.length > 0) return { proven: false, finalState: snapshot(afterComp), violation: violations.join("; ") };
+  return { proven: true, finalState: snapshot(afterComp) };
 }
 
 export interface TrackerAdapter {
@@ -319,6 +378,11 @@ export interface TrackerAdapter {
   finalizeIntegrated(issueNumber: number, branch: string): Promise<TrackerTransitionResult>;
   cleanupClosedIssueStaleLabels(issue: IssueInput): Promise<{ cleaned: boolean; removed: string[] }>;
   comment(issueNumber: number, body: string): Promise<boolean>;
+  /**
+   * Stale implementation reconciliation — the single consumer-facing port.
+   * Internally constructs the Git/worktree inspection implementation.
+   */
+  reconcileStaleImplementation(issue: IssueInput, branch: string): Promise<ReconcileResult>;
 }
 
 export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
@@ -343,6 +407,12 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
     async claimImplementation(issue) {
       const n = issue.number;
       const claimantLogin = await gh.resolveClaimantLogin();
+      // Capture the ACTUAL fresh pre-claim state — never inferred from labels.
+      let beforeState: IssueSnapshot | null = null;
+      try {
+        beforeState = snapshot(await fetchById(String(n)));
+      } catch { beforeState = null; }
+
       const ops: ClaimOps & { claimantLogin: string } = {
         claimantLogin,
         fetchIssue: (id) => fetchById(id),
@@ -358,7 +428,15 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
         },
       };
       const result = await claimImplementation(String(n), issue, ops);
-      return claimResultToTransition("claimImplementation", n, result, receiptSink);
+
+      // Prove compensation on a fresh read whenever the canonical ops report it.
+      let compensationProof: { proven: boolean; finalState: IssueSnapshot | null; violation?: string } | null = null;
+      if (!result.success && result.compensated && !result.factoryError) {
+        compensationProof = await proveClaimCompensation(gh, n, claimantLogin, "implementation", beforeState);
+      }
+
+      const outcome = classifyClaimOutcome("claimImplementation", result, beforeState, compensationProof);
+      return outcomeToTransition(outcome, "claimImplementation", n, receiptSink);
     },
 
     /**
@@ -370,6 +448,12 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
     async claimResearch(issue) {
       const n = issue.number;
       const claimantLogin = await gh.resolveClaimantLogin();
+      // Capture the ACTUAL fresh pre-claim state — never inferred from labels.
+      let beforeState: IssueSnapshot | null = null;
+      try {
+        beforeState = snapshot(await fetchById(String(n)));
+      } catch { beforeState = null; }
+
       const ops: ResearchClaimOps & { claimantLogin: string } = {
         claimantLogin,
         fetchIssue: (id) => fetchById(id),
@@ -385,7 +469,15 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
         },
       };
       const result = await claimResearch(String(n), ops);
-      return claimResultToTransition("claimResearch", n, result, receiptSink);
+
+      // Prove compensation on a fresh read whenever the canonical ops report it.
+      let compensationProof: { proven: boolean; finalState: IssueSnapshot | null; violation?: string } | null = null;
+      if (!result.success && result.compensated && !result.factoryError) {
+        compensationProof = await proveClaimCompensation(gh, n, claimantLogin, "research", beforeState);
+      }
+
+      const outcome = classifyClaimOutcome("claimResearch", result, beforeState, compensationProof);
+      return outcomeToTransition(outcome, "claimResearch", n, receiptSink);
     },
 
     /**
@@ -399,12 +491,15 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
       return runSaga(gh, issueNumber, "transitionToBlocked", [
         {
           name: "release-claim",
-          // Validate the exact claimed before-state BEFORE releasing — blind
+          // Validate the COMPLETE claimed state BEFORE releasing — blind
           // compensation could otherwise create a claim that never existed.
           validateBefore: (fresh) => {
             if (fresh.state !== "open") return `issue #${issueNumber} not open`;
+            if (!fresh.labels.includes(READY_FOR_AGENT)) return `#${issueNumber} missing ${READY_FOR_AGENT}`;
             if (!fresh.labels.includes(AGENT_IN_PROGRESS)) return `#${issueNumber} missing ${AGENT_IN_PROGRESS} — nothing to release`;
             if (!fresh.assignees.includes(claimantLogin)) return `claimant ${claimantLogin} not assigned on #${issueNumber} — refusing to create a claim`;
+            if (fresh.labels.includes(AGENT_IMPLEMENT)) return `#${issueNumber} has ${AGENT_IMPLEMENT} — implement must not be reintroduced before blocking`;
+            if (fresh.labels.includes(AGENT_BLOCKED)) return `#${issueNumber} already has ${AGENT_BLOCKED}`;
             return null;
           },
           mutate: () => editIssue(issueNumber, ["--remove-label", AGENT_IN_PROGRESS, "--remove-assignee", claimantLogin]),
@@ -420,8 +515,12 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
             } catch { return false; }
           },
           verifyCompensation: (afterComp) => {
+            // Freshly prove the SAME complete claimed state that was validated before.
+            if (afterComp.state !== "open") return `issue #${issueNumber} not open after restore`;
+            if (!afterComp.labels.includes(READY_FOR_AGENT)) return `${READY_FOR_AGENT} absent after restore`;
             if (!afterComp.labels.includes(AGENT_IN_PROGRESS)) return `${AGENT_IN_PROGRESS} absent after restore`;
             if (!afterComp.assignees.includes(claimantLogin)) return `claimant absent after restore`;
+            if (afterComp.labels.includes(AGENT_IMPLEMENT)) return `${AGENT_IMPLEMENT} present after restore`;
             if (afterComp.labels.includes(AGENT_BLOCKED)) return `${AGENT_BLOCKED} present after restore`;
             return null;
           },
@@ -525,65 +624,193 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
         return true;
       } catch { return false; }
     },
+
+    /**
+     * Stale implementation reconciliation — single consumer-facing port.
+     * Constructs the internal Git/worktree implementation from transport-owned
+     * identity (claimant, owner/repo via gh) plus the injected local git runner.
+     */
+    async reconcileStaleImplementation(issue, branch) {
+      if (!deps.runGit || !deps.repoRoot) {
+        throw new Error("reconcileStaleImplementation requires runGit and repoRoot on the adapter deps");
+      }
+      const claimantLogin = await gh.resolveClaimantLogin();
+      const fullOps = createProductionReconcileOps({
+        runGh: (args) => gh.run(args),
+        runGit: deps.runGit,
+        repoRoot: deps.repoRoot,
+        claimantLogin,
+      });
+      return reconcileStaleImplementation(issue, branch, fullOps);
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Adapter
+// ---------------------------------------------------------------------------
+
+export interface TrackerAdapterDeps {
+  gh: GhTransport;
+  receiptSink: ReceiptSink;
+  /**
+   * Local git runner for reconciliation's branch/worktree/provenance
+   * inspections. Required only when reconcileStaleImplementation is used.
+   */
+  runGit?: (args: string[]) => { exitCode: number; stdout: string; stderr: string };
+  /** Stable repository root for reconciliation's local git operations. */
+  repoRoot?: string;
+}
+
+/**
+ * Classify a canonical ClaimResult into an authoritative phase using OBSERVED
+ * facts: whether mutation was attempted (before-state captured and eligibility
+ * passed), whether compensation was proven on a fresh read, and the actual
+ * final state. Never infers from labels or fabricated snapshots.
+ */
+function classifyClaimOutcome(
+  transition: string,
+  result: ClaimResult,
+  beforeState: IssueSnapshot | null,
+  compensationProof: { proven: boolean; finalState: IssueSnapshot | null; violation?: string } | null,
+): AuthoritativeClaimOutcome {
+  if (result.success) {
+    return {
+      phase: "committed",
+      beforeState,
+      finalState: result.issue ? snapshot(result.issue) : null,
+    };
+  }
+
+  // Rejected-before-mutation: eligibility/contradiction/body-contract failures
+  // occur before applyClaim is ever invoked. These are exactly the codes the
+  // canonical policy returns from its eligibility gates.
+  const REJECTION_CODES: ReadonlySet<string> = new Set([
+    "NOT_ELIGIBLE", "ELIGIBILITY_FAILED", "FETCH_FAILED",
+    "STATE_NOT_OPEN", "MISSING_READY_AND_IMPLEMENT", "MISSING_IMPLEMENT",
+    "ALREADY_IN_PROGRESS", "ALREADY_BLOCKED", "ALREADY_ASSIGNED",
+    "BLOCKED_UNKNOWN", "BLOCKED", "FORBIDDEN_WAYFINDER", "MISSING_TRACER",
+    "MISSING_RESEARCH_LABEL", "WRONG_WAYFINDER", "RESEARCH_BODY_INVALID",
+    "MULTIPLE_WAYFINDER", "RESEARCH_WITH_IMPLEMENT",
+    "PROTOTYPE_WITH_READY_AGENT", "PROTOTYPE_WITH_IMPLEMENT",
+    "GRILLING_WITH_READY_AGENT", "GRILLING_WITH_IMPLEMENT",
+    "TASK_BOTH_READY", "TASK_MISSING_READINESS", "IMPLEMENT_WITHOUT_READY",
+    "IMPLEMENT_WITH_IN_PROGRESS", "RETIRED_AGENT_RESEARCH",
+    "RETIRED_PRESERVE_FUTURES", "MAP_WITH_COMMAND",
+  ]);
+  const rejectedBeforeMutation = REJECTION_CODES.has(result.code ?? "");
+  if (rejectedBeforeMutation) {
+    return {
+      phase: "rejected-before-mutation",
+      reason: result.reason,
+      code: result.code,
+      beforeState,
+      finalState: result.issue ? snapshot(result.issue) : beforeState,
+    };
+  }
+
+  // Compensation attempted — only "compensated" if PROVEN on fresh read.
+  if (!result.factoryError && compensationProof !== null) {
+    if (compensationProof.proven) {
+      return {
+        phase: "compensated",
+        reason: result.reason,
+        code: result.code,
+        beforeState,
+        finalState: compensationProof.finalState,
+      };
+    }
+    return {
+      phase: "indeterminate",
+      reason: `${result.reason}; compensation applied but safe state not proven${compensationProof.violation ? `: ${compensationProof.violation}` : ""}`,
+      code: "COMPENSATION_VERIFY_FAILED",
+      beforeState,
+      finalState: compensationProof.finalState,
+    };
+  }
+
+  // Anything else is indeterminate.
+  return {
+    phase: "indeterminate",
+    reason: result.reason,
+    code: result.code,
+    beforeState,
+    finalState: result.issue ? snapshot(result.issue) : compensationProof?.finalState ?? null,
   };
 }
 
 /**
- * Convert a canonical ClaimResult into the typed transition taxonomy:
- * success → committed; ineligible-before-mutation → rejected; mutation/
- * verification failure with proven compensation → compensated; anything
- * uncertain → indeterminate FACTORY_ERROR.
+ * Convert an authoritative claim outcome into the typed transition taxonomy.
+ * Receipt persistence failure FORCES indeterminate regardless of phase.
  */
-function claimResultToTransition(
+function outcomeToTransition(
+  outcome: AuthoritativeClaimOutcome,
   transition: string,
   issueNumber: number,
-  result: ClaimResult,
   sink: ReceiptSink,
 ): TrackerTransitionResult {
   const base = { transition, issueNumber } as const;
-  if (result.success) {
-    // Canonical claimImplementation returns the post-claim state; reconstruct
-    // the before-state from it: implement was consumed, in-progress/claimant added.
-    const after = snapshot(result.issue);
-    const before: IssueSnapshot = {
-      ...after,
-      labels: after.labels
-        .filter((l) => l !== AGENT_IN_PROGRESS)
-        .concat(after.assignees.length > 0 ? [AGENT_IMPLEMENT] : []),
-    };
-    const receipt = persistOrIndeterminate(sink, { ...base, kind: "committed", before, after });
-    return { kind: "committed", before, after, receipt };
-  }
-  const lastObserved = result.issue ? snapshot(result.issue) : null;
 
-  // Precondition/eligibility failures happen BEFORE any mutation — rejected.
-  const isPrecondition =
-    result.code === "NOT_ELIGIBLE" ||
-    result.code === "ELIGIBILITY_FAILED" ||
-    (result.compensated === true && !result.factoryError && lastObserved !== null && lastObserved.labels.includes(AGENT_IN_PROGRESS) === false);
-
-  if (isPrecondition && lastObserved) {
-    const receipt = persistOrIndeterminate(sink, {
-      ...base, kind: "rejected", reason: result.reason, code: result.code, before: lastObserved, after: lastObserved,
+  if (outcome.phase === "committed") {
+    if (!outcome.beforeState || !outcome.finalState) {
+      // A committed claim without both observed states cannot be evidenced.
+      const failureReceipt = persistReceipt(sink, {
+        ...base, kind: "indeterminate", code: "RECEIPT_PERSIST_FAILED",
+        reason: "committed claim missing observed before/final state",
+        lastObserved: outcome.finalState,
+      });
+      return { kind: "indeterminate", lastObserved: outcome.finalState, receipt: failureReceipt.receipt, factoryError: true };
+    }
+    const outcome2 = persistReceipt(sink, {
+      ...base, kind: "committed", before: outcome.beforeState, after: outcome.finalState,
     });
-    return { kind: "rejected", before: lastObserved, after: lastObserved, receipt };
+    if (outcome2.persistFailed) {
+      return { kind: "indeterminate", lastObserved: outcome.finalState, receipt: outcome2.receipt, factoryError: true };
+    }
+    return { kind: "committed", before: outcome.beforeState, after: outcome.finalState, receipt: outcome2.receipt };
   }
 
-  if (result.factoryError || !result.compensated) {
-    const receipt = persistOrIndeterminate(sink, {
-      ...base, kind: "indeterminate", reason: result.reason, code: result.code, lastObserved,
+  if (outcome.phase === "rejected-before-mutation") {
+    const state = outcome.finalState ?? outcome.beforeState;
+    if (!state) {
+      const failureReceipt = persistReceipt(sink, {
+        ...base, kind: "indeterminate", code: "RECEIPT_PERSIST_FAILED",
+        reason: outcome.reason ?? "rejection without observed state",
+      });
+      return { kind: "indeterminate", lastObserved: null, receipt: failureReceipt.receipt, factoryError: true };
+    }
+    const persisted = persistReceipt(sink, {
+      ...base, kind: "rejected", reason: outcome.reason, code: outcome.code, before: state, after: state,
     });
-    return { kind: "indeterminate", lastObserved, receipt, factoryError: true };
+    if (persisted.persistFailed) {
+      return { kind: "indeterminate", lastObserved: state, receipt: persisted.receipt, factoryError: true };
+    }
+    return { kind: "rejected", before: state, after: state, receipt: persisted.receipt };
   }
 
-  // Compensated path — canonical ops verified compensation (compensated=true,
-  // no factoryError); record as compensated with observed state as evidence.
-  const after = lastObserved ?? ({ number: issueNumber, labels: [], assignees: [], state: "open" } as IssueSnapshot);
-  const receipt = persistOrIndeterminate(sink, {
-    ...base, kind: "compensated", reason: result.reason, code: result.code, after,
+  if (outcome.phase === "compensated") {
+    if (!outcome.beforeState || !outcome.finalState) {
+      const failureReceipt = persistReceipt(sink, {
+        ...base, kind: "indeterminate", code: "RECEIPT_PERSIST_FAILED",
+        reason: outcome.reason ?? "compensated claim missing observed states",
+        lastObserved: outcome.finalState,
+      });
+      return { kind: "indeterminate", lastObserved: outcome.finalState, receipt: failureReceipt.receipt, factoryError: true };
+    }
+    const persisted = persistReceipt(sink, {
+      ...base, kind: "compensated", reason: outcome.reason, code: outcome.code,
+      before: outcome.beforeState, after: outcome.finalState,
+    });
+    if (persisted.persistFailed) {
+      return { kind: "indeterminate", lastObserved: outcome.finalState, receipt: persisted.receipt, factoryError: true };
+    }
+    return { kind: "compensated", before: outcome.beforeState, after: outcome.finalState, receipt: persisted.receipt };
+  }
+
+  // indeterminate
+  const persisted = persistReceipt(sink, {
+    ...base, kind: "indeterminate", reason: outcome.reason, code: outcome.code,
+    lastObserved: outcome.finalState,
   });
-  return { kind: "compensated", before: after, after, receipt };
+  return { kind: "indeterminate", lastObserved: outcome.finalState, receipt: persisted.receipt, factoryError: true };
 }
-
-// Re-export for consumers that need the underlying ops-level results.
-export type { ClaimResult };

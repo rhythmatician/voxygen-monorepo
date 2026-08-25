@@ -639,14 +639,8 @@ export async function runTrackerMigrationCli(args: string[], deps: CliDeps = {})
     try { return execSyncFn("git rev-parse HEAD", { encoding: "utf8" }).trim(); } catch { return "unknown"; }
   });
 
-  const parseOwnerRepo = () => {
-    try {
-      const out = execSyncFn("git remote get-url origin", { encoding: "utf8" }).trim();
-      const m = out.match(/github\.com[:\/]([^\/]+)\/([^\/\.]+)/);
-      if (m) return { owner: m[1], repo: m[2] };
-    } catch {}
-    return null;
-  };
+  // Transport-owned repository identity — no local git-remote parsing.
+  const parseOwnerRepo = () => migrationTransport.resolveOwnerRepo();
 
   const inventoryOps: InventoryOps2 = {
     listOpenIssues: async () => {

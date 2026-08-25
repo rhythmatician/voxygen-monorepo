@@ -44,14 +44,10 @@ import {
   WAYFINDER_RESEARCH as TRACKER_WAYFINDER_RESEARCH,
 } from "./tracker-policy.mts";
 import {
-  reconcileStaleImplementation,
-} from "./tracker-operations.mts";
-import {
   partitionMergerInfrastructureFailure,
 } from "./factory-verdict-gate.mts";
 import * as branchHelpers from "./branch-helpers.mts";
 import type { GitRunner, GitResult } from "./branch-helpers.mts";
-import { createProductionReconcileOps } from "./reconcile-adapter.mts";
 import { publishBatchBranch } from "./batch-publication.mts";
 import { mayAutonomouslyMerge } from "./ci-policy.mts";
 import { runReviewerPass } from "./review-pass.mts";
@@ -174,7 +170,12 @@ async function runGh(args: string[]): Promise<string> {
 // verified-saga transitions with typed receipts. main.mts no longer composes
 // `gh issue edit` calls or knows machine-state label strings inline.
 const fileReceiptSink = makeFileReceiptSink(REPO_ROOT);
-const tracker: TrackerAdapter = createTrackerAdapter({ gh: ghTransport, receiptSink: fileReceiptSink });
+const tracker: TrackerAdapter = createTrackerAdapter({
+  gh: ghTransport,
+  receiptSink: fileReceiptSink,
+  runGit: createGitRunner(),
+  repoRoot: REPO_ROOT,
+});
 
 /**
  * Production receipt sink — atomic writes via withAtomicJsonReceipt, and
@@ -428,29 +429,41 @@ async function transitionToBlocked(issueId: string): Promise<boolean> {
 
 async function markBlocked(issueId: string, branch: string, reason: string): Promise<boolean> {
   const shortReason = reason.slice(0, REASON_TRUNCATE);
-  const transitionOk = await transitionToBlocked(issueId);
-  const commentOk = await safeRunGh([
-    "issue",
-    "comment",
-    issueId,
-    "--body",
-    `Sandcastle failed on \`${branch}\` -- not merged. Preserved branch for inspection.\n\n**Reason:** ${shortReason}\n\nBranch: \`${branch}\`\n\nTo retry: remove \`agent:blocked\` and explicitly re-add \`agent:implement\`, then re-run factory. Branch \`${branch}\` preserved, ready-for-agent retained, agent:in-progress and claimant assignee removed, agent:implement not restored.`,
-  ]);
-  const ok = transitionOk && commentOk;
-  if (!ok) {
-    // GitHub unavailable during failure cleanup — do not falsely report that the branch was marked.
-    // Preserve recoverable local state so next reconciliation can truthfully report status after connectivity returns.
-    try {
-      const recoveryDir = path.join(REPO_ROOT, ".sandcastle", "recovery");
-      fs.mkdirSync(recoveryDir, { recursive: true });
-      const recoveryPath = path.join(recoveryDir, `${issueId}-${branch.replace(/[^a-zA-Z0-9-]/g, "-")}.json`);
-      fs.writeFileSync(recoveryPath, JSON.stringify({ issueId, branch, reason: shortReason, at: new Date().toISOString(), transitionOk, commentOk, githubAvailable: false }, null, 2));
-      console.warn(`  [recovery] Preserved local state at ${recoveryPath} — GitHub mutations failed (transitionOk=${transitionOk} commentOk=${commentOk}), will reconcile truthfully after connectivity returns. Did NOT report as "marked agent:blocked".`);
-    } catch (e) {
-      console.warn(`  [recovery] Failed to preserve local state for #${issueId}: ${getErrorMessage(e)}`);
+  // Verified saga transition. Only committed may publish a success-oriented
+  // comment; rejected/compensated/indeterminate are handled explicitly.
+  const result = await tracker.transitionToBlocked(Number(issueId));
+  if (result.kind === "committed") {
+    const commentOk = await safeRunGh([
+      "issue",
+      "comment",
+      issueId,
+      "--body",
+      `Sandcastle failed on \`${branch}\` -- not merged. Preserved branch for inspection.\n\n**Reason:** ${shortReason}\n\nBranch: \`${branch}\`\n\nTo retry: remove \`agent:blocked\` and explicitly re-add \`agent:implement\`, then re-run factory. Branch \`${branch}\` preserved, ready-for-agent retained, agent:in-progress and claimant assignee removed, agent:implement not restored.`,
+    ]);
+    if (!commentOk) {
+      try {
+        const recoveryDir = path.join(REPO_ROOT, ".sandcastle", "recovery");
+        fs.mkdirSync(recoveryDir, { recursive: true });
+        const recoveryPath = path.join(recoveryDir, `${issueId}-${branch.replace(/[^a-zA-Z0-9-]/g, "-")}.json`);
+        fs.writeFileSync(recoveryPath, JSON.stringify({ issueId, branch, reason: shortReason, at: new Date().toISOString(), transitionOk: true, commentOk: false, githubAvailable: false }, null, 2));
+        console.warn(`  [recovery] Preserved local state at ${recoveryPath} — blocked transition committed but comment failed.`);
+      } catch (e) {
+        console.warn(`  [recovery] Failed to preserve local state for #${issueId}: ${getErrorMessage(e)}`);
+      }
     }
+    return true;
   }
-  return ok;
+  if (result.kind === "rejected") {
+    console.error(`  BLOCKED transition rejected for #${issueId}: ${result.receipt.reason ?? result.receipt.code} — state was not a valid claimed state; no mutation applied.`);
+    return false;
+  }
+  if (result.kind === "compensated") {
+    console.error(`  BLOCKED transition compensated for #${issueId}: ${result.receipt.reason ?? result.receipt.code} — original claimed state restored; not marked blocked.`);
+    return false;
+  }
+  // indeterminate — FACTORY_ERROR, stop progression.
+  console.error(`  FACTORY_ERROR blocking #${issueId}: ${result.receipt.reason ?? result.receipt.code} — recovery evidence in receipt; stopping before any success reporting.`);
+  throw new Error(`FACTORY_ERROR blocking #${issueId}: ${result.receipt.reason ?? result.receipt.code}`);
 }
 
 async function markFactoryError(issueId: string, branch: string, reason: string): Promise<boolean> {
@@ -458,9 +471,17 @@ async function markFactoryError(issueId: string, branch: string, reason: string)
   // Verified saga release — never restores agent:implement; indeterminate on
   // unsafe-to-restore failure with recovery evidence in the typed receipt.
   const released = await tracker.releaseAfterFactoryError(Number(issueId));
-  const transitionOk = released.kind === "committed";
   if (released.kind === "indeterminate") {
     console.error(`  FACTORY_ERROR releasing claim for #${issueId}: ${released.receipt.reason}`);
+    throw new Error(`FACTORY_ERROR releasing claim for #${issueId}: ${released.receipt.reason ?? released.receipt.code}`);
+  }
+  if (released.kind === "rejected") {
+    console.error(`  FACTORY_ERROR release rejected for #${issueId}: ${released.receipt.reason ?? released.receipt.code} — no valid claim to release.`);
+    throw new Error(`FACTORY_ERROR release rejected for #${issueId}: ${released.receipt.reason ?? released.receipt.code}`);
+  }
+  if (released.kind === "compensated") {
+    console.error(`  FACTORY_ERROR release compensated for #${issueId}: ${released.receipt.reason ?? released.receipt.code} — claim restored; not reporting release.`);
+    throw new Error(`FACTORY_ERROR release compensated for #${issueId}: ${released.receipt.reason ?? released.receipt.code}`);
   }
   const commentOk = await safeRunGh([
     "issue",
@@ -469,7 +490,7 @@ async function markFactoryError(issueId: string, branch: string, reason: string)
     "--body",
     `Sandcastle factory infrastructure failed on \`${branch}\` — preserved branch for inspection.\n\n**Reason:** ${shortReason}\n\nBranch: \`${branch}\`\n\nThe issue was released — remove \`agent:blocked\` if present and explicitly re-add \`agent:implement\` to retry. Branch preserved, ready-for-agent retained, agent:in-progress and claimant assignee removed, agent:implement not restored.`,
   ]);
-  return transitionOk && commentOk;
+  return commentOk;
 }
 
 async function markIntegrated(issueId: string, branch: string): Promise<void> {
@@ -536,7 +557,16 @@ ${JSON.stringify(verdict ?? { approved: false, reason: fallbackReason }, null, 2
 Branch: \`${branch}\`
 
 To retry: fix implementation to address findings, remove \`agent:blocked\` and explicitly re-add \`agent:implement\`, then re-run factory. Branch preserved, ready-for-agent retained, agent:in-progress and claimant assignee removed, agent:implement not restored.`;
-  await transitionToBlocked(issueId);
+  // Only a committed blocked transition may publish the rejection comment.
+  const result = await tracker.transitionToBlocked(Number(issueId));
+  if (result.kind !== "committed") {
+    const detail = result.receipt.reason ?? result.receipt.code ?? "unknown";
+    if (result.kind === "indeterminate") {
+      throw new Error(`FACTORY_ERROR review-rejecting #${issueId}: ${detail}`);
+    }
+    console.error(`  Review-reject blocked transition ${result.kind} for #${issueId}: ${detail} — no rejection comment published.`);
+    return;
+  }
   await safeRunGh(["issue", "comment", issueId, "--body", body]);
 }
 
@@ -603,9 +633,8 @@ async function reconcileInProgressIssues(): Promise<void> {
     const hasAssignee = issue.assignees.length > 0;
     if (hasReady && hasInProgress && hasAssignee && !hasImplement) {
       console.log(`  #${id} (${branch}) → stale implementation claim (consumed ${AGENT_IMPLEMENT}) — full seam`);
-      const claimantLogin = await resolveClaimantLogin();
-    const fullOps = createProductionReconcileOps({ runGh, runGit: createGitRunner(), repoRoot: REPO_ROOT, claimantLogin });
-      const result = await reconcileStaleImplementation(issue, branch, fullOps);
+      // Single consumer-facing reconciliation port on the tracker adapter.
+      const result = await tracker.reconcileStaleImplementation(issue, branch);
       if (!result.reconciled) {
         console.warn(`  #${id} → ${result.reason} — decision=${result.decision?.type} factoryError=${result.factoryError}`);
         if (result.factoryError) {
@@ -1716,11 +1745,17 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
       mutations: {
         apply: async (action) => {
           if (action.kind === "failed") {
-            await markBlocked(action.issue.id, action.issue.branch, action.reason);
+            const ok = await markBlocked(action.issue.id, action.issue.branch, action.reason);
+            if (!ok) {
+              throw new Error(`FACTORY_ERROR marking #${action.issue.id} blocked failed — stopping progression`);
+            }
           } else if (action.kind === "reviewRejected") {
             await markReviewRejected(action.issue.id, action.issue.branch, action.verdict!, action.reason);
           } else {
-            await markFactoryError(action.issue.id, action.issue.branch, action.reason);
+            const ok = await markFactoryError(action.issue.id, action.issue.branch, action.reason);
+            if (!ok) {
+              throw new Error(`FACTORY_ERROR factory-error release for #${action.issue.id} did not complete — stopping progression`);
+            }
           }
         },
       },

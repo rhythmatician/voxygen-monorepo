@@ -9,7 +9,6 @@ import {
   AGENT_BLOCKED,
   type IssueInput,
 } from "./tracker-policy.mts";
-import { reconcileStaleImplementation } from "./tracker-operations.mts";
 import { createTrackerAdapter, makeMemoryReceiptSink, type TrackerAdapter } from "./tracker-adapter.mts";
 import { withTemporaryIssueFixtures, withAtomicJsonReceipt } from "./resource-scopes.mts";
 import { createGhTransport, type GhTransport } from "./gh-transport.mts";
@@ -70,18 +69,8 @@ function transportFromRunner(runGhFn: (args: string[]) => Promise<string>, claim
 }
 
 export async function resolveClaimantLogin(runGhFn: (args: string[]) => Promise<string> = (args) => canaryTransport.run(args)): Promise<string> {
-  const candidates = [
-    ["api", "user", "--jq", ".login"],
-    ["api", "/user", "--jq", ".login"],
-  ];
-  for (const args of candidates) {
-    try {
-      const out = await runGhFn(args);
-      const login = out.trim().replace(/"/g, "");
-      if (login && login !== "null" && !login.includes(" ")) return login;
-    } catch {}
-  }
-  throw new Error("failed to resolve claimant login via gh api user");
+  // Transport-owned claimant resolution — no local candidate loop.
+  return canaryTransport.resolveClaimantLogin();
 }
 async function fetchIssueReal(id: number, runGhFn: (args:string[])=>Promise<string> = (args)=>canaryTransport.run(args)): Promise<IssueInput> {
   const rawJson = await runGhFn(["issue", "view", String(id), "--json", "number,title,body,labels,assignees,state"]);
@@ -145,21 +134,14 @@ export function createLiveCanaryOps(opts: {
     reconcile: async (issue) => {
       const id = String(issue.number);
       const branch = "sandcastle/issue-"+id;
-      const { reconcileStaleImplementation } = await import("./tracker-operations.mts");
-      const ops2: any = {
-        releaseClaim: async (rid: string) => { try { await runGhFn(["issue", "edit", rid, "--remove-label", AGENT_IN_PROGRESS, "--remove-assignee", claimantLogin]); return true; } catch { return false; } },
-        comment: async (cid: string, body: string) => { try { await runGhFn(["issue", "comment", cid, "--body", body]); return true; } catch { return false; } },
-        fetchIssue: async (fid: string) => fetchReal(parseInt(fid,10)),
-        getBatchPrNumber: async () => ({ prNumber: null, state: "absent" as const }),
-        getPrState: async () => ({ state: "CLOSED", mergedAt: null, found: false }),
-        checkBranchExists: async () => "absent" as const,
-        checkProvenanceValid: async () => ({ valid: true }),
-        hasCommitsAhead: async () => "empty" as const,
-        deleteBranch: async () => true,
-        addBlocked: async (iid:string) => { try { await runGhFn(["issue", "edit", iid, "--add-label", AGENT_BLOCKED]); return true; } catch { return false; } },
-        markIntegrated: async () => true,
-      };
-      const res = await reconcileStaleImplementation(issue, branch, ops2);
+      // Same adapter authority used by main — no parallel reconciliation implementation.
+      const adapter = createTrackerAdapter({
+        gh: transportFromRunner(runGhFn, claimantLogin),
+        receiptSink: makeMemoryReceiptSink(),
+        runGit: () => ({ exitCode: 1, stdout: "", stderr: "canary has no local git" }),
+        repoRoot: CANARY_REPO_ROOT,
+      });
+      const res = await adapter.reconcileStaleImplementation(issue, branch);
       // For canary, consider reconciled if postcondition holds regardless of blocked
       return res.reconciled || res.reason.includes("no branch");
     },

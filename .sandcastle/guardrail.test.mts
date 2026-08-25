@@ -26,10 +26,16 @@ describe("production-consumer guardrails", () => {
   it("main reconciliation calls full reconciliation adapter with required ops", () => {
     const main = readFile(".sandcastle/main.mts");
     const adapter = readFile(".sandcastle/reconcile-adapter.mts");
+    const trackerAdapter = readFile(".sandcastle/tracker-adapter.mts");
+    // One-authority rule: main consumes the tracker adapter's reconcile port,
+    // never createProductionReconcileOps directly.
     expect(main).toContain("reconcileStaleImplementation");
-    // Production path must use the single extracted adapter
-    expect(main).toContain("createProductionReconcileOps");
-    expect(main).toContain("reconcile-adapter");
+    expect(main).toContain("tracker.reconcileStaleImplementation");
+    expect(main).not.toContain("createProductionReconcileOps");
+    // The tracker adapter is the consumer-facing authority; reconcile-adapter
+    // is its internal Git/worktree implementation.
+    expect(trackerAdapter).toContain("createProductionReconcileOps");
+    expect(trackerAdapter).toContain("reconcileStaleImplementation");
     // Adapter must provide all required ops (authoritative safety)
     expect(adapter).toContain("getBatchPrNumber");
     expect(adapter).toContain("getPrState");
@@ -42,8 +48,6 @@ describe("production-consumer guardrails", () => {
     expect(adapter).toContain("fetchIssue");
     // No fallback comment about release anyway
     expect(main).not.toContain("No branch check provided");
-    // Should use fullOps not minimal ops
-    expect(main).toContain("fullOps");
   });
 
   it("canary CLI calls tested live adapter with injected runner", () => {

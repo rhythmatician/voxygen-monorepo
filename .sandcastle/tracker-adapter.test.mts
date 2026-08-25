@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { createTrackerAdapter, makeMemoryReceiptSink, type TrackerAdapter } from "./tracker-adapter.mts";
+import { createTrackerAdapter, makeMemoryReceiptSink, type TrackerAdapter, type ReceiptSink } from "./tracker-adapter.mts";
 import type { GhTransport } from "./gh-transport.mts";
 import type { IssueInput } from "./tracker-policy.mts";
 
@@ -312,5 +312,188 @@ describe("tracker-adapter — verified saga", () => {
     expect(sink.receipts.length).toBe(1);
     expect(sink.receipts[0].at).toBeDefined();
     expect(sink.receipts[0].issueNumber).toBe(510);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Production-shaped guardrails (PR #217 round 2)
+// ---------------------------------------------------------------------------
+
+describe("tracker-adapter — production guardrails", () => {
+  it("GUARDRAIL: receipt sink throws after GitHub mutation → outer indeterminate, never committed", async () => {
+    const { issue, input } = implIssue(601);
+    const gh = makeFakeGh({ issues: new Map([[601, issue]]) });
+    // Sink that always throws — simulates disk failure after the GitHub edit succeeded.
+    const throwingSink: ReceiptSink = {
+      persist() { throw new Error("disk full"); },
+    };
+    const tracker = createTrackerAdapter({ gh, receiptSink: throwingSink });
+
+    const result = await tracker.claimImplementation(input);
+
+    // The GitHub claim DID succeed (labels mutated), but without durable
+    // evidence the outer result must be indeterminate FACTORY_ERROR — main
+    // would not launch a worker.
+    expect(result.kind).toBe("indeterminate");
+    if (result.kind !== "indeterminate") return;
+    expect(result.factoryError).toBe(true);
+    expect(result.receipt.code).toBe("RECEIPT_PERSIST_FAILED");
+    // GitHub state was actually mutated (claim applied) — evidence of why this is indeterminate.
+    expect(issue.labels.has("agent:in-progress")).toBe(true);
+  });
+
+  it("GUARDRAIL: compensation edit exits 0 but post-state remains claimed → indeterminate", async () => {
+    // Scenario: the claim edit SUCCEEDS (claim applied), then a postcondition
+    // mismatch triggers compensation — but the compensation edit silently
+    // no-ops (exit 0, mutates nothing). The fresh-read proof must catch it.
+    const issue: FakeIssue = {
+      number: 602,
+      title: "t",
+      body: TRACER_BODY,
+      state: "open",
+      labels: new Set(["ready-for-agent", "agent:implement"]),
+      assignees: new Set(),
+    };
+    const gh = makeFakeGh({ issues: new Map([[602, issue]]) });
+    // Scenario: the claim edit PARTIALLY applies (implement not consumed →
+    // postcondition mismatch), then compensation silently no-ops (exit 0,
+    // mutates nothing). The fresh-read proof must catch the still-claimed state.
+    const origRun = gh.run.bind(gh);
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "issue" && args[1] === "edit") {
+        const isClaimEdit = args.includes("--add-label");
+        if (isClaimEdit) {
+          // Partial effect: add assignee + in-progress but SKIP removing implement.
+          const patched = args.filter((a, i) => !(a === "--remove-label" && args[i + 1] === "agent:implement"));
+          if (patched.length === args.length) return origRun(args);
+          return origRun(patched);
+        }
+        // Compensation edit: pretend success, mutate nothing.
+        return "";
+      }
+      return origRun(args);
+    };
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const input602: IssueInput = { number: 602, title: "t", state: "open", labels: ["ready-for-agent", "agent:implement"], assignees: [], body: TRACER_BODY };
+    const result = await tracker.claimImplementation(input602);
+
+    expect(result.kind).toBe("indeterminate");
+    if (result.kind !== "indeterminate") return;
+    expect(result.factoryError).toBe(true);
+    expect(result.receipt.code).toBe("COMPENSATION_VERIFY_FAILED");
+    // Post-state remains claimed — exactly the hazard this guardrail proves.
+    expect(issue.labels.has("agent:in-progress")).toBe(true);
+    expect(issue.assignees.has("test-bot")).toBe(true);
+  });
+
+  it("GUARDRAIL: invalid Research input → rejected with zero mutation", async () => {
+    const issue: FakeIssue = { number: 603, title: "t", body: "no question here", state: "open", labels: new Set(["wayfinder:research"]), assignees: new Set() };
+    const input: IssueInput = { number: 603, title: "t", state: "open", labels: ["wayfinder:research"], assignees: [], body: "no question here" };
+    const gh = makeFakeGh({ issues: new Map([[603, issue]]) });
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.claimResearch(input);
+
+    expect(result.kind).toBe("rejected");
+    if (result.kind !== "rejected") return;
+    expect(gh.editCalls.length).toBe(0); // zero mutation
+    expect(sink.receipts[0].kind).toBe("rejected");
+  });
+
+  it("GUARDRAIL: successful claim receipt has truthful pre-claim assignees/labels", async () => {
+    const { issue, input } = implIssue(604);
+    const gh = makeFakeGh({ issues: new Map([[604, issue]]) });
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.claimImplementation(input);
+
+    expect(result.kind).toBe("committed");
+    if (result.kind !== "committed") return;
+    // before.assignees must NOT contain the newly added claimant
+    expect(result.before.assignees).not.toContain("test-bot");
+    expect(result.before.labels).toContain("agent:implement");   // implement present pre-claim
+    expect(result.before.labels).not.toContain("agent:in-progress");
+    // after is the actual final observed state
+    expect(result.after.assignees).toContain("test-bot");
+    expect(result.after.labels).toContain("agent:in-progress");
+    expect(result.after.labels).not.toContain("agent:implement");
+  });
+
+  it("GUARDRAIL: implement reintroduced before blocked transition → rejected, zero mutation", async () => {
+    const issue: FakeIssue = {
+      number: 605,
+      title: "t",
+      body: TRACER_BODY,
+      state: "open",
+      labels: new Set(["ready-for-agent", "agent:in-progress", "agent:implement"]),
+      assignees: new Set(["test-bot"]),
+    };
+    const gh = makeFakeGh({ issues: new Map([[605, issue]]) });
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.transitionToBlocked(605);
+
+    expect(result.kind).toBe("rejected");
+    if (result.kind !== "rejected") return;
+    expect(gh.editCalls.length).toBe(0); // zero mutation
+    // State untouched
+    expect(issue.labels.has("agent:in-progress")).toBe(true);
+    expect(issue.labels.has("agent:blocked")).toBe(false);
+  });
+
+  it("GUARDRAIL: blocked transition missing claimant → rejected, zero mutation", async () => {
+    const issue: FakeIssue = {
+      number: 606,
+      title: "t",
+      body: TRACER_BODY,
+      state: "open",
+      labels: new Set(["ready-for-agent", "agent:in-progress"]),
+      assignees: new Set(), // no claimant
+    };
+    const gh = makeFakeGh({ issues: new Map([[606, issue]]) });
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.transitionToBlocked(606);
+
+    expect(result.kind).toBe("rejected");
+    if (result.kind !== "rejected") return;
+    expect(gh.editCalls.length).toBe(0);
+  });
+
+  it("GUARDRAIL: verify-fetch failure after claim → compensated only when proven on fresh read", async () => {
+    const issue: FakeIssue = { number: 607, title: "t", body: TRACER_BODY, state: "open", labels: new Set(["ready-for-agent", "agent:implement"]), assignees: new Set() };
+    const input: IssueInput = { number: 607, title: "t", state: "open", labels: ["ready-for-agent", "agent:implement"], assignees: [], body: TRACER_BODY };
+    const gh = makeFakeGh({ issues: new Map([[607, issue]]) });
+    // Sabotage: edits apply but drop --remove-label agent:implement → postcondition mismatch → compensate
+    const origRun = gh.run.bind(gh);
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "issue" && args[1] === "edit") {
+        const patched = args.filter((a, i) => !(a === "--remove-label" && args[i + 1] === "agent:implement"));
+        if (patched.length === args.length) return origRun(args);
+        return origRun(patched);
+      }
+      return origRun(args);
+    };
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.claimImplementation(input);
+
+    expect(result.kind).toBe("compensated");
+    if (result.kind !== "compensated") return;
+    // Compensation proven by fresh read: claim fully released, readiness retained
+    expect(issue.labels.has("agent:in-progress")).toBe(false);
+    expect(issue.assignees.size).toBe(0);
+    expect(issue.labels.has("agent:implement")).toBe(true); // still there (never consumed)
+    expect(issue.labels.has("ready-for-agent")).toBe(true);
+    // Truthful snapshots in receipt
+    expect(result.before.assignees).not.toContain("test-bot");
+    expect(result.after.assignees).not.toContain("test-bot");
   });
 });
