@@ -2334,3 +2334,117 @@ describe("tracker-operations — round 8 authoritative absence (no error-text in
     expect(r).toBe("unknown");
   });
 });
+
+describe("tracker-operations — round 9 unknown-versus-absent parsing", () => {
+  it("checkBranchExists exact ref match => present", async () => {
+    const { createProductionReconcileOps } = await import("./reconcile-adapter.mts");
+    const mockGh = async (args: string[]) => {
+      if (args[0] === "api" && args[1].includes("git/refs")) {
+        return "refs/heads/sandcastle/issue-999";
+      }
+      return "";
+    };
+    const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockGh, runGit: fakeGit, repoRoot: process.cwd(), claimantLogin: "bot" });
+    const r = await ops.checkBranchExists("sandcastle/issue-999");
+    expect(r).toBe("present");
+  });
+
+  it("checkBranchExists mismatched successful ref => unknown (never absent)", async () => {
+    const { createProductionReconcileOps } = await import("./reconcile-adapter.mts");
+    const mockGh = async (args: string[]) => {
+      if (args[0] === "api" && args[1].includes("git/refs")) {
+        // A successful response that does NOT exactly equal the expected ref
+        // (e.g. a different branch) is UNKNOWN, never absent.
+        return "refs/heads/some-other-branch";
+      }
+      return "";
+    };
+    const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockGh, runGit: fakeGit, repoRoot: process.cwd(), claimantLogin: "bot" });
+    const r = await ops.checkBranchExists("sandcastle/issue-999");
+    expect(r).toBe("unknown");
+  });
+
+  it("checkBranchExists empty successful ref => unknown (never absent)", async () => {
+    const { createProductionReconcileOps } = await import("./reconcile-adapter.mts");
+    const mockGh = async (args: string[]) => {
+      if (args[0] === "api" && args[1].includes("git/refs")) {
+        // An empty successful response is UNKNOWN, never absent.
+        return "";
+      }
+      return "";
+    };
+    const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockGh, runGit: fakeGit, repoRoot: process.cwd(), claimantLogin: "bot" });
+    const r = await ops.checkBranchExists("sandcastle/issue-999");
+    expect(r).toBe("unknown");
+  });
+
+  it("checkBranchExists malformed successful ref => unknown (never absent)", async () => {
+    const { createProductionReconcileOps } = await import("./reconcile-adapter.mts");
+    const mockGh = async (args: string[]) => {
+      if (args[0] === "api" && args[1].includes("git/refs")) {
+        // A malformed successful response (not a string) is UNKNOWN.
+        return "12345";
+      }
+      return "";
+    };
+    const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockGh, runGit: fakeGit, repoRoot: process.cwd(), claimantLogin: "bot" });
+    const r = await ops.checkBranchExists("sandcastle/issue-999");
+    expect(r).toBe("unknown");
+  });
+
+  it("getPrState valid PR response => found with normalized state", async () => {
+    const { createProductionReconcileOps } = await import("./reconcile-adapter.mts");
+    const mockGh = async (args: string[]) => {
+      if (args[0] === "api" && args[1].includes("/pulls/")) {
+        return JSON.stringify({ state: "open", merged_at: null, number: 999 });
+      }
+      return "";
+    };
+    const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockGh, runGit: fakeGit, repoRoot: process.cwd(), claimantLogin: "bot" });
+    const r = await ops.getPrState("999");
+    expect(r).toEqual({ state: "OPEN", mergedAt: null, found: true });
+  });
+
+  it("getPrState mismatched PR number => unknown (never found)", async () => {
+    const { createProductionReconcileOps } = await import("./reconcile-adapter.mts");
+    const mockGh = async (args: string[]) => {
+      if (args[0] === "api" && args[1].includes("/pulls/")) {
+        // The response is for a DIFFERENT PR number — malformed/mismatched
+        // success is UNKNOWN, never found.
+        return JSON.stringify({ state: "open", merged_at: null, number: 1000 });
+      }
+      return "";
+    };
+    const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockGh, runGit: fakeGit, repoRoot: process.cwd(), claimantLogin: "bot" });
+    const r = await ops.getPrState("999");
+    expect(r).toEqual({ state: "UNKNOWN", mergedAt: null, found: false, unknown: true });
+  });
+
+  it("getPrState invalid state => unknown (never found)", async () => {
+    const { createProductionReconcileOps } = await import("./reconcile-adapter.mts");
+    const mockGh = async (args: string[]) => {
+      if (args[0] === "api" && args[1].includes("/pulls/")) {
+        // An unknown state value is malformed — UNKNOWN, never found.
+        return JSON.stringify({ state: "weird", merged_at: null, number: 999 });
+      }
+      return "";
+    };
+    const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockGh, runGit: fakeGit, repoRoot: process.cwd(), claimantLogin: "bot" });
+    const r = await ops.getPrState("999");
+    expect(r).toEqual({ state: "UNKNOWN", mergedAt: null, found: false, unknown: true });
+  });
+
+  it("getPrState malformed JSON success => unknown (never found)", async () => {
+    const { createProductionReconcileOps } = await import("./reconcile-adapter.mts");
+    const mockGh = async (args: string[]) => {
+      if (args[0] === "api" && args[1].includes("/pulls/")) {
+        // Malformed JSON from a successful response is UNKNOWN.
+        return "not-json";
+      }
+      return "";
+    };
+    const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockGh, runGit: fakeGit, repoRoot: process.cwd(), claimantLogin: "bot" });
+    const r = await ops.getPrState("999");
+    expect(r).toEqual({ state: "UNKNOWN", mergedAt: null, found: false, unknown: true });
+  });
+});

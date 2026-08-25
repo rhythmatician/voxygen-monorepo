@@ -34,6 +34,19 @@ export function createProductionReconcileOps(deps: ReconcileAdapterDeps): Reconc
   // Transport-owned identity only — no local remote parsing.
   const ownerRepo = deps.ownerRepo;
 
+  /**
+   * Classify a successful REST git-ref response. A ref is PRESENT only when it
+   * EXACTLY equals the expected ref (`refs/heads/<branch>`). An empty,
+   * mismatched, or malformed successful response is UNKNOWN — it does not
+   * prove the branch is absent (the response could be a different ref, a
+   * truncated payload, or a shape we did not expect). Only an authoritative
+   * HTTP 404 (handled by the caller) proves absence.
+   */
+  function classifyRefResponse(ref: unknown, branchName: string): "present" | "unknown" {
+    if (typeof ref === "string" && ref === `refs/heads/${branchName}`) return "present";
+    return "unknown";
+  }
+
   async function fetchIssueFresh(issueId: string): Promise<IssueInput> {
     const rawJson = await runGh(["issue","view",issueId,"--json","number,title,body,labels,assignees,state"]);
     const raw = JSON.parse(rawJson);
@@ -101,11 +114,30 @@ export function createProductionReconcileOps(deps: ReconcileAdapterDeps): Reconc
       if (!ownerRepo) return { state:"UNKNOWN", mergedAt:null, found:false, unknown:true };
       try {
         const prJson=await runGh(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/pulls/${prNumber}`, "--jq", "{state,merged_at,number}"]);
-        const pr=JSON.parse(prJson);
+        let pr: unknown;
+        try {
+          pr = JSON.parse(prJson);
+        } catch {
+          // Malformed successful response — the PR state cannot be trusted.
+          return { state:"UNKNOWN", mergedAt:null, found:false, unknown:true };
+        }
+        // Validate the response before returning found: the PR number must
+        // match the requested number, and the state must be a known PR state.
+        // A malformed or mismatched successful response is UNKNOWN, never
+        // found.
+        const obj = pr as { number?: unknown; state?: unknown; merged_at?: unknown };
+        if (Number(obj.number) !== Number(prNumber)) {
+          return { state:"UNKNOWN", mergedAt:null, found:false, unknown:true };
+        }
+        const rawState = String(obj.state ?? "").toLowerCase();
+        if (rawState !== "open" && rawState !== "closed") {
+          return { state:"UNKNOWN", mergedAt:null, found:false, unknown:true };
+        }
         // Normalize to the uppercase state contract the decision logic expects
         // ("OPEN"/"CLOSED"), matching the prior `gh pr view` output.
-        const state = String(pr.state ?? "").toUpperCase();
-        return { state, mergedAt: pr.merged_at ?? null, found:true };
+        const state = rawState.toUpperCase();
+        const mergedAt = typeof obj.merged_at === "string" && obj.merged_at.length > 0 ? obj.merged_at : null;
+        return { state, mergedAt, found:true };
       } catch (e) {
         if (isHttp404(e)) return { state:"CLOSED", mergedAt:null, found:false };
         return { state:"UNKNOWN", mergedAt:null, found:false, unknown:true };
@@ -121,8 +153,9 @@ export function createProductionReconcileOps(deps: ReconcileAdapterDeps): Reconc
       if (!ownerRepo) return "unknown";
       try {
         const ref = await runGh(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/git/refs/heads/${branchName}`, "--jq", ".ref"]);
-        if (ref && ref.includes(branchName)) return "present";
-        return "absent";
+        // Present ONLY when the response exactly equals the expected ref.
+        // Empty/mismatched/malformed success is UNKNOWN, never absent.
+        return classifyRefResponse(ref, branchName);
       } catch (e) {
         // ONLY an authoritative HTTP 404 proves remote absence. Auth/network/
         // timeout/403/429/5xx => unknown — never inferred from a message
@@ -206,7 +239,9 @@ export function createProductionReconcileOps(deps: ReconcileAdapterDeps): Reconc
       let remotePresent: "present"|"absent"|"unknown" = "unknown";
       try {
         const ref = await runGh(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/git/refs/heads/${branchName}`, "--jq", ".ref"]);
-        remotePresent = (ref && ref.includes(branchName)) ? "present" : "absent";
+        // Present ONLY when the response exactly equals the expected ref.
+        // Empty/mismatched/malformed success is UNKNOWN, never absent.
+        remotePresent = classifyRefResponse(ref, branchName);
       } catch (e) {
         // ONLY an authoritative HTTP 404 proves remote absence.
         if (isHttp404(e)) remotePresent="absent";
@@ -233,7 +268,11 @@ export function createProductionReconcileOps(deps: ReconcileAdapterDeps): Reconc
       if (verifyLocal.stdout.trim()) return false;
       try {
         const ref = await runGh(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/git/refs/heads/${branchName}`, "--jq",".ref"]);
-        if (ref && ref.includes(branchName)) return false;
+        // Present (exact ref match) => not absent, fail closed. An empty,
+        // mismatched, or malformed successful response is UNKNOWN — fail
+        // closed (do not delete provenance on ambiguous remote state).
+        if (classifyRefResponse(ref, branchName) === "present") return false;
+        if (classifyRefResponse(ref, branchName) === "unknown") return false;
       } catch (e) {
         // ONLY an authoritative HTTP 404 proves remote absence.
         if (!isHttp404(e)) return false;

@@ -735,8 +735,7 @@ describe("tracker-adapter — one-authority migration and cleanup receipts", () 
 
     const outcome = await tracker.cleanupClosedIssueStaleLabels(707);
 
-    expect(outcome.cleaned).toBe(true);
-    expect(outcome.removed.sort()).toEqual(["agent:implement", "agent:in-progress"]);
+    expect(outcome.status).toBe("committed");
     // ONE verified closed-state transition for the whole cleanup, one typed receipt.
     expect(sink.receipts.length).toBe(1);
     const receipt = sink.receipts[0];
@@ -932,6 +931,72 @@ describe("tracker-adapter — exact ownership for stale reconciliation (round 4)
     expect(blockedEdit).toBeUndefined();
     expect(issue.labels.has("agent:blocked")).toBe(false);
   });
+
+  it("REGRESSION: unrelated assignee appears after ownership proof => indeterminate, no block progression (zero assignees)", async () => {
+    const issue: FakeIssue = ownedIssue(814);
+    const gh = makeFakeGh({ issues: new Map([[814, issue]]) });
+    // Sabotage: after the release edit removes the claimant, an unrelated
+    // assignee (human-reviewer) is added concurrently. The released
+    // intermediate state must have ZERO assignees — this drift must make the
+    // transition indeterminate and prevent block progression.
+    const origRun = gh.run.bind(gh);
+    (gh as any).run = async (args: string[]) => {
+      const r = await origRun(args);
+      if (args[0] === "issue" && args[1] === "edit" && args.includes("--remove-assignee")) {
+        // Concurrent unrelated assignee appears after the release.
+        issue.assignees.add("human-reviewer");
+      }
+      return r;
+    };
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.transitionToBlocked(814);
+
+    // Released intermediate state has an unrelated assignee — indeterminate,
+    // and NO blocked label was added.
+    expect(result.kind).toBe("indeterminate");
+    if (result.kind !== "indeterminate") return;
+    expect(result.factoryError).toBe(true);
+    const blockedEdit = gh.editCalls.find((c) => c.includes("--add-label") && c.includes("agent:blocked"));
+    expect(blockedEdit).toBeUndefined();
+    expect(issue.labels.has("agent:blocked")).toBe(false);
+    expect(issue.assignees.has("human-reviewer")).toBe(true);
+  });
+
+  it("REGRESSION: unrelated assignee appears during finalizeIntegrated close => indeterminate, not closed", async () => {
+    const issue: FakeIssue = ownedIssue(815);
+    const gh = makeFakeGh({ issues: new Map([[815, issue]]) });
+    // Sabotage: after the strip-transient step, an unrelated assignee appears
+    // before the close step. The close step's verifyAfter must reject (zero
+    // assignees in the closed integrated state) — indeterminate, not closed.
+    const origRun = gh.run.bind(gh);
+    let stripped = false;
+    (gh as any).run = async (args: string[]) => {
+      const r = await origRun(args);
+      if (args[0] === "issue" && args[1] === "edit" && args.includes("--remove-label") && args.includes("agent:in-progress")) {
+        stripped = true;
+      }
+      if (stripped && args[0] === "issue" && args[1] === "close") {
+        // Concurrent unrelated assignee appears before close.
+        issue.assignees.add("human-reviewer");
+      }
+      return r;
+    };
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.finalizeIntegrated(815, "sandcastle/issue-815");
+
+    // The close step's verifyAfter rejects (unrelated assignee present) —
+    // indeterminate, NOT committed. The close mutation may have landed (state
+    // closed) but the transition is not committed because the final state has
+    // an unrelated assignee.
+    expect(result.kind).toBe("indeterminate");
+    if (result.kind !== "indeterminate") return;
+    expect(result.factoryError).toBe(true);
+    expect(issue.assignees.has("human-reviewer")).toBe(true);
+  });
 });
 
 describe("tracker-adapter — one verified closed-state cleanup (round 4)", () => {
@@ -951,8 +1016,7 @@ describe("tracker-adapter — one verified closed-state cleanup (round 4)", () =
     const outcome = await tracker.cleanupClosedIssueStaleLabels(821);
 
     // Fresh pre-mutation read sees open — rejected, zero writes.
-    expect(outcome.cleaned).toBe(false);
-    expect(outcome.removed).toEqual([]);
+    expect(outcome.status).toBe("rejected");
     expect(gh.editCalls.length).toBe(0);
     expect(sink.receipts[sink.receipts.length - 1].kind).toBe("rejected");
     expect(issue.labels.has("agent:in-progress")).toBe(true);
@@ -987,7 +1051,7 @@ describe("tracker-adapter — one verified closed-state cleanup (round 4)", () =
     const outcome = await tracker.cleanupClosedIssueStaleLabels(822);
 
     // Postcondition proves closed-state violation — not cleaned, factory stops.
-    expect(outcome.cleaned).toBe(false);
+    expect(outcome.status).toBe("indeterminate");
     expect(mutated).toBe(true);
     expect(sink.receipts[sink.receipts.length - 1].kind).not.toBe("committed");
   });
@@ -1007,8 +1071,7 @@ describe("tracker-adapter — one verified closed-state cleanup (round 4)", () =
 
     const outcome = await tracker.cleanupClosedIssueStaleLabels(823);
 
-    expect(outcome.cleaned).toBe(true);
-    expect(outcome.removed).toEqual([]);
+    expect(outcome.status).toBe("unchanged");
     expect(gh.editCalls.length).toBe(0);
   });
 });
@@ -1096,7 +1159,7 @@ describe("tracker-adapter — terminal committed snapshot revalidation (round 5)
 
     const outcome = await tracker.cleanupClosedIssueStaleLabels(902);
 
-    expect(outcome.cleaned).toBe(false);
+    expect(outcome.status).toBe("indeterminate");
     expect(sink.receipts.some((r) => r.kind === "committed")).toBe(false);
   });
 
@@ -1529,8 +1592,7 @@ describe("tracker-adapter — complete closed-claim cleanup (round 5)", () => {
 
     const outcome = await tracker.cleanupClosedIssueStaleLabels(1001);
 
-    expect(outcome.cleaned).toBe(true);
-    expect(outcome.removed.sort()).toEqual(["agent:implement", "agent:in-progress", "test-bot"]);
+    expect(outcome.status).toBe("committed");
     // Final invariant: closed + claimant absent + all three machine labels absent.
     expect(issue.state).toBe("closed");
     expect(issue.assignees.has("test-bot")).toBe(false);
@@ -1559,8 +1621,7 @@ describe("tracker-adapter — complete closed-claim cleanup (round 5)", () => {
 
     const outcome = await tracker.cleanupClosedIssueStaleLabels(1002);
 
-    expect(outcome.cleaned).toBe(true);
-    expect(outcome.removed).toEqual(["test-bot"]);
+    expect(outcome.status).toBe("committed");
     expect(issue.assignees.has("test-bot")).toBe(false);
     expect(issue.labels.has("agent:in-progress")).toBe(false);
     expect(issue.labels.has("agent:implement")).toBe(false);
@@ -1595,7 +1656,7 @@ describe("tracker-adapter — complete closed-claim cleanup (round 5)", () => {
 
     // The label step committed, but the assignee step's verifyAfter catches
     // the still-assigned claimant → indeterminate, not cleaned.
-    expect(outcome.cleaned).toBe(false);
+    expect(outcome.status).toBe("indeterminate");
     expect(issue.assignees.has("test-bot")).toBe(true);
     expect(sink.receipts.some((r) => r.kind === "committed")).toBe(false);
   });
@@ -1615,8 +1676,7 @@ describe("tracker-adapter — complete closed-claim cleanup (round 5)", () => {
 
     const outcome = await tracker.cleanupClosedIssueStaleLabels(1004);
 
-    expect(outcome.cleaned).toBe(true);
-    expect(outcome.removed).toEqual(["agent:in-progress"]);
+    expect(outcome.status).toBe("committed");
     // Unrelated assignee preserved; no assignee edit attempted.
     expect(issue.assignees.has("human-reviewer")).toBe(true);
     expect(issue.labels.has("agent:in-progress")).toBe(false);
@@ -2431,8 +2491,7 @@ describe("tracker-adapter — closed cleanup residue regressions (round 6)", () 
 
     const outcome = await tracker.cleanupClosedIssueStaleLabels(1601);
 
-    expect(outcome.cleaned).toBe(true);
-    expect(outcome.removed.sort()).toEqual(["agent:blocked", "test-bot"]);
+    expect(outcome.status).toBe("committed");
     // Final invariant: closed + claimant absent + all three labels absent.
     expect(issue.state).toBe("closed");
     expect(issue.assignees.has("test-bot")).toBe(false);
@@ -2458,8 +2517,7 @@ describe("tracker-adapter — closed cleanup residue regressions (round 6)", () 
     const outcome = await tracker.cleanupClosedIssueStaleLabels(1602);
 
     // Reopened issue is not clean even though there is no label residue.
-    expect(outcome.cleaned).toBe(false);
-    expect(outcome.removed).toEqual([]);
+    expect(outcome.status).toBe("rejected");
     expect(gh.editCalls.length).toBe(0);
   });
 
@@ -2496,8 +2554,7 @@ describe("tracker-adapter — closed cleanup residue regressions (round 6)", () 
     const outcome = await tracker.cleanupClosedIssueStaleLabels(1603);
 
     // The fast path's fresh read proves the issue is no longer closed => not clean.
-    expect(outcome.cleaned).toBe(false);
-    expect(outcome.removed).toEqual([]);
+    expect(outcome.status).toBe("indeterminate");
     expect(gh.editCalls.length).toBe(0);
   });
 
@@ -2528,8 +2585,7 @@ describe("tracker-adapter — closed cleanup residue regressions (round 6)", () 
     // main.mts does: tracker.cleanupClosedIssueStaleLabels(number).
     for (const number of numbers) {
       const cleanup = await tracker.cleanupClosedIssueStaleLabels(number);
-      expect(cleanup.cleaned).toBe(true);
-      expect(cleanup.removed.sort()).toEqual(["agent:in-progress", "test-bot"]);
+      expect(cleanup.status).toBe("committed");
     }
 
     // Final invariant: closed + claimant absent + unrelated assignee preserved
@@ -2582,8 +2638,7 @@ describe("tracker-adapter — closed cleanup residue regressions (round 6)", () 
 
     // The claimant appeared after the initial read — cleanup must NOT report
     // cleaned (the terminal invariant is unconditional).
-    expect(outcome.cleaned).toBe(false);
-    expect(outcome.removed).toEqual([]);
+    expect(outcome.status).toBe("indeterminate");
     // No committed cleanup receipt.
     expect(sink.receipts.some((r) => r.kind === "committed")).toBe(false);
   });
@@ -2606,8 +2661,7 @@ describe("tracker-adapter — recoverably ordered closed cleanup (round 8)", () 
 
     const outcome = await tracker.cleanupClosedIssueStaleLabels(1701);
 
-    expect(outcome.cleaned).toBe(true);
-    expect(outcome.removed).toEqual(["agent:in-progress", "test-bot"]);
+    expect(outcome.status).toBe("committed");
     // The claimant was removed BEFORE agent:in-progress (recoverable order).
     const removeAssigneeIdx = gh.editCalls.findIndex((c) => c.includes("--remove-assignee"));
     const removeInProgressIdx = gh.editCalls.findIndex((c) => c.includes("--remove-label") && c.includes("agent:in-progress"));
@@ -2646,16 +2700,43 @@ describe("tracker-adapter — recoverably ordered closed cleanup (round 8)", () 
 
     // The in-progress removal step's validateBefore rejects (claimant still
     // assigned) — cleanup is NOT reported cleaned.
-    expect(outcome.cleaned).toBe(false);
+    expect(outcome.status).toBe("indeterminate");
     expect(issue.labels.has("agent:in-progress")).toBe(true);
+  });
+
+  it("removes the claimant FIRST, before implement/blocked markers", async () => {
+    // Closed issue with agent:implement + agent:blocked + claimant assigned.
+    // The cleanup must remove the claimant BEFORE the non-last machine markers
+    // (claimant first, implement/blocked next, in-progress last).
+    const issue: FakeIssue = { number: 1703, title: "t", body: "body", state: "closed", labels: new Set(["agent:implement", "agent:blocked"]), assignees: new Set(["test-bot"]) };
+    const gh = makeFakeGh({ issues: new Map([[1703, issue]]) });
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const outcome = await tracker.cleanupClosedIssueStaleLabels(1703);
+
+    expect(outcome.status).toBe("committed");
+    // The claimant was removed BEFORE the implement/blocked markers.
+    const removeAssigneeIdx = gh.editCalls.findIndex((c) => c.includes("--remove-assignee"));
+    const removeImplementIdx = gh.editCalls.findIndex((c) => c.includes("--remove-label") && c.includes("agent:implement"));
+    const removeBlockedIdx = gh.editCalls.findIndex((c) => c.includes("--remove-label") && c.includes("agent:blocked"));
+    expect(removeAssigneeIdx).toBeGreaterThanOrEqual(0);
+    expect(removeImplementIdx).toBeGreaterThan(removeAssigneeIdx);
+    expect(removeBlockedIdx).toBeGreaterThan(removeAssigneeIdx);
+    // Final invariant: closed + claimant absent + no machine labels.
+    expect(issue.state).toBe("closed");
+    expect(issue.assignees.size).toBe(0);
+    expect(issue.labels.has("agent:implement")).toBe(false);
+    expect(issue.labels.has("agent:blocked")).toBe(false);
   });
 });
 
 describe("tracker-adapter — claimant-only residue recovery (round 8)", () => {
-  it("recovers claimant-only closed residue with Sandcastle evidence, skips without", async () => {
+  it("recovers claimant-only closed residue with state-specific receipt evidence, skips without", async () => {
     // Two closed issues assigned to the claimant with NO machine labels.
-    // #1801 has a Sandcastle audit comment (evidence) => recovered.
-    // #1802 has no evidence => skipped (ordinary closed issue).
+    // #1801 has a CURRENT, RELEVANT indeterminate cleanup receipt whose
+    // observed state matches the live claimant-only residue => recovered.
+    // #1802 has no such evidence => skipped (ordinary closed issue).
     const issue1801: FakeIssue = { number: 1801, title: "t", body: "body", state: "closed", labels: new Set(), assignees: new Set(["test-bot"]) };
     const issue1802: FakeIssue = { number: 1802, title: "t", body: "body", state: "closed", labels: new Set(), assignees: new Set(["test-bot"]) };
     const gh = makeFakeGh({ issues: new Map([[1801, issue1801], [1802, issue1802]]) });
@@ -2665,30 +2746,31 @@ describe("tracker-adapter — claimant-only residue recovery (round 8)", () => {
       if (args[0] === "issue" && args[1] === "list" && args.includes("--assignee")) {
         return JSON.stringify([{ number: 1801 }, { number: 1802 }]);
       }
-      // #1801 has a Sandcastle audit comment; #1802 has none.
-      if (args[0] === "issue" && args[1] === "view" && args.includes("comments")) {
-        const id = Number(args[2]);
-        if (id === 1801) return "Completed by Sandcastle -- branch `x` merged and integrated.";
-        return "";
-      }
       return origRun(args);
     };
     const sink = makeMemoryReceiptSink();
-    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+    // #1801 has a current indeterminate cleanup receipt whose observed state
+    // matches the live claimant-only residue (closed + claimant + no labels).
+    sink.receipts.push({
+      transition: "cleanupClosedStaleLabels", issueNumber: 1801, at: new Date().toISOString(),
+      kind: "indeterminate", code: "UNSAFE_TO_RESTORE",
+      lastObserved: { number: 1801, state: "closed", labels: [], assignees: ["test-bot"] },
+    });
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink, readReceipts: () => sink.receipts });
 
     const result = await tracker.recoverClaimantOnlyClosedResidue(100);
 
     expect(result.recovered).toBe(1);
     expect(result.skipped).toBe(1);
     expect(result.errors).toEqual([]);
-    // #1801 unassigned (evidence), #1802 left assigned (no evidence).
+    // #1801 unassigned (state-specific evidence), #1802 left assigned (no evidence).
     expect(issue1801.assignees.has("test-bot")).toBe(false);
     expect(issue1802.assignees.has("test-bot")).toBe(true);
   });
 
-  it("does not unassign an ordinary closed issue without Sandcastle evidence", async () => {
+  it("does not unassign an ordinary closed issue without state-specific evidence", async () => {
     // A closed issue assigned to the claimant with NO machine labels and NO
-    // Sandcastle evidence — must NOT be unassigned.
+    // state-specific receipt evidence — must NOT be unassigned.
     const issue: FakeIssue = { number: 1803, title: "t", body: "body", state: "closed", labels: new Set(), assignees: new Set(["test-bot"]) };
     const gh = makeFakeGh({ issues: new Map([[1803, issue]]) });
     const origRun = gh.run.bind(gh);
@@ -2696,13 +2778,103 @@ describe("tracker-adapter — claimant-only residue recovery (round 8)", () => {
       if (args[0] === "issue" && args[1] === "list" && args.includes("--assignee")) {
         return JSON.stringify([{ number: 1803 }]);
       }
-      if (args[0] === "issue" && args[1] === "view" && args.includes("comments")) {
-        return ""; // no Sandcastle comment
+      return origRun(args);
+    };
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink, readReceipts: () => sink.receipts });
+
+    const result = await tracker.recoverClaimantOnlyClosedResidue(100);
+
+    expect(result.recovered).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(issue.assignees.has("test-bot")).toBe(true);
+    expect(gh.editCalls.length).toBe(0);
+  });
+
+  it("does not treat a historical committed receipt as ownership proof", async () => {
+    // A closed issue assigned to the claimant with a COMMITTED cleanup receipt
+    // (the transition settled) — the receipt is NOT indeterminate, so it is
+    // NOT recovery evidence. The issue must NOT be unassigned.
+    const issue: FakeIssue = { number: 1804, title: "t", body: "body", state: "closed", labels: new Set(), assignees: new Set(["test-bot"]) };
+    const gh = makeFakeGh({ issues: new Map([[1804, issue]]) });
+    const origRun = gh.run.bind(gh);
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "issue" && args[1] === "list" && args.includes("--assignee")) {
+        return JSON.stringify([{ number: 1804 }]);
       }
       return origRun(args);
     };
     const sink = makeMemoryReceiptSink();
-    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+    // A committed cleanup receipt — the transition settled, so no residue
+    // recovery is warranted. NOT evidence.
+    sink.receipts.push({
+      transition: "cleanupClosedStaleLabels", issueNumber: 1804, at: new Date().toISOString(),
+      kind: "committed",
+      before: { number: 1804, state: "closed", labels: ["agent:in-progress"], assignees: ["test-bot"] },
+      after: { number: 1804, state: "closed", labels: [], assignees: [] },
+    });
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink, readReceipts: () => sink.receipts });
+
+    const result = await tracker.recoverClaimantOnlyClosedResidue(100);
+
+    expect(result.recovered).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(issue.assignees.has("test-bot")).toBe(true);
+    expect(gh.editCalls.length).toBe(0);
+  });
+
+  it("does not treat a mismatched-state indeterminate receipt as ownership proof", async () => {
+    // A closed issue assigned to the claimant with an indeterminate cleanup
+    // receipt whose observed state does NOT match the live residue (the
+    // receipt observed the claimant ABSENT) — NOT recovery evidence.
+    const issue: FakeIssue = { number: 1805, title: "t", body: "body", state: "closed", labels: new Set(), assignees: new Set(["test-bot"]) };
+    const gh = makeFakeGh({ issues: new Map([[1805, issue]]) });
+    const origRun = gh.run.bind(gh);
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "issue" && args[1] === "list" && args.includes("--assignee")) {
+        return JSON.stringify([{ number: 1805 }]);
+      }
+      return origRun(args);
+    };
+    const sink = makeMemoryReceiptSink();
+    // Indeterminate cleanup receipt, but the observed state has the claimant
+    // ABSENT — does not match the live claimant-only residue.
+    sink.receipts.push({
+      transition: "cleanupClosedStaleLabels", issueNumber: 1805, at: new Date().toISOString(),
+      kind: "indeterminate", code: "UNSAFE_TO_RESTORE",
+      lastObserved: { number: 1805, state: "closed", labels: [], assignees: [] },
+    });
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink, readReceipts: () => sink.receipts });
+
+    const result = await tracker.recoverClaimantOnlyClosedResidue(100);
+
+    expect(result.recovered).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(issue.assignees.has("test-bot")).toBe(true);
+    expect(gh.editCalls.length).toBe(0);
+  });
+
+  it("does not treat a non-cleanup/integration indeterminate receipt as ownership proof", async () => {
+    // A closed issue assigned to the claimant with an indeterminate CLAIM
+    // receipt (not a cleanup/integration transition) — NOT recovery evidence.
+    const issue: FakeIssue = { number: 1806, title: "t", body: "body", state: "closed", labels: new Set(), assignees: new Set(["test-bot"]) };
+    const gh = makeFakeGh({ issues: new Map([[1806, issue]]) });
+    const origRun = gh.run.bind(gh);
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "issue" && args[1] === "list" && args.includes("--assignee")) {
+        return JSON.stringify([{ number: 1806 }]);
+      }
+      return origRun(args);
+    };
+    const sink = makeMemoryReceiptSink();
+    // Indeterminate claimImplementation receipt — not a cleanup/integration
+    // transition, so it does not describe a closed residue.
+    sink.receipts.push({
+      transition: "claimImplementation", issueNumber: 1806, at: new Date().toISOString(),
+      kind: "indeterminate", code: "UNSAFE_TO_RESTORE",
+      lastObserved: { number: 1806, state: "closed", labels: [], assignees: ["test-bot"] },
+    });
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink, readReceipts: () => sink.receipts });
 
     const result = await tracker.recoverClaimantOnlyClosedResidue(100);
 

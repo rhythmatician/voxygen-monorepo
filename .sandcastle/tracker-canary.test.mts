@@ -681,4 +681,105 @@ describe("tracker-canary — live path behavioral (item 5)", () => {
       expect(after.labels).not.toContain("agent:blocked");
     }
   }, 15000);
+
+  it("runCanaryCli uncertain POST recovery: recovered fixture id returned to registrar, primaryError, cleanup proved, exit 1", async () => {
+    const { runCanaryCli } = await import("./tracker-canary.mts");
+    const store = new Map<number, any>();
+    let createdIds = 0;
+    const TRACER = "Scope bounded observable outcome\nno unresolved design decided\nacceptance criteria done when\nverification path verify\ndependencies blocked by none\nsmall enough for one session\nvertical tracer bullet slice";
+    const RESEARCH_BODY = "## Question\n\nCanary research question with substantive details for validation, part of #190 with evidence needed and mechanism to be investigated.";
+    // The POST inserts the issue into the store, then THROWS (uncertain POST).
+    // The exact-title search must recover the id so the registrar owns it.
+    const mockRunGh = async (args:string[]) => {
+      if (args[0]==="api" && args[1]==="user") return "test-bot";
+      if (args[0]==="api" && args.includes("--method") && args.includes("POST")) {
+        createdIds++;
+        const id = 9400+createdIds;
+        const labels: string[] = [];
+        let title = "";
+        let body = "";
+        for (let i=0;i<args.length;i++) {
+          if (args[i]==="-f" && args[i+1]?.startsWith("title=")) title = args[i+1].slice("title=".length);
+          else if (args[i]==="-f" && args[i+1]?.startsWith("body=")) body = args[i+1].slice("body=".length);
+          else if (args[i]==="-f" && args[i+1]?.startsWith("labels[]=")) labels.push(args[i+1].slice("labels[]=".length));
+        }
+        store.set(id, { number:id, title, body, state:"open", labels:[...labels], assignees:[] as string[], blockedByCount:0 });
+        // UNCERTAIN POST: the issue was created but the command throws.
+        throw new Error("gh api POST failed: connection reset");
+      }
+      // Exact-title recovery search: list open issues matching the title.
+      if (args[0]==="issue" && args[1]==="list" && args.includes("--search")) {
+        const title = args[args.indexOf("--search")+1].replace('"','').replace('"','').replace(" in:title","");
+        const matches = [...store.values()].filter((i:any)=>i.title===title);
+        return JSON.stringify(matches.map((i:any)=>({ number:i.number, title:i.title })));
+      }
+      if (args[0]==="issue" && args[1]==="view") {
+        if (args.includes("comments")) return "";
+        const id = parseInt(args[2],10);
+        const issue = store.get(id);
+        if (!issue) throw new Error("not found "+id);
+        return JSON.stringify({ number: issue.number, title: issue.title, body: issue.body, labels: issue.labels.map((n:string)=>({name:n})), assignees: issue.assignees.map((l:string)=>({login:l})), state: issue.state });
+      }
+      if (args[0]==="api" && args[1].includes("/issues/") && args.includes("--jq")) return "0";
+      if (args[0]==="issue" && args[1]==="edit") {
+        const id = parseInt(args[2],10);
+        const issue = store.get(id);
+        if (!issue) throw new Error("not found "+id);
+        for (let i=3;i<args.length;i++) {
+          if (args[i]==="--add-label") { const l=args[++i]; if(!issue.labels.includes(l)) issue.labels.push(l); }
+          else if (args[i]==="--remove-label") { const l=args[++i]; issue.labels=issue.labels.filter((x:string)=>x!==l); }
+          else if (args[i]==="--add-assignee") { const l=args[++i]; if(!issue.assignees.includes(l)) issue.assignees.push(l); }
+          else if (args[i]==="--remove-assignee") { const l=args[++i]; issue.assignees=issue.assignees.filter((x:string)=>x!==l); }
+        }
+        return "";
+      }
+      if (args[0]==="issue" && args[1]==="comment") return "";
+      if (args[0]==="issue" && args[1]==="close") {
+        const id = parseInt(args[2],10);
+        const issue = store.get(id);
+        if (issue) issue.state="closed";
+        return "";
+      }
+      if (args[0]==="pr" && args[1]==="list") return "[]";
+      if (args[0]==="api" && args[1].includes("git/refs")) throw new Error("HTTP 404: Not Found");
+      return "";
+    };
+    const cp = await import("node:child_process");
+    const repoRoot = process.cwd();
+    const runGit = (gitArgs:string[]) => {
+      try {
+        const out = cp.execFileSync("git", gitArgs, { encoding:"utf8", cwd: repoRoot } as any);
+        return { exitCode:0, stdout: out as string, stderr:"" };
+      } catch (e:any) {
+        return { exitCode: e?.status ?? 1, stdout: e?.stdout?.toString() ?? "", stderr: e?.stderr?.toString() ?? String(e?.message ?? e) };
+      }
+    };
+    const fsTest = await import("node:fs");
+    const { makeMemoryReceiptSink } = await import("./tracker-adapter.mts");
+    const result = await runCanaryCli(["--live"], {
+      runGh: mockRunGh,
+      resolveClaimantLoginFn: async () => "test-bot",
+      receiptSink: makeMemoryReceiptSink(),
+      writeFileSync: (path:string, data:string) => { fsTest.writeFileSync(path, data, "utf8"); },
+      mkdirSync: ((p:string, o?:any) => { fsTest.mkdirSync(p, o); }) as any,
+    });
+    // The canary fails closed on the indeterminate (recovered) fixture.
+    expect(result.exitCode).toBe(1);
+    expect(result.result).toBeDefined();
+    expect(result.result!.primaryError).toBeDefined();
+    expect(result.result!.primaryError).toContain("not committed");
+    // The recovered fixture id is retained so cleanup owns it.
+    expect(result.result!.fixtureIds.length).toBeGreaterThan(0);
+    // Cleanup is PROVED: every recorded fixture is closed and clean.
+    expect(result.result!.fixturesCleaned).toBe(true);
+    expect(result.result!.cleanupFailures).toEqual([]);
+    for (const id of result.result!.fixtureIds) {
+      const after = store.get(id)!;
+      expect(after.state).toBe("closed");
+      expect(after.assignees.length).toBe(0);
+      expect(after.labels).not.toContain("agent:in-progress");
+      expect(after.labels).not.toContain("agent:implement");
+      expect(after.labels).not.toContain("agent:blocked");
+    }
+  }, 15000);
 });

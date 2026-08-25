@@ -59,7 +59,7 @@ import {
 } from "./review-verdict.mts";
 import { formatGhFailure, getErrorMessage, getGhErrorDetails } from "./gh-errors.mts";
 import { createGhTransport, resolveGhToken, GhCapabilityError, type GhTransport } from "./gh-transport.mts";
-import { createTrackerAdapter, type TrackerAdapter, type TrackerTransitionResult } from "./tracker-adapter.mts";
+import { createTrackerAdapter, type TrackerAdapter, type TrackerTransitionResult, type TransitionReceipt } from "./tracker-adapter.mts";
 import { withAtomicJsonReceipt } from "./resource-scopes.mts";
 import { parsePlannerOutput, fallbackToSingle } from "./planner-helpers.mts";
 import {
@@ -174,6 +174,7 @@ const fileReceiptSink = makeFileReceiptSink(REPO_ROOT);
 const tracker: TrackerAdapter = createTrackerAdapter({
   gh: ghTransport,
   receiptSink: fileReceiptSink,
+  readReceipts: () => fileReceiptSink.readAll(),
   runGit: createGitRunner(),
   repoRoot: REPO_ROOT,
 });
@@ -182,7 +183,8 @@ const tracker: TrackerAdapter = createTrackerAdapter({
  * Production receipt sink — atomic writes via withAtomicJsonReceipt, and
  * persistence failures THROW so the saga converts an unpersistable required
  * receipt into indeterminate FACTORY_ERROR (a committed result can never lack
- * durable evidence).
+ * durable evidence). Also exposes readAll() so claimant-only residue recovery
+ * can inspect CURRENT, RELEVANT indeterminate cleanup/integration receipts.
  */
 function makeFileReceiptSink(repoRoot: string) {
   const receiptsDir = path.join(repoRoot, ".sandcastle", "logs", "tracker-transitions");
@@ -196,6 +198,16 @@ function makeFileReceiptSink(repoRoot: string) {
       // Verify the persisted receipt reads back and parses — evidence must be durable.
       const written = path.join(receiptsDir, name);
       JSON.parse(fs.readFileSync(written, "utf8"));
+    },
+    readAll(): TransitionReceipt[] {
+      if (!fs.existsSync(receiptsDir)) return [];
+      return fs.readdirSync(receiptsDir)
+        .filter((f) => f.endsWith(".json"))
+        .map((f) => {
+          try { return JSON.parse(fs.readFileSync(path.join(receiptsDir, f), "utf8")); }
+          catch { return null; }
+        })
+        .filter((r): r is TransitionReceipt => r !== null);
     },
   };
 }
@@ -696,11 +708,12 @@ async function reconcileInProgressIssues(): Promise<void> {
   }
   // Bounded startup recovery for CLAIMANT-ONLY closed residue: closed issues
   // assigned to the authenticated claimant with NO machine labels. Only
-  // unassigned when Sandcastle-owned evidence exists (typed receipt or exact
-  // audit comment). Ordinary closed issues assigned to the maintainer are
-  // never touched. A listing/read failure is FACTORY_ERROR — never continue
-  // on unknown residue.
-  console.log("  Recovering claimant-only closed residue (Sandcastle-owned evidence)...");
+  // unassigned when a CURRENT, RELEVANT indeterminate cleanup/integration
+  // receipt whose observed state matches the live claimant-only residue
+  // proves Sandcastle owned it. Ordinary closed issues assigned to the
+  // maintainer are never touched. A listing/read failure is FACTORY_ERROR —
+  // never continue on unknown residue.
+  console.log("  Recovering claimant-only closed residue (state-specific receipt evidence)...");
   const residueRecovery = await tracker.recoverClaimantOnlyClosedResidue(100);
   if (residueRecovery.errors.length > 0) {
     const msg = `FACTORY_ERROR recovering claimant-only closed residue: ${residueRecovery.errors.join("; ")}`;
@@ -708,7 +721,7 @@ async function reconcileInProgressIssues(): Promise<void> {
     throw new Error(msg);
   }
   if (residueRecovery.recovered > 0) console.log(`  Recovered ${residueRecovery.recovered} claimant-only closed issue(s).`);
-  if (residueRecovery.skipped > 0) console.log(`  Skipped ${residueRecovery.skipped} closed issue(s) without Sandcastle evidence (left assigned).`);
+  if (residueRecovery.skipped > 0) console.log(`  Skipped ${residueRecovery.skipped} closed issue(s) without state-specific evidence (left assigned).`);
   if (residueRecovery.recovered === 0 && residueRecovery.skipped === 0) console.log("  No claimant-only closed residue to recover.");
   for (const number of closedIssueNumbers) {
     const id = String(number);
@@ -718,9 +731,11 @@ async function reconcileInProgressIssues(): Promise<void> {
     // authenticated claimant (preserving unrelated assignees), and terminally
     // proves closed + claimant absent + all three labels absent.
     const cleanup = await tracker.cleanupClosedIssueStaleLabels(number);
-    // Unproved closed cleanup STOPS the factory — never continue on uncertainty.
-    if (!cleanup.cleaned) {
-      const msg = `FACTORY_ERROR cleaning closed issue #${id}: residue not proved removed (removed=[${cleanup.removed.join(", ")}])`;
+    // Unproved closed cleanup STOPS the factory — never continue on
+    // uncertainty. `committed` (cleaned) and `unchanged` (already clean) are
+    // both success; `rejected`/`indeterminate` are failures.
+    if (cleanup.status !== "committed" && cleanup.status !== "unchanged") {
+      const msg = `FACTORY_ERROR cleaning closed issue #${id}: ${cleanup.reason ?? cleanup.status}`;
       console.error(`  ${msg} — stopping before discovery/claim`);
       throw new Error(msg);
     }
