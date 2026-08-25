@@ -62,17 +62,18 @@ class EndScaffoldMultiLevelTest {
                 .thenReturn(1.0);
         var cand = new EndL4DeterministicCandidate(na);
 
-        // Voxel size doubles per coarser level: L4=16, L3=32, L2=64, L1=128.
-        // L3: origin (16,0,0) -> baseBlockX = 256; first centre = 256+0+16 = 272; y=z=16.
+        // Voxy geometry: node at level L = (32<<L) blocks, always 32^3 voxels,
+        // so voxel = 2^L blocks: L4=16, L3=8, L2=4, L1=2.
+        // L3: origin (16,0,0) -> baseBlockX = 256; first centre = 256+0*8+4 = 260; y=z=4.
         cand.produceRegion(Level.L3, new SectionPos(16, 0, 0));
-        Mockito.verify(na).sampleFinalDensity(272, 16, 16);
+        Mockito.verify(na).sampleFinalDensity(260, 4, 4);
 
-        // L1: origin (4,0,0) -> baseBlockX = 64; first centre = 64 + 0 + 64 = 128; y=z=64.
+        // L1: origin (4,0,0) -> baseBlockX = 64; first centre = 64+0*2+1 = 65; y=z=1.
         Mockito.reset(na);
         Mockito.when(na.sampleFinalDensity(Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt()))
                 .thenReturn(1.0);
         cand.produceRegion(Level.L1, new SectionPos(4, 0, 0));
-        Mockito.verify(na).sampleFinalDensity(128, 64, 64);
+        Mockito.verify(na).sampleFinalDensity(65, 1, 1);
     }
 
     @Test
@@ -82,18 +83,20 @@ class EndScaffoldMultiLevelTest {
                 .thenReturn(1.0);
         var cand = new EndL4DeterministicCandidate(na);
 
-        // Active Y slices per region = ceil(128 / voxelBlocks):
-        //   L3 (32 blocks): 4 slices -> 4 * 32 * 32 = 4096 evaluations.
+        // Region at level L spans (32<<L) blocks; active Y slices per region
+        // = min(32, ceil(128 / voxelBlocks)) with voxelBlocks = 2^L:
+        //   L3 (8-block voxels, 256-block region): 16 slices -> 16384 evals.
         cand.produceRegion(Level.L3, new SectionPos(0, 0, 0));
-        Mockito.verify(na, Mockito.times(4096))
+        Mockito.verify(na, Mockito.times(16384))
                 .sampleFinalDensity(Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt());
 
-        //   L1 (128 blocks): 1 slice -> 1 * 32 * 32 = 1024 evaluations.
+        //   L1 (2-block voxels, 64-block region): region [0,64) inside [0,128)
+        //   -> all 32 slices active -> 32768 evals.
         Mockito.reset(na);
         Mockito.when(na.sampleFinalDensity(Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt()))
                 .thenReturn(1.0);
         cand.produceRegion(Level.L1, new SectionPos(0, 0, 0));
-        Mockito.verify(na, Mockito.times(1024))
+        Mockito.verify(na, Mockito.times(32768))
                 .sampleFinalDensity(Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt());
     }
 
@@ -102,8 +105,8 @@ class EndScaffoldMultiLevelTest {
         var cand = new EndL4DeterministicCandidate(solidNoise());
         for (Level level : new Level[] {Level.L3, Level.L2, Level.L1}) {
             VoxelVolume vol = cand.produceRegion(level, new SectionPos(0, 0, 0));
-            int voxelBlocks = 16 << (4 - level.value());
-            int activeSlices = (128 + voxelBlocks - 1) / voxelBlocks;
+            int voxelBlocks = 1 << level.value();
+            int activeSlices = Math.min(32, (128 + voxelBlocks - 1) / voxelBlocks);
             for (int y = activeSlices; y < 32; y++) {
                 assertEquals(0, vol.blockId(0, y, 0),
                         "Y outside [0,128) must be air at " + level + " y=" + y);

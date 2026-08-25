@@ -5,8 +5,9 @@ package com.rhythmatician.lodiffusion.voxy;
  *
  * <p><b>Deterministic approximation — centre-sample rasterization.</b>
  * Converts cell occupancy from density by a single centre-sample at the
- * centre of each active voxel ({@code 16 << level} blocks per axis) where
- * the voxel overlaps the End responsibility {@code Y [0,128)}.
+ * centre of each active voxel ({@code 2^level} blocks per axis, matching
+ * Voxy's node geometry: node = {@code 32<<level} blocks, always 32³ voxels)
+ * where the voxel overlaps the End responsibility {@code Y [0,128)}.
  * Honestly labeled approximation: thin features or edge occupancy within a
  * voxel may vanish if the centre sample lies outside the solid. The caveat
  * strengthens at finer Levels (per the map's Stage 2 fidelity note).
@@ -32,8 +33,6 @@ final class EndL4DeterministicCandidate {
     static final int BLOCK_AIR = CanonicalRegistries.BLOCK_AIR;
     static final int BLOCK_END_STONE = 359; // canonical minecraft:end_stone
     static final int EXTENT = 32;
-    /** Blocks per voxel at L4 (the coarsest). */
-    static final int VOXEL_BLOCKS_L4 = 16;
     static final int END_MIN_Y = 0;
     static final int END_MAX_Y = 128;
 
@@ -68,8 +67,9 @@ final class EndL4DeterministicCandidate {
                     "origin " + origin + " not aligned to " + level
                     + " regionSections=" + level.regionSections());
         }
-        // Blocks per voxel at this Level: L4=16, L3=32, L2=64, L1=128.
-        int voxelBlocks = VOXEL_BLOCKS_L4 << (Level.L4.value() - level.value());
+        // Blocks per voxel at this Level (Voxy node geometry: node = 32<<L
+        // blocks, always 32^3 voxels): L4=16, L3=8, L2=4, L1=2.
+        int voxelBlocks = 1 << level.value();
         int centreOffset = voxelBlocks / 2;
 
         VoxelVolume.Builder b = VoxelVolume.builder(EXTENT);
