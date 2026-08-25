@@ -295,8 +295,8 @@ export interface InventoryOps2 {
 }
 export interface MutationOps2 {
   updateIssueLabels: (issueNumber: number, add: string[], remove: string[], expected?: ReviewedIssueSnapshot) => Promise<void>;
-  updateLabelDescription: (name: string, description: string) => Promise<void>;
-  deleteLabel: (name: string) => Promise<void>;
+  updateLabelDescription: (name: string, description: string, expectedOldDescription?: string) => Promise<void>;
+  deleteLabel: (name: string, expectedExists?: boolean) => Promise<void>;
 }
 
 export interface ReviewedReceipt {
@@ -494,14 +494,20 @@ export async function runTrackerMigration(opts: {
   for (const upd of plan.labelDescriptionUpdates) {
     const liveDesc = (await opts.inventoryOps.getLabelDescriptions())[upd.name];
     if (liveDesc !== upd.newDesc) {
-      try { await opts.mutationOps.updateLabelDescription(upd.name, upd.newDesc); } catch (e) { throw new Error(`label description update failed for ${upd.name}: ${e}`); }
+      // Bind to the REVIEWED old description — the port's own fresh pre-mutation
+      // read must match before any write.
+      const reviewedOld = receipt.labelDescriptions[upd.name];
+      try { await opts.mutationOps.updateLabelDescription(upd.name, upd.newDesc, reviewedOld); } catch (e) { throw new Error(`label description update failed for ${upd.name}: ${e}`); }
     }
   }
   // Delete retired labels independently (per-label)
   for (const del of plan.retiredLabelsToDelete) {
     const liveState = normalizeRetiredState(await opts.inventoryOps.getRetiredLabelsExist() as any);
     if (liveState[del]) {
-      try { await opts.mutationOps.deleteLabel(del); } catch (e) { throw new Error(`retired label delete failed for ${del}: ${e}`); }
+      // Bind to the REVIEWED existence — the port's own fresh pre-mutation read
+      // must confirm the label exists before any write.
+      const reviewedExists = (receipt.retiredLabelsExist as any)[del] ?? false;
+      try { await opts.mutationOps.deleteLabel(del, reviewedExists); } catch (e) { throw new Error(`retired label delete failed for ${del}: ${e}`); }
     }
   }
   // Also attempt to delete any remaining retired labels that exist but were not in plan (independent)
@@ -509,7 +515,9 @@ export async function runTrackerMigration(opts: {
     const liveState = normalizeRetiredState(await opts.inventoryOps.getRetiredLabelsExist() as any);
     for (const label of [AGENT_RESEARCH_RETIRED, WAYFINDER_PRESERVE_FUTURES_RETIRED] as const) {
       if (liveState[label] && !plan.retiredLabelsToDelete.includes(label)) {
-        try { await opts.mutationOps.deleteLabel(label); } catch (e) { throw new Error(`retired label delete failed for ${label}: ${e}`); }
+        // These labels exist live (not in the reviewed plan) — bind to the
+        // observed existence.
+        try { await opts.mutationOps.deleteLabel(label, true); } catch (e) { throw new Error(`retired label delete failed for ${label}: ${e}`); }
       }
     }
   }
@@ -643,9 +651,11 @@ export async function runTrackerMigrationCli(args: string[], deps: CliDeps = {})
   // .sandcastle/logs/migration-transitions/ (sidecar receipts alongside the
   // canonical migration receipt; the canonical schema is unchanged).
   const MIGRATION_TRANSITIONS_DIR = path.join(MIGRATION_REPO_ROOT, ".sandcastle", "logs", "migration-transitions");
+  // Per-run sequence — collision-resistant receipt filenames.
+  let migrationSeq = 0;
   const adapterReceiptSink: ReceiptSink = {
     persist(receipt: unknown): void {
-      const name = `${Date.now()}-${(receipt as { transition?: string }).transition ?? "transition"}-${(receipt as { issueNumber?: number }).issueNumber ?? "x"}.json`;
+      const name = `${Date.now()}-${String(migrationSeq++).padStart(4, "0")}-${(receipt as { transition?: string }).transition ?? "transition"}-${(receipt as { issueNumber?: number }).issueNumber ?? "x"}.json`;
       withAtomicJsonReceipt(path.join(MIGRATION_TRANSITIONS_DIR, name), () => receipt);
     },
   };
@@ -785,18 +795,20 @@ export async function runTrackerMigrationCli(args: string[], deps: CliDeps = {})
         throw new Error(`mutation failed for #${issueNumber}: ${result.reason}`);
       }
     },
-    updateLabelDescription: async (name, description) => {
-      // Route through the tracker adapter's owned repository port — fresh
-      // read-back proves the description landed, typed receipt persisted.
-      const result = await adapter.updateCanonicalLabelDescription(name, description);
+    updateLabelDescription: async (name, description, expectedOldDescription) => {
+      // Route through the tracker adapter's owned repository port — binds to
+      // the reviewed old description, fresh read-back proves the description
+      // landed, typed receipt persisted.
+      const result = await adapter.updateCanonicalLabelDescription(name, description, expectedOldDescription);
       if (!result.committed) {
         throw new Error(`label description update failed for ${name}: ${result.reason}`);
       }
     },
-    deleteLabel: async (name) => {
-      // Route through the tracker adapter's owned repository port — fresh
+    deleteLabel: async (name, expectedExists) => {
+      // Route through the tracker adapter's owned repository port — binds to
+      // the reviewed existence, proves zero open users before deletion, fresh
       // read-back proves the label is gone, typed receipt persisted.
-      const result = await adapter.deleteRetiredLabel(name);
+      const result = await adapter.deleteRetiredLabel(name, expectedExists);
       if (!result.committed) {
         throw new Error(`retired label delete failed for ${name}: ${result.reason}`);
       }

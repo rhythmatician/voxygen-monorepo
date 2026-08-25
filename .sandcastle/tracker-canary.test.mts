@@ -35,6 +35,7 @@ function makeMockOps() {
       if (!issue) return;
       issue.assignees = [];
       issue.labels = issue.labels.filter(l => l !== "agent:in-progress" && l !== "agent:implement" && l !== "agent:blocked");
+      issue.state = "closed";
     },
     updateIssueLabels: async (id: number, add: string[], remove: string[]) => {
       const issue = store.get(id);
@@ -165,21 +166,21 @@ describe("tracker-canary", () => {
 
   it("cleans all fixtures in finally and retains receipt if cleanup incomplete", async () => {
     const ops = makeMockOps();
-    // Make close fail for one fixture to test cleanup failure receipt
-    const originalClose = ops.closeIssue;
+    // Make cleanup fail for one fixture to test cleanup failure receipt
+    const originalCleanup = ops.cleanupIssue;
     let failOnce = true;
-    ops.closeIssue = async (id: number) => {
+    ops.cleanupIssue = async (id: number) => {
       if (failOnce) {
         failOnce = false;
         throw new Error("cleanup failed");
       }
-      return originalClose(id);
+      return originalCleanup!(id);
     };
     const result = await runCanary(ops as any, { live: true });
     // Should have cleanup failures but still have receipt
     expect(result.fixtureIds.length).toBeGreaterThan(0);
-    // Fixtures should be attempted to close; cleanupFailures may contain entry
-    // In this mock, first close fails, but others succeed
+    // Fixtures should be attempted to clean; cleanupFailures may contain entry
+    // In this mock, first cleanup fails, but others succeed
     expect(result.cleanupFailures.length).toBeGreaterThan(0);
     expect(result.fixturesCleaned).toBe(false);
   });
@@ -390,6 +391,7 @@ describe("tracker-canary — live path behavioral (item 5)", () => {
         if(!st) return;
         st.assignees=[];
         st.labels=st.labels.filter((l:string)=>l!=="agent:in-progress" && l!=="agent:implement" && l!=="agent:blocked");
+        st.state="closed";
       },
       removeAssignee: async (id:number) => {
         const st=store.get(id);
@@ -501,10 +503,12 @@ describe("tracker-canary — live path behavioral (item 5)", () => {
         if(st) st.state="closed";
       },
       cleanupIssue: async (id:number) => {
+        if (id===9200) throw new Error("close failed");
         const st=store.get(id);
         if(st) {
           st.assignees=[];
           st.labels=st.labels.filter((l:string)=>l!=="agent:in-progress" && l!=="agent:implement" && l!=="agent:blocked");
+          st.state="closed";
         }
       },
       claimImplementation: async (issue:any) => {

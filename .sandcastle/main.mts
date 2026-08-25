@@ -41,6 +41,7 @@ import {
   READY_FOR_AGENT,
   AGENT_IMPLEMENT,
   AGENT_IN_PROGRESS,
+  AGENT_BLOCKED,
   WAYFINDER_RESEARCH as TRACKER_WAYFINDER_RESEARCH,
 } from "./tracker-policy.mts";
 import {
@@ -185,9 +186,12 @@ const tracker: TrackerAdapter = createTrackerAdapter({
  */
 function makeFileReceiptSink(repoRoot: string) {
   const receiptsDir = path.join(repoRoot, ".sandcastle", "logs", "tracker-transitions");
+  // Per-run sequence — collision-resistant receipt filenames (two receipts for
+  // the same transition+issue within the same millisecond must not collide).
+  let seq = 0;
   return {
     persist(receipt: unknown): void {
-      const name = `${Date.now()}-${(receipt as { transition?: string }).transition ?? "transition"}-${(receipt as { issueNumber?: number }).issueNumber ?? "x"}.json`;
+      const name = `${Date.now()}-${String(seq++).padStart(4, "0")}-${(receipt as { transition?: string }).transition ?? "transition"}-${(receipt as { issueNumber?: number }).issueNumber ?? "x"}.json`;
       withAtomicJsonReceipt(path.join(receiptsDir, name), () => receipt);
       // Verify the persisted receipt reads back and parses — evidence must be durable.
       const written = path.join(receiptsDir, name);
@@ -457,15 +461,19 @@ async function markBlocked(issueId: string, branch: string, reason: string): Pro
 
 async function markFactoryError(issueId: string, branch: string, reason: string): Promise<boolean> {
   const shortReason = reason.slice(0, REASON_TRUNCATE);
-  // Verified saga release — never restores agent:implement; indeterminate on
-  // unsafe-to-restore failure with recovery evidence in the typed receipt.
-  const released = await tracker.releaseAfterFactoryError(Number(issueId));
+  // Verified saga release — proves EXACT ownership (claimant, ready-for-agent,
+  // in-progress, implement absent) on its own fresh pre-mutation read before
+  // removing in-progress + claimant. Unknown or unrelated ownership means ZERO
+  // mutation and FACTORY_ERROR — never release another actor's claim. Never
+  // restores agent:implement; indeterminate on unsafe-to-restore failure with
+  // recovery evidence in the typed receipt.
+  const released = await tracker.releaseOwnedImplementationClaim(Number(issueId));
   if (released.kind === "indeterminate") {
     console.error(`  FACTORY_ERROR releasing claim for #${issueId}: ${released.receipt.reason}`);
     throw new Error(`FACTORY_ERROR releasing claim for #${issueId}: ${released.receipt.reason ?? released.receipt.code}`);
   }
   if (released.kind === "rejected") {
-    console.error(`  FACTORY_ERROR release rejected for #${issueId}: ${released.receipt.reason ?? released.receipt.code} — no valid claim to release.`);
+    console.error(`  FACTORY_ERROR release rejected for #${issueId}: ${released.receipt.reason ?? released.receipt.code} — no valid owned claim to release.`);
     throw new Error(`FACTORY_ERROR release rejected for #${issueId}: ${released.receipt.reason ?? released.receipt.code}`);
   }
   if (released.kind === "compensated") {
@@ -660,75 +668,48 @@ async function reconcileInProgressIssues(): Promise<void> {
     continue;
   }
   }
-  // 2. Closed in-progress issues — cleanup after GitHub Closes #N auto-close
+  // 2. Closed issues with any stale transient/command labels — general cleanup.
+  //    Covers ALL THREE machine labels (agent:in-progress, agent:implement,
+  //    agent:blocked). Issue numbers are fetched across all three label
+  //    queries and DEDUPED so each closed issue is cleaned exactly once.
+  //    A listing failure is FACTORY_ERROR, never warn-and-continue.
+  const closedLabelQueries = [AGENT_IN_PROGRESS, AGENT_IMPLEMENT, AGENT_BLOCKED];
+  const closedIssueNumbers = new Set<number>();
   try {
-    const closedJson = await runGh([
-      "issue", "list",
-      "--state", "closed",
-      "--label", "agent:in-progress",
-      "--limit", "100",
-      "--json", "number,title,labels,state",
-    ]);
-    const closed: any[] = JSON.parse(closedJson);
-    for(const r of closed){
-      const id = String(r.number);
-      console.log(`  closed #${id} still has agent:in-progress — cleaning up stale claim label`);
-      const cleanup = await tracker.cleanupClosedIssueStaleLabels({
-        number: r.number,
-        title: r.title,
-        state: (r.state?.toLowerCase() ?? "closed") as "open" | "closed",
-        labels: (r.labels ?? []).map((l: any) => l.name),
-        assignees: [],
-        body: undefined,
-      });
-      // Unproved closed cleanup STOPS the factory — never continue on uncertainty.
-      if (!cleanup.cleaned) {
-        const msg = `FACTORY_ERROR cleaning closed issue #${id}: residue not proved removed (removed=[${cleanup.removed.join(", ")}])`;
-        console.error(`  ${msg} — stopping before discovery/claim`);
-        throw new Error(msg);
-      }
-    }
-    if(closed.length===0) console.log("  No closed in-progress issues to clean.");
-  } catch (e){
-    // Distinguish listing failures (warn-and-retry-next-run) from cleanup FACTORY_ERRORs (stop).
-    if (e instanceof Error && e.message.startsWith("FACTORY_ERROR")) throw e;
-    console.warn(`  Reconciliation: failed to list closed in-progress issues: ${getErrorMessage(e)}`);
-  }
-  // 3. Closed issues with any stale transient/command labels — general cleanup
-  try {
-    const closedImplementJson = await runGh([
-      "issue", "list",
-      "--state", "closed",
-      "--label", "agent:implement",
-      "--limit", "100",
-      "--json", "number,title,labels,state",
-    ]);
-    const closedImplement: any[] = JSON.parse(closedImplementJson);
-    for(const r of closedImplement){
-      const labels = (r.labels ?? []).map((l: any) => l.name);
-      if (labels.includes(AGENT_IMPLEMENT)) {
-        console.log(`  closed #${r.number} still has ${AGENT_IMPLEMENT} — cleaning`);
-        const cleanup = await tracker.cleanupClosedIssueStaleLabels({
-          number: r.number,
-          title: r.title,
-          state: (r.state?.toLowerCase() ?? "closed") as "open" | "closed",
-          labels,
-          assignees: [],
-          body: undefined,
-        });
-        // Unproved closed cleanup STOPS the factory — never continue on uncertainty.
-        if (!cleanup.cleaned) {
-          const msg = `FACTORY_ERROR cleaning closed issue #${r.number}: residue not proved removed (removed=[${cleanup.removed.join(", ")}])`;
-          console.error(`  ${msg} — stopping before discovery/claim`);
-          throw new Error(msg);
-        }
-      }
+    for (const label of closedLabelQueries) {
+      const closedJson = await runGh([
+        "issue", "list",
+        "--state", "closed",
+        "--label", label,
+        "--limit", "100",
+        "--json", "number",
+      ]);
+      const closed: any[] = JSON.parse(closedJson);
+      for (const r of closed) closedIssueNumbers.add(r.number);
     }
   } catch (e) {
-    // Distinguish listing failures (warn-and-retry-next-run) from cleanup FACTORY_ERRORs (stop).
-    if (e instanceof Error && e.message.startsWith("FACTORY_ERROR")) throw e;
-    console.warn(`  Reconciliation: failed to list closed implement issues: ${getErrorMessage(e)}`);
+    // A closed-inventory listing failure is FACTORY_ERROR — never continue on
+    // unknown closed-claim residue.
+    const msg = `FACTORY_ERROR listing closed issues with stale machine labels: ${getErrorMessage(e)} — stopping before discovery/claim`;
+    console.error(`  ${msg}`);
+    throw new Error(msg);
   }
+  for (const number of closedIssueNumbers) {
+    const id = String(number);
+    console.log(`  closed #${id} still has a stale machine label — cleaning`);
+    // Fresh-state-owned cleanup: the adapter reads the issue fresh by number,
+    // requires it remains closed, removes all three machine labels + only the
+    // authenticated claimant (preserving unrelated assignees), and terminally
+    // proves closed + claimant absent + all three labels absent.
+    const cleanup = await tracker.cleanupClosedIssueStaleLabels(number);
+    // Unproved closed cleanup STOPS the factory — never continue on uncertainty.
+    if (!cleanup.cleaned) {
+      const msg = `FACTORY_ERROR cleaning closed issue #${id}: residue not proved removed (removed=[${cleanup.removed.join(", ")}])`;
+      console.error(`  ${msg} — stopping before discovery/claim`);
+      throw new Error(msg);
+    }
+  }
+  if (closedIssueNumbers.size === 0) console.log("  No closed issues with stale machine labels to clean.");
   console.log("=== Reconciliation complete ===\n");
 }
 import { doctorWorktreePath, cleanupDoctorBranchAndWorktree, reconcileStaleDoctorResources } from "./doctor-helpers.mts";

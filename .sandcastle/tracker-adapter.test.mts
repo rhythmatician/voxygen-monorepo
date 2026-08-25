@@ -263,7 +263,7 @@ describe("tracker-adapter — verified saga", () => {
     expect(issue.assignees.size).toBe(0);
   });
 
-  it("releaseAfterFactoryError commits without restoring agent:implement", async () => {
+  it("releaseOwnedImplementationClaim commits without restoring agent:implement", async () => {
     const issue: FakeIssue = {
       number: 508,
       title: "t",
@@ -276,7 +276,7 @@ describe("tracker-adapter — verified saga", () => {
     const sink = makeMemoryReceiptSink();
     const tracker = createTrackerAdapter({ gh, receiptSink: sink });
 
-    const result = await tracker.releaseAfterFactoryError(508);
+    const result = await tracker.releaseOwnedImplementationClaim(508);
 
     expect(result.kind).toBe("committed");
     expect(issue.labels.has("agent:implement")).toBe(false);
@@ -733,11 +733,7 @@ describe("tracker-adapter — one-authority migration and cleanup receipts", () 
     const sink = makeMemoryReceiptSink();
     const tracker = createTrackerAdapter({ gh, receiptSink: sink });
 
-    const outcome = await tracker.cleanupClosedIssueStaleLabels({
-      number: 707, title: "t", state: "closed",
-      labels: ["ready-for-agent", "agent:in-progress", "agent:implement"],
-      assignees: [], body: undefined,
-    });
+    const outcome = await tracker.cleanupClosedIssueStaleLabels(707);
 
     expect(outcome.cleaned).toBe(true);
     expect(outcome.removed.sort()).toEqual(["agent:implement", "agent:in-progress"]);
@@ -820,7 +816,7 @@ describe("tracker-adapter — phase-aware second-step preconditions (round 4)", 
 
     // Release first through the adapter (committed), then inject drift before
     // the add-blocked saga reads.
-    const released = await tracker.releaseAfterFactoryError(802);
+    const released = await tracker.releaseOwnedImplementationClaim(802);
     expect(released.kind).toBe("committed");
     // Concurrent reclaim by another actor.
     issue.labels.add("agent:in-progress");
@@ -948,11 +944,7 @@ describe("tracker-adapter — one verified closed-state cleanup (round 4)", () =
     const sink = makeMemoryReceiptSink();
     const tracker = createTrackerAdapter({ gh, receiptSink: sink });
 
-    const outcome = await tracker.cleanupClosedIssueStaleLabels({
-      number: 821, title: "t", state: "closed",
-      labels: ["ready-for-agent", "agent:in-progress", "agent:implement"],
-      assignees: [], body: undefined,
-    });
+    const outcome = await tracker.cleanupClosedIssueStaleLabels(821);
 
     // Fresh pre-mutation read sees open — rejected, zero writes.
     expect(outcome.cleaned).toBe(false);
@@ -988,11 +980,7 @@ describe("tracker-adapter — one verified closed-state cleanup (round 4)", () =
     const sink = makeMemoryReceiptSink();
     const tracker = createTrackerAdapter({ gh, receiptSink: sink });
 
-    const outcome = await tracker.cleanupClosedIssueStaleLabels({
-      number: 822, title: "t", state: "closed",
-      labels: ["ready-for-agent", "agent:in-progress"],
-      assignees: [], body: undefined,
-    });
+    const outcome = await tracker.cleanupClosedIssueStaleLabels(822);
 
     // Postcondition proves closed-state violation — not cleaned, factory stops.
     expect(outcome.cleaned).toBe(false);
@@ -1013,11 +1001,7 @@ describe("tracker-adapter — one verified closed-state cleanup (round 4)", () =
     const sink = makeMemoryReceiptSink();
     const tracker = createTrackerAdapter({ gh, receiptSink: sink });
 
-    const outcome = await tracker.cleanupClosedIssueStaleLabels({
-      number: 823, title: "t", state: "closed",
-      labels: ["ready-for-agent"],
-      assignees: [], body: undefined,
-    });
+    const outcome = await tracker.cleanupClosedIssueStaleLabels(823);
 
     expect(outcome.cleaned).toBe(true);
     expect(outcome.removed).toEqual([]);
@@ -1106,11 +1090,7 @@ describe("tracker-adapter — terminal committed snapshot revalidation (round 5)
     const sink = makeMemoryReceiptSink();
     const tracker = createTrackerAdapter({ gh, receiptSink: sink });
 
-    const outcome = await tracker.cleanupClosedIssueStaleLabels({
-      number: 902, title: "t", state: "closed",
-      labels: ["ready-for-agent", "agent:in-progress"],
-      assignees: [], body: undefined,
-    });
+    const outcome = await tracker.cleanupClosedIssueStaleLabels(902);
 
     expect(outcome.cleaned).toBe(false);
     expect(sink.receipts.some((r) => r.kind === "committed")).toBe(false);
@@ -1468,11 +1448,7 @@ describe("tracker-adapter — complete closed-claim cleanup (round 5)", () => {
     const sink = makeMemoryReceiptSink();
     const tracker = createTrackerAdapter({ gh, receiptSink: sink });
 
-    const outcome = await tracker.cleanupClosedIssueStaleLabels({
-      number: 1001, title: "t", state: "closed",
-      labels: ["ready-for-agent", "agent:in-progress", "agent:implement"],
-      assignees: ["test-bot", "human-reviewer"], body: undefined,
-    });
+    const outcome = await tracker.cleanupClosedIssueStaleLabels(1001);
 
     expect(outcome.cleaned).toBe(true);
     expect(outcome.removed.sort()).toEqual(["agent:implement", "agent:in-progress", "test-bot"]);
@@ -1502,11 +1478,7 @@ describe("tracker-adapter — complete closed-claim cleanup (round 5)", () => {
     const sink = makeMemoryReceiptSink();
     const tracker = createTrackerAdapter({ gh, receiptSink: sink });
 
-    const outcome = await tracker.cleanupClosedIssueStaleLabels({
-      number: 1002, title: "t", state: "closed",
-      labels: ["ready-for-agent"],
-      assignees: ["test-bot"], body: undefined,
-    });
+    const outcome = await tracker.cleanupClosedIssueStaleLabels(1002);
 
     expect(outcome.cleaned).toBe(true);
     expect(outcome.removed).toEqual(["test-bot"]);
@@ -1540,11 +1512,7 @@ describe("tracker-adapter — complete closed-claim cleanup (round 5)", () => {
     const sink = makeMemoryReceiptSink();
     const tracker = createTrackerAdapter({ gh, receiptSink: sink });
 
-    const outcome = await tracker.cleanupClosedIssueStaleLabels({
-      number: 1003, title: "t", state: "closed",
-      labels: ["ready-for-agent", "agent:in-progress"],
-      assignees: ["test-bot"], body: undefined,
-    });
+    const outcome = await tracker.cleanupClosedIssueStaleLabels(1003);
 
     // The label step committed, but the assignee step's verifyAfter catches
     // the still-assigned claimant → indeterminate, not cleaned.
@@ -1566,11 +1534,7 @@ describe("tracker-adapter — complete closed-claim cleanup (round 5)", () => {
     const sink = makeMemoryReceiptSink();
     const tracker = createTrackerAdapter({ gh, receiptSink: sink });
 
-    const outcome = await tracker.cleanupClosedIssueStaleLabels({
-      number: 1004, title: "t", state: "closed",
-      labels: ["ready-for-agent", "agent:in-progress"],
-      assignees: ["human-reviewer"], body: undefined,
-    });
+    const outcome = await tracker.cleanupClosedIssueStaleLabels(1004);
 
     expect(outcome.cleaned).toBe(true);
     expect(outcome.removed).toEqual(["agent:in-progress"]);
@@ -1697,5 +1661,595 @@ describe("tracker-adapter — reviewed-state-bound migration mutation (round 5)"
     expect(result.committed).toBe(false);
     expect(result.reason).toContain("state drifted");
     expect(gh.editCalls.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PR #217 round-6 — terminal claim proof (item 1), evidence-authoritative
+// repository/creation ports (item 4), reviewed-state drift after precondition
+// (item 5), canary cleanup one operation (item 6).
+// ---------------------------------------------------------------------------
+
+describe("tracker-adapter — terminal claim proof (round 6)", () => {
+  it("implementation claim closes before final read => not committed, no worker", async () => {
+    const { issue, input } = implIssue(1201);
+    const gh = makeFakeGh({ issues: new Map([[1201, issue]]) });
+    // Sabotage: after the canonical claim succeeds, the terminal fresh read
+    // observes the issue closed.
+    const origRun = gh.run.bind(gh);
+    let viewCount = 0;
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "issue" && args[1] === "view") {
+        viewCount++;
+        const raw = await origRun(args);
+        // claimImplementation views: 1=canonical fetch, 2=canonical verify,
+        // 3=terminal proof.
+        if (viewCount === 3) {
+          const parsed = JSON.parse(raw);
+          parsed.state = "closed";
+          return JSON.stringify(parsed);
+        }
+        return raw;
+      }
+      return origRun(args);
+    };
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.claimImplementation(input);
+
+    expect(result.kind).toBe("indeterminate");
+    if (result.kind !== "indeterminate") return;
+    expect(result.factoryError).toBe(true);
+    expect(result.receipt.code).toBe("TERMINAL_CLAIM_DRIFT");
+    // No committed receipt — worker must not launch.
+    expect(sink.receipts.some((r) => r.kind === "committed")).toBe(false);
+  });
+
+  it("implementation claim gains agent:blocked/open blocker => not committed", async () => {
+    const { issue, input } = implIssue(1202);
+    const gh = makeFakeGh({ issues: new Map([[1202, issue]]) });
+    // Sabotage: the terminal fresh read observes agent:blocked present.
+    const origRun = gh.run.bind(gh);
+    let viewCount = 0;
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "issue" && args[1] === "view") {
+        viewCount++;
+        const raw = await origRun(args);
+        if (viewCount === 3) {
+          const parsed = JSON.parse(raw);
+          parsed.labels.push({ name: "agent:blocked" });
+          return JSON.stringify(parsed);
+        }
+        return raw;
+      }
+      return origRun(args);
+    };
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.claimImplementation(input);
+
+    expect(result.kind).toBe("indeterminate");
+    if (result.kind !== "indeterminate") return;
+    expect(result.factoryError).toBe(true);
+    expect(result.receipt.code).toBe("TERMINAL_CLAIM_DRIFT");
+    expect(sink.receipts.some((r) => r.kind === "committed")).toBe(false);
+  });
+
+  it("Research claim gains blocker or closes => not committed", async () => {
+    const issue: FakeIssue = { number: 1203, title: "t", body: RESEARCH_BODY, state: "open", labels: new Set(["wayfinder:research"]), assignees: new Set() };
+    const input: IssueInput = { number: 1203, title: "t", state: "open", labels: ["wayfinder:research"], assignees: [], body: RESEARCH_BODY };
+    const gh = makeFakeGh({ issues: new Map([[1203, issue]]) });
+    // Sabotage: the terminal fresh read observes the issue closed.
+    const origRun = gh.run.bind(gh);
+    let viewCount = 0;
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "issue" && args[1] === "view") {
+        viewCount++;
+        const raw = await origRun(args);
+        // claimResearch views: 1=canonical fetch, 2=canonical verify, 3=terminal.
+        if (viewCount === 3) {
+          const parsed = JSON.parse(raw);
+          parsed.state = "closed";
+          return JSON.stringify(parsed);
+        }
+        return raw;
+      }
+      return origRun(args);
+    };
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.claimResearch(input);
+
+    expect(result.kind).toBe("indeterminate");
+    if (result.kind !== "indeterminate") return;
+    expect(result.factoryError).toBe(true);
+    expect(result.receipt.code).toBe("TERMINAL_CLAIM_DRIFT");
+    expect(sink.receipts.some((r) => r.kind === "committed")).toBe(false);
+  });
+});
+
+describe("tracker-adapter — evidence-authoritative repository/creation ports (round 6)", () => {
+  it("updateCanonicalLabelDescription binds to reviewed old description", async () => {
+    const gh = makeFakeGh({ issues: new Map() });
+    // Mock the label API: PATCH + read-back.
+    let liveDesc = "old desc";
+    const origRun = gh.run.bind(gh);
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "api" && args[1] === "--method" && args[2] === "PATCH") {
+        liveDesc = args[args.indexOf("-f") + 1].replace("description=", "");
+        return "";
+      }
+      if (args[0] === "api" && args[1].includes("/labels/") && args.includes("--jq")) {
+        return liveDesc;
+      }
+      return origRun(args);
+    };
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    // Reviewed old description matches live — mutation proceeds.
+    const ok = await tracker.updateCanonicalLabelDescription("wayfinder:task", "new desc", "old desc");
+    expect(ok.committed).toBe(true);
+    expect(liveDesc).toBe("new desc");
+
+    // Reviewed old description drifted — zero mutation.
+    const drifted = await tracker.updateCanonicalLabelDescription("wayfinder:task", "new desc 2", "stale reviewed desc");
+    expect(drifted.committed).toBe(false);
+    expect(drifted.reason).toContain("drifted");
+    expect(liveDesc).toBe("new desc");
+  });
+
+  it("updateCanonicalLabelDescription receipt persistence failure => not committed", async () => {
+    const gh = makeFakeGh({ issues: new Map() });
+    let liveDesc = "old desc";
+    const origRun = gh.run.bind(gh);
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "api" && args[1] === "--method" && args[2] === "PATCH") {
+        liveDesc = args[args.indexOf("-f") + 1].replace("description=", "");
+        return "";
+      }
+      if (args[0] === "api" && args[1].includes("/labels/") && args.includes("--jq")) {
+        return liveDesc;
+      }
+      return origRun(args);
+    };
+    // Receipt sink throws after the PATCH succeeds.
+    const sink = makeMemoryReceiptSink();
+    const origPersist = sink.persist.bind(sink);
+    sink.persist = (r) => { if (r.transition === "updateCanonicalLabelDescription") throw new Error("sink full"); origPersist(r); };
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.updateCanonicalLabelDescription("wayfinder:task", "new desc", "old desc");
+    expect(result.committed).toBe(false);
+    expect(result.reason).toContain("receipt persistence failed");
+  });
+
+  it("deleteRetiredLabel proves zero open users before deletion", async () => {
+    const gh = makeFakeGh({ issues: new Map() });
+    const origRun = gh.run.bind(gh);
+    let deleted = false;
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "issue" && args[1] === "list" && args.includes("--label")) {
+        // One open user still uses the label — refuse deletion.
+        return JSON.stringify([{ number: 1 }]);
+      }
+      if (args[0] === "api" && args[1] === "--method" && args[2] === "DELETE") { deleted = true; return ""; }
+      if (args[0] === "api" && args[1].includes("/labels/")) {
+        // Pre-mutation existence read succeeds (label exists).
+        return JSON.stringify({ name: "agent:research", description: "retired" });
+      }
+      return origRun(args);
+    };
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.deleteRetiredLabel("agent:research", true);
+    expect(result.committed).toBe(false);
+    expect(result.reason).toContain("open users");
+    expect(deleted).toBe(false);
+  });
+
+  it("deleteRetiredLabel verification returns 500/network failure => not committed", async () => {
+    const gh = makeFakeGh({ issues: new Map() });
+    const origRun = gh.run.bind(gh);
+    let deleted = false;
+    let existenceReads = 0;
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "issue" && args[1] === "list" && args.includes("--label")) {
+        return JSON.stringify([]);
+      }
+      if (args[0] === "api" && args[1] === "--method" && args[2] === "DELETE") { deleted = true; return ""; }
+      if (args[0] === "api" && args[1].includes("/labels/")) {
+        existenceReads++;
+        // First read = pre-mutation existence (succeeds); second = post-delete
+        // read-back (500 => indeterminate).
+        if (existenceReads === 1) return JSON.stringify({ name: "agent:research", description: "retired" });
+        throw new Error("500 Internal Server Error");
+      }
+      return origRun(args);
+    };
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.deleteRetiredLabel("agent:research", true);
+    expect(result.committed).toBe(false);
+    expect(result.reason).toContain("not authoritative 404");
+    expect(deleted).toBe(true);
+  });
+
+  it("deleteRetiredLabel receipt persistence failure => not committed", async () => {
+    const gh = makeFakeGh({ issues: new Map() });
+    const origRun = gh.run.bind(gh);
+    let existenceReads = 0;
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "issue" && args[1] === "list" && args.includes("--label")) {
+        return JSON.stringify([]);
+      }
+      if (args[0] === "api" && args[1] === "--method" && args[2] === "DELETE") { return ""; }
+      if (args[0] === "api" && args[1].includes("/labels/")) {
+        existenceReads++;
+        if (existenceReads === 1) return JSON.stringify({ name: "agent:research", description: "retired" });
+        throw new Error("404 Not Found");
+      }
+      return origRun(args);
+    };
+    const sink = makeMemoryReceiptSink();
+    const origPersist = sink.persist.bind(sink);
+    sink.persist = (r) => { if (r.transition === "deleteRetiredLabel") throw new Error("sink full"); origPersist(r); };
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.deleteRetiredLabel("agent:research", true);
+    expect(result.committed).toBe(false);
+    expect(result.reason).toContain("receipt persistence failed");
+  });
+
+  it("createCanaryFixture receipt persistence failure => not committed but id exposed for cleanup", async () => {
+    const gh = makeFakeGh({ issues: new Map() });
+    const origRun = gh.run.bind(gh);
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "api" && args[1] === "--method" && args[2] === "POST") {
+        return "1301";
+      }
+      if (args[0] === "issue" && args[1] === "view") {
+        return JSON.stringify({ number: 1301, title: "t", body: "body", state: "open", labels: [{ name: "ready-for-agent" }], assignees: [] });
+      }
+      return origRun(args);
+    };
+    const sink = makeMemoryReceiptSink();
+    const origPersist = sink.persist.bind(sink);
+    sink.persist = (r) => { if (r.transition === "createCanaryFixture") throw new Error("sink full"); origPersist(r); };
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.createCanaryFixture("t", "body", ["ready-for-agent"]);
+    expect(result.committed).toBe(false);
+    expect(result.reason).toContain("receipt persistence failed");
+    // The fixture id is still exposed so cleanup can occur.
+    expect(result.id).toBe(1301);
+  });
+});
+
+describe("tracker-adapter — reviewed-state drift after precondition (round 6)", () => {
+  function reviewedSnapshot(n: number, overrides: Partial<{ state: string; labels: string[]; assignees: string[]; blocked_by: number | undefined; bodySha256: string }> = {}) {
+    return {
+      number: n,
+      state: "open",
+      labels: ["wayfinder:task"],
+      assignees: [],
+      blocked_by: 0,
+      bodySha256: "230d8358dc8e8890b4c58deeb62912ee2f20357ae92a5cc861b98e68fe31acb5", // sha256("body")
+      ...overrides,
+    };
+  }
+
+  it("concurrent assignee drift after precondition => not committed", async () => {
+    const { makeIssueLabelMutationPort } = await import("./tracker-adapter.mts");
+    const issue: FakeIssue = { number: 1401, title: "task", body: "body", state: "open", labels: new Set(["wayfinder:task"]), assignees: new Set() };
+    const gh = makeFakeGh({ issues: new Map([[1401, issue]]) });
+    // Sabotage: after the precondition read passes, an unrelated assignee is
+    // added before the terminal verification read.
+    const origRun = gh.run.bind(gh);
+    let viewCount = 0;
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "issue" && args[1] === "view") {
+        viewCount++;
+        const raw = await origRun(args);
+        // migrationLabelMutation views: 1=validateBefore, 2=verifyAfter, 3=terminal.
+        if (viewCount === 3) {
+          const parsed = JSON.parse(raw);
+          parsed.assignees.push({ login: "intruder" });
+          return JSON.stringify(parsed);
+        }
+        return raw;
+      }
+      return origRun(args);
+    };
+    const sink = makeMemoryReceiptSink();
+    const mutate = makeIssueLabelMutationPort(gh, sink);
+
+    const result = await mutate(1401, ["ready-for-human"], [], reviewedSnapshot(1401));
+    expect(result.committed).toBe(false);
+    expect(result.reason).toContain("assignees changed");
+    expect(sink.receipts.some((r) => r.kind === "committed")).toBe(false);
+  });
+
+  it("concurrent body drift after precondition => not committed", async () => {
+    const { makeIssueLabelMutationPort } = await import("./tracker-adapter.mts");
+    const issue: FakeIssue = { number: 1402, title: "task", body: "body", state: "open", labels: new Set(["wayfinder:task"]), assignees: new Set() };
+    const gh = makeFakeGh({ issues: new Map([[1402, issue]]) });
+    const origRun = gh.run.bind(gh);
+    let viewCount = 0;
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "issue" && args[1] === "view") {
+        viewCount++;
+        const raw = await origRun(args);
+        if (viewCount === 3) {
+          const parsed = JSON.parse(raw);
+          parsed.body = "changed body";
+          return JSON.stringify(parsed);
+        }
+        return raw;
+      }
+      return origRun(args);
+    };
+    const sink = makeMemoryReceiptSink();
+    const mutate = makeIssueLabelMutationPort(gh, sink);
+
+    const result = await mutate(1402, ["ready-for-human"], [], reviewedSnapshot(1402));
+    expect(result.committed).toBe(false);
+    expect(result.reason).toContain("body hash changed");
+    expect(sink.receipts.some((r) => r.kind === "committed")).toBe(false);
+  });
+
+  it("concurrent dependency drift after precondition => not committed", async () => {
+    const { makeIssueLabelMutationPort } = await import("./tracker-adapter.mts");
+    const issue: FakeIssue = { number: 1403, title: "task", body: "body", state: "open", labels: new Set(["wayfinder:task"]), assignees: new Set() };
+    const gh = makeFakeGh({ issues: new Map([[1403, issue]]) });
+    const origRun = gh.run.bind(gh);
+    let viewCount = 0;
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "issue" && args[1] === "view") {
+        viewCount++;
+        const raw = await origRun(args);
+        if (viewCount === 3) {
+          const parsed = JSON.parse(raw);
+          parsed.labels.push({ name: "agent:blocked" });
+          return JSON.stringify(parsed);
+        }
+        return raw;
+      }
+      return origRun(args);
+    };
+    const sink = makeMemoryReceiptSink();
+    const mutate = makeIssueLabelMutationPort(gh, sink);
+
+    const result = await mutate(1403, ["ready-for-human"], [], reviewedSnapshot(1403));
+    expect(result.committed).toBe(false);
+    expect(result.reason).toContain("labels not exactly reviewed-transformed");
+    expect(sink.receipts.some((r) => r.kind === "committed")).toBe(false);
+  });
+
+  it("concurrent state drift after precondition => not committed", async () => {
+    const { makeIssueLabelMutationPort } = await import("./tracker-adapter.mts");
+    const issue: FakeIssue = { number: 1404, title: "task", body: "body", state: "open", labels: new Set(["wayfinder:task"]), assignees: new Set() };
+    const gh = makeFakeGh({ issues: new Map([[1404, issue]]) });
+    const origRun = gh.run.bind(gh);
+    let viewCount = 0;
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "issue" && args[1] === "view") {
+        viewCount++;
+        const raw = await origRun(args);
+        if (viewCount === 3) {
+          const parsed = JSON.parse(raw);
+          parsed.state = "closed";
+          return JSON.stringify(parsed);
+        }
+        return raw;
+      }
+      return origRun(args);
+    };
+    const sink = makeMemoryReceiptSink();
+    const mutate = makeIssueLabelMutationPort(gh, sink);
+
+    const result = await mutate(1404, ["ready-for-human"], [], reviewedSnapshot(1404));
+    expect(result.committed).toBe(false);
+    expect(result.reason).toContain("state changed");
+    expect(sink.receipts.some((r) => r.kind === "committed")).toBe(false);
+  });
+
+  it("concurrent unrelated label drift after precondition => not committed", async () => {
+    const { makeIssueLabelMutationPort } = await import("./tracker-adapter.mts");
+    const issue: FakeIssue = { number: 1405, title: "task", body: "body", state: "open", labels: new Set(["wayfinder:task"]), assignees: new Set() };
+    const gh = makeFakeGh({ issues: new Map([[1405, issue]]) });
+    const origRun = gh.run.bind(gh);
+    let viewCount = 0;
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "issue" && args[1] === "view") {
+        viewCount++;
+        const raw = await origRun(args);
+        if (viewCount === 3) {
+          const parsed = JSON.parse(raw);
+          parsed.labels.push({ name: "needs-triage" });
+          return JSON.stringify(parsed);
+        }
+        return raw;
+      }
+      return origRun(args);
+    };
+    const sink = makeMemoryReceiptSink();
+    const mutate = makeIssueLabelMutationPort(gh, sink);
+
+    const result = await mutate(1405, ["ready-for-human"], [], reviewedSnapshot(1405));
+    expect(result.committed).toBe(false);
+    expect(result.reason).toContain("labels not exactly reviewed-transformed");
+    expect(sink.receipts.some((r) => r.kind === "committed")).toBe(false);
+  });
+});
+
+describe("tracker-adapter — canary fixture cleanup one operation (round 6)", () => {
+  it("cleanupCanaryFixture executes once with one close command and one receipt", async () => {
+    const issue: FakeIssue = { number: 1501, title: "t", body: TRACER_BODY, state: "open", labels: new Set(["ready-for-agent", "agent:in-progress"]), assignees: new Set(["test-bot"]) };
+    const gh = makeFakeGh({ issues: new Map([[1501, issue]]) });
+    // Track close commands.
+    const closeCommands: string[][] = [];
+    const origRun = gh.run.bind(gh);
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "issue" && args[1] === "close") closeCommands.push([...args]);
+      return origRun(args);
+    };
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    await tracker.cleanupCanaryFixture(1501);
+
+    // ONE logical cleanup call => one close command, one final receipt.
+    expect(closeCommands.length).toBe(1);
+    // ONE final cleanup receipt per fixture.
+    const cleanupReceipts = sink.receipts.filter((r) => r.transition === "cleanupCanaryFixture");
+    expect(cleanupReceipts.length).toBe(1);
+    expect(cleanupReceipts[0].kind).toBe("committed");
+    // Final invariant: closed + claimant absent + all three labels absent.
+    expect(issue.state).toBe("closed");
+    expect(issue.assignees.has("test-bot")).toBe(false);
+    expect(issue.labels.has("agent:in-progress")).toBe(false);
+    expect(issue.labels.has("agent:implement")).toBe(false);
+    expect(issue.labels.has("agent:blocked")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PR #217 round-6 — remaining item-7 regressions: closed agent:blocked-only
+// residue, reopened no-label fast path, and the production closed-inventory
+// wiring path (initial list omits assignee details; fresh read supplies them).
+// ---------------------------------------------------------------------------
+
+describe("tracker-adapter — closed cleanup residue regressions (round 6)", () => {
+  it("closed agent:blocked-only residue is cleaned", async () => {
+    const issue: FakeIssue = {
+      number: 1601,
+      title: "t",
+      body: TRACER_BODY,
+      state: "closed",
+      labels: new Set(["ready-for-agent", "agent:blocked"]),
+      assignees: new Set(["test-bot"]),
+    };
+    const gh = makeFakeGh({ issues: new Map([[1601, issue]]) });
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const outcome = await tracker.cleanupClosedIssueStaleLabels(1601);
+
+    expect(outcome.cleaned).toBe(true);
+    expect(outcome.removed.sort()).toEqual(["agent:blocked", "test-bot"]);
+    // Final invariant: closed + claimant absent + all three labels absent.
+    expect(issue.state).toBe("closed");
+    expect(issue.assignees.has("test-bot")).toBe(false);
+    expect(issue.labels.has("agent:in-progress")).toBe(false);
+    expect(issue.labels.has("agent:implement")).toBe(false);
+    expect(issue.labels.has("agent:blocked")).toBe(false);
+    expect(sink.receipts[0].kind).toBe("committed");
+  });
+
+  it("reopened no-label cleanup fast path => not clean", async () => {
+    const issue: FakeIssue = {
+      number: 1602,
+      title: "t",
+      body: TRACER_BODY,
+      state: "open", // reopened between listing and cleanup
+      labels: new Set(["ready-for-agent"]),
+      assignees: new Set(),
+    };
+    const gh = makeFakeGh({ issues: new Map([[1602, issue]]) });
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const outcome = await tracker.cleanupClosedIssueStaleLabels(1602);
+
+    // Reopened issue is not clean even though there is no label residue.
+    expect(outcome.cleaned).toBe(false);
+    expect(outcome.removed).toEqual([]);
+    expect(gh.editCalls.length).toBe(0);
+  });
+
+  it("reopened no-label fast path with concurrent reopen after first read => not clean", async () => {
+    const issue: FakeIssue = {
+      number: 1603,
+      title: "t",
+      body: TRACER_BODY,
+      state: "closed",
+      labels: new Set(["ready-for-agent"]),
+      assignees: new Set(),
+    };
+    const gh = makeFakeGh({ issues: new Map([[1603, issue]]) });
+    // Sabotage: the fast-path fresh read observes the issue reopened.
+    const origRun = gh.run.bind(gh);
+    let viewCount = 0;
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "issue" && args[1] === "view") {
+        viewCount++;
+        const raw = await origRun(args);
+        // cleanupClosedStaleLabels views: 1=initial fresh read, 2=fast-path fresh read.
+        if (viewCount === 2) {
+          const parsed = JSON.parse(raw);
+          parsed.state = "open";
+          return JSON.stringify(parsed);
+        }
+        return raw;
+      }
+      return origRun(args);
+    };
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const outcome = await tracker.cleanupClosedIssueStaleLabels(1603);
+
+    // The fast path's fresh read proves the issue is no longer closed => not clean.
+    expect(outcome.cleaned).toBe(false);
+    expect(outcome.removed).toEqual([]);
+    expect(gh.editCalls.length).toBe(0);
+  });
+
+  it("production closed-inventory path: initial list omits assignee details, fresh read supplies them", async () => {
+    // Simulate the production closed-inventory wiring in main.mts: the initial
+    // `issue list --state closed --label <machine-label> --json number` returns
+    // ONLY the issue number (no assignee details). The cleanup then reads the
+    // issue FRESH by number, which supplies assignee details, and unassigns the
+    // authenticated claimant + removes all three machine labels.
+    const issue: FakeIssue = {
+      number: 1604,
+      title: "t",
+      body: TRACER_BODY,
+      state: "closed",
+      labels: new Set(["ready-for-agent", "agent:in-progress"]),
+      assignees: new Set(["test-bot", "human-reviewer"]),
+    };
+    const gh = makeFakeGh({ issues: new Map([[1604, issue]]) });
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    // Production inventory: list returns only { number } — no assignee details.
+    const listed = [{ number: 1604 }];
+    const numbers = new Set<number>();
+    for (const r of listed) numbers.add(r.number);
+
+    // The cleanup is driven by the production inventory number, exactly as
+    // main.mts does: tracker.cleanupClosedIssueStaleLabels(number).
+    for (const number of numbers) {
+      const cleanup = await tracker.cleanupClosedIssueStaleLabels(number);
+      expect(cleanup.cleaned).toBe(true);
+      expect(cleanup.removed.sort()).toEqual(["agent:in-progress", "test-bot"]);
+    }
+
+    // Final invariant: closed + claimant absent + unrelated assignee preserved
+    // + all three machine labels absent.
+    expect(issue.state).toBe("closed");
+    expect(issue.assignees.has("test-bot")).toBe(false);
+    expect(issue.assignees.has("human-reviewer")).toBe(true);
+    expect(issue.labels.has("agent:in-progress")).toBe(false);
+    expect(issue.labels.has("agent:implement")).toBe(false);
+    expect(issue.labels.has("agent:blocked")).toBe(false);
+    expect(sink.receipts[0].kind).toBe("committed");
   });
 });

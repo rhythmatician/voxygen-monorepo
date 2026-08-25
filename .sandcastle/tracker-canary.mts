@@ -52,9 +52,11 @@ export interface CanaryOps {
  */
 function makeFileReceiptSink(repoRoot: string): ReceiptSink {
   const dir = path2.join(repoRoot, ".sandcastle", "logs", "canary-transitions");
+  // Per-run sequence — collision-resistant receipt filenames.
+  let seq = 0;
   return {
     persist(receipt: unknown): void {
-      const name = `${Date.now()}-${(receipt as { transition?: string }).transition ?? "transition"}-${(receipt as { issueNumber?: number }).issueNumber ?? "x"}.json`;
+      const name = `${Date.now()}-${String(seq++).padStart(4, "0")}-${(receipt as { transition?: string }).transition ?? "transition"}-${(receipt as { issueNumber?: number }).issueNumber ?? "x"}.json`;
       withAtomicJsonReceipt(path2.join(dir, name), () => receipt);
       JSON.parse(fs2.readFileSync(path2.join(dir, name), "utf8"));
     },
@@ -154,8 +156,12 @@ export function createLiveCanaryOps(opts: {
   });
   return {
     createIssue: async (title, body, labels) => {
-      // Adapter-owned canary fixture creation — never a raw gh POST.
-      return adapter.createCanaryFixture(title, body, labels);
+      // Adapter-owned canary fixture creation — never a raw gh POST. The
+      // adapter freshly proves the created state and returns the fixture id
+      // even when creation is indeterminate (receipt persistence failure), so
+      // the fixture is still registered for cleanup.
+      const created = await adapter.createCanaryFixture(title, body, labels);
+      return created.id;
     },
     fetchIssue: fetchReal,
     closeIssue: async (id) => {
@@ -257,7 +263,11 @@ export async function runCanary(ops: CanaryOps, opts: { live: boolean }): Promis
     },
     {
       cleanup: async (id) => {
-        // Real cleanup operation: remove assignee and transient labels, then close
+        // ONE adapter-owned cleanup operation, invoked exactly once per
+        // fixture. The adapter's cleanupCanaryFixture removes stale machine
+        // labels, removes the authenticated claimant assignee, and closes the
+        // issue in a single verified saga with one final receipt. Never wire
+        // cleanupIssue AND closeIssue to the same full cleanup operation.
         if (ops.cleanupIssue) {
           await ops.cleanupIssue(id);
         } else {
@@ -265,8 +275,8 @@ export async function runCanary(ops: CanaryOps, opts: { live: boolean }): Promis
           if (ops.removeLabel) {
             for (const lbl of [AGENT_IN_PROGRESS, AGENT_IMPLEMENT, AGENT_BLOCKED]) { try { await ops.removeLabel(id, lbl); } catch {} }
           }
+          await ops.closeIssue(id);
         }
-        await ops.closeIssue(id);
       },
       verify: async (id) => {
         const after = await ops.fetchIssue(id);
