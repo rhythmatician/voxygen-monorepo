@@ -482,17 +482,6 @@ async function markFactoryError(issueId: string, branch: string, reason: string)
   return commentOk;
 }
 
-async function markIntegrated(issueId: string, branch: string): Promise<void> {
-  // TODO(factory-v1): Wayfinder close ownership -- host closes ordinary impl
-  // only; Wayfinder skill will own Wayfinder ticket close. See plan-prompt.
-  // Verified saga: strip transient labels, close with audit comment, verify
-  // closed-and-clean postcondition, persist typed receipt.
-  const result = await tracker.finalizeIntegrated(Number(issueId), branch);
-  if (result.kind === "indeterminate") {
-    console.error(`  FACTORY_ERROR finalizing integrated #${issueId}: ${result.receipt.reason}`);
-  }
-}
-
 function formatVerdictForRetry(verdict: ReviewVerdict | null, fallback: string): string {
   if (!verdict) return fallback.slice(0, REASON_TRUNCATE);
   const findings = verdict.findings.map(f => `[${f.severity}] ${f.message}`).join("\n");
@@ -558,7 +547,13 @@ To retry: fix implementation to address findings, remove \`agent:blocked\` and e
     }
     throw new Error(`FACTORY_ERROR review-rejecting #${issueId}: blocked transition ${result.kind} — ${detail}`);
   }
-  await safeRunGh(["issue", "comment", issueId, "--body", body]);
+  // The rejection comment is REQUIRED evidence of the review outcome. A
+  // comment failure after a committed blocked transition is a FACTORY_ERROR —
+  // the issue is blocked but the human reviewer has no record of why.
+  const commentOk = await safeRunGh(["issue", "comment", issueId, "--body", body]);
+  if (!commentOk) {
+    throw new Error(`FACTORY_ERROR review-rejecting #${issueId}: blocked transition committed but rejection comment failed to publish`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -604,10 +599,10 @@ async function reconcileInProgressIssues(): Promise<void> {
     const classification = classifyTicket(issue);
     if (classification.profile === "research") {
       console.log(`  #${id} (${branch}) → research in-progress stale on restart — preserving branch, releasing transient claim`);
-      // Release through the tracker adapter's factory-error release saga
-      // (same verified transition; never restores agent:implement).
+      // Release through the tracker adapter's owned-research release saga
+      // (proves exact ownership: claimant, in-progress, wayfinder:research).
       // A failed stale-Research release STOPS the factory before discovery/claim.
-      const released = await tracker.releaseAfterFactoryError(issue.number);
+      const released = await tracker.releaseOwnedResearchClaim(issue.number);
       if (released.kind !== "committed") {
         const reason = released.receipt.reason ?? released.receipt.code ?? `unexpected result kind ${released.kind}`;
         console.error(`  FACTORY_ERROR releasing stale research claim for #${id}: ${reason} — stopping before discovery/claim`);
@@ -622,9 +617,11 @@ async function reconcileInProgressIssues(): Promise<void> {
       // Handled BEFORE the generic conflicting-profile continue so this exact
       // contradiction always reaches its recovery path.
       console.warn(`  #${id} (${branch}) → contradictory both ${AGENT_IMPLEMENT} and ${AGENT_IN_PROGRESS} present — compensating`);
-      // Release through the tracker adapter's factory-error release saga.
+      // Compensate through the tracker adapter's both-present compensation saga
+      // (proves exact ownership: claimant, in-progress, implement present; then
+      // removes in-progress + claimant while RETAINING agent:implement).
       // A contradictory-state compensation failure STOPS the factory.
-      const released = await tracker.releaseAfterFactoryError(issue.number);
+      const released = await tracker.compensateBothPresentClaim(issue.number);
       if (released.kind !== "committed") {
         const reason = released.receipt.reason ?? released.receipt.code ?? `unexpected result kind ${released.kind}`;
         console.error(`  FACTORY_ERROR compensating contradictory state for #${id}: ${reason} — stopping before discovery/claim`);
@@ -657,21 +654,6 @@ async function reconcileInProgressIssues(): Promise<void> {
         continue;
       }
       console.log(`  #${id} (${branch}) → ${result.reason}`);
-      continue;
-    }
-    if (hasImplement && hasInProgress) {
-      // Contradictory both present — should never be created intentionally; compensate by releasing in-progress
-      console.warn(`  #${id} (${branch}) → contradictory both ${AGENT_IMPLEMENT} and ${AGENT_IN_PROGRESS} present — compensating`);
-      // Release through the tracker adapter's factory-error release saga.
-      // A contradictory-state compensation failure STOPS the factory.
-      const released = await tracker.releaseAfterFactoryError(issue.number);
-      if (released.kind !== "committed") {
-        const reason = released.receipt.reason ?? released.receipt.code ?? `unexpected result kind ${released.kind}`;
-        console.error(`  FACTORY_ERROR compensating contradictory state for #${id}: ${reason} — stopping before discovery/claim`);
-        throw new Error(`FACTORY_ERROR compensating contradictory state for #${id}: ${reason}`);
-      }
-      await safeRunGh(["issue", "comment", id, "--body", `Sandcastle reconciliation: compensated contradictory state for \`${branch}\` — removed assignee and \`${AGENT_IN_PROGRESS}\` but retained \`${AGENT_IMPLEMENT}\` (command not consumed). Requires revalidation before retry.`]);
-      console.log(`  #${id} → compensated contradictory both-present`);
       continue;
     }
     console.log(`  #${id} (${branch}) → not a stale claimed implementation (ready=${hasReady} implement=${hasImplement} inProgress=${hasInProgress} assignee=${hasAssignee}) — leaving in-progress for inspection`);

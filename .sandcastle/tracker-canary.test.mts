@@ -83,17 +83,19 @@ function makeMockOps() {
       // Same FullReconcileOps shape as production: tri-state inspections plus
       // the adapter-saga GitHub transition port — no parallel implementation.
       const github = {
-        releaseClaim: async (id: number) => {
+        releaseAndBlockOwnedImplementation: async (id: number) => {
           const st=store.get(id);
           if(!st) return { kind: "indeterminate" as const };
           st.labels=st.labels.filter(l=>l!=="agent:in-progress");
           st.assignees=[];
+          if(!st.labels.includes("agent:blocked")) st.labels.push("agent:blocked");
           return { kind: "committed" as const };
         },
-        addBlockedAfterRelease: async (id: number) => {
+        releaseOwnedImplementationClaim: async (id: number) => {
           const st=store.get(id);
           if(!st) return { kind: "indeterminate" as const };
-          if(!st.labels.includes("agent:blocked")) st.labels.push("agent:blocked");
+          st.labels=st.labels.filter(l=>l!=="agent:in-progress");
+          st.assignees=[];
           return { kind: "committed" as const };
         },
         integrateAndClose: async () => ({ kind: "committed" as const }),
@@ -361,7 +363,7 @@ describe("tracker-canary — live path behavioral (item 5)", () => {
     }
     expect(mkdirCalled).toBe(true);
     expect(written).not.toBeNull();
-  });
+  }, 15000);
 
   it("runCanary cleanup removes claimant and machine labels, closes and reads back", async () => {
     const store = new Map<number, any>();

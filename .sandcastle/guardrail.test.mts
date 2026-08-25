@@ -59,16 +59,19 @@ describe("production-consumer guardrails", () => {
 
   it("canary CLI calls tested live adapter with injected runner", () => {
     const canary = readFile(".sandcastle/tracker-canary.mts");
+    const trackerAdapter = readFile(".sandcastle/tracker-adapter.mts");
     expect(canary).toContain("export function createLiveCanaryOps");
     expect(canary).toContain("export async function runCanaryCli");
     expect(canary).toContain("export async function resolveClaimantLogin");
     // Must use claimantLogin
     expect(canary).toContain("claimantLogin");
-    // Must use gh api POST for creation
-    expect(canary).toContain('api", "--method", "POST"');
-    // Cleanup must remove assignee and transient labels
-    expect(canary).toContain("cleanupIssue");
-    expect(canary).toContain("AGENT_IN_PROGRESS");
+    // Fixture creation and cleanup route through the tracker adapter's owned
+    // ports — never raw gh commands in the canary.
+    expect(canary).toContain("createCanaryFixture");
+    expect(canary).toContain("cleanupCanaryFixture");
+    expect(trackerAdapter).toContain('api", "--method", "POST"');
+    expect(trackerAdapter).toContain("cleanupCanaryFixture");
+    expect(trackerAdapter).toContain("AGENT_IN_PROGRESS");
     // Check that main canary uses createLiveCanaryOps
     expect(canary).toMatch(/createLiveCanaryOps[\s\S]*runCanary/);
     // Reconciliation must be executable: real or injected GitRunner, never an

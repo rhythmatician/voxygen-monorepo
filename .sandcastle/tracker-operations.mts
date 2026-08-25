@@ -271,10 +271,19 @@ export type ReconcileDecision =
  * is validated, proved on fresh reads, and receipted by the single authority.
  */
 export interface ReconcileGitHubTransitions {
-  /** Release the transient claim (in-progress + claimant). Returns committed result. */
-  releaseClaim(issueNumber: number): Promise<TransitionOutcome>;
-  /** Add agent:blocked on the PROVEN released state (release already done). Returns committed result. */
-  addBlockedAfterRelease(issueNumber: number): Promise<TransitionOutcome>;
+  /**
+   * Release an owned implementation claim then add agent:blocked — ONE
+   * two-step saga. The release step proves exact ownership; the add-blocked
+   * step re-proves the released intermediate state on its own fresh read.
+   * A drift between the two steps is indeterminate, never a clean rejection.
+   */
+  releaseAndBlockOwnedImplementation(issueNumber: number): Promise<TransitionOutcome>;
+  /**
+   * Release an owned implementation claim WITHOUT adding agent:blocked — used
+   * by the empty-branch cleanup path where the branch was cleaned and the
+   * claim is simply released. Proves exact ownership on its own fresh read.
+   */
+  releaseOwnedImplementationClaim(issueNumber: number): Promise<TransitionOutcome>;
   /** Strip transient labels, close, verify closed-and-clean. Returns committed result. */
   integrateAndClose(issueNumber: number, branch: string): Promise<TransitionOutcome>;
   comment(issueNumber: number, body: string): Promise<boolean>;
@@ -409,29 +418,24 @@ export async function executeReconciliation(
     return null;
   }
 
-  /** Release (on proven ownership) then add agent:blocked on the proven released state. */
+  /**
+   * Release (on proven ownership) then add agent:blocked — ONE two-step saga
+   * through the adapter's releaseAndBlockOwnedImplementation port. The port's
+   * own validateBefore freshly proves exact ownership before the release
+   * mutation; the add-blocked step re-proves the released intermediate state.
+   */
   async function releaseThenBlock(what: string): Promise<ReconcileResult | null> {
     const owned = await validateStillOwned(what);
     if (owned) return owned;
-    let released: TransitionOutcome;
+    let outcome: TransitionOutcome;
     try {
-      released = await gh.releaseClaim(issue.number);
+      outcome = await gh.releaseAndBlockOwnedImplementation(issue.number);
     } catch (e) {
-      return { reconciled: false, reason: `${what}: failed to release claim for #${issue.number}: ${e}`, factoryError: true, decision, receipts };
+      return { reconciled: false, reason: `${what}: failed to release+block claim for #${issue.number}: ${e}`, factoryError: true, decision, receipts };
     }
-    collectTransitionReceipts(released, receipts);
-    if (released.kind !== "committed") {
-      return { reconciled: false, reason: transitionFailureReason(released, `${what} release claim`, issue.number), factoryError: true, decision, receipts };
-    }
-    let blocked: TransitionOutcome;
-    try {
-      blocked = await gh.addBlockedAfterRelease(issue.number);
-    } catch (e) {
-      return { reconciled: false, reason: `${what}: failed to add blocked for #${issue.number}: ${e}`, factoryError: true, decision, receipts };
-    }
-    collectTransitionReceipts(blocked, receipts);
-    if (blocked.kind !== "committed") {
-      return { reconciled: false, reason: transitionFailureReason(blocked, `${what} add-blocked`, issue.number), factoryError: true, decision, receipts };
+    collectTransitionReceipts(outcome, receipts);
+    if (outcome.kind !== "committed") {
+      return { reconciled: false, reason: transitionFailureReason(outcome, `${what} release+block`, issue.number), factoryError: true, decision, receipts };
     }
     return null;
   }
@@ -469,6 +473,11 @@ export async function executeReconciliation(
       return { reconciled: false, reason: decision.reason, decision, receipts };
     }
     case "no_branch": {
+      // Prove exact ownership BEFORE any worktree/branch/provenance deletion —
+      // never clean up orphaned provenance for a claim that no longer belongs
+      // to us. The later release+block saga revalidates ownership too.
+      const ownedBeforeDelete = await validateStillOwned("no_branch");
+      if (ownedBeforeDelete) return ownedBeforeDelete;
       // Recovery: authoritative absent-branch cleanup for orphaned provenance crash window.
       // deleteBranch proves worktree/local/remote absence before provenance deletion.
       try {
@@ -515,6 +524,10 @@ export async function executeReconciliation(
       return { reconciled: false, reason: decision.reason, decision, receipts };
     }
     case "absent_empty_branch": {
+      // Prove exact ownership BEFORE any worktree/branch/provenance deletion —
+      // never clean up a branch for a claim that no longer belongs to us.
+      const ownedBeforeDelete = await validateStillOwned("absent_empty_branch");
+      if (ownedBeforeDelete) return ownedBeforeDelete;
       let deleted = false;
       try { deleted = await ops.deleteBranch(branch); } catch (e) { return { reconciled: false, reason: `failed to delete branch ${branch}: ${e}`, factoryError: true, decision, receipts }; }
       if (!deleted) {
@@ -526,10 +539,12 @@ export async function executeReconciliation(
         if (afterState === "present") return { reconciled: false, reason: `failed to verify branch deletion for ${branch} — still present`, factoryError: true, decision, receipts };
         if (afterState === "unknown") return { reconciled: false, reason: `branch ${branch} state unknown after delete — fail closed`, factoryError: true, decision, receipts };
       } catch (e) { return { reconciled: false, reason: `failed to verify branch deletion for ${branch}: ${e}`, factoryError: true, decision, receipts }; }
-      // Release claim only after required cleanup succeeds — through the adapter saga.
+      // Release claim only after required cleanup succeeds — through the
+      // adapter's owned-release saga (revalidates exact ownership on its own
+      // fresh read before the release mutation).
       let releaseOutcome: TransitionOutcome;
       try {
-        releaseOutcome = await gh.releaseClaim(issue.number);
+        releaseOutcome = await gh.releaseOwnedImplementationClaim(issue.number);
       } catch (e) { return { reconciled: false, reason: `failed to release claim for #${issue.number}: ${e}`, factoryError: true, decision, receipts }; }
       collectTransitionReceipts(releaseOutcome, receipts);
       if (releaseOutcome.kind !== "committed") {

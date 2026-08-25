@@ -9,7 +9,7 @@ import {
   AGENT_BLOCKED,
   type IssueInput,
 } from "./tracker-policy.mts";
-import { createTrackerAdapter, makeIssueLabelMutationPort, type ReceiptSink } from "./tracker-adapter.mts";
+import { createTrackerAdapter, type ReceiptSink } from "./tracker-adapter.mts";
 import { withTemporaryIssueFixtures, withAtomicJsonReceipt } from "./resource-scopes.mts";
 import { createGhTransport, type GhTransport } from "./gh-transport.mts";
 import * as fs2 from "node:fs";
@@ -125,7 +125,7 @@ export function createLiveCanaryOps(opts: {
   /** Receipt sink override for tests. Production defaults to a durable atomic file sink. */
   receiptSink?: ReceiptSink;
 }): CanaryOps {
-  const { owner, repo, runGh: runGhFn, claimantLogin } = opts;
+  const { runGh: runGhFn, claimantLogin } = opts;
   const fetchReal = opts.fetchIssueRealFn ?? ((id:number)=>fetchIssueReal(id, runGhFn));
   const canaryRepoRoot = opts.repoRoot ?? CANARY_REPO_ROOT;
   // Real git runner by default — the fresh fixture's local branch absence is
@@ -152,30 +152,22 @@ export function createLiveCanaryOps(opts: {
     runGit,
     repoRoot: canaryRepoRoot,
   });
-  // Verified label-mutation port over the same transport — used by fixture
-  // cleanup so every tracker mutation is saga-verified and receipted.
-  const applyLabelMutation = makeIssueLabelMutationPort(canaryTransport, receiptSink);
   return {
     createIssue: async (title, body, labels) => {
-      const args: string[] = ["api", "--method", "POST", `repos/${owner}/${repo}/issues`, "-f", `title=${title}`, "-f", `body=${body}`];
-      for (const l of labels) args.push("-f", `labels[]=${l}`);
-      args.push("--jq", ".number");
-      const out = await runGhFn(args);
-      const n = parseInt(out.trim(), 10);
-      if (isNaN(n)) throw new Error("failed to create issue via gh api POST: "+out+" args="+args.join(" "));
-      return n;
+      // Adapter-owned canary fixture creation — never a raw gh POST.
+      return adapter.createCanaryFixture(title, body, labels);
     },
     fetchIssue: fetchReal,
-    closeIssue: async (id) => { await runGhFn(["issue", "close", String(id), "--comment", "Canary fixture — cleaning up"]); },
+    closeIssue: async (id) => {
+      // Adapter-owned canary fixture cleanup — saga-verified close with typed
+      // receipt. Never a raw gh close.
+      await adapter.cleanupCanaryFixture(id);
+    },
     cleanupIssue: async (id) => {
-      // Fixture cleanup tracker mutations flow through the SAME adapter as
-      // claims/reconciliation — one authority, typed receipts. Labels are
-      // removed while the fixture is still open (cleanup precedes close), so
-      // this uses the adapter's verified label-mutation port rather than the
-      // closed-issue-only cleanup path.
-      const result = await applyLabelMutation(id, [], [AGENT_IN_PROGRESS, AGENT_IMPLEMENT, AGENT_BLOCKED]);
-      if (!result.committed) throw new Error(`fixture #${id} label cleanup not committed: ${result.reason ?? "unknown"}`);
-      try { await runGhFn(["issue", "edit", String(id), "--remove-assignee", claimantLogin]); } catch {}
+      // Adapter-owned canary fixture cleanup — saga-verified label removal,
+      // claimant assignee removal, and close. Never raw gh commands, never
+      // swallowed errors.
+      await adapter.cleanupCanaryFixture(id);
     },
     claimImplementation: async (issue) => {
       // Route through the ONE production tracker adapter — the canary must

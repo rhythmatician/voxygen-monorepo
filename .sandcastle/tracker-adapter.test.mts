@@ -163,7 +163,7 @@ describe("tracker-adapter — verified saga", () => {
     expect(gh.editCalls.length).toBe(0);
   });
 
-  it("mutation failure with defined compensation rolls back to before-state (compensated)", async () => {
+  it("mutation failure with defined compensation → indeterminate when post-mutation state unavailable (command-aware)", async () => {
     const { issue, input } = implIssue(504);
     const issues = new Map([[504, issue]]);
     // Fail the claim edit itself
@@ -173,11 +173,14 @@ describe("tracker-adapter — verified saga", () => {
 
     const result = await tracker.claimImplementation(input);
 
-    expect(result.kind).toBe("compensated");
-    if (result.kind !== "compensated") return;
-    // Canonical ops report MUTATE_FAILED with compensated=true — mapped to compensated.
-    expect(result.receipt.code).toBe("MUTATE_FAILED");
-    // Rollback proved by fresh read: no claim residue
+    // The claim edit threw, so verifyClaim never ran → the ACTUAL post-mutation
+    // state is unavailable. Command-aware compensation cannot prove whether
+    // agent:implement was consumed → indeterminate, never "compensated".
+    expect(result.kind).toBe("indeterminate");
+    if (result.kind !== "indeterminate") return;
+    expect(result.factoryError).toBe(true);
+    expect(result.receipt.code).toBe("COMPENSATION_STATE_UNAVAILABLE");
+    // Compensation still attempted on the fresh read: no claim residue.
     expect(issue.labels.has("agent:in-progress")).toBe(false);
     expect(issue.assignees.size).toBe(0);
   });
@@ -386,6 +389,61 @@ describe("tracker-adapter — production guardrails", () => {
     // Post-state remains claimed — exactly the hazard this guardrail proves.
     expect(issue.labels.has("agent:in-progress")).toBe(true);
     expect(issue.assignees.has("test-bot")).toBe(true);
+  });
+
+  it("GUARDRAIL: consumed-then-reintroduced command → compensation indeterminate (command-aware)", async () => {
+    // Scenario: the claim edit CONSUMES agent:implement (removes it) and adds
+    // in-progress, but the assignee add silently fails → postcondition
+    // mismatch → compensation runs. The post-mutation state shows implement
+    // ABSENT (consumed). Then, before compensation, an external actor
+    // REINTRODUCES agent:implement. The command-aware compensation must detect
+    // the reintroduction as "unexpectedly restored" and report indeterminate —
+    // NOT "compensated".
+    const issue: FakeIssue = {
+      number: 608,
+      title: "t",
+      body: TRACER_BODY,
+      state: "open",
+      labels: new Set(["ready-for-agent", "agent:implement"]),
+      assignees: new Set(),
+    };
+    const gh = makeFakeGh({ issues: new Map([[608, issue]]) });
+    const origRun = gh.run.bind(gh);
+    let claimEditApplied = false;
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "issue" && args[1] === "edit") {
+        const isClaimEdit = args.includes("--add-label");
+        if (isClaimEdit) {
+          // Claim edit: consume implement + add in-progress, but DROP the
+          // --add-assignee so the postcondition fails (assignee absent).
+          const patched = args.filter((a, i) => !(a === "--add-assignee" && args[i + 1] === "test-bot"));
+          const out = await origRun(patched);
+          claimEditApplied = true;
+          return out;
+        }
+        // Compensation edit: BEFORE it runs, an external actor reintroduces
+        // agent:implement (the command was consumed, then restored).
+        if (claimEditApplied) {
+          issue.labels.add("agent:implement");
+        }
+        return origRun(args);
+      }
+      return origRun(args);
+    };
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const input608: IssueInput = { number: 608, title: "t", state: "open", labels: ["ready-for-agent", "agent:implement"], assignees: [], body: TRACER_BODY };
+    const result = await tracker.claimImplementation(input608);
+
+    // The claim edit consumed implement (post-mutation state had it absent),
+    // then compensation observed implement restored → indeterminate.
+    expect(result.kind).toBe("indeterminate");
+    if (result.kind !== "indeterminate") return;
+    expect(result.factoryError).toBe(true);
+    expect(result.receipt.code).toBe("COMPENSATION_VERIFY_FAILED");
+    // The reintroduced implement is the reason — never reported as compensated.
+    expect(result.receipt.reason).toContain("unexpectedly restored");
   });
 
   it("GUARDRAIL: invalid Research input → rejected with zero mutation", async () => {
@@ -782,9 +840,11 @@ describe("tracker-adapter — phase-aware second-step preconditions (round 4)", 
       hasCommitsAhead: async () => "empty" as const,
       deleteBranch: async () => true,
       github: {
-        releaseClaim: async () => ({ kind: "indeterminate" as const, reason: "should not be reached — ownership gate fires first" }),
-        addBlockedAfterRelease: async () => {
-          throw new Error("blocked must not be added after observed drift");
+        releaseAndBlockOwnedImplementation: async () => {
+          throw new Error("release+block must not run after observed drift");
+        },
+        releaseOwnedImplementationClaim: async () => {
+          throw new Error("owned release must not run after observed drift");
         },
         integrateAndClose: async () => ({ kind: "indeterminate" as const }),
         comment: async () => true,
@@ -961,6 +1021,681 @@ describe("tracker-adapter — one verified closed-state cleanup (round 4)", () =
 
     expect(outcome.cleaned).toBe(true);
     expect(outcome.removed).toEqual([]);
+    expect(gh.editCalls.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PR #217 round-5 — terminal committed snapshot revalidation. The final fetch
+// in runSaga is a NEW read that must be re-verified against the last step's
+// postcondition before it may be persisted as the committed `after`. A drift
+// between the in-loop verified read and the terminal read is indeterminate.
+// ---------------------------------------------------------------------------
+
+describe("tracker-adapter — terminal committed snapshot revalidation (round 5)", () => {
+  it("REGRESSION: transitionToBlocked terminal drift => indeterminate, not committed", async () => {
+    const issue: FakeIssue = {
+      number: 901,
+      title: "t",
+      body: TRACER_BODY,
+      state: "open",
+      labels: new Set(["ready-for-agent", "agent:in-progress"]),
+      assignees: new Set(["test-bot"]),
+    };
+    const gh = makeFakeGh({ issues: new Map([[901, issue]]) });
+    // Drift on the terminal fetch: agent:in-progress reappears after the
+    // in-loop verifyAfter passed. The committed snapshot must NOT be persisted.
+    const origRun = gh.run.bind(gh);
+    let viewCount = 0;
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "issue" && args[1] === "view") {
+        viewCount++;
+        const raw = await origRun(args);
+        // transitionToBlocked views: 1=release validate, 2=release verify,
+        // 3=add-blocked validate, 4=add-blocked verify, 5=terminal.
+        if (viewCount === 5) {
+          const parsed = JSON.parse(raw);
+          parsed.labels.push({ name: "agent:in-progress" });
+          return JSON.stringify(parsed);
+        }
+        return raw;
+      }
+      return origRun(args);
+    };
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.transitionToBlocked(901);
+
+    expect(result.kind).toBe("indeterminate");
+    if (result.kind !== "indeterminate") return;
+    expect(result.factoryError).toBe(true);
+    expect(result.receipt.code).toBe("TERMINAL_DRIFT");
+    // No committed receipt was persisted.
+    expect(sink.receipts.some((r) => r.kind === "committed")).toBe(false);
+  });
+
+  it("REGRESSION: cleanupClosedStaleLabels terminal drift => indeterminate, not cleaned", async () => {
+    const issue: FakeIssue = {
+      number: 902,
+      title: "t",
+      body: TRACER_BODY,
+      state: "closed",
+      labels: new Set(["ready-for-agent", "agent:in-progress"]),
+      assignees: new Set(),
+    };
+    const gh = makeFakeGh({ issues: new Map([[902, issue]]) });
+    // Drift on the terminal fetch: agent:in-progress reappears on the closed
+    // issue after the in-loop verifyAfter passed.
+    const origRun = gh.run.bind(gh);
+    let viewCount = 0;
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "issue" && args[1] === "view") {
+        viewCount++;
+        const raw = await origRun(args);
+        // cleanupClosedStaleLabels views: 1=validateBefore, 2=verifyAfter, 3=terminal.
+        if (viewCount === 3) {
+          const parsed = JSON.parse(raw);
+          parsed.labels.push({ name: "agent:in-progress" });
+          return JSON.stringify(parsed);
+        }
+        return raw;
+      }
+      return origRun(args);
+    };
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const outcome = await tracker.cleanupClosedIssueStaleLabels({
+      number: 902, title: "t", state: "closed",
+      labels: ["ready-for-agent", "agent:in-progress"],
+      assignees: [], body: undefined,
+    });
+
+    expect(outcome.cleaned).toBe(false);
+    expect(sink.receipts.some((r) => r.kind === "committed")).toBe(false);
+  });
+
+  it("REGRESSION: finalizeIntegrated terminal drift => indeterminate, not committed", async () => {
+    const issue: FakeIssue = {
+      number: 903,
+      title: "t",
+      body: TRACER_BODY,
+      state: "open",
+      labels: new Set(["ready-for-agent", "agent:in-progress"]),
+      assignees: new Set(["test-bot"]),
+    };
+    const gh = makeFakeGh({ issues: new Map([[903, issue]]) });
+    // Drift on the terminal fetch: the issue is reopened after the in-loop
+    // verifyAfter proved it closed.
+    const origRun = gh.run.bind(gh);
+    let viewCount = 0;
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "issue" && args[1] === "view") {
+        viewCount++;
+        const raw = await origRun(args);
+        // finalizeIntegrated views: 1=strip validate, 2=strip verify,
+        // 3=close validate, 4=close verify, 5=terminal.
+        if (viewCount === 5) {
+          const parsed = JSON.parse(raw);
+          parsed.state = "open";
+          return JSON.stringify(parsed);
+        }
+        return raw;
+      }
+      return origRun(args);
+    };
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.finalizeIntegrated(903, "sandcastle/issue-903");
+
+    expect(result.kind).toBe("indeterminate");
+    if (result.kind !== "indeterminate") return;
+    expect(result.factoryError).toBe(true);
+    expect(result.receipt.code).toBe("TERMINAL_DRIFT");
+    expect(sink.receipts.some((r) => r.kind === "committed")).toBe(false);
+  });
+
+  it("REGRESSION: migrationLabelMutation terminal drift => not committed", async () => {
+    const { makeIssueLabelMutationPort } = await import("./tracker-adapter.mts");
+    const issue: FakeIssue = { number: 904, title: "task", body: "body", state: "open", labels: new Set(["wayfinder:task"]), assignees: new Set() };
+    const gh = makeFakeGh({ issues: new Map([[904, issue]]) });
+    // Drift on the terminal fetch: ready-for-human disappears after the
+    // in-loop verifyAfter proved it present.
+    const origRun = gh.run.bind(gh);
+    let viewCount = 0;
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "issue" && args[1] === "view") {
+        viewCount++;
+        const raw = await origRun(args);
+        // migrationLabelMutation views: 1=validateBefore, 2=verifyAfter, 3=terminal.
+        if (viewCount === 3) {
+          const parsed = JSON.parse(raw);
+          parsed.labels = parsed.labels.filter((l: any) => l.name !== "ready-for-human");
+          return JSON.stringify(parsed);
+        }
+        return raw;
+      }
+      return origRun(args);
+    };
+    const sink = makeMemoryReceiptSink();
+    const mutate = makeIssueLabelMutationPort(gh, sink);
+
+    const result = await mutate(904, ["ready-for-human"], []);
+
+    expect(result.committed).toBe(false);
+    expect(sink.receipts.some((r) => r.kind === "committed")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PR #217 round-5 — exact ownership inside the release mutation. The release
+// mutation's own validateBefore freshly proves the exact claimant, profile,
+// readiness, and command state before mutation. Reconciliation release+block
+// is ONE two-step saga.
+// ---------------------------------------------------------------------------
+
+describe("tracker-adapter — exact ownership inside release mutation (round 5)", () => {
+  function ownedImpl(n: number): FakeIssue {
+    return {
+      number: n,
+      title: "t",
+      body: TRACER_BODY,
+      state: "open",
+      labels: new Set(["ready-for-agent", "agent:in-progress"]),
+      assignees: new Set(["test-bot"]),
+    };
+  }
+
+  it("releaseOwnedImplementationClaim commits on exact ownership", async () => {
+    const issue = ownedImpl(911);
+    const gh = makeFakeGh({ issues: new Map([[911, issue]]) });
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.releaseOwnedImplementationClaim(911);
+
+    expect(result.kind).toBe("committed");
+    expect(issue.labels.has("agent:in-progress")).toBe(false);
+    expect(issue.assignees.has("test-bot")).toBe(false);
+    expect(issue.labels.has("ready-for-agent")).toBe(true);
+    expect(issue.labels.has("agent:implement")).toBe(false);
+  });
+
+  it("releaseOwnedImplementationClaim rejects unrelated assignee with zero mutation", async () => {
+    const issue = ownedImpl(912);
+    issue.assignees.clear();
+    issue.assignees.add("someone-else");
+    const gh = makeFakeGh({ issues: new Map([[912, issue]]) });
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.releaseOwnedImplementationClaim(912);
+
+    expect(result.kind).toBe("rejected");
+    expect(gh.editCalls.length).toBe(0);
+    expect(issue.labels.has("agent:in-progress")).toBe(true);
+    expect(issue.assignees.has("someone-else")).toBe(true);
+  });
+
+  it("releaseOwnedImplementationClaim rejects when implement not consumed (both present)", async () => {
+    const issue = ownedImpl(913);
+    issue.labels.add("agent:implement");
+    const gh = makeFakeGh({ issues: new Map([[913, issue]]) });
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.releaseOwnedImplementationClaim(913);
+
+    expect(result.kind).toBe("rejected");
+    expect(gh.editCalls.length).toBe(0);
+    expect(issue.labels.has("agent:implement")).toBe(true);
+  });
+
+  it("releaseOwnedResearchClaim commits on exact research ownership", async () => {
+    const issue: FakeIssue = {
+      number: 914,
+      title: "t",
+      body: RESEARCH_BODY,
+      state: "open",
+      labels: new Set(["wayfinder:research", "agent:in-progress"]),
+      assignees: new Set(["test-bot"]),
+    };
+    const gh = makeFakeGh({ issues: new Map([[914, issue]]) });
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.releaseOwnedResearchClaim(914);
+
+    expect(result.kind).toBe("committed");
+    expect(issue.labels.has("agent:in-progress")).toBe(false);
+    expect(issue.assignees.has("test-bot")).toBe(false);
+    expect(issue.labels.has("wayfinder:research")).toBe(true);
+  });
+
+  it("releaseOwnedResearchClaim rejects unrelated assignee with zero mutation", async () => {
+    const issue: FakeIssue = {
+      number: 915,
+      title: "t",
+      body: RESEARCH_BODY,
+      state: "open",
+      labels: new Set(["wayfinder:research", "agent:in-progress"]),
+      assignees: new Set(["someone-else"]),
+    };
+    const gh = makeFakeGh({ issues: new Map([[915, issue]]) });
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.releaseOwnedResearchClaim(915);
+
+    expect(result.kind).toBe("rejected");
+    expect(gh.editCalls.length).toBe(0);
+    expect(issue.labels.has("agent:in-progress")).toBe(true);
+  });
+
+  it("compensateBothPresentClaim removes in-progress + claimant but RETAINS implement", async () => {
+    const issue = ownedImpl(916);
+    issue.labels.add("agent:implement");
+    const gh = makeFakeGh({ issues: new Map([[916, issue]]) });
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.compensateBothPresentClaim(916);
+
+    expect(result.kind).toBe("committed");
+    expect(issue.labels.has("agent:in-progress")).toBe(false);
+    expect(issue.assignees.has("test-bot")).toBe(false);
+    // The command was NOT consumed — agent:implement must be retained.
+    expect(issue.labels.has("agent:implement")).toBe(true);
+  });
+
+  it("compensateBothPresentClaim rejects when implement absent (not a contradiction)", async () => {
+    const issue = ownedImpl(917);
+    const gh = makeFakeGh({ issues: new Map([[917, issue]]) });
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.compensateBothPresentClaim(917);
+
+    expect(result.kind).toBe("rejected");
+    expect(gh.editCalls.length).toBe(0);
+    expect(issue.labels.has("agent:in-progress")).toBe(true);
+  });
+
+  it("releaseAndBlockOwnedImplementation is ONE two-step saga: release then block", async () => {
+    const issue = ownedImpl(918);
+    const gh = makeFakeGh({ issues: new Map([[918, issue]]) });
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.releaseAndBlockOwnedImplementation(918);
+
+    expect(result.kind).toBe("committed");
+    expect(issue.labels.has("agent:in-progress")).toBe(false);
+    expect(issue.assignees.has("test-bot")).toBe(false);
+    expect(issue.labels.has("agent:blocked")).toBe(true);
+    expect(issue.labels.has("ready-for-agent")).toBe(true);
+    // ONE typed receipt for the whole two-step saga.
+    expect(sink.receipts.length).toBe(1);
+    expect(sink.receipts[0].transition).toBe("releaseAndBlockOwnedImplementation");
+    expect(sink.receipts[0].kind).toBe("committed");
+  });
+
+  it("releaseAndBlockOwnedImplementation rejects unrelated assignee with zero mutation", async () => {
+    const issue = ownedImpl(919);
+    issue.assignees.clear();
+    issue.assignees.add("someone-else");
+    const gh = makeFakeGh({ issues: new Map([[919, issue]]) });
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.releaseAndBlockOwnedImplementation(919);
+
+    expect(result.kind).toBe("rejected");
+    expect(gh.editCalls.length).toBe(0);
+    expect(issue.labels.has("agent:blocked")).toBe(false);
+    expect(issue.labels.has("agent:in-progress")).toBe(true);
+  });
+
+  it("releaseAndBlockOwnedImplementation drift between steps => indeterminate, no blocked", async () => {
+    const issue = ownedImpl(920);
+    const gh = makeFakeGh({ issues: new Map([[920, issue]]) });
+    // Drift: after the release step commits, another actor reclaims before the
+    // add-blocked step's own fresh read.
+    const origRun = gh.run.bind(gh);
+    let viewCount = 0;
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "issue" && args[1] === "view") {
+        viewCount++;
+        const raw = await origRun(args);
+        // releaseAndBlockOwnedImplementation views: 1=release validate,
+        // 2=release verify, 3=add-blocked validate, 4=add-blocked verify, 5=terminal.
+        if (viewCount === 3) {
+          const parsed = JSON.parse(raw);
+          parsed.labels.push({ name: "agent:in-progress" });
+          parsed.assignees.push({ login: "test-bot" });
+          return JSON.stringify(parsed);
+        }
+        return raw;
+      }
+      return origRun(args);
+    };
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.releaseAndBlockOwnedImplementation(920);
+
+    expect(result.kind).toBe("indeterminate");
+    if (result.kind !== "indeterminate") return;
+    expect(result.factoryError).toBe(true);
+    expect(result.receipt.code).toBe("PRECONDITION_DRIFT");
+    const blockedEdit = gh.editCalls.find((c) => c.includes("--add-label") && c.includes("agent:blocked"));
+    expect(blockedEdit).toBeUndefined();
+    expect(issue.labels.has("agent:blocked")).toBe(false);
+  });
+
+  it("REGRESSION: drift between executor read and adapter saga read => zero mutation", async () => {
+    // The executor's validateStillOwned read passes (claimant present), but
+    // the adapter saga's OWN fresh read observes the drift (claimant removed).
+    // The saga's validateBefore must reject with zero mutation.
+    const issue = ownedImpl(921);
+    const gh = makeFakeGh({ issues: new Map([[921, issue]]) });
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    // Drive the reconciliation executor with the REAL adapter saga port. The
+    // executor's validateStillOwned reads ops.fetchIssue (claimant present),
+    // then calls the adapter's releaseAndBlockOwnedImplementation which does
+    // its OWN fresh read. Inject drift so the saga's read sees no claimant.
+    const { reconcileStaleImplementation } = await import("./tracker-operations.mts");
+    const staleInput: IssueInput = { number: 921, title: "t", state: "open", labels: ["ready-for-agent", "agent:in-progress"], assignees: ["test-bot"], body: TRACER_BODY, blockedByCount: 0 };
+    let executorReads = 0;
+    const res = await reconcileStaleImplementation(staleInput, "sandcastle/issue-921", {
+      claimantLogin: "test-bot",
+      // Executor ownership read (first) sees the claimant; the saga's own
+      // fresh read (subsequent) sees the claimant removed.
+      fetchIssue: async () => {
+        executorReads++;
+        if (executorReads === 1) return { ...staleInput };
+        return { ...staleInput, assignees: [] };
+      },
+      getBatchPrNumber: async () => ({ prNumber: null, state: "absent" as const }),
+      getPrState: async () => ({ state: "CLOSED", mergedAt: null, found: false }),
+      checkBranchExists: async () => "absent" as const,
+      checkProvenanceValid: async () => ({ state: "valid" as const, reason: "valid" }) as any,
+      hasCommitsAhead: async () => "empty" as const,
+      deleteBranch: async () => true,
+      github: {
+        releaseAndBlockOwnedImplementation: (n) => tracker.releaseAndBlockOwnedImplementation(n),
+        releaseOwnedImplementationClaim: (n) => tracker.releaseOwnedImplementationClaim(n),
+        integrateAndClose: (n, b) => tracker.finalizeIntegrated(n, b),
+        comment: (n, body) => tracker.comment(n, body),
+      },
+    });
+
+    // The executor's validateStillOwned passes, but the saga's own read
+    // rejects — the release+block saga's validateBefore fires with zero
+    // mutation. The saga's validateBefore rejection is a clean rejection
+    // (first step), so no factoryError.
+    expect(res.factoryError ?? false).toBe(false);
+    expect(issue.labels.has("agent:in-progress")).toBe(true);
+    expect(issue.assignees.has("test-bot")).toBe(true);
+    expect(issue.labels.has("agent:blocked")).toBe(false);
+    expect(gh.editCalls.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PR #217 round-5 — complete closed-claim cleanup. The cleanup fetches the
+// closed issue's assignees, removes and verifies the AUTHENTICATED claimant
+// while preserving unrelated assignees, and proves the final invariant:
+// closed + claimant absent + all three machine labels absent. Applied in the
+// no-label fast path too.
+// ---------------------------------------------------------------------------
+
+describe("tracker-adapter — complete closed-claim cleanup (round 5)", () => {
+  it("removes claimant assignee while preserving unrelated assignees on a closed issue", async () => {
+    const issue: FakeIssue = {
+      number: 1001,
+      title: "t",
+      body: TRACER_BODY,
+      state: "closed",
+      labels: new Set(["ready-for-agent", "agent:in-progress", "agent:implement"]),
+      assignees: new Set(["test-bot", "human-reviewer"]),
+    };
+    const gh = makeFakeGh({ issues: new Map([[1001, issue]]) });
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const outcome = await tracker.cleanupClosedIssueStaleLabels({
+      number: 1001, title: "t", state: "closed",
+      labels: ["ready-for-agent", "agent:in-progress", "agent:implement"],
+      assignees: ["test-bot", "human-reviewer"], body: undefined,
+    });
+
+    expect(outcome.cleaned).toBe(true);
+    expect(outcome.removed.sort()).toEqual(["agent:implement", "agent:in-progress", "test-bot"]);
+    // Final invariant: closed + claimant absent + all three machine labels absent.
+    expect(issue.state).toBe("closed");
+    expect(issue.assignees.has("test-bot")).toBe(false);
+    expect(issue.assignees.has("human-reviewer")).toBe(true); // unrelated preserved
+    expect(issue.labels.has("agent:in-progress")).toBe(false);
+    expect(issue.labels.has("agent:implement")).toBe(false);
+    expect(issue.labels.has("agent:blocked")).toBe(false);
+    // ONE verified two-step saga, one typed receipt.
+    expect(sink.receipts.length).toBe(1);
+    expect(sink.receipts[0].transition).toBe("cleanupClosedStaleLabels");
+    expect(sink.receipts[0].kind).toBe("committed");
+  });
+
+  it("no-label fast path also removes the claimant assignee", async () => {
+    const issue: FakeIssue = {
+      number: 1002,
+      title: "t",
+      body: TRACER_BODY,
+      state: "closed",
+      labels: new Set(["ready-for-agent"]),
+      assignees: new Set(["test-bot"]),
+    };
+    const gh = makeFakeGh({ issues: new Map([[1002, issue]]) });
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const outcome = await tracker.cleanupClosedIssueStaleLabels({
+      number: 1002, title: "t", state: "closed",
+      labels: ["ready-for-agent"],
+      assignees: ["test-bot"], body: undefined,
+    });
+
+    expect(outcome.cleaned).toBe(true);
+    expect(outcome.removed).toEqual(["test-bot"]);
+    expect(issue.assignees.has("test-bot")).toBe(false);
+    expect(issue.labels.has("agent:in-progress")).toBe(false);
+    expect(issue.labels.has("agent:implement")).toBe(false);
+    expect(issue.labels.has("agent:blocked")).toBe(false);
+    expect(sink.receipts[0].kind).toBe("committed");
+  });
+
+  it("claimant removal silently dropped => indeterminate, not cleaned", async () => {
+    const issue: FakeIssue = {
+      number: 1003,
+      title: "t",
+      body: TRACER_BODY,
+      state: "closed",
+      labels: new Set(["ready-for-agent", "agent:in-progress"]),
+      assignees: new Set(["test-bot"]),
+    };
+    const gh = makeFakeGh({ issues: new Map([[1003, issue]]) });
+    // Sabotage: the assignee-removal edit silently drops --remove-assignee.
+    const origRun = gh.run.bind(gh);
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "issue" && args[1] === "edit") {
+        const patched = args.filter((a, i) => !(a === "--remove-assignee" && args[i + 1] === "test-bot"));
+        if (patched.length === args.length) return origRun(args);
+        return origRun(patched);
+      }
+      return origRun(args);
+    };
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const outcome = await tracker.cleanupClosedIssueStaleLabels({
+      number: 1003, title: "t", state: "closed",
+      labels: ["ready-for-agent", "agent:in-progress"],
+      assignees: ["test-bot"], body: undefined,
+    });
+
+    // The label step committed, but the assignee step's verifyAfter catches
+    // the still-assigned claimant → indeterminate, not cleaned.
+    expect(outcome.cleaned).toBe(false);
+    expect(issue.assignees.has("test-bot")).toBe(true);
+    expect(sink.receipts.some((r) => r.kind === "committed")).toBe(false);
+  });
+
+  it("claimant not assigned on closed issue => no assignee mutation, labels still cleaned", async () => {
+    const issue: FakeIssue = {
+      number: 1004,
+      title: "t",
+      body: TRACER_BODY,
+      state: "closed",
+      labels: new Set(["ready-for-agent", "agent:in-progress"]),
+      assignees: new Set(["human-reviewer"]), // claimant NOT assigned
+    };
+    const gh = makeFakeGh({ issues: new Map([[1004, issue]]) });
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const outcome = await tracker.cleanupClosedIssueStaleLabels({
+      number: 1004, title: "t", state: "closed",
+      labels: ["ready-for-agent", "agent:in-progress"],
+      assignees: ["human-reviewer"], body: undefined,
+    });
+
+    expect(outcome.cleaned).toBe(true);
+    expect(outcome.removed).toEqual(["agent:in-progress"]);
+    // Unrelated assignee preserved; no assignee edit attempted.
+    expect(issue.assignees.has("human-reviewer")).toBe(true);
+    expect(issue.labels.has("agent:in-progress")).toBe(false);
+    const assigneeEdits = gh.editCalls.filter((c) => c.includes("--remove-assignee"));
+    expect(assigneeEdits.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PR #217 round-5 — reviewed-state-bound migration mutations. The label
+// mutation port accepts the expected reviewed snapshot and validates
+// state/labels/assignees/blocked_by/body hash on its own fresh pre-mutation
+// read before any write. Drift between review and apply is evidence loss.
+// ---------------------------------------------------------------------------
+
+describe("tracker-adapter — reviewed-state-bound migration mutation (round 5)", () => {
+  function reviewedSnapshot(n: number, overrides: Partial<{ state: string; labels: string[]; assignees: string[]; blocked_by: number | undefined; bodySha256: string }> = {}) {
+    return {
+      number: n,
+      state: "open",
+      labels: ["wayfinder:task"],
+      assignees: [],
+      blocked_by: 0,
+      bodySha256: "abc123",
+      ...overrides,
+    };
+  }
+
+  it("commits when the fresh pre-mutation read matches the reviewed snapshot", async () => {
+    const { makeIssueLabelMutationPort } = await import("./tracker-adapter.mts");
+    const issue: FakeIssue = { number: 1101, title: "task", body: "body", state: "open", labels: new Set(["wayfinder:task"]), assignees: new Set() };
+    const gh = makeFakeGh({ issues: new Map([[1101, issue]]) });
+    const sink = makeMemoryReceiptSink();
+    const mutate = makeIssueLabelMutationPort(gh, sink);
+
+    // Body hash must match the live body "body"., { bodySha256: "230d8358dc8e8890b4c58deeb62912ee2f20357ae92a5cc861b98e68fe31acb5" }
+    const result = await mutate(1101, ["ready-for-human"], [], reviewedSnapshot(1101, { bodySha256: "230d8358dc8e8890b4c58deeb62912ee2f20357ae92a5cc861b98e68fe31acb5" }));
+
+    expect(result.committed).toBe(true);
+    expect(issue.labels.has("ready-for-human")).toBe(true);
+    expect(sink.receipts[0].kind).toBe("committed");
+  });
+
+  it("rejects with zero mutation when labels drifted from the reviewed snapshot", async () => {
+    const { makeIssueLabelMutationPort } = await import("./tracker-adapter.mts");
+    const issue: FakeIssue = { number: 1102, title: "task", body: "body", state: "open", labels: new Set(["wayfinder:task", "ready-for-human"]), assignees: new Set() };
+    const gh = makeFakeGh({ issues: new Map([[1102, issue]]) });
+    const sink = makeMemoryReceiptSink();
+    const mutate = makeIssueLabelMutationPort(gh, sink);
+
+    // Reviewed snapshot says only wayfinder:task; live has ready-for-human too.
+    const result = await mutate(1102, ["ready-for-human"], [], reviewedSnapshot(1102));
+
+    expect(result.committed).toBe(false);
+    expect(result.reason).toContain("labels drifted");
+    expect(gh.editCalls.length).toBe(0); // zero mutation
+  });
+
+  it("rejects with zero mutation when assignees drifted from the reviewed snapshot", async () => {
+    const { makeIssueLabelMutationPort } = await import("./tracker-adapter.mts");
+    const issue: FakeIssue = { number: 1103, title: "task", body: "body", state: "open", labels: new Set(["wayfinder:task"]), assignees: new Set(["someone-else"]) };
+    const gh = makeFakeGh({ issues: new Map([[1103, issue]]) });
+    const sink = makeMemoryReceiptSink();
+    const mutate = makeIssueLabelMutationPort(gh, sink);
+
+    const result = await mutate(1103, ["ready-for-human"], [], reviewedSnapshot(1103));
+
+    expect(result.committed).toBe(false);
+    expect(result.reason).toContain("assignees drifted");
+    expect(gh.editCalls.length).toBe(0);
+  });
+
+  it("rejects with zero mutation when blocked_by drifted from the reviewed snapshot", async () => {
+    const { makeIssueLabelMutationPort } = await import("./tracker-adapter.mts");
+    const issue: FakeIssue = { number: 1104, title: "task", body: "body", state: "open", labels: new Set(["wayfinder:task"]), assignees: new Set() };
+    const gh = makeFakeGh({ issues: new Map([[1104, issue]]) });
+    // Override the blocked_by lookup to report 2 (live) while the reviewed
+    // snapshot says 0.
+    const origRun = gh.run.bind(gh);
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "api" && args[1].includes("issues/") && args.includes("--jq")) return "2";
+      return origRun(args);
+    };
+    const sink = makeMemoryReceiptSink();
+    const mutate = makeIssueLabelMutationPort(gh, sink);
+
+    // Reviewed blocked_by=0; live blocked_by=2. Body hash matches so the
+    // blocked_by check is the one that fires.
+    const result = await mutate(1104, ["ready-for-human"], [], reviewedSnapshot(1104, { blocked_by: 0, bodySha256: "230d8358dc8e8890b4c58deeb62912ee2f20357ae92a5cc861b98e68fe31acb5" }));
+
+    expect(result.committed).toBe(false);
+    expect(result.reason).toContain("blocked_by drifted");
+    expect(gh.editCalls.length).toBe(0);
+  });
+
+  it("rejects with zero mutation when body hash drifted from the reviewed snapshot", async () => {
+    const { makeIssueLabelMutationPort } = await import("./tracker-adapter.mts");
+    const issue: FakeIssue = { number: 1105, title: "task", body: "body", state: "open", labels: new Set(["wayfinder:task"]), assignees: new Set() };
+    const gh = makeFakeGh({ issues: new Map([[1105, issue]]) });
+    const sink = makeMemoryReceiptSink();
+    const mutate = makeIssueLabelMutationPort(gh, sink);
+
+    // Reviewed bodySha256=abc123; live body hashes to something else.
+    const result = await mutate(1105, ["ready-for-human"], [], reviewedSnapshot(1105, { bodySha256: "abc123" }));
+
+    expect(result.committed).toBe(false);
+    expect(result.reason).toContain("body hash drifted");
+    expect(gh.editCalls.length).toBe(0);
+  });
+
+  it("rejects with zero mutation when state drifted from the reviewed snapshot", async () => {
+    const { makeIssueLabelMutationPort } = await import("./tracker-adapter.mts");
+    const issue: FakeIssue = { number: 1106, title: "task", body: "body", state: "closed", labels: new Set(["wayfinder:task"]), assignees: new Set() };
+    const gh = makeFakeGh({ issues: new Map([[1106, issue]]) });
+    const sink = makeMemoryReceiptSink();
+    const mutate = makeIssueLabelMutationPort(gh, sink);
+
+    // Reviewed state=open; live state=closed.
+    const result = await mutate(1106, ["ready-for-human"], [], reviewedSnapshot(1106));
+
+    expect(result.committed).toBe(false);
+    expect(result.reason).toContain("state drifted");
     expect(gh.editCalls.length).toBe(0);
   });
 });

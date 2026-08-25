@@ -4,7 +4,7 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { createGhTransport, type GhTransport } from "./gh-transport.mts";
 import { withAtomicJsonReceipt } from "./resource-scopes.mts";
-import { createTrackerAdapter, makeIssueLabelMutationPort, type ReceiptSink, type TrackerAdapter } from "./tracker-adapter.mts";
+import { createTrackerAdapter, makeIssueLabelMutationPort, type ReceiptSink, type TrackerAdapter, type ReviewedIssueSnapshot } from "./tracker-adapter.mts";
 import {
   detectContradictions,
   getRemovableResidueLabels,
@@ -294,7 +294,7 @@ export interface InventoryOps2 {
   getHeadSha?: () => Promise<string>;
 }
 export interface MutationOps2 {
-  updateIssueLabels: (issueNumber: number, add: string[], remove: string[]) => Promise<void>;
+  updateIssueLabels: (issueNumber: number, add: string[], remove: string[], expected?: ReviewedIssueSnapshot) => Promise<void>;
   updateLabelDescription: (name: string, description: string) => Promise<void>;
   deleteLabel: (name: string) => Promise<void>;
 }
@@ -470,10 +470,13 @@ export async function runTrackerMigration(opts: {
     return { plan, receipt: before, before, after, afterPlan, applied: false, blockingProblems, migrationRequired: migrationNeeded, checkPassed };
   }
   if (!opts.mutationOps) throw new Error("mutationOps required for apply");
-  // Phase 1: normalize issue labels
+  // Phase 1: normalize issue labels — each mutation is bound to the REVIEWED
+  // snapshot so the port's own fresh pre-mutation read must match the reviewed
+  // state/labels/assignees/blocked_by/body hash before any write.
+  const reviewedByNumber = new Map<number, ReviewedIssueSnapshot>((receipt.issues ?? []).map((i) => [i.number, i]));
   for (const m of plan.plannedMutations) {
     try {
-      await opts.mutationOps.updateIssueLabels(m.issue, m.addLabels, m.removeLabels);
+      await opts.mutationOps.updateIssueLabels(m.issue, m.addLabels, m.removeLabels, reviewedByNumber.get(m.issue));
     } catch (e) {
       throw new Error(`mutation failed for #${m.issue}: ${e}`);
     }
@@ -626,8 +629,8 @@ export async function runTrackerMigrationCli(args: string[], deps: CliDeps = {})
 
   // ONE tracker adapter — every ISSUE mutation flows through its verified saga
   // with typed receipts. Repository-level label metadata operations
-  // (description updates, retired-label deletion) are not issue state
-  // transitions and remain direct api calls.
+  // (description updates, retired-label deletion) route through the adapter's
+  // owned repository ports with fresh read-back and receipts.
   const adapterTransport: GhTransport = {
     capabilityMode: migrationTransport.capabilityMode,
     isWriteForbidden: (args) => migrationTransport.isWriteForbidden(args),
@@ -648,16 +651,7 @@ export async function runTrackerMigrationCli(args: string[], deps: CliDeps = {})
   };
   const adapter: TrackerAdapter = createTrackerAdapter({
     gh: adapterTransport,
-    // Durable typed-transition-receipt sink: atomic writes under
-    // .sandcastle/logs/migration-transitions/ (sidecar receipts alongside the
-    // canonical migration receipt; the canonical schema is unchanged).
-    receiptSink: {
-      persist(receipt: unknown): void {
-        const dir = path.join(MIGRATION_REPO_ROOT, ".sandcastle", "logs", "migration-transitions");
-        const name = `${Date.now()}-${(receipt as { transition?: string }).transition ?? "transition"}-${(receipt as { issueNumber?: number }).issueNumber ?? "x"}.json`;
-        withAtomicJsonReceipt(path.join(dir, name), () => receipt);
-      },
-    },
+    receiptSink: adapterReceiptSink,
   });
   const applyLabelMutation = makeIssueLabelMutationPort(
     adapterTransport,
@@ -780,20 +774,32 @@ export async function runTrackerMigrationCli(args: string[], deps: CliDeps = {})
   };
 
   const mutationOps: MutationOps2 = {
-    updateIssueLabels: async (issueNumber, add, remove) => {
+    updateIssueLabels: async (issueNumber, add, remove, expected) => {
       // Route through the tracker adapter's verified saga — the single GitHub
       // state-transition authority. The combined add/remove edit is applied,
-      // proved on a fresh read, and receipted.
-      const result = await applyLabelMutation(issueNumber, add, remove);
+      // proved on a fresh read, and receipted. The reviewed snapshot binds the
+      // mutation to the reviewed state (state/labels/assignees/blocked_by/body
+      // hash) on the port's own fresh pre-mutation read.
+      const result = await applyLabelMutation(issueNumber, add, remove, expected);
       if (!result.committed) {
         throw new Error(`mutation failed for #${issueNumber}: ${result.reason}`);
       }
     },
     updateLabelDescription: async (name, description) => {
-      await runGhFn(["api", "--method", "PATCH", `repos/${parseOwnerRepo()?.owner}/${parseOwnerRepo()?.repo}/labels/${encodeURIComponent(name)}`, "-f", `description=${description}`]);
+      // Route through the tracker adapter's owned repository port — fresh
+      // read-back proves the description landed, typed receipt persisted.
+      const result = await adapter.updateCanonicalLabelDescription(name, description);
+      if (!result.committed) {
+        throw new Error(`label description update failed for ${name}: ${result.reason}`);
+      }
     },
     deleteLabel: async (name) => {
-      await runGhFn(["api", "--method", "DELETE", `repos/${parseOwnerRepo()?.owner}/${parseOwnerRepo()?.repo}/labels/${encodeURIComponent(name)}`]);
+      // Route through the tracker adapter's owned repository port — fresh
+      // read-back proves the label is gone, typed receipt persisted.
+      const result = await adapter.deleteRetiredLabel(name);
+      if (!result.committed) {
+        throw new Error(`retired label delete failed for ${name}: ${result.reason}`);
+      }
     },
   };
 

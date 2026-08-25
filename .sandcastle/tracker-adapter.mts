@@ -17,6 +17,22 @@ import {
 } from "./tracker-operations.mts";
 import { createProductionReconcileOps } from "./reconcile-adapter.mts";
 import type { GhTransport } from "./gh-transport.mts";
+import { createHash } from "node:crypto";
+
+/**
+ * The reviewed snapshot of a single issue, as captured in the reviewed
+ * receipt. The label-mutation port validates its own fresh pre-mutation read
+ * against this snapshot (state, labels, assignees, blocked_by, body hash)
+ * before any write — drift between review and apply is evidence loss.
+ */
+export interface ReviewedIssueSnapshot {
+  number: number;
+  state: string;
+  labels: string[];
+  assignees: string[];
+  blocked_by: number | undefined;
+  bodySha256: string;
+}
 
 /**
  * tracker-adapter — the single adapter constructing ALL production tracker
@@ -92,8 +108,8 @@ export function makeMemoryReceiptSink(): ReceiptSink & { receipts: TransitionRec
 export function makeIssueLabelMutationPort(
   gh: GhTransport,
   sink: ReceiptSink,
-): (issueNumber: number, addLabels: string[], removeLabels: string[]) => Promise<{ committed: boolean; reason?: string }> {
-  return async (issueNumber, addLabels, removeLabels) => {
+): (issueNumber: number, addLabels: string[], removeLabels: string[], expected?: ReviewedIssueSnapshot) => Promise<{ committed: boolean; reason?: string }> {
+  return async (issueNumber, addLabels, removeLabels, expected) => {
     const args: string[] = [];
     for (const a of addLabels) args.push("--add-label", a);
     for (const r of removeLabels) args.push("--remove-label", r);
@@ -101,6 +117,21 @@ export function makeIssueLabelMutationPort(
     const result = await runSaga(gh, issueNumber, "migrationLabelMutation", [
       {
         name: "apply-label-mutation",
+        // Bind the mutation to the REVIEWED state: the port's own fresh
+        // pre-mutation read must match the reviewed snapshot (state, labels,
+        // assignees, blocked_by, body hash) before any write. Drift between
+        // review and apply is evidence loss — reject with zero mutation.
+        validateBefore: (before) => {
+          if (!expected) return null;
+          if (before.state !== expected.state) return `state drifted: reviewed ${expected.state}, live ${before.state}`;
+          const labelDiff = (l: string[]) => [...l].sort().join(",");
+          if (labelDiff(before.labels) !== labelDiff(expected.labels)) return `labels drifted from reviewed snapshot`;
+          const assigneeDiff = (a: string[]) => [...a].sort().join(",");
+          if (assigneeDiff(before.assignees) !== assigneeDiff(expected.assignees)) return `assignees drifted from reviewed snapshot`;
+          if (before.blockedByCount !== expected.blocked_by) return `blocked_by drifted: reviewed ${expected.blocked_by}, live ${before.blockedByCount}`;
+          if (bodySha256(before.body) !== expected.bodySha256) return `body hash drifted from reviewed snapshot`;
+          return null;
+        },
         mutate: () => runEdit(gh, issueNumber, args),
         verifyAfter: (after) => {
           for (const l of addLabels) if (!after.labels.includes(l)) return `${l} absent after mutation`;
@@ -112,6 +143,11 @@ export function makeIssueLabelMutationPort(
     if (result.kind === "committed") return { committed: true };
     return { committed: false, reason: result.receipt.reason ?? result.receipt.code };
   };
+}
+
+/** sha256 hex digest of a body string (empty string when undefined). */
+function bodySha256(body: string | undefined): string {
+  return createHash("sha256").update(body ?? "").digest("hex");
 }
 
 async function runEdit(gh: GhTransport, issueNumber: number, args: string[]): Promise<void> {
@@ -142,6 +178,64 @@ function validateReleasedPrecondition(
   if (fresh.assignees.includes(claimantLogin)) return `claimant ${claimantLogin} assigned on pre-mutation read — claim was reintroduced concurrently`;
   if (fresh.labels.includes(AGENT_IMPLEMENT)) return `${AGENT_IMPLEMENT} present on pre-mutation read — concurrent mutation`;
   if (fresh.labels.includes(AGENT_BLOCKED)) return `${AGENT_BLOCKED} already present on pre-mutation read — concurrent mutation`;
+  return null;
+}
+
+/**
+ * Exact-ownership precondition for releasing an IMPLEMENTATION claim. The
+ * release mutation must freshly prove the exact claimed state before it may
+ * remove in-progress + claimant: open, ready-for-agent present, in-progress
+ * present, the authenticated claimant assigned, agent:implement absent
+ * (consumed by the claim), and agent:blocked absent. Any drift rejects with
+ * zero mutation — never release another actor's claim.
+ */
+function validateOwnedImplementationClaim(
+  fresh: IssueInput,
+  issueNumber: number,
+  claimantLogin: string,
+): string | null {
+  if (fresh.state !== "open") return `issue #${issueNumber} not open on pre-mutation read`;
+  if (!fresh.labels.includes(READY_FOR_AGENT)) return `${READY_FOR_AGENT} absent on pre-mutation read`;
+  if (!fresh.labels.includes(AGENT_IN_PROGRESS)) return `${AGENT_IN_PROGRESS} absent on pre-mutation read — nothing to release`;
+  if (!fresh.assignees.includes(claimantLogin)) return `claimant ${claimantLogin} not assigned on #${issueNumber} — refusing to release another actor's claim`;
+  if (fresh.labels.includes(AGENT_IMPLEMENT)) return `${AGENT_IMPLEMENT} present on pre-mutation read — command not consumed`;
+  if (fresh.labels.includes(AGENT_BLOCKED)) return `${AGENT_BLOCKED} already present on pre-mutation read`;
+  return null;
+}
+
+/**
+ * Exact-ownership precondition for releasing a RESEARCH claim: open,
+ * in-progress present, the authenticated claimant assigned, and
+ * wayfinder:research retained. agent:implement is not part of a research
+ * claim's command state.
+ */
+function validateOwnedResearchClaim(
+  fresh: IssueInput,
+  issueNumber: number,
+  claimantLogin: string,
+): string | null {
+  if (fresh.state !== "open") return `issue #${issueNumber} not open on pre-mutation read`;
+  if (!fresh.labels.includes(AGENT_IN_PROGRESS)) return `${AGENT_IN_PROGRESS} absent on pre-mutation read — nothing to release`;
+  if (!fresh.assignees.includes(claimantLogin)) return `claimant ${claimantLogin} not assigned on #${issueNumber} — refusing to release another actor's claim`;
+  if (!fresh.labels.includes("wayfinder:research")) return `wayfinder:research absent on pre-mutation read`;
+  return null;
+}
+
+/**
+ * Exact-ownership precondition for compensating a BOTH-PRESENT contradiction:
+ * open, in-progress present, agent:implement present (the command was NOT
+ * consumed), and the authenticated claimant assigned. Compensation removes
+ * in-progress + claimant but RETAINS agent:implement.
+ */
+function validateBothPresentClaim(
+  fresh: IssueInput,
+  issueNumber: number,
+  claimantLogin: string,
+): string | null {
+  if (fresh.state !== "open") return `issue #${issueNumber} not open on pre-mutation read`;
+  if (!fresh.labels.includes(AGENT_IN_PROGRESS)) return `${AGENT_IN_PROGRESS} absent on pre-mutation read — nothing to compensate`;
+  if (!fresh.labels.includes(AGENT_IMPLEMENT)) return `${AGENT_IMPLEMENT} absent on pre-mutation read — not a both-present contradiction`;
+  if (!fresh.assignees.includes(claimantLogin)) return `claimant ${claimantLogin} not assigned on #${issueNumber} — refusing to compensate another actor's claim`;
   return null;
 }
 
@@ -277,9 +371,25 @@ async function runSaga(
     }
   }
 
+  // Terminal committed snapshot: the final fetch is a NEW read that must be
+  // re-verified against the LAST step's postcondition before it may be
+  // persisted as the committed `after`. A drift between the in-loop verified
+  // read and this final read is evidence loss — indeterminate, never committed.
+  const lastStep = steps[steps.length - 1];
   try {
     const final = await fetchFresh(gh, issueNumber);
     const finalSnap = snapshot(final);
+    if (lastStep.verifyAfter) {
+      const terminalViolation = lastStep.verifyAfter(final);
+      if (terminalViolation) {
+        const reason = `terminal committed snapshot drifted for #${issueNumber} (${lastStep.name}): ${terminalViolation}`;
+        const outcome = persistReceipt(sink, {
+          transition, issueNumber, kind: "indeterminate", reason, code: "TERMINAL_DRIFT",
+          before: beforeSnap!, lastObserved: finalSnap,
+        });
+        return { kind: "indeterminate", lastObserved: finalSnap, receipt: outcome.receipt, factoryError: true };
+      }
+    }
     const outcome = persistReceipt(sink, {
       transition, issueNumber, kind: "committed", before: beforeSnap!, after: finalSnap,
     });
@@ -406,14 +516,23 @@ interface AuthoritativeClaimOutcome {
  * Claim compensation proof: perform a fresh read and verify the FULL safe
  * state — expected claimant absent, agent:in-progress absent,
  * agent:implement not restored, plus profile-specific retention.
+ *
+ * Command-awareness: whether agent:implement was consumed is determined from
+ * the ACTUAL POST-MUTATION state (captured immediately after applyClaim), NOT
+ * inferred from the pre-claim snapshot. If the post-mutation state is
+ * unavailable, the compensation cannot be proven — return indeterminate.
  */
 async function proveClaimCompensation(
   gh: GhTransport,
   issueNumber: number,
   claimantLogin: string,
   profile: "implementation" | "research",
-  beforeState: IssueSnapshot | null,
-): Promise<{ proven: boolean; finalState: IssueSnapshot | null; violation?: string }> {
+  postMutationState: IssueSnapshot | null,
+): Promise<{ proven: boolean; finalState: IssueSnapshot | null; violation?: string; unavailable?: boolean }> {
+  if (postMutationState === null) {
+    // Command-consumption state unavailable — cannot prove compensation.
+    return { proven: false, finalState: null, unavailable: true };
+  }
   let afterComp: IssueInput;
   try {
     afterComp = await fetchFresh(gh, issueNumber);
@@ -424,9 +543,11 @@ async function proveClaimCompensation(
   if (afterComp.assignees.includes(claimantLogin)) violations.push(`claimant ${claimantLogin} still assigned`);
   if (afterComp.labels.includes(AGENT_IN_PROGRESS)) violations.push(`${AGENT_IN_PROGRESS} still present`);
   // implement is only "unexpectedly restored" if the claim had actually
-  // consumed it (it was absent before the claim attempt). If the mutation
-  // never applied, implement legitimately remains from the pre-claim state.
-  const implementWasConsumed = beforeState !== null && !beforeState.labels.includes(AGENT_IMPLEMENT);
+  // consumed it (it was absent in the ACTUAL POST-MUTATION state). If the
+  // mutation never applied, implement legitimately remains from the pre-claim
+  // state — but we use the observed post-mutation state, not the pre-claim
+  // snapshot, so a consumed-then-reintroduced command is detected.
+  const implementWasConsumed = !postMutationState.labels.includes(AGENT_IMPLEMENT);
   if (implementWasConsumed && afterComp.labels.includes(AGENT_IMPLEMENT)) violations.push(`${AGENT_IMPLEMENT} unexpectedly restored`);
   if (profile === "implementation" && !afterComp.labels.includes(READY_FOR_AGENT)) violations.push(`${READY_FOR_AGENT} not retained`);
   if (profile === "research" && !afterComp.labels.includes("wayfinder:research")) violations.push(`wayfinder:research not retained`);
@@ -439,9 +560,57 @@ export interface TrackerAdapter {
   claimResearch(issue: IssueInput): Promise<TrackerTransitionResult>;
   transitionToBlocked(issueNumber: number): Promise<TrackerTransitionResult>;
   releaseAfterFactoryError(issueNumber: number): Promise<TrackerTransitionResult>;
+  /**
+   * Release an owned IMPLEMENTATION claim — validates exact ownership
+   * (claimant, ready-for-agent, in-progress, implement absent) on its own
+   * fresh read before removing in-progress + claimant. Never releases another
+   * actor's claim.
+   */
+  releaseOwnedImplementationClaim(issueNumber: number): Promise<TrackerTransitionResult>;
+  /**
+   * Release an owned RESEARCH claim — validates exact ownership (claimant,
+   * in-progress, wayfinder:research) before removing in-progress + claimant.
+   */
+  releaseOwnedResearchClaim(issueNumber: number): Promise<TrackerTransitionResult>;
+  /**
+   * Compensate a BOTH-PRESENT contradiction — validates exact ownership
+   * (claimant, in-progress, implement present) before removing in-progress +
+   * claimant while RETAINING agent:implement (command not consumed).
+   */
+  compensateBothPresentClaim(issueNumber: number): Promise<TrackerTransitionResult>;
+  /**
+   * Release an owned implementation claim then add agent:blocked — ONE
+   * two-step saga. The release step proves exact ownership; the add-blocked
+   * step re-proves the released intermediate state on its own fresh read.
+   */
+  releaseAndBlockOwnedImplementation(issueNumber: number): Promise<TrackerTransitionResult>;
   finalizeIntegrated(issueNumber: number, branch: string): Promise<TrackerTransitionResult>;
   cleanupClosedIssueStaleLabels(issue: IssueInput): Promise<{ cleaned: boolean; removed: string[] }>;
   comment(issueNumber: number, body: string): Promise<boolean>;
+  /**
+   * Update a canonical repository label's description — adapter-owned
+   * repository port with fresh read-back and typed receipt. Returns false
+   * when the live description already matches (no mutation needed).
+   */
+  updateCanonicalLabelDescription(name: string, description: string): Promise<{ committed: boolean; reason?: string }>;
+  /**
+   * Delete a retired repository label — adapter-owned repository port with
+   * fresh read-back and typed receipt. Returns false when the label no longer
+   * exists (already deleted).
+   */
+  deleteRetiredLabel(name: string): Promise<{ committed: boolean; reason?: string }>;
+  /**
+   * Create a canary fixture issue — adapter-owned port. Returns the created
+   * issue number, or throws on failure (never swallows).
+   */
+  createCanaryFixture(title: string, body: string, labels: string[]): Promise<number>;
+  /**
+   * Clean up a canary fixture — adapter-owned port. Removes stale machine
+   * labels, removes the authenticated claimant assignee, and closes the issue,
+   * each saga-verified with typed receipts. Throws on any failure (never
+   * swallows).
+   */
+  cleanupCanaryFixture(id: number): Promise<void>;
   /**
    * Stale implementation reconciliation — the single consumer-facing port.
    * Internally constructs the Git/worktree inspection implementation.
@@ -505,6 +674,11 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
       // snapshot: ops.fetchIssue is invoked by claimImplementation itself and
       // captured here verbatim — no separate adapter prefetch that could race.
       let canonicalBeforeState: IssueSnapshot | null = null;
+      // The ACTUAL POST-MUTATION state (captured from verifyClaim immediately
+      // after applyClaim) — used for command-aware compensation. Whether
+      // agent:implement was consumed is determined from THIS observed state,
+      // never inferred from the pre-claim snapshot.
+      let canonicalPostMutationState: IssueSnapshot | null = null;
       let canonicalFetchFailed = false;
 
       const ops: ClaimOps & { claimantLogin: string } = {
@@ -519,7 +693,13 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
         applyClaim: async (id) => {
           await editIssue(Number(id), ["--add-assignee", claimantLogin, "--add-label", AGENT_IN_PROGRESS, "--remove-label", AGENT_IMPLEMENT]);
         },
-        verifyClaim: (id) => fetchById(id),
+        verifyClaim: async (id) => {
+          const fetched = await fetchById(id);
+          if (Number(id) === n) {
+            canonicalPostMutationState = snapshot(fetched);
+          }
+          return fetched;
+        },
         compensateClaim: async (id) => {
           try {
             await editIssue(Number(id), ["--remove-label", AGENT_IN_PROGRESS, "--remove-assignee", claimantLogin]);
@@ -542,9 +722,12 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
       }
 
       // Prove compensation on a fresh read whenever the canonical ops report it.
-      let compensationProof: { proven: boolean; finalState: IssueSnapshot | null; violation?: string } | null = null;
+      // Command-awareness: pass the ACTUAL POST-MUTATION state so a
+      // consumed-then-reintroduced command is detected. If that state is
+      // unavailable, proveClaimCompensation returns indeterminate.
+      let compensationProof: { proven: boolean; finalState: IssueSnapshot | null; violation?: string; unavailable?: boolean } | null = null;
       if (!result.success && result.compensated && !result.factoryError) {
-        compensationProof = await proveClaimCompensation(gh, n, claimantLogin, "implementation", canonicalBeforeState);
+        compensationProof = await proveClaimCompensation(gh, n, claimantLogin, "implementation", canonicalPostMutationState);
       }
 
       const outcome = classifyClaimOutcome("claimImplementation", result, canonicalBeforeState, compensationProof);
@@ -564,6 +747,9 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
       // Same authoritative pre-mutation capture as implementation claims:
       // the canonical operation's own fetch IS the receipted before-state.
       let canonicalBeforeState: IssueSnapshot | null = null;
+      // Actual post-mutation state captured from verifyClaim — used for
+      // command-aware compensation.
+      let canonicalPostMutationState: IssueSnapshot | null = null;
 
       const ops: ResearchClaimOps & { claimantLogin: string } = {
         claimantLogin,
@@ -577,7 +763,13 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
         applyClaim: async (id) => {
           await editIssue(Number(id), ["--add-assignee", claimantLogin, "--add-label", AGENT_IN_PROGRESS]);
         },
-        verifyClaim: (id) => fetchById(id),
+        verifyClaim: async (id) => {
+          const fetched = await fetchById(id);
+          if (Number(id) === n) {
+            canonicalPostMutationState = snapshot(fetched);
+          }
+          return fetched;
+        },
         compensateClaim: async (id) => {
           try {
             await editIssue(Number(id), ["--remove-label", AGENT_IN_PROGRESS, "--remove-assignee", claimantLogin]);
@@ -595,9 +787,10 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
       }
 
       // Prove compensation on a fresh read whenever the canonical ops report it.
-      let compensationProof: { proven: boolean; finalState: IssueSnapshot | null; violation?: string } | null = null;
+      // Command-awareness: pass the ACTUAL POST-MUTATION state.
+      let compensationProof: { proven: boolean; finalState: IssueSnapshot | null; violation?: string; unavailable?: boolean } | null = null;
       if (!result.success && result.compensated && !result.factoryError) {
-        compensationProof = await proveClaimCompensation(gh, n, claimantLogin, "research", canonicalBeforeState);
+        compensationProof = await proveClaimCompensation(gh, n, claimantLogin, "research", canonicalPostMutationState);
       }
 
       const outcome = classifyClaimOutcome("claimResearch", result, canonicalBeforeState, compensationProof);
@@ -688,6 +881,126 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
     },
 
     /**
+     * Release an owned IMPLEMENTATION claim. The release mutation's own
+     * validateBefore freshly proves exact ownership (claimant, ready-for-agent,
+     * in-progress, implement absent) before removing in-progress + claimant.
+     * Any drift rejects with zero mutation — never release another actor's claim.
+     */
+    async releaseOwnedImplementationClaim(issueNumber) {
+      const claimantLogin = await gh.resolveClaimantLogin();
+      return runSaga(gh, issueNumber, "releaseOwnedImplementationClaim", [
+        {
+          name: "release-owned-implementation",
+          validateBefore: (fresh) => validateOwnedImplementationClaim(fresh, issueNumber, claimantLogin),
+          mutate: () => editIssue(issueNumber, ["--remove-label", AGENT_IN_PROGRESS, "--remove-assignee", claimantLogin]),
+          verifyAfter: (after) => {
+            if (after.labels.includes(AGENT_IN_PROGRESS)) return `${AGENT_IN_PROGRESS} still present`;
+            if (after.assignees.includes(claimantLogin)) return `claimant still assigned`;
+            if (!after.labels.includes(READY_FOR_AGENT)) return `${READY_FOR_AGENT} not retained`;
+            if (after.labels.includes(AGENT_IMPLEMENT)) return `${AGENT_IMPLEMENT} unexpectedly restored`;
+            return null;
+          },
+          // No compensation: partial release cannot be safely reconstructed.
+        },
+      ], receiptSink);
+    },
+
+    /**
+     * Release an owned RESEARCH claim. The release mutation's own validateBefore
+     * freshly proves exact ownership (claimant, in-progress, wayfinder:research)
+     * before removing in-progress + claimant.
+     */
+    async releaseOwnedResearchClaim(issueNumber) {
+      const claimantLogin = await gh.resolveClaimantLogin();
+      return runSaga(gh, issueNumber, "releaseOwnedResearchClaim", [
+        {
+          name: "release-owned-research",
+          validateBefore: (fresh) => validateOwnedResearchClaim(fresh, issueNumber, claimantLogin),
+          mutate: () => editIssue(issueNumber, ["--remove-label", AGENT_IN_PROGRESS, "--remove-assignee", claimantLogin]),
+          verifyAfter: (after) => {
+            if (after.labels.includes(AGENT_IN_PROGRESS)) return `${AGENT_IN_PROGRESS} still present`;
+            if (after.assignees.includes(claimantLogin)) return `claimant still assigned`;
+            if (!after.labels.includes("wayfinder:research")) return `wayfinder:research not retained`;
+            return null;
+          },
+          // No compensation: partial release cannot be safely reconstructed.
+        },
+      ], receiptSink);
+    },
+
+    /**
+     * Compensate a BOTH-PRESENT contradiction. The mutation's own validateBefore
+     * freshly proves exact ownership (claimant, in-progress, implement present)
+     * before removing in-progress + claimant while RETAINING agent:implement
+     * (the command was not consumed).
+     */
+    async compensateBothPresentClaim(issueNumber) {
+      const claimantLogin = await gh.resolveClaimantLogin();
+      return runSaga(gh, issueNumber, "compensateBothPresentClaim", [
+        {
+          name: "compensate-both-present",
+          validateBefore: (fresh) => validateBothPresentClaim(fresh, issueNumber, claimantLogin),
+          mutate: () => editIssue(issueNumber, ["--remove-label", AGENT_IN_PROGRESS, "--remove-assignee", claimantLogin]),
+          verifyAfter: (after) => {
+            if (after.labels.includes(AGENT_IN_PROGRESS)) return `${AGENT_IN_PROGRESS} still present`;
+            if (after.assignees.includes(claimantLogin)) return `claimant still assigned`;
+            // The command was NOT consumed — agent:implement must be retained.
+            if (!after.labels.includes(AGENT_IMPLEMENT)) return `${AGENT_IMPLEMENT} unexpectedly removed during compensation`;
+            return null;
+          },
+          // No compensation: partial compensation cannot be safely reconstructed.
+        },
+      ], receiptSink);
+    },
+
+    /**
+     * Release an owned implementation claim then add agent:blocked — ONE
+     * two-step saga. The release step proves exact ownership; the add-blocked
+     * step re-proves the released intermediate state on its own fresh read
+     * (phase-aware precondition). A drift between the two steps is
+     * indeterminate, never a clean rejection.
+     */
+    async releaseAndBlockOwnedImplementation(issueNumber) {
+      const claimantLogin = await gh.resolveClaimantLogin();
+      return runSaga(gh, issueNumber, "releaseAndBlockOwnedImplementation", [
+        {
+          name: "release-owned-implementation",
+          validateBefore: (fresh) => validateOwnedImplementationClaim(fresh, issueNumber, claimantLogin),
+          mutate: () => editIssue(issueNumber, ["--remove-label", AGENT_IN_PROGRESS, "--remove-assignee", claimantLogin]),
+          verifyAfter: (after) => {
+            if (after.state !== "open") return `issue #${issueNumber} not open after release`;
+            if (!after.labels.includes(READY_FOR_AGENT)) return `${READY_FOR_AGENT} absent after release`;
+            if (after.labels.includes(AGENT_IN_PROGRESS)) return `${AGENT_IN_PROGRESS} still present`;
+            if (after.assignees.includes(claimantLogin)) return `claimant still assigned`;
+            if (after.labels.includes(AGENT_IMPLEMENT)) return `${AGENT_IMPLEMENT} appeared after release — concurrent mutation`;
+            if (after.labels.includes(AGENT_BLOCKED)) return `${AGENT_BLOCKED} appeared after release — concurrent mutation`;
+            return null;
+          },
+          // No compensation: if the released state cannot be PROVEN, another
+          // actor may own the claim — restoring it could fabricate a claim.
+        },
+        {
+          name: "add-blocked",
+          // Phase-aware precondition: re-prove the released intermediate state
+          // on THIS step's own fresh read. A concurrent reclaim between the
+          // release postcondition and this read is indeterminate — never blocked.
+          validateBefore: (fresh) => validateReleasedPrecondition(fresh, issueNumber, claimantLogin),
+          // No compensation: restoring agent:implement would be unsafe.
+          mutate: () => editIssue(issueNumber, ["--add-label", AGENT_BLOCKED]),
+          verifyAfter: (after) => {
+            if (after.state !== "open") return `issue #${issueNumber} not open`;
+            if (!after.labels.includes(READY_FOR_AGENT)) return `${READY_FOR_AGENT} absent in final state`;
+            if (!after.labels.includes(AGENT_BLOCKED)) return `${AGENT_BLOCKED} absent`;
+            if (after.labels.includes(AGENT_IN_PROGRESS)) return `${AGENT_IN_PROGRESS} still present in final state`;
+            if (after.labels.includes(AGENT_IMPLEMENT)) return `${AGENT_IMPLEMENT} present in final state`;
+            if (after.assignees.includes(claimantLogin)) return `claimant still assigned in final state`;
+            return null;
+          },
+        },
+      ], receiptSink);
+    },
+
+    /**
      * Integration close: strip transient/command labels, close with audit
      * comment. Final postcondition proves ALL of: closed, claimant absent,
      * in-progress/implement/blocked all absent — matching the reconciliation
@@ -749,19 +1062,31 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
      */
     async cleanupClosedIssueStaleLabels(issue) {
       const staleLabels = [AGENT_IN_PROGRESS, AGENT_IMPLEMENT, AGENT_BLOCKED].filter((l) => issue.labels.includes(l));
-      if (staleLabels.length === 0) {
-        // Nothing to remove — prove residue absence on a fresh read anyway.
+      const claimantLogin = await gh.resolveClaimantLogin();
+      const hasClaimant = issue.assignees.includes(claimantLogin);
+
+      // Fast path: nothing listed to remove AND claimant not assigned. Prove
+      // residue absence (labels + claimant) on a fresh read anyway.
+      if (staleLabels.length === 0 && !hasClaimant) {
         try {
           const fresh = await fetchById(String(issue.number));
           const residue = [AGENT_IN_PROGRESS, AGENT_IMPLEMENT, AGENT_BLOCKED].filter((l) => fresh.labels.includes(l));
           if (residue.length > 0) return { cleaned: false, removed: [] };
+          if (fresh.assignees.includes(claimantLogin)) return { cleaned: false, removed: [] };
           return { cleaned: true, removed: [] };
         } catch {
           return { cleaned: false, removed: [] };
         }
       }
-      const result = await runSaga(gh, issue.number, "cleanupClosedStaleLabels", [
-        {
+
+      // Two-step saga: (1) remove stale machine labels, (2) remove the
+      // authenticated claimant assignee while preserving unrelated assignees.
+      // The final invariant — closed + claimant absent + all three machine
+      // labels absent — is proven by the LAST step's verifyAfter and the
+      // terminal revalidation.
+      const steps: SagaStep[] = [];
+      if (staleLabels.length > 0) {
+        steps.push({
           name: "remove-stale-labels",
           validateBefore: (fresh) => {
             if (fresh.state !== "closed") return `issue #${issue.number} is ${fresh.state}, not closed — refusing cleanup mutation`;
@@ -769,16 +1094,46 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
           },
           mutate: () => editIssue(issue.number, staleLabels.flatMap((l) => ["--remove-label", l])),
           verifyAfter: (after) => {
-            if (after.state !== "closed") return `issue #${issue.number} no longer closed after cleanup — reopen during transition`;
+            if (after.state !== "closed") return `issue #${issue.number} no longer closed after label cleanup — reopen during transition`;
             for (const l of [AGENT_IN_PROGRESS, AGENT_IMPLEMENT, AGENT_BLOCKED]) {
               if (after.labels.includes(l)) return `${l} still present on closed issue #${issue.number}`;
             }
             return null;
           },
           // No compensation: re-adding transient labels to a closed issue is unsafe.
-        },
-      ], receiptSink);
-      if (result.kind === "committed") return { cleaned: true, removed: staleLabels };
+        });
+      }
+      if (hasClaimant) {
+        steps.push({
+          name: "remove-claimant-assignee",
+          validateBefore: (fresh) => {
+            if (fresh.state !== "closed") return `issue #${issue.number} is ${fresh.state}, not closed — refusing assignee cleanup`;
+            // Only remove the AUTHENTICATED claimant; unrelated assignees are
+            // preserved. If the claimant is no longer assigned, nothing to do.
+            if (!fresh.assignees.includes(claimantLogin)) return null;
+            return null;
+          },
+          mutate: () => editIssue(issue.number, ["--remove-assignee", claimantLogin]),
+          verifyAfter: (after) => {
+            if (after.state !== "closed") return `issue #${issue.number} no longer closed after assignee cleanup — reopen during transition`;
+            if (after.assignees.includes(claimantLogin)) return `claimant ${claimantLogin} still assigned on closed issue #${issue.number}`;
+            // Final invariant: closed + claimant absent + all three machine
+            // labels absent.
+            for (const l of [AGENT_IN_PROGRESS, AGENT_IMPLEMENT, AGENT_BLOCKED]) {
+              if (after.labels.includes(l)) return `${l} still present on closed issue #${issue.number}`;
+            }
+            return null;
+          },
+          // No compensation: re-adding the claimant to a closed issue is unsafe.
+        });
+      }
+
+      const result = await runSaga(gh, issue.number, "cleanupClosedStaleLabels", steps, receiptSink);
+      if (result.kind === "committed") {
+        const removed: string[] = [...staleLabels];
+        if (hasClaimant) removed.push(claimantLogin);
+        return { cleaned: true, removed };
+      }
       return { cleaned: false, removed: [] };
     },
 
@@ -787,6 +1142,139 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
         await gh.run(["issue", "comment", String(issueNumber), "--body", body]);
         return true;
       } catch { return false; }
+    },
+
+    /**
+     * Update a canonical repository label's description — adapter-owned
+     * repository port. The PATCH is applied, then the label is read back on a
+     * fresh read to prove the description actually landed. A read-back that
+     * fails or shows a mismatched description is NOT committed.
+     */
+    async updateCanonicalLabelDescription(name, description) {
+      const ownerRepo = gh.resolveOwnerRepo();
+      if (!ownerRepo) return { committed: false, reason: "repository identity unavailable" };
+      const encoded = encodeURIComponent(name);
+      const url = `repos/${ownerRepo.owner}/${ownerRepo.repo}/labels/${encoded}`;
+      try {
+        await gh.run(["api", "--method", "PATCH", url, "-f", `description=${description}`]);
+      } catch (e) {
+        return { committed: false, reason: `label description PATCH failed for ${name}: ${getMsg(e)}` };
+      }
+      // Fresh read-back: prove the description actually landed.
+      try {
+        const raw = await gh.run(["api", url, "--jq", ".description"]);
+        const live = raw.trim();
+        if (live !== description) {
+          return { committed: false, reason: `label description read-back mismatch for ${name}: expected "${description}", live "${live}"` };
+        }
+      } catch (e) {
+        return { committed: false, reason: `label description read-back failed for ${name}: ${getMsg(e)}` };
+      }
+      persistReceipt(receiptSink, { transition: "updateCanonicalLabelDescription", issueNumber: 0, kind: "committed", reason: `updated description for label ${name}` });
+      return { committed: true };
+    },
+
+    /**
+     * Delete a retired repository label — adapter-owned repository port. The
+     * DELETE is applied, then the label's absence is proved on a fresh read
+     * (a 404 confirms deletion). A read-back that still finds the label is
+     * NOT committed.
+     */
+    async deleteRetiredLabel(name) {
+      const ownerRepo = gh.resolveOwnerRepo();
+      if (!ownerRepo) return { committed: false, reason: "repository identity unavailable" };
+      const encoded = encodeURIComponent(name);
+      const url = `repos/${ownerRepo.owner}/${ownerRepo.repo}/labels/${encoded}`;
+      try {
+        await gh.run(["api", "--method", "DELETE", url]);
+      } catch (e) {
+        return { committed: false, reason: `label DELETE failed for ${name}: ${getMsg(e)}` };
+      }
+      // Fresh read-back: prove the label is gone (404 confirms deletion).
+      try {
+        await gh.run(["api", url]);
+        return { committed: false, reason: `label ${name} still exists after DELETE — read-back found it` };
+      } catch {
+        // 404 confirms the label is gone.
+      }
+      persistReceipt(receiptSink, { transition: "deleteRetiredLabel", issueNumber: 0, kind: "committed", reason: `deleted retired label ${name}` });
+      return { committed: true };
+    },
+
+    /**
+     * Create a canary fixture issue — adapter-owned port. The POST is applied
+     * and the created issue number is returned. Throws on failure (never
+     * swallows).
+     */
+    async createCanaryFixture(title, body, labels) {
+      const ownerRepo = gh.resolveOwnerRepo();
+      if (!ownerRepo) throw new Error("repository identity unavailable for canary fixture creation");
+      const args: string[] = ["api", "--method", "POST", `repos/${ownerRepo.owner}/${ownerRepo.repo}/issues`, "-f", `title=${title}`, "-f", `body=${body}`];
+      for (const l of labels) args.push("-f", `labels[]=${l}`);
+      args.push("--jq", ".number");
+      const out = await gh.run(args);
+      const n = parseInt(out.trim(), 10);
+      if (isNaN(n)) throw new Error(`failed to create canary fixture issue: ${out}`);
+      persistReceipt(receiptSink, { transition: "createCanaryFixture", issueNumber: n, kind: "committed", reason: `created canary fixture #${n}` });
+      return n;
+    },
+
+    /**
+     * Clean up a canary fixture — adapter-owned port. Removes stale machine
+     * labels, removes the authenticated claimant assignee, and closes the
+     * issue, each saga-verified with typed receipts. Throws on any failure
+     * (never swallows).
+     */
+    async cleanupCanaryFixture(id) {
+      const claimantLogin = await gh.resolveClaimantLogin();
+      // Step 1: remove stale machine labels (saga-verified).
+      const labelResult = await runSaga(gh, id, "cleanupCanaryFixtureLabels", [
+        {
+          name: "remove-stale-labels",
+          mutate: () => editIssue(id, [AGENT_IN_PROGRESS, AGENT_IMPLEMENT, AGENT_BLOCKED].flatMap((l) => ["--remove-label", l])),
+          verifyAfter: (after) => {
+            for (const l of [AGENT_IN_PROGRESS, AGENT_IMPLEMENT, AGENT_BLOCKED]) {
+              if (after.labels.includes(l)) return `${l} still present on canary fixture #${id}`;
+            }
+            return null;
+          },
+        },
+      ], receiptSink);
+      if (labelResult.kind !== "committed") {
+        throw new Error(`canary fixture #${id} label cleanup not committed: ${labelResult.receipt.reason ?? labelResult.receipt.code}`);
+      }
+      // Step 2: remove the authenticated claimant assignee (saga-verified).
+      const assigneeResult = await runSaga(gh, id, "cleanupCanaryFixtureAssignee", [
+        {
+          name: "remove-claimant-assignee",
+          validateBefore: (fresh) => {
+            if (!fresh.assignees.includes(claimantLogin)) return null;
+            return null;
+          },
+          mutate: () => editIssue(id, ["--remove-assignee", claimantLogin]),
+          verifyAfter: (after) => {
+            if (after.assignees.includes(claimantLogin)) return `claimant ${claimantLogin} still assigned on canary fixture #${id}`;
+            return null;
+          },
+        },
+      ], receiptSink);
+      if (assigneeResult.kind !== "committed") {
+        throw new Error(`canary fixture #${id} assignee cleanup not committed: ${assigneeResult.receipt.reason ?? assigneeResult.receipt.code}`);
+      }
+      // Step 3: close the fixture (saga-verified).
+      const closeResult = await runSaga(gh, id, "cleanupCanaryFixtureClose", [
+        {
+          name: "close-fixture",
+          mutate: async () => { await gh.run(["issue", "close", String(id), "--comment", "Canary fixture — cleaning up"]); },
+          verifyAfter: (after) => {
+            if (after.state !== "closed") return `canary fixture #${id} not closed after close`;
+            return null;
+          },
+        },
+      ], receiptSink);
+      if (closeResult.kind !== "committed") {
+        throw new Error(`canary fixture #${id} close not committed: ${closeResult.receipt.reason ?? closeResult.receipt.code}`);
+      }
     },
 
     /**
@@ -815,8 +1303,13 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
       // The adapter's own saga transitions — reconciliation never composes raw edits.
       // `adapter` is assigned by the time any transition port is invoked.
       const github: ReconcileGitHubTransitions = {
-        releaseClaim: (issueNumber) => adapter.releaseAfterFactoryError(issueNumber),
-        addBlockedAfterRelease: (issueNumber) => addBlockedLabelSaga(issueNumber),
+        // ONE two-step saga: release (proving exact ownership) then add-blocked
+        // (re-proving the released intermediate state). Never split into a
+        // release saga + a one-step addBlocked saga whose precondition could be
+        // misclassified as a clean rejection.
+        releaseAndBlockOwnedImplementation: (issueNumber) => adapter.releaseAndBlockOwnedImplementation(issueNumber),
+        // Single owned release for the empty-branch cleanup path (no block).
+        releaseOwnedImplementationClaim: (issueNumber) => adapter.releaseOwnedImplementationClaim(issueNumber),
         integrateAndClose: (issueNumber, integrationBranch) => adapter.finalizeIntegrated(issueNumber, integrationBranch),
         comment: (issueNumber, body) => adapter.comment(issueNumber, body),
       };
@@ -853,7 +1346,7 @@ function classifyClaimOutcome(
   transition: string,
   result: ClaimResult,
   beforeState: IssueSnapshot | null,
-  compensationProof: { proven: boolean; finalState: IssueSnapshot | null; violation?: string } | null,
+  compensationProof: { proven: boolean; finalState: IssueSnapshot | null; violation?: string; unavailable?: boolean } | null,
 ): AuthoritativeClaimOutcome {
   if (result.success) {
     return {
@@ -882,6 +1375,17 @@ function classifyClaimOutcome(
         phase: "compensated",
         reason: result.reason,
         code: result.code,
+        beforeState,
+        finalState: compensationProof.finalState,
+      };
+    }
+    // Command-consumption state unavailable — the compensation cannot be
+    // proven. Indeterminate, never "compensated".
+    if (compensationProof.unavailable) {
+      return {
+        phase: "indeterminate",
+        reason: `${result.reason}; compensation applied but post-mutation command-consumption state unavailable — cannot prove compensation`,
+        code: "COMPENSATION_STATE_UNAVAILABLE",
         beforeState,
         finalState: compensationProof.finalState,
       };
