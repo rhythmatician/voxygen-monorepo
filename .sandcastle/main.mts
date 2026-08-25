@@ -558,14 +558,16 @@ Branch: \`${branch}\`
 
 To retry: fix implementation to address findings, remove \`agent:blocked\` and explicitly re-add \`agent:implement\`, then re-run factory. Branch preserved, ready-for-agent retained, agent:in-progress and claimant assignee removed, agent:implement not restored.`;
   // Only a committed blocked transition may publish the rejection comment.
+  // EVERY noncommitted outcome is a required-outcome failure: rejected means
+  // the state was not a valid claim, compensated means the mutation did not
+  // stand, indeterminate means evidence is missing — none may pass silently.
   const result = await tracker.transitionToBlocked(Number(issueId));
   if (result.kind !== "committed") {
     const detail = result.receipt.reason ?? result.receipt.code ?? "unknown";
     if (result.kind === "indeterminate") {
       throw new Error(`FACTORY_ERROR review-rejecting #${issueId}: ${detail}`);
     }
-    console.error(`  Review-reject blocked transition ${result.kind} for #${issueId}: ${detail} — no rejection comment published.`);
-    return;
+    throw new Error(`FACTORY_ERROR review-rejecting #${issueId}: blocked transition ${result.kind} — ${detail}`);
   }
   await safeRunGh(["issue", "comment", issueId, "--body", body]);
 }
@@ -612,11 +614,12 @@ async function reconcileInProgressIssues(): Promise<void> {
       console.log(`  #${id} (${branch}) → research in-progress stale on restart — preserving branch, releasing transient claim`);
       // Release through the tracker adapter's factory-error release saga
       // (same verified transition; never restores agent:implement).
+      // A failed stale-Research release STOPS the factory before discovery/claim.
       const released = await tracker.releaseAfterFactoryError(issue.number);
       if (released.kind !== "committed") {
-        const reason = released.kind === "indeterminate" ? released.receipt.reason : `unexpected result kind ${released.kind}`;
-        console.warn(`  #${id} → failed to release stale research claim: ${reason} — leaving in-progress for next reconciliation`);
-        continue;
+        const reason = released.receipt.reason ?? released.receipt.code ?? `unexpected result kind ${released.kind}`;
+        console.error(`  FACTORY_ERROR releasing stale research claim for #${id}: ${reason} — stopping before discovery/claim`);
+        throw new Error(`FACTORY_ERROR releasing stale research claim for #${id}: ${reason}`);
       }
       await safeRunGh(["issue", "comment", id, "--body", `Sandcastle reconciliation: released stale research claim for \`${branch}\` — branch preserved.`]);
       console.log(`  #${id} (${branch}) → released stale research claim`);
@@ -634,11 +637,13 @@ async function reconcileInProgressIssues(): Promise<void> {
     if (hasReady && hasInProgress && hasAssignee && !hasImplement) {
       console.log(`  #${id} (${branch}) → stale implementation claim (consumed ${AGENT_IMPLEMENT}) — full seam`);
       // Single consumer-facing reconciliation port on the tracker adapter.
+      // A reconciliation FACTORY_ERROR STOPS the factory before discovery/claim.
       const result = await tracker.reconcileStaleImplementation(issue, branch);
       if (!result.reconciled) {
         console.warn(`  #${id} → ${result.reason} — decision=${result.decision?.type} factoryError=${result.factoryError}`);
         if (result.factoryError) {
-          console.error(`  FACTORY_ERROR reconciling #${id}: ${result.reason}`);
+          console.error(`  FACTORY_ERROR reconciling #${id}: ${result.reason} — stopping before discovery/claim`);
+          throw new Error(`FACTORY_ERROR reconciling #${id}: ${result.reason}`);
         }
         continue;
       }
@@ -649,11 +654,12 @@ async function reconcileInProgressIssues(): Promise<void> {
       // Contradictory both present — should never be created intentionally; compensate by releasing in-progress
       console.warn(`  #${id} (${branch}) → contradictory both ${AGENT_IMPLEMENT} and ${AGENT_IN_PROGRESS} present — compensating`);
       // Release through the tracker adapter's factory-error release saga.
+      // A contradictory-state compensation failure STOPS the factory.
       const released = await tracker.releaseAfterFactoryError(issue.number);
       if (released.kind !== "committed") {
-        const reason = released.kind === "indeterminate" ? released.receipt.reason : `unexpected result kind ${released.kind}`;
-        console.warn(`  #${id} → failed to compensate contradictory state: ${reason} — leaving for next reconciliation`);
-        continue;
+        const reason = released.receipt.reason ?? released.receipt.code ?? `unexpected result kind ${released.kind}`;
+        console.error(`  FACTORY_ERROR compensating contradictory state for #${id}: ${reason} — stopping before discovery/claim`);
+        throw new Error(`FACTORY_ERROR compensating contradictory state for #${id}: ${reason}`);
       }
       await safeRunGh(["issue", "comment", id, "--body", `Sandcastle reconciliation: compensated contradictory state for \`${branch}\` — removed assignee and \`${AGENT_IN_PROGRESS}\` but retained \`${AGENT_IMPLEMENT}\` (command not consumed). Requires revalidation before retry.`]);
       console.log(`  #${id} → compensated contradictory both-present`);
@@ -676,7 +682,7 @@ async function reconcileInProgressIssues(): Promise<void> {
     for(const r of closed){
       const id = String(r.number);
       console.log(`  closed #${id} still has agent:in-progress — cleaning up stale claim label`);
-      await tracker.cleanupClosedIssueStaleLabels({
+      const cleanup = await tracker.cleanupClosedIssueStaleLabels({
         number: r.number,
         title: r.title,
         state: (r.state?.toLowerCase() ?? "closed") as "open" | "closed",
@@ -684,6 +690,12 @@ async function reconcileInProgressIssues(): Promise<void> {
         assignees: [],
         body: undefined,
       });
+      // Unproved closed cleanup STOPS the factory — never continue on uncertainty.
+      if (!cleanup.cleaned) {
+        const msg = `FACTORY_ERROR cleaning closed issue #${id}: residue not proved removed (removed=[${cleanup.removed.join(", ")}])`;
+        console.error(`  ${msg} — stopping before discovery/claim`);
+        throw new Error(msg);
+      }
     }
     if(closed.length===0) console.log("  No closed in-progress issues to clean.");
   } catch (e){
@@ -703,7 +715,7 @@ async function reconcileInProgressIssues(): Promise<void> {
       const labels = (r.labels ?? []).map((l: any) => l.name);
       if (labels.includes(AGENT_IMPLEMENT)) {
         console.log(`  closed #${r.number} still has ${AGENT_IMPLEMENT} — cleaning`);
-        await tracker.cleanupClosedIssueStaleLabels({
+        const cleanup = await tracker.cleanupClosedIssueStaleLabels({
           number: r.number,
           title: r.title,
           state: (r.state?.toLowerCase() ?? "closed") as "open" | "closed",
@@ -711,9 +723,19 @@ async function reconcileInProgressIssues(): Promise<void> {
           assignees: [],
           body: undefined,
         });
+        // Unproved closed cleanup STOPS the factory — never continue on uncertainty.
+        if (!cleanup.cleaned) {
+          const msg = `FACTORY_ERROR cleaning closed issue #${r.number}: residue not proved removed (removed=[${cleanup.removed.join(", ")}])`;
+          console.error(`  ${msg} — stopping before discovery/claim`);
+          throw new Error(msg);
+        }
       }
     }
-  } catch {}
+  } catch (e) {
+    // Distinguish listing failures (warn-and-retry-next-run) from cleanup FACTORY_ERRORs (stop).
+    if (e instanceof Error && e.message.startsWith("FACTORY_ERROR")) throw e;
+    console.warn(`  Reconciliation: failed to list closed implement issues: ${getErrorMessage(e)}`);
+  }
   console.log("=== Reconciliation complete ===\n");
 }
 import { doctorWorktreePath, cleanupDoctorBranchAndWorktree, reconcileStaleDoctorResources } from "./doctor-helpers.mts";

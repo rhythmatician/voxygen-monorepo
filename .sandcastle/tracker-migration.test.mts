@@ -274,7 +274,29 @@ describe("tracker-migration — authoritative verdicts via CLI (item 1)", () => 
       }
       if (args[0] === "issue" && args[1] === "edit") {
         store.writes.push(args);
+        // Apply the edit to the in-memory issue so the verified saga's fresh
+        // read-back proves the mutation actually landed.
+        const issue = opts.issues.find((i:any) => i.number === parseInt(args[2],10));
+        if (issue) {
+          for (let i = 3; i < args.length; i++) {
+            if (args[i] === "--add-label") { const l = args[++i]; if (!issue.labels.includes(l)) issue.labels.push(l); }
+            else if (args[i] === "--remove-label") { const l = args[++i]; issue.labels = issue.labels.filter((x:string) => x !== l); }
+          }
+        }
         return "";
+      }
+      if (args[0] === "issue" && args[1] === "view") {
+        // Fresh read for the label-mutation saga's before/after proof.
+        const issue = opts.issues.find((i:any) => i.number === parseInt(args[2],10));
+        if (!issue) throw new Error(`not found #${args[2]}`);
+        return JSON.stringify({
+          number: issue.number,
+          title: issue.title,
+          body: issue.body,
+          state: issue.state,
+          labels: issue.labels.map((n:string)=>({name:n})),
+          assignees: issue.assignees.map((l:string)=>({login:l})),
+        });
       }
       if (args[0] === "api" && args[1].includes("--method") && args[1].includes("PATCH")) {
         store.labelWrites.push(args);
@@ -342,6 +364,16 @@ describe("tracker-migration — authoritative verdicts via CLI (item 1)", () => 
         const num = parseInt(args[2],10);
         mutated.push(num);
         mutatedFlag=true;
+        // Apply the edit to issuesPre so the saga's fresh read-back proves
+        // the mutation landed (the saga reads via `issue view`, handled by
+        // makeCliDeps against opts.issues === issuesPre).
+        const issue = issuesPre.find((i:any)=>i.number===num);
+        if (issue) {
+          for (let i=3;i<args.length;i++) {
+            if (args[i]==="--add-label") { const l=args[++i]; if(!issue.labels.includes(l)) issue.labels.push(l); }
+            else if (args[i]==="--remove-label") { const l=args[++i]; issue.labels=issue.labels.filter((x:string)=>x!==l); }
+          }
+        }
         return "";
       }
       return origRunGh(args);

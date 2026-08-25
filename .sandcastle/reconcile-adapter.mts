@@ -1,16 +1,22 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { getErrorMessage } from "./gh-errors.mts";
-import * as branchHelpers from "./branch-helpers.mts";
-import type { GitResult, GitRunner } from "./branch-helpers.mts";
+import { inspectProvenance, inspectCommitsAhead, type GitResult, type GitRunner } from "./branch-helpers.mts";
 import type { IssueInput } from "./tracker-policy.mts";
-import type { FullReconcileOps } from "./tracker-operations.mts";
+import type { ReconcileInspectionOps } from "./tracker-operations.mts";
+
+function errMessage(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
 
 /**
- * Production reconciliation adapter — single callable owned by production.
- * Used by main.mts and by behavioral tests (same adapter, not duplicate).
- * Provides fresh GitHub reads and genuinely tri-state inspections.
- * All local Git operations use the injected GitRunner with argument arrays.
+ * Production reconciliation INSPECTION adapter — internal to TrackerAdapter.
+ *
+ * Owns ONLY local Git/worktree/provenance inspection and cleanup:
+ * branch presence, provenance validity, commits-ahead, and proven
+ * worktree/local/remote branch deletion. It performs NO GitHub state
+ * transitions — every issue/label/assignee mutation flows through the
+ * TrackerAdapter's verified saga, which is the single GitHub state-transition
+ * authority (one-authority rule).
  */
 
 export interface ReconcileAdapterDeps {
@@ -29,7 +35,7 @@ function parseOwnerRepo(runGit: GitRunner): { owner:string, repo:string } | null
   return null;
 }
 
-export function createProductionReconcileOps(deps: ReconcileAdapterDeps): FullReconcileOps {
+export function createProductionReconcileOps(deps: ReconcileAdapterDeps): ReconcileInspectionOps {
   const { runGh, repoRoot, claimantLogin, runGit } = deps;
   if (!runGit) throw new Error("runGit is required for production adapter");
   const ownerRepo = parseOwnerRepo(runGit);
@@ -60,27 +66,9 @@ export function createProductionReconcileOps(deps: ReconcileAdapterDeps): FullRe
     };
   }
 
-  async function safeGh(args:string[], context?: string): Promise<boolean> {
-    try {
-      await runGh(args);
-      return true;
-    } catch (e) {
-      if (context) console.warn(`${context}: ${getErrorMessage(e)}`);
-      return false;
-    }
-  }
-
   return {
     claimantLogin,
     fetchIssue: async (id:string) => fetchIssueFresh(id),
-
-    releaseClaim: async (issueId:string) => {
-      return safeGh(["issue","edit",issueId,"--remove-label","agent:in-progress","--remove-assignee",claimantLogin], `Failed to release claim for #${issueId}`);
-    },
-
-    comment: async (issueId:string, body:string) => {
-      return safeGh(["issue","comment",issueId,"--body",body]);
-    },
 
     getBatchPrNumber: async (issueNumber:string) => {
       let batchPrNumber: string | null = null;
@@ -90,7 +78,7 @@ export function createProductionReconcileOps(deps: ReconcileAdapterDeps): FullRe
         const match = commentsJson.match(/Batch PR #(\d+)/);
         if (match) batchPrNumber=match[1];
       } catch (e) {
-        const msg=getErrorMessage(e).toLowerCase();
+        const msg=errMessage(e).toLowerCase();
         const isNotFound=msg.includes("not found")||msg.includes("no pull")||msg.includes("404");
         if (!isNotFound) commentsUnknown=true;
       }
@@ -114,7 +102,7 @@ export function createProductionReconcileOps(deps: ReconcileAdapterDeps): FullRe
         const pr=JSON.parse(prJson);
         return { state: pr.state, mergedAt: pr.mergedAt ?? null, found:true };
       } catch (e) {
-        const msg=getErrorMessage(e).toLowerCase();
+        const msg=errMessage(e).toLowerCase();
         const isNotFound=msg.includes("not found")||msg.includes("could not find")||msg.includes("404");
         if (isNotFound) return { state:"CLOSED", mergedAt:null, found:false };
         return { state:"UNKNOWN", mergedAt:null, found:false, unknown:true };
@@ -141,7 +129,7 @@ export function createProductionReconcileOps(deps: ReconcileAdapterDeps): FullRe
 
     checkProvenanceValid: async (branchName:string) => {
       // Delegates to single canonical implementation in branch-helpers
-      return branchHelpers.inspectProvenance(repoRoot, branchName, runGit);
+      return inspectProvenance(repoRoot, branchName, runGit);
     },
 
     hasCommitsAhead: async (branchName:string): Promise<"has-work"|"empty"|"unknown"> => {
@@ -159,7 +147,7 @@ export function createProductionReconcileOps(deps: ReconcileAdapterDeps): FullRe
         else return "unknown";
       }
       // Use canonical helper for commits-ahead
-      return branchHelpers.inspectCommitsAhead(repoRoot, base, branchName, runGit);
+      return inspectCommitsAhead(repoRoot, base, branchName, runGit);
     },
 
     deleteBranch: async (branchName:string): Promise<boolean> => {
@@ -249,43 +237,6 @@ export function createProductionReconcileOps(deps: ReconcileAdapterDeps): FullRe
         const provPath = path.join(repoRoot, ".sandcastle","provenance", `${branchName.replace(/[^a-zA-Z0-9-]/g,"-")}.json`);
         if (fs.existsSync(provPath)) fs.unlinkSync(provPath);
       } catch { return false; }
-      return true;
-    },
-
-    addBlocked: async (issueId:string) => {
-      return safeGh(["issue","edit",issueId,"--add-label","agent:blocked"], `Failed to add agent:blocked to #${issueId}`);
-    },
-
-    markIntegrated: async (issueId:string, branchName:string): Promise<boolean> => {
-      const steps: Array<{args:string[], context:string}> = [
-        { args:["issue","edit",issueId,"--remove-label","agent:in-progress"], context:`Failed to remove agent:in-progress from #${issueId}` },
-        { args:["issue","edit",issueId,"--remove-label","agent:implement"], context:`Failed to remove agent:implement from #${issueId}` },
-        { args:["issue","edit",issueId,"--remove-label","agent:blocked"], context:`Failed to remove agent:blocked from #${issueId}` },
-        { args:["issue","edit",issueId,"--remove-assignee",claimantLogin], context:`Failed to remove assignee from #${issueId}` },
-      ];
-      for (const s of steps) {
-        const ok = await safeGh(s.args, s.context);
-        if (!ok) return false;
-      }
-      let closed=false;
-      try {
-        await runGh(["issue","close",issueId,"--comment",`Completed by Sandcastle -- branch \`${branchName}\` merged and integrated. Auto-merged to main after verification.`]);
-        closed=true;
-      } catch {
-        try {
-          await runGh(["issue","comment",issueId,"--body",`Completed by Sandcastle -- branch \`${branchName}\` integrated.`]);
-          await runGh(["issue","close",issueId]);
-          closed=true;
-        } catch { return false; }
-      }
-      if (!closed) return false;
-      let after: IssueInput;
-      try { after = await fetchIssueFresh(issueId); } catch { return false; }
-      if (after.state!=="closed") return false;
-      if (after.assignees.includes(claimantLogin)) return false;
-      if (after.labels.includes("agent:in-progress")) return false;
-      if (after.labels.includes("agent:implement")) return false;
-      if (after.labels.includes("agent:blocked")) return false;
       return true;
     },
   };

@@ -14,6 +14,7 @@ import {
   type ClaimOps,
   type ResearchClaimOps,
   type ReconcileResult,
+  type ReconcileGitHubTransitions,
 } from "./tracker-operations.mts";
 import { createProductionReconcileOps } from "./reconcile-adapter.mts";
 import type { GhTransport } from "./gh-transport.mts";
@@ -81,6 +82,41 @@ export interface ReceiptSink {
 export function makeMemoryReceiptSink(): ReceiptSink & { receipts: TransitionReceipt[] } {
   const receipts: TransitionReceipt[] = [];
   return { receipts, persist(r) { receipts.push(r); } };
+}
+
+/**
+ * Apply a combined add/remove label mutation to an open issue through the
+ * adapter's verified saga: fresh read → mutate → fresh read → prove the exact
+ * final label set → persist typed receipt. Used by the migration consumer so
+ * no issue mutation bypasses the single tracker authority.
+ */
+export function makeIssueLabelMutationPort(
+  gh: GhTransport,
+  sink: ReceiptSink,
+): (issueNumber: number, addLabels: string[], removeLabels: string[]) => Promise<{ committed: boolean; reason?: string }> {
+  return async (issueNumber, addLabels, removeLabels) => {
+    const args: string[] = [];
+    for (const a of addLabels) args.push("--add-label", a);
+    for (const r of removeLabels) args.push("--remove-label", r);
+    if (args.length === 0) return { committed: true };
+    const result = await runSaga(gh, issueNumber, "migrationLabelMutation", [
+      {
+        name: "apply-label-mutation",
+        mutate: () => runEdit(gh, issueNumber, args),
+        verifyAfter: (after) => {
+          for (const l of addLabels) if (!after.labels.includes(l)) return `${l} absent after mutation`;
+          for (const l of removeLabels) if (after.labels.includes(l)) return `${l} still present after mutation`;
+          return null;
+        },
+      },
+    ], sink);
+    if (result.kind === "committed") return { committed: true };
+    return { committed: false, reason: result.receipt.reason ?? result.receipt.code };
+  };
+}
+
+async function runEdit(gh: GhTransport, issueNumber: number, args: string[]): Promise<void> {
+  await gh.run(["issue", "edit", String(issueNumber), ...args]);
 }
 
 // ---------------------------------------------------------------------------
@@ -396,7 +432,31 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
     return fetchFresh(gh, Number(id));
   }
 
-  return {
+  /**
+   * Add agent:blocked on the PROVEN released state — used by reconciliation
+   * after its own release step. No claim validation (the claim is already
+   * released); proves the final invariant minus the claimant check (claimant
+   * was removed by the preceding release saga and receipted there).
+   */
+  async function addBlockedLabelSaga(issueNumber: number): Promise<TrackerTransitionResult> {
+    return runSaga(gh, issueNumber, "addBlockedAfterRelease", [
+      {
+        name: "add-blocked",
+        // No compensation: restoring agent:implement would be unsafe.
+        mutate: () => editIssue(issueNumber, ["--add-label", AGENT_BLOCKED]),
+        verifyAfter: (after) => {
+          if (after.state !== "open") return `issue #${issueNumber} not open`;
+          if (!after.labels.includes(READY_FOR_AGENT)) return `${READY_FOR_AGENT} absent in final state`;
+          if (!after.labels.includes(AGENT_BLOCKED)) return `${AGENT_BLOCKED} absent`;
+          if (after.labels.includes(AGENT_IN_PROGRESS)) return `${AGENT_IN_PROGRESS} still present in final state`;
+          if (after.labels.includes(AGENT_IMPLEMENT)) return `${AGENT_IMPLEMENT} present in final state`;
+          return null;
+        },
+      },
+    ], receiptSink);
+  }
+
+  const adapter: TrackerAdapter = {
     /**
      * Implementation claim — DELEGATES to canonical tracker-operations
      * claimImplementation (full eligibility revalidation: assignee, blocked,
@@ -407,15 +467,22 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
     async claimImplementation(issue) {
       const n = issue.number;
       const claimantLogin = await gh.resolveClaimantLogin();
-      // Capture the ACTUAL fresh pre-claim state — never inferred from labels.
-      let beforeState: IssueSnapshot | null = null;
-      try {
-        beforeState = snapshot(await fetchById(String(n)));
-      } catch { beforeState = null; }
+
+      // The canonical operation's OWN pre-mutation fetch is the authoritative
+      // snapshot: ops.fetchIssue is invoked by claimImplementation itself and
+      // captured here verbatim — no separate adapter prefetch that could race.
+      let canonicalBeforeState: IssueSnapshot | null = null;
+      let canonicalFetchFailed = false;
 
       const ops: ClaimOps & { claimantLogin: string } = {
         claimantLogin,
-        fetchIssue: (id) => fetchById(id),
+        fetchIssue: async (id) => {
+          const fetched = await fetchById(id);
+          if (Number(id) === n && !canonicalFetchFailed) {
+            canonicalBeforeState = snapshot(fetched);
+          }
+          return fetched;
+        },
         applyClaim: async (id) => {
           await editIssue(Number(id), ["--add-assignee", claimantLogin, "--add-label", AGENT_IN_PROGRESS, "--remove-label", AGENT_IMPLEMENT]);
         },
@@ -427,15 +494,27 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
           } catch { return false; }
         },
       };
-      const result = await claimImplementation(String(n), issue, ops);
+      const result = await claimImplementation(String(n), issue, ops).catch((e) => {
+        canonicalFetchFailed = true;
+        return { success: false as const, reason: `claim operation threw for #${n}: ${getMsg(e)}`, code: "FETCH_FAILED", compensated: false, factoryError: true };
+      });
+
+      if (!result.success && result.code === "FETCH_FAILED") {
+        // Canonical revalidation read failed — state unknown, zero mutation
+        // attempted. Indeterminate FACTORY_ERROR, never rejected.
+        return outcomeToTransition(
+          { phase: "indeterminate", reason: result.reason, code: result.code, beforeState: canonicalBeforeState, finalState: null },
+          "claimImplementation", n, receiptSink,
+        );
+      }
 
       // Prove compensation on a fresh read whenever the canonical ops report it.
       let compensationProof: { proven: boolean; finalState: IssueSnapshot | null; violation?: string } | null = null;
       if (!result.success && result.compensated && !result.factoryError) {
-        compensationProof = await proveClaimCompensation(gh, n, claimantLogin, "implementation", beforeState);
+        compensationProof = await proveClaimCompensation(gh, n, claimantLogin, "implementation", canonicalBeforeState);
       }
 
-      const outcome = classifyClaimOutcome("claimImplementation", result, beforeState, compensationProof);
+      const outcome = classifyClaimOutcome("claimImplementation", result, canonicalBeforeState, compensationProof);
       return outcomeToTransition(outcome, "claimImplementation", n, receiptSink);
     },
 
@@ -448,15 +527,20 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
     async claimResearch(issue) {
       const n = issue.number;
       const claimantLogin = await gh.resolveClaimantLogin();
-      // Capture the ACTUAL fresh pre-claim state — never inferred from labels.
-      let beforeState: IssueSnapshot | null = null;
-      try {
-        beforeState = snapshot(await fetchById(String(n)));
-      } catch { beforeState = null; }
+
+      // Same authoritative pre-mutation capture as implementation claims:
+      // the canonical operation's own fetch IS the receipted before-state.
+      let canonicalBeforeState: IssueSnapshot | null = null;
 
       const ops: ResearchClaimOps & { claimantLogin: string } = {
         claimantLogin,
-        fetchIssue: (id) => fetchById(id),
+        fetchIssue: async (id) => {
+          const fetched = await fetchById(id);
+          if (Number(id) === n) {
+            canonicalBeforeState = snapshot(fetched);
+          }
+          return fetched;
+        },
         applyClaim: async (id) => {
           await editIssue(Number(id), ["--add-assignee", claimantLogin, "--add-label", AGENT_IN_PROGRESS]);
         },
@@ -470,13 +554,20 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
       };
       const result = await claimResearch(String(n), ops);
 
+      if (!result.success && result.code === "FETCH_FAILED") {
+        return outcomeToTransition(
+          { phase: "indeterminate", reason: result.reason, code: result.code, beforeState: canonicalBeforeState, finalState: null },
+          "claimResearch", n, receiptSink,
+        );
+      }
+
       // Prove compensation on a fresh read whenever the canonical ops report it.
       let compensationProof: { proven: boolean; finalState: IssueSnapshot | null; violation?: string } | null = null;
       if (!result.success && result.compensated && !result.factoryError) {
-        compensationProof = await proveClaimCompensation(gh, n, claimantLogin, "research", beforeState);
+        compensationProof = await proveClaimCompensation(gh, n, claimantLogin, "research", canonicalBeforeState);
       }
 
-      const outcome = classifyClaimOutcome("claimResearch", result, beforeState, compensationProof);
+      const outcome = classifyClaimOutcome("claimResearch", result, canonicalBeforeState, compensationProof);
       return outcomeToTransition(outcome, "claimResearch", n, receiptSink);
     },
 
@@ -504,33 +595,37 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
           },
           mutate: () => editIssue(issueNumber, ["--remove-label", AGENT_IN_PROGRESS, "--remove-assignee", claimantLogin]),
           verifyAfter: (after) => {
+            // PROVE the exact released intermediate state immediately before
+            // add-blocked runs. A mismatch here means another actor touched the
+            // issue between release and block — indeterminate, not committed.
+            if (after.state !== "open") return `issue #${issueNumber} not open after release`;
+            if (!after.labels.includes(READY_FOR_AGENT)) return `${READY_FOR_AGENT} absent after release`;
             if (after.labels.includes(AGENT_IN_PROGRESS)) return `${AGENT_IN_PROGRESS} still present`;
             if (after.assignees.includes(claimantLogin)) return `claimant still assigned`;
+            if (after.labels.includes(AGENT_IMPLEMENT)) return `${AGENT_IMPLEMENT} appeared after release — concurrent mutation`;
+            if (after.labels.includes(AGENT_BLOCKED)) return `${AGENT_BLOCKED} appeared after release — concurrent mutation`;
             return null;
           },
-          compensate: async () => {
-            try {
-              await editIssue(issueNumber, ["--add-label", AGENT_IN_PROGRESS, "--add-assignee", claimantLogin]);
-              return true;
-            } catch { return false; }
-          },
-          verifyCompensation: (afterComp) => {
-            // Freshly prove the SAME complete claimed state that was validated before.
-            if (afterComp.state !== "open") return `issue #${issueNumber} not open after restore`;
-            if (!afterComp.labels.includes(READY_FOR_AGENT)) return `${READY_FOR_AGENT} absent after restore`;
-            if (!afterComp.labels.includes(AGENT_IN_PROGRESS)) return `${AGENT_IN_PROGRESS} absent after restore`;
-            if (!afterComp.assignees.includes(claimantLogin)) return `claimant absent after restore`;
-            if (afterComp.labels.includes(AGENT_IMPLEMENT)) return `${AGENT_IMPLEMENT} present after restore`;
-            if (afterComp.labels.includes(AGENT_BLOCKED)) return `${AGENT_BLOCKED} present after restore`;
-            return null;
-          },
+          // No compensation: if the released state cannot be PROVEN, another
+          // actor may own the claim — restoring it could fabricate a claim
+          // that never existed. Any release/postcondition failure here is
+          // indeterminate FACTORY_ERROR.
         },
         {
           name: "add-blocked",
           // No compensation: restoring agent:implement would be unsafe.
           mutate: () => editIssue(issueNumber, ["--add-label", AGENT_BLOCKED]),
-          verifyAfter: (after) =>
-            after.labels.includes(AGENT_BLOCKED) ? null : `${AGENT_BLOCKED} absent`,
+          verifyAfter: (after) => {
+            // Final committed state must prove the FULL invariant:
+            // open + ready-for-agent + agent:blocked − in-progress − claimant − implement.
+            if (after.state !== "open") return `issue #${issueNumber} not open`;
+            if (!after.labels.includes(READY_FOR_AGENT)) return `${READY_FOR_AGENT} absent in final state`;
+            if (!after.labels.includes(AGENT_BLOCKED)) return `${AGENT_BLOCKED} absent`;
+            if (after.labels.includes(AGENT_IN_PROGRESS)) return `${AGENT_IN_PROGRESS} still present in final state`;
+            if (after.labels.includes(AGENT_IMPLEMENT)) return `${AGENT_IMPLEMENT} present in final state`;
+            if (after.assignees.includes(claimantLogin)) return `claimant still assigned in final state`;
+            return null;
+          },
         },
       ], receiptSink);
     },
@@ -606,16 +701,39 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
       ], receiptSink);
     },
 
-    /** Closed-issue stale label cleanup (delegates decision to tracker-operations). */
+    /**
+     * Closed-issue stale label cleanup — the adapter owns the GitHub mutation
+     * AND its typed receipt, with a fresh read-back proving the final state.
+     * A partial failure (some labels removed, some not) is reported truthfully
+     * via `cleaned:false` so callers can stop progression.
+     */
     async cleanupClosedIssueStaleLabels(issue) {
-      return cleanupClosedIssue(issue, {
+      const outcome = await cleanupClosedIssue(issue, {
         removeLabel: async (id, label) => {
           try {
-            await editIssue(Number(id), ["--remove-label", label]);
-            return true;
+            const result = await runSaga(gh, Number(id), "cleanupClosedStaleLabel", [
+              {
+                name: `remove-${label}`,
+                mutate: () => editIssue(Number(id), ["--remove-label", label]),
+                verifyAfter: (after) =>
+                  after.labels.includes(label) ? `${label} still present` : null,
+              },
+            ], receiptSink);
+            return result.kind === "committed";
           } catch { return false; }
         },
       });
+      // Fresh read-back: prove no transient label remains on the closed issue.
+      if (outcome.cleaned) {
+        try {
+          const after = await fetchById(String(issue.number));
+          const residue = [AGENT_IN_PROGRESS, AGENT_IMPLEMENT, AGENT_BLOCKED].filter((l) => after.labels.includes(l));
+          if (residue.length > 0) return { cleaned: false, removed: outcome.removed };
+        } catch {
+          return { cleaned: false, removed: outcome.removed };
+        }
+      }
+      return outcome;
     },
 
     async comment(issueNumber, body) {
@@ -627,23 +745,37 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
 
     /**
      * Stale implementation reconciliation — single consumer-facing port.
-     * Constructs the internal Git/worktree implementation from transport-owned
-     * identity (claimant, owner/repo via gh) plus the injected local git runner.
+     * Constructs the internal Git/worktree INSPECTION implementation from
+     * transport-owned identity plus the injected local git runner, and wires
+     * its own verified-saga transitions as the ONLY GitHub state-transition
+     * authority used by reconciliation. Every release/block/integrate inside
+     * reconciliation is validated, proved on fresh reads, and receipted here.
      */
     async reconcileStaleImplementation(issue, branch) {
       if (!deps.runGit || !deps.repoRoot) {
         throw new Error("reconcileStaleImplementation requires runGit and repoRoot on the adapter deps");
       }
       const claimantLogin = await gh.resolveClaimantLogin();
-      const fullOps = createProductionReconcileOps({
+      const inspections = createProductionReconcileOps({
         runGh: (args) => gh.run(args),
         runGit: deps.runGit,
         repoRoot: deps.repoRoot,
         claimantLogin,
       });
-      return reconcileStaleImplementation(issue, branch, fullOps);
+
+      // The adapter's own saga transitions — reconciliation never composes raw edits.
+      // `adapter` is assigned by the time any transition port is invoked.
+      const github: ReconcileGitHubTransitions = {
+        releaseClaim: (issueNumber) => adapter.releaseAfterFactoryError(issueNumber),
+        addBlockedAfterRelease: (issueNumber) => addBlockedLabelSaga(issueNumber),
+        integrateAndClose: (issueNumber, integrationBranch) => adapter.finalizeIntegrated(issueNumber, integrationBranch),
+        comment: (issueNumber, body) => adapter.comment(issueNumber, body),
+      };
+
+      return reconcileStaleImplementation(issue, branch, { ...inspections, github });
     },
   };
+  return adapter;
 }
 
 // ---------------------------------------------------------------------------
@@ -663,10 +795,10 @@ export interface TrackerAdapterDeps {
 }
 
 /**
- * Classify a canonical ClaimResult into an authoritative phase using OBSERVED
- * facts: whether mutation was attempted (before-state captured and eligibility
- * passed), whether compensation was proven on a fresh read, and the actual
- * final state. Never infers from labels or fabricated snapshots.
+ * Classify a canonical ClaimResult into an authoritative phase using the
+ * EXPLICIT phase marker returned by the canonical operation plus OBSERVED
+ * facts (compensation proven on a fresh read, actual final state). No string
+ * code inference — the canonical operation declares its own phase.
  */
 function classifyClaimOutcome(
   transition: string,
@@ -682,24 +814,9 @@ function classifyClaimOutcome(
     };
   }
 
-  // Rejected-before-mutation: eligibility/contradiction/body-contract failures
-  // occur before applyClaim is ever invoked. These are exactly the codes the
-  // canonical policy returns from its eligibility gates.
-  const REJECTION_CODES: ReadonlySet<string> = new Set([
-    "NOT_ELIGIBLE", "ELIGIBILITY_FAILED", "FETCH_FAILED",
-    "STATE_NOT_OPEN", "MISSING_READY_AND_IMPLEMENT", "MISSING_IMPLEMENT",
-    "ALREADY_IN_PROGRESS", "ALREADY_BLOCKED", "ALREADY_ASSIGNED",
-    "BLOCKED_UNKNOWN", "BLOCKED", "FORBIDDEN_WAYFINDER", "MISSING_TRACER",
-    "MISSING_RESEARCH_LABEL", "WRONG_WAYFINDER", "RESEARCH_BODY_INVALID",
-    "MULTIPLE_WAYFINDER", "RESEARCH_WITH_IMPLEMENT",
-    "PROTOTYPE_WITH_READY_AGENT", "PROTOTYPE_WITH_IMPLEMENT",
-    "GRILLING_WITH_READY_AGENT", "GRILLING_WITH_IMPLEMENT",
-    "TASK_BOTH_READY", "TASK_MISSING_READINESS", "IMPLEMENT_WITHOUT_READY",
-    "IMPLEMENT_WITH_IN_PROGRESS", "RETIRED_AGENT_RESEARCH",
-    "RETIRED_PRESERVE_FUTURES", "MAP_WITH_COMMAND",
-  ]);
-  const rejectedBeforeMutation = REJECTION_CODES.has(result.code ?? "");
-  if (rejectedBeforeMutation) {
+  // Rejected-before-mutation: the canonical operation explicitly marks
+  // failures that occurred before applyClaim was ever invoked.
+  if (result.phase === "rejected-before-mutation") {
     return {
       phase: "rejected-before-mutation",
       reason: result.reason,

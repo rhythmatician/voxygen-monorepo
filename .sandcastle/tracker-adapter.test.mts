@@ -497,3 +497,199 @@ describe("tracker-adapter — production guardrails", () => {
     expect(result.after.assignees).not.toContain("test-bot");
   });
 });
+
+// ---------------------------------------------------------------------------
+// PR #217 round-3 regressions
+// ---------------------------------------------------------------------------
+
+describe("tracker-adapter — canonical claim reads authoritative", () => {
+  it("REGRESSION: canonical claim fetch failure => indeterminate FACTORY_ERROR, zero mutation", async () => {
+    const issue: FakeIssue = { number: 701, title: "t", body: TRACER_BODY, state: "open", labels: new Set(["ready-for-agent", "agent:implement"]), assignees: new Set() };
+    const gh = makeFakeGh({ issues: new Map([[701, issue]]) });
+    // Sabotage: the FIRST issue view (the canonical pre-mutation fetch) fails.
+    let viewCalls = 0;
+    const origRun = gh.run.bind(gh);
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "issue" && args[1] === "view") {
+        viewCalls++;
+        if (viewCalls === 1) throw new Error("network partition");
+      }
+      return origRun(args);
+    };
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const input: IssueInput = { number: 701, title: "t", state: "open", labels: ["ready-for-agent", "agent:implement"], assignees: [], body: TRACER_BODY };
+    const result = await tracker.claimImplementation(input);
+
+    expect(result.kind).toBe("indeterminate");
+    if (result.kind !== "indeterminate") return;
+    expect(result.factoryError).toBe(true);
+    expect(result.receipt.code).toBe("FETCH_FAILED");
+    expect(result.receipt.kind).toBe("indeterminate");
+    // Zero mutation — the claim edit never ran because eligibility could not be revalidated.
+    expect(gh.editCalls.length).toBe(0);
+    expect(issue.labels.has("agent:in-progress")).toBe(false);
+  });
+
+  it("REGRESSION: exact canonical pre-mutation snapshot is receipted", async () => {
+    const issue: FakeIssue = { number: 702, title: "t", body: TRACER_BODY, state: "open", labels: new Set(["ready-for-agent", "agent:implement"]), assignees: new Set() };
+    const gh = makeFakeGh({ issues: new Map([[702, issue]]) });
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const input: IssueInput = { number: 702, title: "t", state: "open", labels: ["ready-for-agent", "agent:implement"], assignees: [], body: TRACER_BODY };
+    const result = await tracker.claimImplementation(input);
+
+    expect(result.kind).toBe("committed");
+    if (result.kind !== "committed") return;
+    // The receipted before-state is EXACTLY what the canonical operation's own
+    // pre-mutation fetch observed — implement present, no in-progress, unassigned.
+    expect(result.before.labels).toEqual(["ready-for-agent", "agent:implement"]);
+    expect(result.before.assignees).toEqual([]);
+    expect(sink.receipts[0].before).toEqual(result.before);
+  });
+});
+
+describe("tracker-adapter — transition invariants across saga steps", () => {
+  it("REGRESSION: reclaim between release and add-blocked => indeterminate, blocked absent", async () => {
+    const issue: FakeIssue = {
+      number: 703,
+      title: "t",
+      body: TRACER_BODY,
+      state: "open",
+      labels: new Set(["ready-for-agent", "agent:in-progress"]),
+      assignees: new Set(["test-bot"]),
+    };
+    const gh = makeFakeGh({ issues: new Map([[703, issue]]) });
+    // Concurrent drift: after the release edit lands, another actor re-adds
+    // agent:in-progress before the intermediate fresh read proves release.
+    const origRun = gh.run.bind(gh);
+    let released = false;
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "issue" && args[1] === "edit" && args.includes("--remove-label") && args.includes("agent:in-progress")) {
+        released = true;
+        return origRun(args);
+      }
+      if (released && args[0] === "issue" && args[1] === "view") {
+        // Drift: reclaim happened concurrently — inject in-progress back into reads.
+        const raw = await origRun(args);
+        const parsed = JSON.parse(raw);
+        parsed.labels.push({ name: "agent:in-progress" });
+        return JSON.stringify(parsed);
+      }
+      return origRun(args);
+    };
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.transitionToBlocked(703);
+
+    // The released intermediate state did NOT hold — must be indeterminate,
+    // and compensation restored the claimed state; agent:blocked never added.
+    expect(result.kind).toBe("indeterminate");
+    if (result.kind !== "indeterminate") return;
+    expect(result.factoryError).toBe(true);
+    expect(issue.labels.has("agent:blocked")).toBe(false);
+  });
+
+  it("REGRESSION: final committed blocked state proves full invariant", async () => {
+    const issue: FakeIssue = {
+      number: 704,
+      title: "t",
+      body: TRACER_BODY,
+      state: "open",
+      labels: new Set(["ready-for-agent", "agent:in-progress"]),
+      assignees: new Set(["test-bot"]),
+    };
+    const gh = makeFakeGh({ issues: new Map([[704, issue]]) });
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.transitionToBlocked(704);
+
+    expect(result.kind).toBe("committed");
+    if (result.kind !== "committed") return;
+    // open + ready-for-agent + agent:blocked − in-progress − implement − claimant
+    expect(result.after.state).toBe("open");
+    expect(result.after.labels).toContain("ready-for-agent");
+    expect(result.after.labels).toContain("agent:blocked");
+    expect(result.after.labels).not.toContain("agent:in-progress");
+    expect(result.after.labels).not.toContain("agent:implement");
+    expect(result.after.assignees).not.toContain("test-bot");
+  });
+});
+
+describe("tracker-adapter — one-authority migration and cleanup receipts", () => {
+  it("REGRESSION: migration label mutation port commits with typed receipt and proves final label set", async () => {
+    const { makeIssueLabelMutationPort } = await import("./tracker-adapter.mts");
+    const issue: FakeIssue = { number: 705, title: "task", body: "body", state: "open", labels: new Set(["wayfinder:task"]), assignees: new Set() };
+    const gh = makeFakeGh({ issues: new Map([[705, issue]]) });
+    const sink = makeMemoryReceiptSink();
+    const mutate = makeIssueLabelMutationPort(gh, sink);
+
+    const result = await mutate(705, ["ready-for-human"], []);
+
+    expect(result.committed).toBe(true);
+    expect(issue.labels.has("ready-for-human")).toBe(true);
+    // Typed receipt persisted by the tracker authority.
+    expect(sink.receipts.length).toBe(1);
+    expect(sink.receipts[0].transition).toBe("migrationLabelMutation");
+    expect(sink.receipts[0].kind).toBe("committed");
+  });
+
+  it("REGRESSION: migration label mutation postcondition mismatch => not committed", async () => {
+    const { makeIssueLabelMutationPort } = await import("./tracker-adapter.mts");
+    const issue: FakeIssue = { number: 706, title: "task", body: "body", state: "open", labels: new Set(["wayfinder:task"]), assignees: new Set() };
+    const gh = makeFakeGh({ issues: new Map([[706, issue]]) });
+    // Sabotage: edits silently drop --add-label ready-for-human.
+    const origRun = gh.run.bind(gh);
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "issue" && args[1] === "edit") {
+        const patched = args.filter((a, i) => !(a === "--add-label" && args[i + 1] === "ready-for-human"));
+        if (patched.length === args.length) return origRun(args);
+        return origRun(patched);
+      }
+      return origRun(args);
+    };
+    const sink = makeMemoryReceiptSink();
+    const mutate = makeIssueLabelMutationPort(gh, sink);
+
+    const result = await mutate(706, ["ready-for-human"], []);
+
+    expect(result.committed).toBe(false);
+    expect(issue.labels.has("ready-for-human")).toBe(false);
+    expect(sink.receipts[sink.receipts.length - 1].kind).not.toBe("committed");
+  });
+
+  it("REGRESSION: closed cleanup produces the tracker authority's typed receipt per label", async () => {
+    const issue: FakeIssue = {
+      number: 707,
+      title: "t",
+      body: TRACER_BODY,
+      state: "closed",
+      labels: new Set(["ready-for-agent", "agent:in-progress", "agent:implement"]),
+      assignees: new Set(),
+    };
+    const gh = makeFakeGh({ issues: new Map([[707, issue]]) });
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const outcome = await tracker.cleanupClosedIssueStaleLabels({
+      number: 707, title: "t", state: "closed",
+      labels: ["ready-for-agent", "agent:in-progress", "agent:implement"],
+      assignees: [], body: undefined,
+    });
+
+    expect(outcome.cleaned).toBe(true);
+    expect(outcome.removed.sort()).toEqual(["agent:implement", "agent:in-progress"]);
+    // One typed receipt per executed transition.
+    expect(sink.receipts.length).toBe(2);
+    for (const r of sink.receipts) {
+      expect(r.transition).toBe("cleanupClosedStaleLabel");
+      expect(r.kind).toBe("committed");
+    }
+    expect(issue.labels.has("agent:in-progress")).toBe(false);
+    expect(issue.labels.has("agent:implement")).toBe(false);
+  });
+});

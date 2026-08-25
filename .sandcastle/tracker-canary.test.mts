@@ -80,19 +80,27 @@ function makeMockOps() {
       return { success: res.success, reason: (res as any).reason };
     },
     reconcile: async (issue: IssueInput) => {
-      // Use same full reconciliation operation set as createLiveCanaryOps — not minimal fallback
-      const reconcileOps: any = {
-        releaseClaim: async (id: string) => {
-          const n=parseInt(id,10);
-          const st=store.get(n);
-          if(!st) return false;
+      // Same FullReconcileOps shape as production: tri-state inspections plus
+      // the adapter-saga GitHub transition port — no parallel implementation.
+      const github = {
+        releaseClaim: async (id: number) => {
+          const st=store.get(id);
+          if(!st) return { kind: "indeterminate" as const };
           st.labels=st.labels.filter(l=>l!=="agent:in-progress");
           st.assignees=[];
-          return true;
+          return { kind: "committed" as const };
         },
-        comment: async (id: string, body: string) => {
-          return true;
+        addBlockedAfterRelease: async (id: number) => {
+          const st=store.get(id);
+          if(!st) return { kind: "indeterminate" as const };
+          if(!st.labels.includes("agent:blocked")) st.labels.push("agent:blocked");
+          return { kind: "committed" as const };
         },
+        integrateAndClose: async () => ({ kind: "committed" as const }),
+        comment: async () => true,
+      };
+      const reconcileOps: any = {
+        claimantLogin: "bot",
         fetchIssue: async (id: string) => {
           const n=parseInt(id,10);
           const st=store.get(n);
@@ -105,14 +113,7 @@ function makeMockOps() {
         checkProvenanceValid: async () => ({ valid:true }),
         hasCommitsAhead: async () => "empty" as const,
         deleteBranch: async () => true,
-        addBlocked: async (id: string) => {
-          const n=parseInt(id,10);
-          const st=store.get(n);
-          if(!st) return false;
-          if(!st.labels.includes("agent:blocked")) st.labels.push("agent:blocked");
-          return true;
-        },
-        markIntegrated: async () => true,
+        github,
       };
       const res = await reconcileStaleImplementation(issue, `sandcastle/issue-${issue.number}`, reconcileOps);
       // For canary, no_branch (stale with no branch/PR) is considered success if it released claim, even though reconciled=false (blocked)
@@ -265,50 +266,101 @@ describe("tracker-canary", () => {
 });
 
 describe("tracker-canary — live path behavioral (item 5)", () => {
-  it("runCanaryCli with injected runner uses full reconciliation path and records primaryError on failure", async () => {
+  it("runCanaryCli([--live]) exits 0 with all six booleans true, no primaryError, and proven fixture cleanup", async () => {
     const { runCanaryCli } = await import("./tracker-canary.mts");
-    const calls:string[][] = [];
+    const store = new Map<number, any>();
     let createdIds = 0;
+    const TRACER = "Scope bounded observable outcome\nno unresolved design decided\nacceptance criteria done when\nverification path verify\ndependencies blocked by none\nsmall enough for one session\nvertical tracer bullet slice";
+    const RESEARCH_BODY = "## Question\n\nCanary research question with substantive details for validation, part of #190 with evidence needed and mechanism to be investigated.";
     const mockRunGh = async (args:string[]) => {
-      calls.push(args);
       if (args[0]==="api" && args[1]==="user") return "test-bot";
       if (args[0]==="api" && args.includes("--method") && args.includes("POST")) {
         createdIds++;
-        return String(9000+createdIds);
+        const id = 9000+createdIds;
+        const labels: string[] = [];
+        for (let i=0;i<args.length;i++) if (args[i]==="labels[]=".slice(0,8) || args[i].startsWith("labels[]=")) labels.push(args[i].slice("labels[]=".length));
+        store.set(id, { number:id, title:"t", body: labels.includes("wayfinder:research") ? RESEARCH_BODY : TRACER, state:"open", labels:[...labels], assignees:[] as string[], blockedByCount:0 });
+        return String(id);
       }
       if (args[0]==="issue" && args[1]==="view") {
+        if (args.includes("comments")) return "";
         const id = parseInt(args[2],10);
-        if (id===9001) {
-          return JSON.stringify({ number: id, title:"t", body:"Scope bounded observable outcome\nno unresolved design decided\nacceptance criteria done when\nverification path verify\ndependencies blocked by none\nsmall enough for one session\nvertical tracer bullet slice", labels:[{name:"ready-for-agent"}], assignees:[], state:"open" });
-        }
-        if (id===9002) {
-          return JSON.stringify({ number: id, title:"t", body:"Scope bounded observable outcome\nno unresolved design decided\nacceptance criteria done when\nverification path verify\ndependencies blocked by none\nsmall enough for one session\nvertical tracer bullet slice", labels:[{name:"ready-for-agent"},{name:"agent:implement"}], assignees:[], state:"open" });
-        }
-        return JSON.stringify({ number: id, title:"t", body:"## Question\n\nCanary research question with substantive details for validation, part of #190 with evidence needed and mechanism to be investigated.", labels:[{name:"wayfinder:research"}], assignees:[], state:"open" });
+        const issue = store.get(id);
+        if (!issue) throw new Error("not found "+id);
+        return JSON.stringify({ number: issue.number, title: issue.title, body: issue.body, labels: issue.labels.map((n:string)=>({name:n})), assignees: issue.assignees.map((l:string)=>({login:l})), state: issue.state });
       }
-      if (args[0]==="api" && args[1].includes("issues/") && args.includes("--jq")) {
-        if (args[1].includes("9002")) return "1";
+      if (args[0]==="api" && args[1].includes("/issues/") && args.includes("--jq")) {
+        // blocked_by dependency lookup — fixtures are unblocked
         return "0";
       }
-      if (args[0]==="issue" && args[1]==="edit") return "";
+      if (args[0]==="issue" && args[1]==="edit") {
+        const id = parseInt(args[2],10);
+        const issue = store.get(id);
+        if (!issue) throw new Error("not found "+id);
+        for (let i=3;i<args.length;i++) {
+          if (args[i]==="--add-label") { const l=args[++i]; if(!issue.labels.includes(l)) issue.labels.push(l); }
+          else if (args[i]==="--remove-label") { const l=args[++i]; issue.labels=issue.labels.filter((x:string)=>x!==l); }
+          else if (args[i]==="--add-assignee") { const l=args[++i]; if(!issue.assignees.includes(l)) issue.assignees.push(l); }
+          else if (args[i]==="--remove-assignee") { const l=args[++i]; issue.assignees=issue.assignees.filter((x:string)=>x!==l); }
+        }
+        return "";
+      }
       if (args[0]==="issue" && args[1]==="comment") return "";
-      if (args[0]==="issue" && args[1]==="close") return "";
+      if (args[0]==="issue" && args[1]==="close") {
+        const id = parseInt(args[2],10);
+        const issue = store.get(id);
+        if (issue) issue.state="closed";
+        return "";
+      }
+      if (args[0]==="pr" && args[1]==="list") return "[]";
+      if (args[0]==="api" && args[1].includes("git/refs")) throw new Error("404 Not Found");
       return "";
+    };
+    // REAL local git runner over this workspace — branch absence is PROVED by
+    // inspection, not represented by an always-failing stub.
+    const cp = await import("node:child_process");
+    const repoRoot = process.cwd();
+    const runGit = (gitArgs:string[]) => {
+      try {
+        const out = cp.execFileSync("git", gitArgs, { encoding:"utf8", cwd: repoRoot } as any);
+        return { exitCode:0, stdout: out as string, stderr:"" };
+      } catch (e:any) {
+        return { exitCode: e?.status ?? 1, stdout: e?.stdout?.toString() ?? "", stderr: e?.stderr?.toString() ?? String(e?.message ?? e) };
+      }
     };
     let mkdirCalled=false;
     let written:any=null;
+    const fsTest = await import("node:fs");
     const result = await runCanaryCli(["--live"], {
       runGh: mockRunGh,
       resolveClaimantLoginFn: async () => "test-bot",
-      writeFileSync: (path:string, data:string) => { written=data; },
-      mkdirSync: () => { mkdirCalled=true; },
+      // Real writes — the atomic receipt path renames <target>.tmp-* into
+      // place, so the injected writer MUST actually create the temp file.
+      writeFileSync: (path:string, data:string) => { fsTest.writeFileSync(path, data, "utf8"); written=data; },
+      mkdirSync: ((p:string, o?:any) => { fsTest.mkdirSync(p, o); mkdirCalled=true; }) as any,
     });
+    expect(result.exitCode).toBe(0);
     expect(result.result).toBeDefined();
+    expect(result.result!.implementationDiscoverableOnlyWithReadyAndImplement).toBe(true);
+    expect(result.result!.successfulClaimConsumesImplement).toBe(true);
+    expect(result.result!.staleReconciliationReleasesWithoutRestoring).toBe(true);
+    expect(result.result!.researchDiscoverableFromWayfinderAlone).toBe(true);
+    expect(result.result!.contradictionsFailBeforeWorker).toBe(true);
+    expect(result.result!.fixturesCleaned).toBe(true);
+    expect(result.result!.primaryError).toBeUndefined();
+    expect(result.result!.cleanupFailures).toEqual([]);
     expect(result.result!.fixtureIds.length).toBeGreaterThan(0);
-    if (result.exitCode!==0) {
-      expect(result.result!.primaryError).toBeDefined();
+    // Proven cleanup: every fixture closed and clean in the store.
+    for (const id of result.result!.fixtureIds) {
+      const after = store.get(id)!;
+      expect(after.state).toBe("closed");
+      expect(after.assignees.length).toBe(0);
+      expect(after.labels).not.toContain("agent:in-progress");
+      expect(after.labels).not.toContain("agent:implement");
+      expect(after.labels).not.toContain("agent:blocked");
     }
     expect(mkdirCalled).toBe(true);
+    expect(written).not.toBeNull();
   });
 
   it("runCanary cleanup removes claimant and machine labels, closes and reads back", async () => {

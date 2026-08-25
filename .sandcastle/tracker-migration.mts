@@ -4,6 +4,7 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { createGhTransport, type GhTransport } from "./gh-transport.mts";
 import { withAtomicJsonReceipt } from "./resource-scopes.mts";
+import { createTrackerAdapter, makeMemoryReceiptSink, makeIssueLabelMutationPort, type TrackerAdapter } from "./tracker-adapter.mts";
 import {
   detectContradictions,
   getRemovableResidueLabels,
@@ -623,6 +624,27 @@ export async function runTrackerMigrationCli(args: string[], deps: CliDeps = {})
   });
   const runGhFn = deps.runGh ?? ((ghArgs: string[]) => migrationTransport.run(ghArgs));
 
+  // ONE tracker adapter — every ISSUE mutation flows through its verified saga
+  // with typed receipts. Repository-level label metadata operations
+  // (description updates, retired-label deletion) are not issue state
+  // transitions and remain direct api calls.
+  const adapterTransport: GhTransport = {
+    capabilityMode: migrationTransport.capabilityMode,
+    isWriteForbidden: (args) => migrationTransport.isWriteForbidden(args),
+    run: runGhFn,
+    tryRun: async (args) => { try { await runGhFn(args); return true; } catch { return false; } },
+    resolveClaimantLogin: () => migrationTransport.resolveClaimantLogin(),
+    resolveOwnerRepo: () => migrationTransport.resolveOwnerRepo(),
+  };
+  const adapter: TrackerAdapter = createTrackerAdapter({
+    gh: adapterTransport,
+    receiptSink: makeMemoryReceiptSink(),
+  });
+  const applyLabelMutation = makeIssueLabelMutationPort(
+    adapterTransport,
+    makeMemoryReceiptSink(),
+  );
+
   const readFile = deps.readFileSync ?? fsSync.readFileSync;
   const writeFile = deps.writeFileSync ?? fsSync.writeFileSync;
   const mkdir = deps.mkdirSync ?? fsSync.mkdirSync;
@@ -740,10 +762,13 @@ export async function runTrackerMigrationCli(args: string[], deps: CliDeps = {})
 
   const mutationOps: MutationOps2 = {
     updateIssueLabels: async (issueNumber, add, remove) => {
-      const ghArgs: string[] = ["issue", "edit", String(issueNumber)];
-      for (const a of add) ghArgs.push("--add-label", a);
-      for (const r of remove) ghArgs.push("--remove-label", r);
-      await runGhFn(ghArgs);
+      // Route through the tracker adapter's verified saga — the single GitHub
+      // state-transition authority. The combined add/remove edit is applied,
+      // proved on a fresh read, and receipted.
+      const result = await applyLabelMutation(issueNumber, add, remove);
+      if (!result.committed) {
+        throw new Error(`mutation failed for #${issueNumber}: ${result.reason}`);
+      }
     },
     updateLabelDescription: async (name, description) => {
       await runGhFn(["api", "--method", "PATCH", `repos/${parseOwnerRepo()?.owner}/${parseOwnerRepo()?.repo}/labels/${encodeURIComponent(name)}`, "-f", `description=${description}`]);

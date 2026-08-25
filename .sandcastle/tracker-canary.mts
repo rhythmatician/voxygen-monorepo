@@ -9,11 +9,12 @@ import {
   AGENT_BLOCKED,
   type IssueInput,
 } from "./tracker-policy.mts";
-import { createTrackerAdapter, makeMemoryReceiptSink, type TrackerAdapter } from "./tracker-adapter.mts";
+import { createTrackerAdapter, makeMemoryReceiptSink, makeIssueLabelMutationPort } from "./tracker-adapter.mts";
 import { withTemporaryIssueFixtures, withAtomicJsonReceipt } from "./resource-scopes.mts";
 import { createGhTransport, type GhTransport } from "./gh-transport.mts";
 import * as fs2 from "node:fs";
 import * as path2 from "node:path";
+import * as childProcess from "node:child_process";
 import { pathToFileURL, fileURLToPath } from "node:url";
 
 // REPO_ROOT for canary: stable repo root two levels above this module's directory.
@@ -97,9 +98,42 @@ export function createLiveCanaryOps(opts: {
   runGh: (args: string[]) => Promise<string>;
   claimantLogin: string;
   fetchIssueRealFn?: (id:number)=>Promise<IssueInput>;
+  /**
+   * Real or injected local Git runner — reconciliation's branch/worktree
+   * inspections must be executable, never an always-failing stub.
+   */
+  runGit?: (args: string[]) => { exitCode: number; stdout: string; stderr: string };
+  /** Stable repository root for the local git runner. Defaults to CANARY_REPO_ROOT. */
+  repoRoot?: string;
 }): CanaryOps {
   const { owner, repo, runGh: runGhFn, claimantLogin } = opts;
   const fetchReal = opts.fetchIssueRealFn ?? ((id:number)=>fetchIssueReal(id, runGhFn));
+  const canaryRepoRoot = opts.repoRoot ?? CANARY_REPO_ROOT;
+  // Real git runner by default — the fresh fixture's local branch absence is
+  // PROVED by inspection, not represented by a failing stub.
+  const runGit = opts.runGit ?? ((args: string[]) => {
+    try {
+      const out = childProcess.execFileSync("git", args, { encoding: "utf8", cwd: canaryRepoRoot } as any);
+      const stdout = typeof out === "string" ? out : Buffer.from(out).toString();
+      return { exitCode: 0, stdout, stderr: "" };
+    } catch (e: any) {
+      return { exitCode: typeof e?.status === "number" ? e.status : 1, stdout: e?.stdout?.toString() ?? "", stderr: e?.stderr?.toString() ?? String(e?.message ?? e) };
+    }
+  });
+  // ONE adapter per ops instance — every tracker mutation (claims,
+  // reconciliation transitions, fixture cleanup) flows through it with typed
+  // receipts persisted to the shared sink.
+  const receiptSink = makeMemoryReceiptSink();
+  const canaryTransport = transportFromRunner(runGhFn, claimantLogin);
+  const adapter = createTrackerAdapter({
+    gh: canaryTransport,
+    receiptSink,
+    runGit,
+    repoRoot: canaryRepoRoot,
+  });
+  // Verified label-mutation port over the same transport — used by fixture
+  // cleanup so every tracker mutation is saga-verified and receipted.
+  const applyLabelMutation = makeIssueLabelMutationPort(canaryTransport, receiptSink);
   return {
     createIssue: async (title, body, labels) => {
       const args: string[] = ["api", "--method", "POST", `repos/${owner}/${repo}/issues`, "-f", `title=${title}`, "-f", `body=${body}`];
@@ -113,21 +147,18 @@ export function createLiveCanaryOps(opts: {
     fetchIssue: fetchReal,
     closeIssue: async (id) => { await runGhFn(["issue", "close", String(id), "--comment", "Canary fixture — cleaning up"]); },
     cleanupIssue: async (id) => {
-      // Remove claimant assignee and transient labels
+      // Fixture cleanup tracker mutations flow through the SAME adapter as
+      // claims/reconciliation — one authority, typed receipts. Labels are
+      // removed while the fixture is still open (cleanup precedes close), so
+      // this uses the adapter's verified label-mutation port rather than the
+      // closed-issue-only cleanup path.
+      const result = await applyLabelMutation(id, [], [AGENT_IN_PROGRESS, AGENT_IMPLEMENT, AGENT_BLOCKED]);
+      if (!result.committed) throw new Error(`fixture #${id} label cleanup not committed: ${result.reason ?? "unknown"}`);
       try { await runGhFn(["issue", "edit", String(id), "--remove-assignee", claimantLogin]); } catch {}
-      for (const label of [AGENT_IN_PROGRESS, AGENT_IMPLEMENT, AGENT_BLOCKED]) {
-        try { await runGhFn(["issue", "edit", String(id), "--remove-label", label]); } catch {}
-      }
     },
     claimImplementation: async (issue) => {
       // Route through the ONE production tracker adapter — the canary must
       // exercise the exact production claim implementation, not a parallel one.
-      // The adapter is built over the INJECTED runner so tests and live runs
-      // both execute through this path.
-      const adapter = createTrackerAdapter({
-        gh: transportFromRunner(runGhFn, claimantLogin),
-        receiptSink: makeMemoryReceiptSink(),
-      });
       const result = await adapter.claimImplementation(issue);
       return { success: result.kind === "committed", reason: result.receipt.reason ?? result.receipt.code };
     },
@@ -135,12 +166,7 @@ export function createLiveCanaryOps(opts: {
       const id = String(issue.number);
       const branch = "sandcastle/issue-"+id;
       // Same adapter authority used by main — no parallel reconciliation implementation.
-      const adapter = createTrackerAdapter({
-        gh: transportFromRunner(runGhFn, claimantLogin),
-        receiptSink: makeMemoryReceiptSink(),
-        runGit: () => ({ exitCode: 1, stdout: "", stderr: "canary has no local git" }),
-        repoRoot: CANARY_REPO_ROOT,
-      });
+      // The adapter's internal git inspections use the REAL (or injected) runner.
       const res = await adapter.reconcileStaleImplementation(issue, branch);
       // For canary, consider reconciled if postcondition holds regardless of blocked
       return res.reconciled || res.reason.includes("no branch");
