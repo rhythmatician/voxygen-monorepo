@@ -20,8 +20,12 @@ import { getErrorMessage } from "./gh-errors.mts";
 export interface FixtureCleanupOps {
   /** Cleanup a single fixture (remove transient labels/assignee, close, etc.). */
   cleanup: (id: number) => Promise<void>;
-  /** Verify cleanup postcondition for a fixture; return error string when unclean. */
-  verify?: (id: number) => Promise<string | null>;
+  /**
+   * REQUIRED: verify cleanup postcondition for a fixture on a fresh read;
+   * return error string when unclean. Verification failure or unreadable
+   * state is a cleanup failure — fail closed on uncertainty.
+   */
+  verify: (id: number) => Promise<string | null>;
 }
 
 export interface FixturesResult<T> {
@@ -30,25 +34,26 @@ export interface FixturesResult<T> {
   cleanupFailures: string[];
   fixtureIds: number[];
   /**
-   * True when the primary body succeeded AND every fixture is proven clean.
-   * False when primary failed OR any cleanup state remains uncertain — callers
-   * must treat false as fail-closed FACTORY_ERROR evidence.
+   * True when the primary body succeeded AND every fixture is proven clean
+   * by fresh-read verification. False when primary failed OR any cleanup
+   * state remains uncertain — callers must treat false as fail-closed
+   * FACTORY_ERROR evidence.
    */
   ok: boolean;
 }
 
 /**
- * Acquire fixtures via `acquireAll` (each created id is recorded before the
- * next acquisition starts). Body runs with all acquired ids. Cleanup always
- * runs in `finally`, per-fixture isolated: one fixture's cleanup failure never
- * skips another's. Primary failure and cleanup failures are reported
- * separately. Postcondition verification runs after each successful cleanup;
- * an unverifiable postcondition counts as a cleanup failure (fail closed on
- * uncertainty).
+ * Acquire fixtures through the registrar: each created id is RECORDED at the
+ * moment of acquisition, so partial acquisition (fixture #1 created, #2
+ * throws) still leaves #1 on the cleanup list. Body runs with all recorded
+ * ids. Cleanup always runs in `finally`, per-fixture isolated: one fixture's
+ * cleanup failure never skips another's. Primary failure and cleanup failures
+ * are reported separately. Postcondition verification is required after each
+ * successful cleanup; an unverifiable postcondition counts as a cleanup
+ * failure.
  */
 export async function withTemporaryIssueFixtures<T>(
-  acquireAll: () => Promise<number[]>,
-  body: (fixtureIds: number[]) => Promise<T>,
+  acquire: (registrar: { record: (id: number) => void }) => Promise<T>,
   ops: FixtureCleanupOps,
 ): Promise<FixturesResult<T>> {
   const fixtureIds: number[] = [];
@@ -57,9 +62,7 @@ export async function withTemporaryIssueFixtures<T>(
   let value: T | undefined;
 
   try {
-    const ids = await acquireAll();
-    fixtureIds.push(...ids);
-    value = await body(fixtureIds);
+    value = await acquire({ record: (id) => { fixtureIds.push(id); } });
   } catch (e) {
     primaryError = getErrorMessage(e);
   } finally {
@@ -71,14 +74,12 @@ export async function withTemporaryIssueFixtures<T>(
         cleanupFailures.push(`cleanup #${id} failed: ${getErrorMessage(e)}`);
         continue;
       }
-      if (ops.verify) {
-        try {
-          const problem = await ops.verify(id);
-          if (problem) cleanupFailures.push(`fixture #${id} postcondition failed: ${problem}`);
-        } catch (e) {
-          // Verification itself failing means state is UNKNOWN — fail closed.
-          cleanupFailures.push(`fixture #${id} postcondition verification failed: ${getErrorMessage(e)}`);
-        }
+      try {
+        const problem = await ops.verify(id);
+        if (problem) cleanupFailures.push(`fixture #${id} postcondition failed: ${problem}`);
+      } catch (e) {
+        // Verification itself failing means state is UNKNOWN — fail closed.
+        cleanupFailures.push(`fixture #${id} postcondition verification failed: ${getErrorMessage(e)}`);
       }
     }
   }

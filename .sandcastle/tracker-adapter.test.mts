@@ -9,6 +9,8 @@ import type { IssueInput } from "./tracker-policy.mts";
 
 interface FakeIssue {
   number: number;
+  title: string;
+  body: string;
   state: "open" | "closed";
   labels: Set<string>;
   assignees: Set<string>;
@@ -34,8 +36,8 @@ function makeFakeGh(opts: {
         if (!issue) throw new Error(`not found #${args[2]}`);
         return JSON.stringify({
           number: issue.number,
-          title: "t",
-          body: "b",
+          title: issue.title,
+          body: issue.body,
           state: issue.state,
           labels: [...issue.labels].map((name) => ({ name })),
           assignees: [...issue.assignees].map((login) => ({ login })),
@@ -69,6 +71,8 @@ function makeFakeGh(opts: {
         return "";
       }
       if (args[0] === "issue" && args[1] === "comment") return "";
+      // blocked_by dependency lookup used by fetchFresh for eligibility
+      if (args[0] === "api" && args[1].includes("issues/") && args.includes("--jq")) return "0";
       throw new Error(`unexpected gh args: ${args.join(" ")}`);
     },
     async tryRun(args: string[]): Promise<boolean> {
@@ -80,9 +84,14 @@ function makeFakeGh(opts: {
   return gh as unknown as GhTransport & { editCalls: string[][] };
 }
 
+// Tracer-contract-valid body (all 7 concepts) required by canonical eligibility.
+const TRACER_BODY = "Scope bounded observable outcome\nno unresolved design decided\nacceptance criteria done when\nverification path verify\ndependencies blocked by none\nsmall enough for one session\nvertical tracer bullet slice end-to-end";
+// Research body satisfying the ## Question contract.
+const RESEARCH_BODY = "## Question\n\nCanary research question with substantive details for validation, part of #190 with evidence needed and mechanism to be investigated.";
+
 function implIssue(n: number): { issue: FakeIssue; input: IssueInput } {
-  const issue: FakeIssue = { number: n, state: "open", labels: new Set(["ready-for-agent", "agent:implement"]), assignees: new Set() };
-  const input: IssueInput = { number: n, title: "t", state: "open", labels: ["ready-for-agent", "agent:implement"], assignees: [], body: "b" };
+  const issue: FakeIssue = { number: n, title: "t", body: TRACER_BODY, state: "open", labels: new Set(["ready-for-agent", "agent:implement"]), assignees: new Set() };
+  const input: IssueInput = { number: n, title: "t", state: "open", labels: ["ready-for-agent", "agent:implement"], assignees: [], body: TRACER_BODY };
   return { issue, input };
 }
 
@@ -109,8 +118,8 @@ describe("tracker-adapter — verified saga", () => {
   });
 
   it("claimResearch commits and RETAINS wayfinder:research (explicit profile distinction)", async () => {
-    const issue: FakeIssue = { number: 502, state: "open", labels: new Set(["wayfinder:research"]), assignees: new Set() };
-    const input: IssueInput = { number: 502, title: "t", state: "open", labels: ["wayfinder:research"], assignees: [], body: "b" };
+    const issue: FakeIssue = { number: 502, title: "t", body: RESEARCH_BODY, state: "open", labels: new Set(["wayfinder:research"]), assignees: new Set() };
+    const input: IssueInput = { number: 502, title: "t", state: "open", labels: ["wayfinder:research"], assignees: [], body: RESEARCH_BODY };
     const gh = makeFakeGh({ issues: new Map([[502, issue]]) });
     const sink = makeMemoryReceiptSink();
     const tracker = createTrackerAdapter({ gh, receiptSink: sink });
@@ -124,20 +133,34 @@ describe("tracker-adapter — verified saga", () => {
     expect(result.after.assignees).toContain("test-bot");
   });
 
-  it("invalid before-state compensates without mutating", async () => {
-    const issue: FakeIssue = { number: 503, state: "open", labels: new Set(["ready-for-agent"]), assignees: new Set() }; // no agent:implement
-    const input: IssueInput = { number: 503, title: "t", state: "open", labels: ["ready-for-agent"], assignees: [], body: "b" };
+  it("invalid before-state rejects without mutating (canonical eligibility)", async () => {
+    const issue: FakeIssue = { number: 503, title: "t", body: TRACER_BODY, state: "open", labels: new Set(["ready-for-agent"]), assignees: new Set() }; // no agent:implement
+    const input: IssueInput = { number: 503, title: "t", state: "open", labels: ["ready-for-agent"], assignees: [], body: TRACER_BODY };
     const gh = makeFakeGh({ issues: new Map([[503, issue]]) });
     const sink = makeMemoryReceiptSink();
     const tracker = createTrackerAdapter({ gh, receiptSink: sink });
 
     const result = await tracker.claimImplementation(input);
 
-    expect(result.kind).toBe("compensated");
-    if (result.kind !== "compensated") return;
-    expect(result.receipt.code).toBe("PRECONDITION_FAILED");
+    // Canonical policy rejection before any mutation — kind:"rejected", not compensated.
+    expect(result.kind).toBe("rejected");
+    if (result.kind !== "rejected") return;
     expect(gh.editCalls.length).toBe(0); // never mutated
     expect(issue.labels.has("agent:in-progress")).toBe(false);
+  });
+
+  it("invalid tracer body rejects via canonical policy (body contract enforced)", async () => {
+    const issue: FakeIssue = { number: 513, title: "t", body: "b", state: "open", labels: new Set(["ready-for-agent", "agent:implement"]), assignees: new Set() };
+    const input: IssueInput = { number: 513, title: "t", state: "open", labels: ["ready-for-agent", "agent:implement"], assignees: [], body: "b" };
+    const gh = makeFakeGh({ issues: new Map([[513, issue]]) });
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.claimImplementation(input);
+
+    expect(result.kind).toBe("rejected");
+    if (result.kind !== "rejected") return;
+    expect(gh.editCalls.length).toBe(0);
   });
 
   it("mutation failure with defined compensation rolls back to before-state (compensated)", async () => {
@@ -152,7 +175,8 @@ describe("tracker-adapter — verified saga", () => {
 
     expect(result.kind).toBe("compensated");
     if (result.kind !== "compensated") return;
-    expect(result.receipt.code).toBe("COMPENSATED");
+    // Canonical ops report MUTATE_FAILED with compensated=true — mapped to compensated.
+    expect(result.receipt.code).toBe("MUTATE_FAILED");
     // Rollback proved by fresh read: no claim residue
     expect(issue.labels.has("agent:in-progress")).toBe(false);
     expect(issue.assignees.size).toBe(0);
@@ -161,8 +185,8 @@ describe("tracker-adapter — verified saga", () => {
   it("postcondition mismatch triggers compensation and reports compensated", async () => {
     // Issue where the edit succeeds but verification would fail: pre-marked both implement+in-progress
     // is caught by validateBefore, so instead simulate verify failure via a store that ignores edits.
-    const issue: FakeIssue = { number: 505, state: "open", labels: new Set(["ready-for-agent", "agent:implement"]), assignees: new Set() };
-    const input: IssueInput = { number: 505, title: "t", state: "open", labels: ["ready-for-agent", "agent:implement"], assignees: [], body: "b" };
+    const issue: FakeIssue = { number: 505, title: "t", body: TRACER_BODY, state: "open", labels: new Set(["ready-for-agent", "agent:implement"]), assignees: new Set() };
+    const input: IssueInput = { number: 505, title: "t", state: "open", labels: ["ready-for-agent", "agent:implement"], assignees: [], body: TRACER_BODY };
     const issues = new Map([[505, issue]]);
     const gh = makeFakeGh({ issues });
     // Sabotage: edits apply but drop the --remove-label of agent:implement (simulate partial GitHub effect)
@@ -185,12 +209,15 @@ describe("tracker-adapter — verified saga", () => {
     // Compensation removed in-progress + assignee
     expect(issue.labels.has("agent:in-progress")).toBe(false);
     expect(issue.assignees.size).toBe(0);
-    expect(result.receipt.code).toBe("COMPENSATED");
+    // Canonical ops report BOTH_PRESENT with compensated=true — mapped to compensated.
+    expect(result.receipt.code).toBe("BOTH_PRESENT");
   });
 
   it("UNSAFE TO RESTORE: release succeeds but adding agent:blocked fails → indeterminate FACTORY_ERROR, agent:implement NOT restored", async () => {
     const issue: FakeIssue = {
       number: 506,
+      title: "t",
+      body: TRACER_BODY,
       state: "open",
       labels: new Set(["ready-for-agent", "agent:in-progress"]),
       assignees: new Set(["test-bot"]),
@@ -215,6 +242,8 @@ describe("tracker-adapter — verified saga", () => {
   it("transitionToBlocked commits when both steps succeed", async () => {
     const issue: FakeIssue = {
       number: 507,
+      title: "t",
+      body: TRACER_BODY,
       state: "open",
       labels: new Set(["ready-for-agent", "agent:in-progress"]),
       assignees: new Set(["test-bot"]),
@@ -234,6 +263,8 @@ describe("tracker-adapter — verified saga", () => {
   it("releaseAfterFactoryError commits without restoring agent:implement", async () => {
     const issue: FakeIssue = {
       number: 508,
+      title: "t",
+      body: TRACER_BODY,
       state: "open",
       labels: new Set(["ready-for-agent", "agent:in-progress"]),
       assignees: new Set(["test-bot"]),
@@ -252,6 +283,8 @@ describe("tracker-adapter — verified saga", () => {
   it("finalizeIntegrated strips transient labels and closes with postcondition proof", async () => {
     const issue: FakeIssue = {
       number: 509,
+      title: "t",
+      body: TRACER_BODY,
       state: "open",
       labels: new Set(["ready-for-agent", "agent:in-progress"]),
       assignees: new Set(["test-bot"]),

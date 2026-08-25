@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { createGhTransport, type GhTransport } from "./gh-transport.mts";
+import { withAtomicJsonReceipt } from "./resource-scopes.mts";
 import {
   detectContradictions,
   getRemovableResidueLabels,
@@ -625,6 +626,14 @@ export async function runTrackerMigrationCli(args: string[], deps: CliDeps = {})
   const readFile = deps.readFileSync ?? fsSync.readFileSync;
   const writeFile = deps.writeFileSync ?? fsSync.writeFileSync;
   const mkdir = deps.mkdirSync ?? fsSync.mkdirSync;
+  // Atomic receipt writer — evidence is written temp-file + rename; injected
+  // writeFileSync (tests) still flows through the same atomic path.
+  const writeReceiptAtomic = (targetPath: string, data: unknown): void => {
+    withAtomicJsonReceipt(targetPath, () => data, {
+      writeFileSync: ((p: any, d: any) => writeFile(p, typeof d === "string" ? d : JSON.stringify(d, null, 2))) as any,
+      mkdirSync: mkdir as any,
+    });
+  };
 
   const getHeadSha = deps.getHeadSha ?? (() => {
     try { return execSyncFn("git rev-parse HEAD", { encoding: "utf8" }).trim(); } catch { return "unknown"; }
@@ -774,7 +783,7 @@ export async function runTrackerMigrationCli(args: string[], deps: CliDeps = {})
     console.log(formatReceipt(result.plan, mode, { checkPassed: result.checkPassed, blockingProblems: result.blockingProblems, migrationRequired: result.migrationRequired }));
     const receiptPath = ".sandcastle/logs/migration-dry-run-receipt.json";
     try { mkdir(".sandcastle/logs", { recursive: true }); } catch (e) { console.error(`Failed to create logs dir: ${e}`); return { exitCode: 1 }; }
-    try { writeFile(receiptPath, JSON.stringify(result.receipt, null, 2)); console.log(`Dry-run receipt written to ${receiptPath}`); } catch (e) { console.error(`Failed to write dry-run receipt: ${e}`); return { exitCode: 1 }; }
+    try { writeReceiptAtomic(receiptPath, result.receipt); console.log(`Dry-run receipt written to ${receiptPath}`); } catch (e) { console.error(`Failed to write dry-run receipt: ${e}`); return { exitCode: 1 }; }
     console.log("DRY-RUN complete — no writes performed");
     if (hasBlockingMigrationProblems(result.plan)) {
       console.log("NOTE: dry-run shows blocking contradictions/ambiguities that would block apply");
@@ -814,7 +823,7 @@ export async function runTrackerMigrationCli(args: string[], deps: CliDeps = {})
         afterReceipt: result.after,
       };
       try { mkdir(".sandcastle/logs", { recursive: true }); } catch (e) { console.error(`Failed to create logs dir: ${e}`); return { exitCode: 1 }; }
-      try { writeFile(receiptPath, JSON.stringify(persisted, null, 2)); } catch (e) { console.error(`Failed to write apply receipt: ${e}`); return { exitCode: 1 }; }
+      try { writeReceiptAtomic(receiptPath, persisted); } catch (e) { console.error(`Failed to write apply receipt: ${e}`); return { exitCode: 1 }; }
       return { exitCode: 0, receiptPath, plan: result.plan };
     } catch (e) {
       console.error(`APPLY FAILED: ${e}`);

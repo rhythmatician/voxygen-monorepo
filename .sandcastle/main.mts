@@ -45,7 +45,6 @@ import {
 } from "./tracker-policy.mts";
 import {
   reconcileStaleImplementation,
-  reconcileStaleResearch,
 } from "./tracker-operations.mts";
 import {
   partitionMergerInfrastructureFailure,
@@ -64,6 +63,7 @@ import {
 import { formatGhFailure, getErrorMessage, getGhErrorDetails } from "./gh-errors.mts";
 import { createGhTransport, resolveGhToken, GhCapabilityError, type GhTransport } from "./gh-transport.mts";
 import { createTrackerAdapter, type TrackerAdapter, type TrackerTransitionResult } from "./tracker-adapter.mts";
+import { withAtomicJsonReceipt } from "./resource-scopes.mts";
 import { parsePlannerOutput, fallbackToSingle } from "./planner-helpers.mts";
 import {
   makeIterationControl,
@@ -176,19 +176,21 @@ async function runGh(args: string[]): Promise<string> {
 const fileReceiptSink = makeFileReceiptSink(REPO_ROOT);
 const tracker: TrackerAdapter = createTrackerAdapter({ gh: ghTransport, receiptSink: fileReceiptSink });
 
+/**
+ * Production receipt sink — atomic writes via withAtomicJsonReceipt, and
+ * persistence failures THROW so the saga converts an unpersistable required
+ * receipt into indeterminate FACTORY_ERROR (a committed result can never lack
+ * durable evidence).
+ */
 function makeFileReceiptSink(repoRoot: string) {
   const receiptsDir = path.join(repoRoot, ".sandcastle", "logs", "tracker-transitions");
   return {
     persist(receipt: unknown): void {
-      try {
-        fs.mkdirSync(receiptsDir, { recursive: true });
-        const name = `${Date.now()}-${(receipt as { transition?: string }).transition ?? "transition"}-${(receipt as { issueNumber?: number }).issueNumber ?? "x"}.json`;
-        fs.writeFileSync(path.join(receiptsDir, name), JSON.stringify(receipt, null, 2));
-      } catch (e) {
-        // Receipt persistence failure must be visible — the saga contract
-        // promises recovery evidence; silent loss would undermine it.
-        console.warn(`[tracker-receipt] failed to persist receipt: ${getErrorMessage(e)}`);
-      }
+      const name = `${Date.now()}-${(receipt as { transition?: string }).transition ?? "transition"}-${(receipt as { issueNumber?: number }).issueNumber ?? "x"}.json`;
+      withAtomicJsonReceipt(path.join(receiptsDir, name), () => receipt);
+      // Verify the persisted receipt reads back and parses — evidence must be durable.
+      const written = path.join(receiptsDir, name);
+      JSON.parse(fs.readFileSync(written, "utf8"));
     },
   };
 }
@@ -578,24 +580,16 @@ async function reconcileInProgressIssues(): Promise<void> {
     const classification = classifyTicket(issue);
     if (classification.profile === "research") {
       console.log(`  #${id} (${branch}) → research in-progress stale on restart — preserving branch, releasing transient claim`);
-      const ops = {
-        releaseClaim: async (rid: string) => {
-          return await safeRunGh(
-            ["issue", "edit", rid, "--remove-label", "agent:in-progress", "--remove-assignee", "@me"],
-            `Failed to release research claim for #${rid} on reconciliation`,
-          );
-        },
-        comment: async (cid: string, body: string) => {
-          return await safeRunGh(["issue", "comment", cid, "--body", body]);
-        },
-        fetchIssue: async (fid: string) => issue,
-      };
-      const result = await reconcileStaleResearch(issue, branch, ops);
-      if (!result.reconciled) {
-        console.warn(`  #${id} → ${result.reason} — leaving in-progress for next reconciliation`);
+      // Release through the tracker adapter's factory-error release saga
+      // (same verified transition; never restores agent:implement).
+      const released = await tracker.releaseAfterFactoryError(issue.number);
+      if (released.kind !== "committed") {
+        const reason = released.kind === "indeterminate" ? released.receipt.reason : `unexpected result kind ${released.kind}`;
+        console.warn(`  #${id} → failed to release stale research claim: ${reason} — leaving in-progress for next reconciliation`);
         continue;
       }
-      console.log(`  #${id} (${branch}) → ${result.reason}`);
+      await safeRunGh(["issue", "comment", id, "--body", `Sandcastle reconciliation: released stale research claim for \`${branch}\` — branch preserved.`]);
+      console.log(`  #${id} (${branch}) → released stale research claim`);
       continue;
     }
     if (classification.profile === "conflicting") {
@@ -625,12 +619,11 @@ async function reconcileInProgressIssues(): Promise<void> {
     if (hasImplement && hasInProgress) {
       // Contradictory both present — should never be created intentionally; compensate by releasing in-progress
       console.warn(`  #${id} (${branch}) → contradictory both ${AGENT_IMPLEMENT} and ${AGENT_IN_PROGRESS} present — compensating`);
-      const released = await safeRunGh(
-        ["issue", "edit", id, "--remove-label", "agent:in-progress", "--remove-assignee", "@me"],
-        `Failed to compensate contradictory claim for #${id}`,
-      );
-      if (!released) {
-        console.warn(`  #${id} → failed to compensate contradictory state — leaving for next reconciliation`);
+      // Release through the tracker adapter's factory-error release saga.
+      const released = await tracker.releaseAfterFactoryError(issue.number);
+      if (released.kind !== "committed") {
+        const reason = released.kind === "indeterminate" ? released.receipt.reason : `unexpected result kind ${released.kind}`;
+        console.warn(`  #${id} → failed to compensate contradictory state: ${reason} — leaving for next reconciliation`);
         continue;
       }
       await safeRunGh(["issue", "comment", id, "--body", `Sandcastle reconciliation: compensated contradictory state for \`${branch}\` — removed assignee and \`${AGENT_IN_PROGRESS}\` but retained \`${AGENT_IMPLEMENT}\` (command not consumed). Requires revalidation before retry.`]);
@@ -648,16 +641,20 @@ async function reconcileInProgressIssues(): Promise<void> {
       "--state", "closed",
       "--label", "agent:in-progress",
       "--limit", "100",
-      "--json", "number,title",
+      "--json", "number,title,labels,state",
     ]);
     const closed: any[] = JSON.parse(closedJson);
     for(const r of closed){
       const id = String(r.number);
       console.log(`  closed #${id} still has agent:in-progress — cleaning up stale claim label`);
-      await safeRunGh(["issue", "edit", id, "--remove-label", "agent:in-progress"], `Failed to cleanup closed #${id}`);
-      for(const label of ["agent:implement","agent:blocked"]){
-        try{ await runGh(["issue", "edit", id, "--remove-label", label]); }catch{}
-      }
+      await tracker.cleanupClosedIssueStaleLabels({
+        number: r.number,
+        title: r.title,
+        state: (r.state?.toLowerCase() ?? "closed") as "open" | "closed",
+        labels: (r.labels ?? []).map((l: any) => l.name),
+        assignees: [],
+        body: undefined,
+      });
     }
     if(closed.length===0) console.log("  No closed in-progress issues to clean.");
   } catch (e){
@@ -670,15 +667,21 @@ async function reconcileInProgressIssues(): Promise<void> {
       "--state", "closed",
       "--label", "agent:implement",
       "--limit", "100",
-      "--json", "number,title,labels",
+      "--json", "number,title,labels,state",
     ]);
     const closedImplement: any[] = JSON.parse(closedImplementJson);
     for(const r of closedImplement){
-      const id = String(r.number);
       const labels = (r.labels ?? []).map((l: any) => l.name);
-      if (labels.includes("agent:implement")) {
-        console.log(`  closed #${id} still has agent:implement — cleaning`);
-        try{ await runGh(["issue", "edit", id, "--remove-label", "agent:implement"]); }catch{}
+      if (labels.includes(AGENT_IMPLEMENT)) {
+        console.log(`  closed #${r.number} still has ${AGENT_IMPLEMENT} — cleaning`);
+        await tracker.cleanupClosedIssueStaleLabels({
+          number: r.number,
+          title: r.title,
+          state: (r.state?.toLowerCase() ?? "closed") as "open" | "closed",
+          labels,
+          assignees: [],
+          body: undefined,
+        });
       }
     }
   } catch {}

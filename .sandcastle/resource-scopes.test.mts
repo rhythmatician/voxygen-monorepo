@@ -8,9 +8,14 @@ describe("withTemporaryIssueFixtures", () => {
   it("records fixtures at acquisition and cleans all in finally on success", async () => {
     const cleaned: number[] = [];
     const result = await withTemporaryIssueFixtures(
-      async () => [1, 2, 3],
-      async (ids) => ids.map((i) => i * 10),
-      { cleanup: async (id) => { cleaned.push(id); } },
+      async ({ record }) => {
+        record(1); record(2); record(3);
+        return [10, 20, 30];
+      },
+      {
+        cleanup: async (id) => { cleaned.push(id); },
+        verify: async () => null,
+      },
     );
     expect(result.ok).toBe(true);
     expect(result.value).toEqual([10, 20, 30]);
@@ -19,12 +24,39 @@ describe("withTemporaryIssueFixtures", () => {
     expect(result.cleanupFailures).toEqual([]);
   });
 
+  it("PARTIAL ACQUISITION: first fixture created, second throws — first still cleaned and verified", async () => {
+    const cleaned: number[] = [];
+    const verified: number[] = [];
+    const result = await withTemporaryIssueFixtures(
+      async ({ record }) => {
+        record(101);
+        throw new Error("second fixture creation failed");
+      },
+      {
+        cleanup: async (id) => { cleaned.push(id); },
+        verify: async (id) => { verified.push(id); return null; },
+      },
+    );
+    // The recorded fixture was NOT leaked despite the promise never resolving normally
+    expect(result.fixtureIds).toEqual([101]);
+    expect(cleaned).toEqual([101]);
+    expect(verified).toEqual([101]);
+    expect(result.primaryError).toContain("second fixture creation failed");
+    expect(result.cleanupFailures).toEqual([]);
+    expect(result.ok).toBe(false);
+  });
+
   it("cleans up when the primary body fails, keeping failures separated", async () => {
     const cleaned: number[] = [];
     const result = await withTemporaryIssueFixtures(
-      async () => [7, 8],
-      async () => { throw new Error("primary exploded"); },
-      { cleanup: async (id) => { cleaned.push(id); } },
+      async ({ record }) => {
+        record(7); record(8);
+        throw new Error("primary exploded");
+      },
+      {
+        cleanup: async (id) => { cleaned.push(id); },
+        verify: async () => null,
+      },
     );
     expect(cleaned).toEqual([7, 8]);
     expect(result.primaryError).toContain("primary exploded");
@@ -36,13 +68,13 @@ describe("withTemporaryIssueFixtures", () => {
   it("one fixture's cleanup failure does not skip another's cleanup", async () => {
     const cleaned: number[] = [];
     const result = await withTemporaryIssueFixtures(
-      async () => [1, 2, 3],
-      async () => "done",
+      async ({ record }) => { record(1); record(2); record(3); return "done"; },
       {
         cleanup: async (id) => {
           if (id === 2) throw new Error("fixture 2 unclean");
           cleaned.push(id);
         },
+        verify: async () => null,
       },
     );
     // Fixtures 1 and 3 still cleaned despite fixture 2 failing
@@ -55,8 +87,7 @@ describe("withTemporaryIssueFixtures", () => {
 
   it("postcondition verification failure counts as cleanup failure", async () => {
     const result = await withTemporaryIssueFixtures(
-      async () => [5],
-      async () => "ok",
+      async ({ record }) => { record(5); return "ok"; },
       {
         cleanup: async () => {},
         verify: async () => "still assigned",
@@ -69,8 +100,7 @@ describe("withTemporaryIssueFixtures", () => {
 
   it("verification throwing means state is UNKNOWN — fail closed", async () => {
     const result = await withTemporaryIssueFixtures(
-      async () => [9],
-      async () => "ok",
+      async ({ record }) => { record(9); return "ok"; },
       {
         cleanup: async () => {},
         verify: async () => { throw new Error("read-back failed"); },
@@ -84,8 +114,7 @@ describe("withTemporaryIssueFixtures", () => {
   it("cleanup failure skips postcondition verification for that fixture but verifies others", async () => {
     const verified: number[] = [];
     const result = await withTemporaryIssueFixtures(
-      async () => [1, 2],
-      async () => "ok",
+      async ({ record }) => { record(1); record(2); return "ok"; },
       {
         cleanup: async (id) => { if (id === 1) throw new Error("nope"); },
         verify: async (id) => { verified.push(id); return null; },

@@ -53,9 +53,9 @@ describe("merger control", () => {
     expect(canClaimNextOuterIteration(partition)).toBe(false);
 
     const productionSource = readFileSync(".sandcastle/main.mts", "utf8");
-    expect(productionSource).toContain(
-      '"--remove-label", "agent:in-progress", "--remove-assignee", "@me"',
-    );
+    // Factory-error release now routes through the tracker adapter's verified
+    // saga (releaseAfterFactoryError) — main.mts no longer composes raw edits.
+    expect(productionSource).toContain("releaseAfterFactoryError");
     // Inspect real submitImplementation adapter — executable code, not dummy comments
     const adapterStart = productionSource.indexOf("const submitImplementation = async");
     expect(adapterStart).toBeGreaterThan(-1);
