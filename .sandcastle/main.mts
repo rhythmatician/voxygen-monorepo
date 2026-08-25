@@ -416,17 +416,6 @@ async function claimResearchIssue(issue: IssueInput): Promise<boolean> {
   return false;
 }
 
-async function transitionToBlocked(issueId: string): Promise<boolean> {
-  // Per ADR 0010: release claim, retain ready-for-agent, add agent:blocked,
-  // never restore implement. Verified saga with typed receipt; unsafe-to-restore
-  // asymmetry handled inside the adapter.
-  const result = await tracker.transitionToBlocked(Number(issueId));
-  if (result.kind === "indeterminate") {
-    console.error(`  FACTORY_ERROR transitionToBlocked #${issueId}: ${result.receipt.reason} — recovery evidence preserved in receipt`);
-  }
-  return result.kind === "committed";
-}
-
 async function markBlocked(issueId: string, branch: string, reason: string): Promise<boolean> {
   const shortReason = reason.slice(0, REASON_TRUNCATE);
   // Verified saga transition. Only committed may publish a success-oriented
@@ -443,9 +432,9 @@ async function markBlocked(issueId: string, branch: string, reason: string): Pro
     if (!commentOk) {
       try {
         const recoveryDir = path.join(REPO_ROOT, ".sandcastle", "recovery");
-        fs.mkdirSync(recoveryDir, { recursive: true });
         const recoveryPath = path.join(recoveryDir, `${issueId}-${branch.replace(/[^a-zA-Z0-9-]/g, "-")}.json`);
-        fs.writeFileSync(recoveryPath, JSON.stringify({ issueId, branch, reason: shortReason, at: new Date().toISOString(), transitionOk: true, commentOk: false, githubAvailable: false }, null, 2));
+        // Atomic write — recovery evidence must never be a torn file.
+        withAtomicJsonReceipt(recoveryPath, () => ({ issueId, branch, reason: shortReason, at: new Date().toISOString(), transitionOk: true, commentOk: false, githubAvailable: false }));
         console.warn(`  [recovery] Preserved local state at ${recoveryPath} — blocked transition committed but comment failed.`);
       } catch (e) {
         console.warn(`  [recovery] Failed to preserve local state for #${issueId}: ${getErrorMessage(e)}`);
@@ -600,8 +589,11 @@ async function reconcileInProgressIssues(): Promise<void> {
       body: r.body,
     }));
   } catch (e) {
-    console.warn(`  Reconciliation: failed to list agent:in-progress issues: ${getErrorMessage(e)} — fail-closed, will retry next startup`);
-    return;
+    // Fail closed: an unreadable reconciliation inventory must STOP the
+    // factory — never continue to discovery/claim with unknown claim state.
+    const msg = `FACTORY_ERROR listing open agent:in-progress issues for reconciliation: ${getErrorMessage(e)} — stopping before discovery/claim`;
+    console.error(`  ${msg}`);
+    throw new Error(msg);
   }
   if (inProgress.length === 0) {
     console.log("  No Sandcastle-owned open in-progress issues to reconcile.");
@@ -623,6 +615,23 @@ async function reconcileInProgressIssues(): Promise<void> {
       }
       await safeRunGh(["issue", "comment", id, "--body", `Sandcastle reconciliation: released stale research claim for \`${branch}\` — branch preserved.`]);
       console.log(`  #${id} (${branch}) → released stale research claim`);
+      continue;
+    }
+    if (issue.labels.includes(AGENT_IMPLEMENT) && issue.labels.includes(AGENT_IN_PROGRESS)) {
+      // Contradictory both present — should never be created intentionally; compensate by releasing in-progress.
+      // Handled BEFORE the generic conflicting-profile continue so this exact
+      // contradiction always reaches its recovery path.
+      console.warn(`  #${id} (${branch}) → contradictory both ${AGENT_IMPLEMENT} and ${AGENT_IN_PROGRESS} present — compensating`);
+      // Release through the tracker adapter's factory-error release saga.
+      // A contradictory-state compensation failure STOPS the factory.
+      const released = await tracker.releaseAfterFactoryError(issue.number);
+      if (released.kind !== "committed") {
+        const reason = released.receipt.reason ?? released.receipt.code ?? `unexpected result kind ${released.kind}`;
+        console.error(`  FACTORY_ERROR compensating contradictory state for #${id}: ${reason} — stopping before discovery/claim`);
+        throw new Error(`FACTORY_ERROR compensating contradictory state for #${id}: ${reason}`);
+      }
+      await safeRunGh(["issue", "comment", id, "--body", `Sandcastle reconciliation: compensated contradictory state for \`${branch}\` — removed assignee and \`${AGENT_IN_PROGRESS}\` but retained \`${AGENT_IMPLEMENT}\` (command not consumed). Requires revalidation before retry.`]);
+      console.log(`  #${id} → compensated contradictory both-present`);
       continue;
     }
     if (classification.profile === "conflicting") {
@@ -699,6 +708,8 @@ async function reconcileInProgressIssues(): Promise<void> {
     }
     if(closed.length===0) console.log("  No closed in-progress issues to clean.");
   } catch (e){
+    // Distinguish listing failures (warn-and-retry-next-run) from cleanup FACTORY_ERRORs (stop).
+    if (e instanceof Error && e.message.startsWith("FACTORY_ERROR")) throw e;
     console.warn(`  Reconciliation: failed to list closed in-progress issues: ${getErrorMessage(e)}`);
   }
   // 3. Closed issues with any stale transient/command labels — general cleanup

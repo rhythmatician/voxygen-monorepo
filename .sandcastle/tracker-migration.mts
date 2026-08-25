@@ -4,7 +4,7 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { createGhTransport, type GhTransport } from "./gh-transport.mts";
 import { withAtomicJsonReceipt } from "./resource-scopes.mts";
-import { createTrackerAdapter, makeMemoryReceiptSink, makeIssueLabelMutationPort, type TrackerAdapter } from "./tracker-adapter.mts";
+import { createTrackerAdapter, makeIssueLabelMutationPort, type ReceiptSink, type TrackerAdapter } from "./tracker-adapter.mts";
 import {
   detectContradictions,
   getRemovableResidueLabels,
@@ -636,13 +636,32 @@ export async function runTrackerMigrationCli(args: string[], deps: CliDeps = {})
     resolveClaimantLogin: () => migrationTransport.resolveClaimantLogin(),
     resolveOwnerRepo: () => migrationTransport.resolveOwnerRepo(),
   };
+  // Durable typed-transition-receipt sink — atomic writes under
+  // .sandcastle/logs/migration-transitions/ (sidecar receipts alongside the
+  // canonical migration receipt; the canonical schema is unchanged).
+  const MIGRATION_TRANSITIONS_DIR = path.join(MIGRATION_REPO_ROOT, ".sandcastle", "logs", "migration-transitions");
+  const adapterReceiptSink: ReceiptSink = {
+    persist(receipt: unknown): void {
+      const name = `${Date.now()}-${(receipt as { transition?: string }).transition ?? "transition"}-${(receipt as { issueNumber?: number }).issueNumber ?? "x"}.json`;
+      withAtomicJsonReceipt(path.join(MIGRATION_TRANSITIONS_DIR, name), () => receipt);
+    },
+  };
   const adapter: TrackerAdapter = createTrackerAdapter({
     gh: adapterTransport,
-    receiptSink: makeMemoryReceiptSink(),
+    // Durable typed-transition-receipt sink: atomic writes under
+    // .sandcastle/logs/migration-transitions/ (sidecar receipts alongside the
+    // canonical migration receipt; the canonical schema is unchanged).
+    receiptSink: {
+      persist(receipt: unknown): void {
+        const dir = path.join(MIGRATION_REPO_ROOT, ".sandcastle", "logs", "migration-transitions");
+        const name = `${Date.now()}-${(receipt as { transition?: string }).transition ?? "transition"}-${(receipt as { issueNumber?: number }).issueNumber ?? "x"}.json`;
+        withAtomicJsonReceipt(path.join(dir, name), () => receipt);
+      },
+    },
   });
   const applyLabelMutation = makeIssueLabelMutationPort(
     adapterTransport,
-    makeMemoryReceiptSink(),
+    adapterReceiptSink,
   );
 
   const readFile = deps.readFileSync ?? fsSync.readFileSync;
@@ -840,6 +859,9 @@ export async function runTrackerMigrationCli(args: string[], deps: CliDeps = {})
         receipt: result.receipt,
         beforeReceipt: result.before,
         afterReceipt: result.after,
+        // Rollout evidence: sidecar typed transition receipts (one per saga
+        // mutation) are persisted atomically under this directory.
+        transitionReceiptsDir: path.relative(MIGRATION_REPO_ROOT, MIGRATION_TRANSITIONS_DIR),
       };
       try { mkdir(".sandcastle/logs", { recursive: true }); } catch (e) { console.error(`Failed to create logs dir: ${e}`); return { exitCode: 1 }; }
       try { writeReceiptAtomic(receiptPath, persisted); } catch (e) { console.error(`Failed to write apply receipt: ${e}`); return { exitCode: 1 }; }

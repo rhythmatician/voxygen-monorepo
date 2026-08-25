@@ -96,4 +96,32 @@ describe("production-consumer guardrails", () => {
     // Should not contain legacy fallback phrase
     expect(ops).not.toContain("fallback to old simple behavior");
   });
+
+  it("round 4: reconcile-adapter owns no remote parsing — ownerRepo comes from GhTransport", () => {
+    const adapter = readFile(".sandcastle/reconcile-adapter.mts");
+    const transport = readFile(".sandcastle/gh-transport.mts");
+    // Single transport authority: only gh-transport resolves owner/repo from git remotes.
+    expect(transport).toContain("resolveOwnerRepo");
+    expect(adapter).not.toContain("parseOwnerRepo");
+    expect(adapter).not.toMatch(/remote",\s*"get-url/);
+    // The adapter requires ownerRepo as an injected dependency.
+    expect(adapter).toContain("ownerRepo:");
+  });
+
+  it("round 4: production canary persists receipts durably, never in memory", () => {
+    const canary = readFile(".sandcastle/tracker-canary.mts");
+    // Production default sink is the atomic file sink; memory sink is test-only.
+    expect(canary).toContain("makeFileReceiptSink");
+    expect(canary).not.toMatch(/makeMemoryReceiptSink/);
+    expect(canary).toMatch(/receiptSink \?\? makeFileReceiptSink/);
+  });
+
+  it("round 4: migration records durable transition receipts directory in persisted receipt", () => {
+    const migration = readFile(".sandcastle/tracker-migration.mts");
+    // Durable atomic receipt sink (no memory sink in production paths).
+    expect(migration).not.toMatch(/makeMemoryReceiptSink/);
+    // Persisted receipt records where transition receipts live.
+    expect(migration).toContain("transitionReceiptsDir");
+    expect(migration).toContain("migration-transitions");
+  });
 });

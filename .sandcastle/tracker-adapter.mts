@@ -8,7 +8,6 @@ import {
 import {
   claimImplementation,
   claimResearch,
-  cleanupClosedIssue,
   reconcileStaleImplementation,
   type ClaimResult,
   type ClaimOps,
@@ -123,6 +122,29 @@ async function runEdit(gh: GhTransport, issueNumber: number, args: string[]): Pr
 // Saga primitive
 // ---------------------------------------------------------------------------
 
+/**
+ * Phase-aware precondition for the SECOND step of a release→block sequence.
+ * The step's own fresh read must re-prove the released intermediate state:
+ * open + ready-for-agent, with agent:in-progress, the expected claimant,
+ * agent:implement, and agent:blocked all absent. A failure here means an
+ * external actor mutated the issue after the first step committed — the
+ * caller reports it INDETERMINATE (never rejected) and does NOT proceed to
+ * the blocked mutation.
+ */
+function validateReleasedPrecondition(
+  fresh: IssueInput,
+  issueNumber: number,
+  claimantLogin: string,
+): string | null {
+  if (fresh.state !== "open") return `issue #${issueNumber} not open on pre-mutation read`;
+  if (!fresh.labels.includes(READY_FOR_AGENT)) return `${READY_FOR_AGENT} absent on pre-mutation read`;
+  if (fresh.labels.includes(AGENT_IN_PROGRESS)) return `${AGENT_IN_PROGRESS} present on pre-mutation read — claim was reintroduced concurrently`;
+  if (fresh.assignees.includes(claimantLogin)) return `claimant ${claimantLogin} assigned on pre-mutation read — claim was reintroduced concurrently`;
+  if (fresh.labels.includes(AGENT_IMPLEMENT)) return `${AGENT_IMPLEMENT} present on pre-mutation read — concurrent mutation`;
+  if (fresh.labels.includes(AGENT_BLOCKED)) return `${AGENT_BLOCKED} already present on pre-mutation read — concurrent mutation`;
+  return null;
+}
+
 interface SagaStep {
   name: string;
   /**
@@ -220,11 +242,17 @@ async function runSaga(
       const problem = step.validateBefore(fresh);
       if (problem) {
         const afterSnap = snapshot(fresh);
+        // A failed precondition AFTER a prior external mutation is evidence
+        // loss, not a clean rejection: when this saga already executed an
+        // earlier step, the state cannot be trusted as untouched — report
+        // indeterminate FACTORY_ERROR so callers stop progression.
+        const priorMutation = steps.indexOf(step) > 0;
         const outcome = persistReceipt(sink, {
-          transition, issueNumber, kind: "rejected", reason: problem, code: "PRECONDITION_FAILED",
+          transition, issueNumber, kind: priorMutation ? "indeterminate" : "rejected",
+          reason: problem, code: priorMutation ? "PRECONDITION_DRIFT" : "PRECONDITION_FAILED",
           before: beforeSnap, after: afterSnap,
         });
-        if (outcome.persistFailed) {
+        if (outcome.persistFailed || priorMutation) {
           return { kind: "indeterminate", lastObserved: afterSnap, receipt: outcome.receipt, factoryError: true };
         }
         return { kind: "rejected", before: beforeSnap, after: afterSnap, receipt: outcome.receipt };
@@ -439,9 +467,14 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
    * was removed by the preceding release saga and receipted there).
    */
   async function addBlockedLabelSaga(issueNumber: number): Promise<TrackerTransitionResult> {
+    const claimantLogin = await gh.resolveClaimantLogin();
     return runSaga(gh, issueNumber, "addBlockedAfterRelease", [
       {
         name: "add-blocked",
+        // Phase-aware precondition: this step's OWN fresh read must prove the
+        // released intermediate state before mutating. Drift here is reported
+        // indeterminate by runSaga (second step) and NO blocked label is added.
+        validateBefore: (fresh) => validateReleasedPrecondition(fresh, issueNumber, claimantLogin),
         // No compensation: restoring agent:implement would be unsafe.
         mutate: () => editIssue(issueNumber, ["--add-label", AGENT_BLOCKED]),
         verifyAfter: (after) => {
@@ -613,6 +646,10 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
         },
         {
           name: "add-blocked",
+          // Phase-aware precondition: re-prove the released state on THIS
+          // step's own fresh read. A concurrent reclaim between the release
+          // postcondition and this read is indeterminate — never blocked.
+          validateBefore: (fresh) => validateReleasedPrecondition(fresh, issueNumber, claimantLogin),
           // No compensation: restoring agent:implement would be unsafe.
           mutate: () => editIssue(issueNumber, ["--add-label", AGENT_BLOCKED]),
           verifyAfter: (after) => {
@@ -702,38 +739,47 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
     },
 
     /**
-     * Closed-issue stale label cleanup — the adapter owns the GitHub mutation
-     * AND its typed receipt, with a fresh read-back proving the final state.
-     * A partial failure (some labels removed, some not) is reported truthfully
-     * via `cleaned:false` so callers can stop progression.
+     * Closed-issue stale label cleanup — ONE verified closed-state transition
+     * owned by this adapter. The saga's own fresh read requires state ==
+     * closed BEFORE any mutation (a reopened issue is rejected with zero
+     * writes); after mutation a fresh read proves the FULL final invariant:
+     * still closed, agent:in-progress / agent:implement / agent:blocked all
+     * absent. A reopen DURING the transition is indeterminate and stops the
+     * factory. Every executed transition persists its typed receipt.
      */
     async cleanupClosedIssueStaleLabels(issue) {
-      const outcome = await cleanupClosedIssue(issue, {
-        removeLabel: async (id, label) => {
-          try {
-            const result = await runSaga(gh, Number(id), "cleanupClosedStaleLabel", [
-              {
-                name: `remove-${label}`,
-                mutate: () => editIssue(Number(id), ["--remove-label", label]),
-                verifyAfter: (after) =>
-                  after.labels.includes(label) ? `${label} still present` : null,
-              },
-            ], receiptSink);
-            return result.kind === "committed";
-          } catch { return false; }
-        },
-      });
-      // Fresh read-back: prove no transient label remains on the closed issue.
-      if (outcome.cleaned) {
+      const staleLabels = [AGENT_IN_PROGRESS, AGENT_IMPLEMENT, AGENT_BLOCKED].filter((l) => issue.labels.includes(l));
+      if (staleLabels.length === 0) {
+        // Nothing to remove — prove residue absence on a fresh read anyway.
         try {
-          const after = await fetchById(String(issue.number));
-          const residue = [AGENT_IN_PROGRESS, AGENT_IMPLEMENT, AGENT_BLOCKED].filter((l) => after.labels.includes(l));
-          if (residue.length > 0) return { cleaned: false, removed: outcome.removed };
+          const fresh = await fetchById(String(issue.number));
+          const residue = [AGENT_IN_PROGRESS, AGENT_IMPLEMENT, AGENT_BLOCKED].filter((l) => fresh.labels.includes(l));
+          if (residue.length > 0) return { cleaned: false, removed: [] };
+          return { cleaned: true, removed: [] };
         } catch {
-          return { cleaned: false, removed: outcome.removed };
+          return { cleaned: false, removed: [] };
         }
       }
-      return outcome;
+      const result = await runSaga(gh, issue.number, "cleanupClosedStaleLabels", [
+        {
+          name: "remove-stale-labels",
+          validateBefore: (fresh) => {
+            if (fresh.state !== "closed") return `issue #${issue.number} is ${fresh.state}, not closed — refusing cleanup mutation`;
+            return null;
+          },
+          mutate: () => editIssue(issue.number, staleLabels.flatMap((l) => ["--remove-label", l])),
+          verifyAfter: (after) => {
+            if (after.state !== "closed") return `issue #${issue.number} no longer closed after cleanup — reopen during transition`;
+            for (const l of [AGENT_IN_PROGRESS, AGENT_IMPLEMENT, AGENT_BLOCKED]) {
+              if (after.labels.includes(l)) return `${l} still present on closed issue #${issue.number}`;
+            }
+            return null;
+          },
+          // No compensation: re-adding transient labels to a closed issue is unsafe.
+        },
+      ], receiptSink);
+      if (result.kind === "committed") return { cleaned: true, removed: staleLabels };
+      return { cleaned: false, removed: [] };
     },
 
     async comment(issueNumber, body) {
@@ -761,6 +807,9 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
         runGit: deps.runGit,
         repoRoot: deps.repoRoot,
         claimantLogin,
+        // Transport-owned repository identity — the inspection port never
+        // parses git remotes locally.
+        ownerRepo: gh.resolveOwnerRepo(),
       });
 
       // The adapter's own saga transitions — reconciliation never composes raw edits.

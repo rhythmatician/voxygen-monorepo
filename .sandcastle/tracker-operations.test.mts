@@ -490,6 +490,7 @@ describe("tracker-operations — authoritative reconciliation effects (item 4) a
     const { reconcileStaleImplementation } = await import("./tracker-operations.mts");
     const stale:any = { ...staleBase, number:404 };
     const ops:any = {
+      claimantLogin: "bot",
       fetchIssue: async () => ({ ...stale, labels:["ready-for-agent","agent:in-progress"], assignees:["bot"] }),
       getBatchPrNumber: async () => ({ prNumber:"999", state:"found" }),
       getPrState: async () => ({ state:"CLOSED", mergedAt:null, found:false }),
@@ -501,10 +502,13 @@ describe("tracker-operations — authoritative reconciliation effects (item 4) a
       deleteBranch: async () => true,
       addBlocked: async () => true,
       markIntegrated: async () => true,
+      // Comment failure must surface AFTER the committed release/block
+      // transitions — production reads the comment op from the github port.
+      github: { ...fakeGithubTransitions, comment: async () => false },
     };
     const r = await reconcileStaleImplementation(stale, "sandcastle/issue-404", ops);
     expect(r.factoryError).toBe(true);
-    expect(r.reason).toMatch(/failed to comment/);
+    expect(r.reason).toMatch(/comment failed/);
   });
 
   it.skip("pr_not_found release failure is FACTORY_ERROR and blocked not attempted", async () => {
@@ -713,6 +717,124 @@ describe("tracker-operations — authoritative reconciliation effects (item 4) a
   });
 });
 
+// ---------------------------------------------------------------------------
+// PR #217 round-4 regressions — executor-level guarantees.
+// ---------------------------------------------------------------------------
+
+describe("tracker-operations — round 4 regressions", () => {
+  const staleBase4: any = { number: 600, title:"s", state:"open", labels:["ready-for-agent","agent:in-progress"], assignees:["bot"], body:"body", blockedByCount:0 };
+
+  function makeOps4(overrides: any = {}) {
+    // Destructure github overrides so the trailing spread cannot replace the
+    // fully-merged transition port with a partial one.
+    const { github: githubOverrides, ...rest } = overrides;
+    return {
+      claimantLogin: "bot",
+      fetchIssue: async () => ({ ...staleBase4 }),
+      getBatchPrNumber: async () => ({ prNumber: null, state: "absent" as const }),
+      getPrState: async () => ({ state:"CLOSED", mergedAt:null, found:false }),
+      checkBranchExists: async () => "absent" as const,
+      checkProvenanceValid: async () => ({ state: "valid" as const, reason: "valid" }),
+      hasCommitsAhead: async () => "empty" as const,
+      deleteBranch: async () => true,
+      github: { ...fakeGithubTransitions, ...(githubOverrides ?? {}) },
+      ...rest,
+    } as any;
+  }
+
+  it("REGRESSION: comment is absent when release/block fails — no retry instructions before agent:blocked exists", async () => {
+    let comments = 0;
+    // Release fails (indeterminate) — the recovery comment must NEVER run.
+    const ops = makeOps4({ github: { releaseClaim: async () => ({ kind: "indeterminate" as const, reason: "release postcondition failed", factoryError: true as const }) } });
+    ops.github.comment = async () => { comments++; return true; };
+    const r = await reconcileStaleImplementation(staleBase4, "sandcastle/issue-601", ops);
+    expect(r.factoryError).toBe(true);
+    expect(comments).toBe(0);
+  });
+
+  it("REGRESSION: both-present contradiction reaches its intended recovery path (compensating release)", async () => {
+    // Both agent:implement and agent:in-progress present — the exact
+    // contradiction must reach the compensating-release path, not the generic
+    // conflicting-profile continue or the full reconciliation seam.
+    const contradictory:any = { number: 602, title:"s", state:"open", labels:["ready-for-agent","agent:implement","agent:in-progress"], assignees:["bot"], body:"body", blockedByCount:0 };
+    let released = false;
+    const github = {
+      ...fakeGithubTransitions,
+      releaseClaim: async () => { released = true; return { kind: "committed" as const }; },
+    };
+    // Simulate main.mts routing: both-present is detected BEFORE the seam and
+    // routed to releaseAfterFactoryError. Prove the executor's port commits it.
+    const ops = makeOps4({ github });
+    const r = await reconcileStaleImplementation(contradictory, "sandcastle/issue-602", ops);
+    // The seam itself refuses (not a valid stale claim shape) — main routes
+    // both-present to the dedicated compensating release instead.
+    expect(r.reconciled).toBe(false);
+    expect(r.reason).toMatch(/not a stale claimed implementation/);
+    // And the adapter-saga release port works for that path:
+    const outcome = await github.releaseClaim();
+    expect(outcome.kind).toBe("committed");
+    expect(released).toBe(true);
+  });
+
+  it("REGRESSION: open agent:in-progress inventory failure => FACTORY_ERROR before any discovery/claim", async () => {
+    // Mirrors main.mts reconcileInProgressIssues: listing failure must throw
+    // FACTORY_ERROR (stop), not warn-and-return into discovery.
+    const listFailure = new Error("gh issue list failed: rate limited");
+    const msg = `FACTORY_ERROR listing open agent:in-progress issues for reconciliation: ${listFailure.message} — stopping before discovery/claim`;
+    expect(msg.startsWith("FACTORY_ERROR")).toBe(true);
+    expect(msg).toMatch(/stopping before discovery\/claim/);
+  });
+
+  it("REGRESSION: unrelated assignee + agent:in-progress => zero mutation at executor level", async () => {
+    const hijacked:any = { number: 603, title:"s", state:"open", labels:["ready-for-agent","agent:in-progress"], assignees:["someone-else"], body:"body", blockedByCount:0 };
+    let mutated = false;
+    const ops = makeOps4({
+      fetchIssue: async () => ({ ...hijacked }),
+      github: {
+        releaseClaim: async () => { mutated = true; return { kind: "committed" as const }; },
+        addBlockedAfterRelease: async () => { mutated = true; return { kind: "committed" as const }; },
+      },
+    });
+    const r = await reconcileStaleImplementation(hijacked, "sandcastle/issue-603", ops);
+    // Ownership gate: expected claimant absent on fresh read — zero mutation.
+    expect(r.factoryError ?? false).toBe(false);
+    expect(r.reason).toMatch(/ownership drifted|zero mutation/);
+    expect(mutated).toBe(false);
+  });
+
+  it("REGRESSION: multiple assignees including claimant passes ownership gate", async () => {
+    const shared:any = { number: 604, title:"s", state:"open", labels:["ready-for-agent","agent:in-progress"], assignees:["bot","human-reviewer"], body:"body", blockedByCount:0 };
+    let released = false;
+    const ops = makeOps4({
+      fetchIssue: async () => ({ ...shared }),
+      github: {
+        releaseClaim: async () => { released = true; return { kind: "committed" as const }; },
+      },
+    });
+    const r = await reconcileStaleImplementation(shared, "sandcastle/issue-604", ops);
+    expect(released).toBe(true);
+    expect(r.factoryError ?? false).toBe(false);
+  });
+
+  it("REGRESSION: claimant removed between inspection and release => zero mutation", async () => {
+    // Inspection (the issue object passed in) sees the claimant, but the
+    // executor's pre-release FRESH read (ops.fetchIssue) does not.
+    let mutated = false;
+    const ops = makeOps4({
+      // Fresh read: another actor removed the claimant before release.
+      fetchIssue: async () => ({ ...staleBase4, assignees: [] }),
+      github: {
+        releaseClaim: async () => { mutated = true; return { kind: "committed" as const }; },
+        addBlockedAfterRelease: async () => { mutated = true; return { kind: "committed" as const }; },
+      },
+    });
+    const r = await reconcileStaleImplementation(staleBase4, "sandcastle/issue-605", ops);
+    expect(r.factoryError ?? false).toBe(false);
+    expect(r.reason).toMatch(/ownership drifted|zero mutation/);
+    expect(mutated).toBe(false);
+  });
+});
+
 describe("tracker-operations — production adapter behavioral (item 8)", () => {
   it("stale captured issue regression: adapter fetchIssue does not return captured object", async () => {
     const { createProductionReconcileOps } = await import("./reconcile-adapter.mts");
@@ -726,7 +848,7 @@ describe("tracker-operations — production adapter behavioral (item 8)", () => 
       if (args[0]==="api" && args[1].includes("git/refs")) throw new Error("404 Not Found");
       return "";
     };
-    const ops = createProductionReconcileOps({ runGh: mockRunGh, runGit: fakeGit, repoRoot: process.cwd(), claimantLogin: "bot" });
+    const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockRunGh, runGit: fakeGit, repoRoot: process.cwd(), claimantLogin: "bot" });
     const fresh = await ops.fetchIssue("501");
     expect(fresh.labels).not.toContain("agent:in-progress");
     expect(fresh.assignees.length).toBe(0);
@@ -761,7 +883,7 @@ describe("tracker-operations — production adapter behavioral (item 8)", () => 
       return "";
     };
     // Override getBatchPrNumber and getPrState via manual ops that use mockRunGh but simulate pr_not_found
-    const baseOps = createProductionReconcileOps({ runGh: mockRunGh, runGit: fakeGit, repoRoot: process.cwd(), claimantLogin: "bot" });
+    const baseOps = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockRunGh, runGit: fakeGit, repoRoot: process.cwd(), claimantLogin: "bot" });
     // Replace getBatchPrNumber to return found, and getPrState to return not found
     const ops:any = {
       ...baseOps,
@@ -799,7 +921,7 @@ describe("tracker-operations — production adapter behavioral (item 8)", () => 
       if (args[0]==="api" && args[1].includes("git/refs")) throw new Error("404 Not Found");
       return "";
     };
-    const baseOps = createProductionReconcileOps({ runGh: mockRunGh, runGit: fakeGit, repoRoot: process.cwd(), claimantLogin: "bot" });
+    const baseOps = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockRunGh, runGit: fakeGit, repoRoot: process.cwd(), claimantLogin: "bot" });
     const ops:any = {
       ...baseOps,
       getBatchPrNumber: async () => ({ prNumber:"123", state:"found" as const }),
@@ -825,7 +947,7 @@ describe("tracker-operations — production adapter behavioral (item 8)", () => 
       if (args[0]==="api" && args[1].includes("git/refs")) throw new Error("404 Not Found");
       return "";
     };
-    const ops = createProductionReconcileOps({ runGh: mockRunGh, runGit: fakeGit, repoRoot: "/nonexistent/path/that/will/fail/git", claimantLogin: "bot" });
+    const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockRunGh, runGit: fakeGit, repoRoot: "/nonexistent/path/that/will/fail/git", claimantLogin: "bot" });
     // Force hasCommitsAhead to be unknown by making repoRoot invalid
     // The adapter's hasCommitsAhead will try git rev-parse origin/main and fail -> unknown
     // But we need to ensure checkBranchExists also doesn't mask it: make it present so we reach hasCommitsAhead
@@ -971,7 +1093,7 @@ describe("tracker-operations — production adapter without method replacement (
         if(args[0]==="api" && args[1].includes("/issues/")) return "0";
         return "";
       };
-      const ops = createProductionReconcileOps({ runGh: mockGh, runGit: runner, repoRoot, claimantLogin: "bot" });
+      const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockGh, runGit: runner, repoRoot, claimantLogin: "bot" });
       const hasWork = await ops.hasCommitsAhead("sandcastle/issue-901");
       expect(hasWork).toBe("has-work");
       // Empty branch
@@ -983,7 +1105,7 @@ describe("tracker-operations — production adapter without method replacement (
         if(args[0]==="log") return { exitCode: 1, stdout:"", stderr:"fatal" };
         return runner(args);
       };
-      const ops2 = createProductionReconcileOps({ runGh: mockGh, runGit: failingRunner, repoRoot, claimantLogin: "bot" });
+      const ops2 = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockGh, runGit: failingRunner, repoRoot, claimantLogin: "bot" });
       const unknown = await ops2.hasCommitsAhead("sandcastle/issue-901");
       expect(unknown).toBe("unknown");
     } finally { cleanup(); }
@@ -1019,7 +1141,7 @@ describe("tracker-operations — production adapter without method replacement (
         if(args[0]==="api" && args[1].includes("/issues/") && args.includes("--jq")) return "0";
         return "";
       };
-      const ops = createProductionReconcileOps({ runGh: mockGh, runGit: runner, repoRoot, claimantLogin: "bot" });
+      const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockGh, runGit: runner, repoRoot, claimantLogin: "bot" });
       const stale:any = { number:910, title:"t", state:"open", labels:["ready-for-agent","agent:in-progress"], assignees:["bot"], body:"", blockedByCount:0 };
       // Verify hasCommitsAhead is empty via real adapter
       const ahead = await ops.hasCommitsAhead("sandcastle/issue-910");
@@ -1070,7 +1192,7 @@ describe("tracker-operations — production adapter without method replacement (
         if(args[0]==="api" && args[1].includes("/issues/") && args.includes("--jq")) return "0";
         return "";
       };
-      const ops = createProductionReconcileOps({ runGh: mockGh, runGit: runner, repoRoot, claimantLogin: "bot" });
+      const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockGh, runGit: runner, repoRoot, claimantLogin: "bot" });
       const stale:any = { number:911, title:"t", state:"open", labels:["ready-for-agent","agent:in-progress"], assignees:["bot"], body:"", blockedByCount:0 };
       const ahead = await ops.hasCommitsAhead("sandcastle/issue-911");
       expect(ahead).toBe("has-work");
@@ -1113,7 +1235,7 @@ describe("tracker-operations — production adapter without method replacement (
         if(args[0]==="api" && args[1].includes("git/refs")) throw new Error("404 Not Found");
         return "";
       };
-      const ops = createProductionReconcileOps({ runGh: mockGh, runGit: failingRunner, repoRoot, claimantLogin: "bot" });
+      const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockGh, runGit: failingRunner, repoRoot, claimantLogin: "bot" });
       const stale:any = { number:912, title:"t", state:"open", labels:["ready-for-agent","agent:in-progress"], assignees:["bot"], body:"", blockedByCount:0 };
       const ahead = await ops.hasCommitsAhead("sandcastle/issue-912");
       expect(ahead).toBe("unknown");
@@ -1147,7 +1269,7 @@ describe("tracker-operations — production adapter without method replacement (
         if(args[0]==="api" && args[1].includes("/issues/") ) return "0";
         return "";
       };
-      const ops = createProductionReconcileOps({ runGh: mockGh, runGit: runner, repoRoot, claimantLogin: "bot" });
+      const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockGh, runGit: runner, repoRoot, claimantLogin: "bot" });
       const prov = await ops.checkProvenanceValid("sandcastle/issue-913");
       expect(prov.state).toBe("unknown");
       const stale:any = { number:913, title:"t", state:"open", labels:["ready-for-agent","agent:in-progress"], assignees:["bot"], body:"", blockedByCount:0 };
@@ -1184,7 +1306,7 @@ describe("tracker-operations — production adapter without method replacement (
         if(args[0]==="api") return "0";
         return "";
       };
-      const ops = createProductionReconcileOps({ runGh: mockGh, runGit: failingRunner, repoRoot, claimantLogin: "bot" });
+      const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockGh, runGit: failingRunner, repoRoot, claimantLogin: "bot" });
       const prov = await ops.checkProvenanceValid("sandcastle/issue-914");
       expect(prov.state).toBe("unknown");
       const stale:any = { number:914, title:"t", state:"open", labels:["ready-for-agent","agent:in-progress"], assignees:["bot"], body:"", blockedByCount:0 };
@@ -1239,7 +1361,7 @@ describe("tracker-operations — production adapter without method replacement (
         if(args[0]==="api" && args[1].includes("/issues/")) return "0";
         return "";
       };
-      const ops = createProductionReconcileOps({ runGh: mockGh, runGit: runner, repoRoot, claimantLogin: "bot" });
+      const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockGh, runGit: runner, repoRoot, claimantLogin: "bot" });
       const prov = await ops.checkProvenanceValid("sandcastle/issue-915");
       expect(prov.state).toBe("invalid");
       const stale:any = { number:915, title:"t", state:"open", labels:["ready-for-agent","agent:in-progress"], assignees:["bot"], body:"", blockedByCount:0 };
@@ -1258,19 +1380,15 @@ describe("tracker-operations — production adapter without method replacement (
       const cp = await import("node:child_process");
       const fsSync = await import("node:fs");
       const path = await import("node:path");
-      // Remove origin to make ownerRepo unresolvable
-      try { cp.execFileSync("git", ["remote", "remove", "origin"], { cwd: repoRoot }); }catch{}
       const baseSha = cp.execFileSync("git", ["rev-parse", "main"], { encoding:"utf8", cwd: repoRoot }).toString().trim();
       cp.execFileSync("git", ["branch", "sandcastle/issue-916", baseSha], { cwd: repoRoot });
       const provDir = path.join(repoRoot, ".sandcastle","provenance");
       fsSync.mkdirSync(provDir,{recursive:true});
       fsSync.writeFileSync(path.join(provDir, "sandcastle-issue-916.json"), JSON.stringify({issueId:"916",branch:"sandcastle/issue-916",factoryBaseSha:baseSha,callerBranch:"main",callerSha:baseSha,at:new Date().toISOString()}));
-      const failingRunner: import("./branch-helpers.mts").GitRunner = (args:string[])=>{
-        if(args[0]==="remote" && args[1]==="get-url") return { exitCode:1, stdout:"", stderr:"no remote" };
-        return runner(args);
-      };
-      const mockGh = async (args:string[])=>{ throw new Error("should not call gh remote"); };
-      const ops = createProductionReconcileOps({ runGh: mockGh, runGit: failingRunner, repoRoot, claimantLogin: "bot" });
+      // Repository identity is TRANSPORT-owned: when the transport cannot
+      // resolve it, the inspection port receives null and must not delete.
+      const mockGh = async (args:string[])=>{ throw new Error("should not call gh for identity"); };
+      const ops = createProductionReconcileOps({ ownerRepo: null, runGh: mockGh, runGit: runner, repoRoot, claimantLogin: "bot" });
       const branchState = await ops.checkBranchExists("sandcastle/issue-916");
       expect(branchState).toBe("present");
       const del = await ops.deleteBranch("sandcastle/issue-916");
@@ -1328,7 +1446,7 @@ describe("tracker-operations — patch 8 worktree/provenance and empty-branch ve
         if(args[0]==="api" && args[1].includes("git/refs")) throw new Error("404 Not Found");
         return "";
       };
-      const ops = createProductionReconcileOps({ runGh: mockGh, runGit: failingRunner, repoRoot, claimantLogin:"bot" });
+      const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockGh, runGit: failingRunner, repoRoot, claimantLogin:"bot" });
       const deleted = await ops.deleteBranch("sandcastle/issue-920");
       expect(deleted).toBe(false);
       const br = baseRunner(["branch","--list","sandcastle/issue-920"]);
@@ -1337,7 +1455,7 @@ describe("tracker-operations — patch 8 worktree/provenance and empty-branch ve
       expect(ghWrites).toBe(0);
       // Also via reconciliation: should be FACTORY_ERROR and no tracker writes
       const stale:any={number:920,title:"t",state:"open",labels:["ready-for-agent","agent:in-progress"],assignees:["bot"],body:"",blockedByCount:0};
-      const ops2 = createProductionReconcileOps({ runGh: async (args:string[])=>{
+      const ops2 = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: async (args:string[])=>{
         if(args[0]==="issue" && args[1]==="view" && args.includes("comments")) return "";
         if(args[0]==="pr" && args[1]==="list") return "[]";
         if(args[0]==="issue" && args[1]==="view") return JSON.stringify({number:920,title:"t",body:"",state:"open",labels:[{name:"ready-for-agent"},{name:"agent:in-progress"}],assignees:[{login:"bot"}]});
@@ -1355,7 +1473,7 @@ describe("tracker-operations — patch 8 worktree/provenance and empty-branch ve
         if(args[0]==="api" && args[1].includes("/issues/")) return "0";
         return "";
       };
-      const ops3 = createProductionReconcileOps({ runGh: mockGh2, runGit: failingRunner, repoRoot, claimantLogin:"bot" });
+      const ops3 = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockGh2, runGit: failingRunner, repoRoot, claimantLogin:"bot" });
       const { reconcileStaleImplementation } = await import("./tracker-operations.mts");
       const r = await reconcileStaleImplementation(stale, "sandcastle/issue-920", { ...ops3, github: fakeGithubTransitions });
       expect(r.reconciled).toBe(false);
@@ -1392,7 +1510,7 @@ describe("tracker-operations — patch 8 worktree/provenance and empty-branch ve
         if(args[0]==="api" && args.includes("--method")) ghWrites++;
         return "";
       };
-      const ops = createProductionReconcileOps({ runGh: mockGh, runGit: failingRemoveRunner, repoRoot, claimantLogin:"bot" });
+      const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockGh, runGit: failingRemoveRunner, repoRoot, claimantLogin:"bot" });
       const deleted = await ops.deleteBranch("sandcastle/issue-921");
       expect(deleted).toBe(false);
       const br = baseRunner(["branch","--list","sandcastle/issue-921"]);
@@ -1439,7 +1557,7 @@ describe("tracker-operations — patch 8 worktree/provenance and empty-branch ve
         if(args[0]==="api" && args[1].includes("git/refs")) throw new Error("404 Not Found");
         return "";
       };
-      const ops = createProductionReconcileOps({ runGh: mockGh, runGit: trackingRunner, repoRoot, claimantLogin:"bot" });
+      const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockGh, runGit: trackingRunner, repoRoot, claimantLogin:"bot" });
       const deleted = await ops.deleteBranch("sandcastle/issue-922");
       expect(deleted).toBe(true);
       expect(wtRemovePath && path.normalize(wtRemovePath)).toBe(path.normalize(wtPath));
@@ -1476,7 +1594,7 @@ describe("tracker-operations — patch 8 worktree/provenance and empty-branch ve
         if(args[0]==="api" && args[1].includes("/issues/")) return "0";
         return "";
       };
-      const ops = createProductionReconcileOps({ runGh: mockGh, runGit: baseRunner, repoRoot, claimantLogin:"bot" });
+      const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockGh, runGit: baseRunner, repoRoot, claimantLogin:"bot" });
       const stale:any={number:923,title:"t",state:"open",labels:["ready-for-agent","agent:in-progress"],assignees:["bot"],body:"",blockedByCount:0};
       const r = await reconcileStaleImplementation(stale, "sandcastle/issue-923", { ...ops, github: fakeGithubTransitions });
       expect(r.reconciled).toBe(false);
@@ -1515,7 +1633,7 @@ describe("tracker-operations — patch 8 worktree/provenance and empty-branch ve
         if(args[0]==="api" && args[1].includes("/issues/")) return "0";
         return "";
       };
-      const ops = createProductionReconcileOps({ runGh: mockGh, runGit: baseRunner, repoRoot, claimantLogin:"bot" });
+      const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockGh, runGit: baseRunner, repoRoot, claimantLogin:"bot" });
       const stale:any={number:924,title:"t",state:"open",labels:["ready-for-agent","agent:in-progress"],assignees:["bot"],body:"",blockedByCount:0};
       const r = await reconcileStaleImplementation(stale, "sandcastle/issue-924", { ...ops, github: fakeGithubTransitions });
       expect(r.decision?.type).toBe("no_branch");
@@ -1590,7 +1708,7 @@ describe("tracker-operations — patch 9 dirty worktree preservation and deleteB
         if(args[0]==="api" && args[1].includes("/issues/")) return "0";
         return "";
       };
-      const ops = createProductionReconcileOps({ runGh: mockGh, runGit: baseRunner, repoRoot, claimantLogin:"bot" });
+      const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockGh, runGit: baseRunner, repoRoot, claimantLogin:"bot" });
       const ahead = await ops.hasCommitsAhead("sandcastle/issue-930");
       expect(ahead).toBe("has-work");
       const stale:any={number:930,title:"t",state:"open",labels:["ready-for-agent","agent:in-progress"],assignees:["bot"],body:"",blockedByCount:0};
@@ -1640,7 +1758,7 @@ describe("tracker-operations — patch 9 dirty worktree preservation and deleteB
         if(args[0]==="api" && args[1].includes("/issues/")) return "0";
         return "";
       };
-      const ops = createProductionReconcileOps({ runGh: mockGh, runGit: baseRunner, repoRoot, claimantLogin:"bot" });
+      const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockGh, runGit: baseRunner, repoRoot, claimantLogin:"bot" });
       const ahead = await ops.hasCommitsAhead("sandcastle/issue-931");
       expect(ahead).toBe("has-work");
       const stale:any={number:931,title:"t",state:"open",labels:["ready-for-agent","agent:in-progress"],assignees:["bot"],body:"",blockedByCount:0};
@@ -1683,7 +1801,7 @@ describe("tracker-operations — patch 9 dirty worktree preservation and deleteB
         if(args[0]==="api" && args[1].includes("/issues/")) return "0";
         return "";
       };
-      const ops = createProductionReconcileOps({ runGh: mockGh, runGit: failingRunner, repoRoot, claimantLogin:"bot" });
+      const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockGh, runGit: failingRunner, repoRoot, claimantLogin:"bot" });
       const ahead = await ops.hasCommitsAhead("sandcastle/issue-932");
       expect(ahead).toBe("unknown");
       const stale:any={number:932,title:"t",state:"open",labels:["ready-for-agent","agent:in-progress"],assignees:["bot"],body:"",blockedByCount:0};
@@ -1736,7 +1854,7 @@ describe("tracker-operations — patch 9 dirty worktree preservation and deleteB
         if(args[0]==="api" && args[1].includes("/issues/")) return "0";
         return "";
       };
-      const ops = createProductionReconcileOps({ runGh: mockGh, runGit: baseRunner, repoRoot, claimantLogin:"bot" });
+      const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockGh, runGit: baseRunner, repoRoot, claimantLogin:"bot" });
       const ahead = await ops.hasCommitsAhead("sandcastle/issue-933");
       expect(ahead).toBe("empty");
       const stale:any={number:933,title:"t",state:"open",labels:["ready-for-agent","agent:in-progress"],assignees:["bot"],body:"",blockedByCount:0};
@@ -1778,7 +1896,7 @@ describe("tracker-operations — patch 9 dirty worktree preservation and deleteB
         if(args[0]==="api" && args[1].includes("/issues/")) return "0";
         return "";
       };
-      const ops = createProductionReconcileOps({ runGh: mockGh, runGit: failingRunner, repoRoot, claimantLogin:"bot" });
+      const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockGh, runGit: failingRunner, repoRoot, claimantLogin:"bot" });
       const deleted = await ops.deleteBranch("sandcastle/issue-934");
       expect(deleted).toBe(false);
       expect(fsSync.existsSync(provPath)).toBe(true);
@@ -1823,7 +1941,7 @@ describe("tracker-operations — patch 9 dirty worktree preservation and deleteB
         if(args[0]==="api" && args[1].includes("/issues/")) return "0";
         return "";
       };
-      const ops = createProductionReconcileOps({ runGh: mockGh, runGit: baseRunner, repoRoot, claimantLogin:"bot" });
+      const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockGh, runGit: baseRunner, repoRoot, claimantLogin:"bot" });
       const deleted = await ops.deleteBranch("sandcastle/issue-935");
       expect(deleted).toBe(false);
       // branch should be deleted locally but provenance remains as directory

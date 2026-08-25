@@ -356,6 +356,25 @@ function transitionFailureReason(outcome: TransitionOutcome, what: string, issue
   return `FACTORY_ERROR ${what} for #${issueNumber}: ${detail}`;
 }
 
+/**
+ * State-dependent recovery comments are published ONLY after the state
+ * transition has committed and its receipt persisted. A comment failure
+ * after a committed transition is separate recovery evidence — it never
+ * rolls back or hides the committed, receipted transition.
+ */
+async function recoveryComment(
+  gh: ReconcileGitHubTransitions,
+  issueNumber: number,
+  body: string,
+): Promise<string | null> {
+  try {
+    const ok = await gh.comment(issueNumber, body);
+    return ok ? null : "comment command reported failure";
+  } catch (e) {
+    return e instanceof Error ? e.message : String(e);
+  }
+}
+
 export async function executeReconciliation(
   decision: ReconcileDecision,
   issue: IssueInput,
@@ -364,6 +383,59 @@ export async function executeReconciliation(
 ): Promise<ReconcileResult> {
   const gh = ops.github;
   const receipts: unknown[] = [];
+
+  /**
+   * Exact-ownership pre-release validation on a FRESH read: a stale
+   * Sandcastle claim must STILL belong to the authenticated claimant at
+   * release time — merely being assigned to someone is not ownership.
+   * Any drift (claimant removed, readiness gone, implement reintroduced)
+   * receives ZERO mutation and never blocks on another actor's claim.
+   */
+  async function validateStillOwned(what: string): Promise<ReconcileResult | null> {
+    let fresh: IssueInput;
+    try {
+      fresh = await ops.fetchIssue(String(issue.number));
+    } catch (e) {
+      return { reconciled: false, reason: `${what}: fresh ownership read failed for #${issue.number}: ${e}`, factoryError: true, decision, receipts };
+    }
+    const problems: string[] = [];
+    if (!fresh.assignees.includes(ops.claimantLogin)) problems.push(`expected claimant ${ops.claimantLogin} not assigned`);
+    if (!fresh.labels.includes(AGENT_IN_PROGRESS)) problems.push(`${AGENT_IN_PROGRESS} absent`);
+    if (!fresh.labels.includes(READY_FOR_AGENT)) problems.push(`${READY_FOR_AGENT} absent`);
+    if (fresh.labels.includes(AGENT_IMPLEMENT)) problems.push(`${AGENT_IMPLEMENT} present`);
+    if (problems.length > 0) {
+      return { reconciled: false, reason: `${what}: claim ownership drifted for #${issue.number} before release — zero mutation (${problems.join("; ")})`, decision, receipts };
+    }
+    return null;
+  }
+
+  /** Release (on proven ownership) then add agent:blocked on the proven released state. */
+  async function releaseThenBlock(what: string): Promise<ReconcileResult | null> {
+    const owned = await validateStillOwned(what);
+    if (owned) return owned;
+    let released: TransitionOutcome;
+    try {
+      released = await gh.releaseClaim(issue.number);
+    } catch (e) {
+      return { reconciled: false, reason: `${what}: failed to release claim for #${issue.number}: ${e}`, factoryError: true, decision, receipts };
+    }
+    collectTransitionReceipts(released, receipts);
+    if (released.kind !== "committed") {
+      return { reconciled: false, reason: transitionFailureReason(released, `${what} release claim`, issue.number), factoryError: true, decision, receipts };
+    }
+    let blocked: TransitionOutcome;
+    try {
+      blocked = await gh.addBlockedAfterRelease(issue.number);
+    } catch (e) {
+      return { reconciled: false, reason: `${what}: failed to add blocked for #${issue.number}: ${e}`, factoryError: true, decision, receipts };
+    }
+    collectTransitionReceipts(blocked, receipts);
+    if (blocked.kind !== "committed") {
+      return { reconciled: false, reason: transitionFailureReason(blocked, `${what} add-blocked`, issue.number), factoryError: true, decision, receipts };
+    }
+    return null;
+  }
+
   switch (decision.type) {
     case "not_stale":
       return { reconciled: false, reason: decision.reason, decision };
@@ -384,29 +456,15 @@ export async function executeReconciliation(
     }
     case "pr_not_found":
     case "pr_closed_without_merge": {
-      try {
-        const ok = await gh.comment(issue.number, `Sandcastle reconciliation: batch PR #${decision.prNumber} for \`${branch}\` ${decision.type === "pr_not_found" ? "not found" : `state ${(decision as any).state}`} — preserving. To retry, remove \`agent:blocked\` and re-add \`agent:implement\`.`);
-        if (!ok) return { reconciled: false, reason: `failed to comment for #${issue.number}`, factoryError: true, decision, receipts };
-      } catch (e) { return { reconciled: false, reason: `failed to comment for #${issue.number}: ${e}`, factoryError: true, decision, receipts }; }
-      // Release the stale claim FIRST through the adapter saga — the blocked
-      // transition validates the claimed state, so it must not be used after
-      // a separate release. Release here, then add agent:blocked on the
-      // proven released state.
-      let releasedOutcome: TransitionOutcome;
-      try {
-        releasedOutcome = await gh.releaseClaim(issue.number);
-      } catch (e) { return { reconciled: false, reason: `failed to release claim for #${issue.number}: ${e}`, factoryError: true, decision, receipts }; }
-      collectTransitionReceipts(releasedOutcome, receipts);
-      if (releasedOutcome.kind !== "committed") {
-        return { reconciled: false, reason: transitionFailureReason(releasedOutcome, "release claim", issue.number), factoryError: true, decision, receipts };
-      }
-      let blockedOutcome: TransitionOutcome;
-      try {
-        blockedOutcome = await gh.addBlockedAfterRelease(issue.number);
-      } catch (e) { return { reconciled: false, reason: `failed to add blocked for #${issue.number}: ${e}`, factoryError: true, decision, receipts }; }
-      collectTransitionReceipts(blockedOutcome, receipts);
-      if (blockedOutcome.kind !== "committed") {
-        return { reconciled: false, reason: transitionFailureReason(blockedOutcome, "add-blocked", issue.number), factoryError: true, decision, receipts };
+      // State first: release the stale claim, then add agent:blocked on the
+      // proven released state. The recovery comment is published ONLY after
+      // both transitions have committed — never instructions to remove
+      // agent:blocked that does not yet exist.
+      const prFailed = await releaseThenBlock(decision.type);
+      if (prFailed) return prFailed;
+      const commentError = await recoveryComment(gh, issue.number, `Sandcastle reconciliation: batch PR #${decision.prNumber} for \`${branch}\` ${decision.type === "pr_not_found" ? "not found" : `state ${(decision as any).state}`} — preserving. To retry, remove \`agent:blocked\` and re-add \`agent:implement\`.`);
+      if (commentError) {
+        return { reconciled: false, reason: `state transition committed for #${issue.number}, but recovery comment failed (separate recovery evidence): ${commentError}`, factoryError: true, decision, receipts };
       }
       return { reconciled: false, reason: decision.reason, decision, receipts };
     }
@@ -432,30 +490,15 @@ export async function executeReconciliation(
           } catch {}
           return { reconciled: false, reason: `failed to clean up orphaned provenance for ${branch} — fail closed`, factoryError: true, decision, receipts };
         }
-      } catch (e) { return { reconciled: false, reason: `absent-branch cleanup failed for ${branch}: ${e}`, factoryError: true, decision, receipts }; }
-      try {
-        const ok = await gh.comment(issue.number, `Sandcastle reconciliation: no branch \`${branch}\` or batch PR for #${issue.number} — stale claim after crash. To retry, remove \`agent:blocked\` and re-add \`agent:implement\`.`);
-        if (!ok) return { reconciled: false, reason: `failed to comment for #${issue.number}`, factoryError: true, decision, receipts };
-      } catch (e) { return { reconciled: false, reason: `failed to comment for #${issue.number}: ${e}`, factoryError: true, decision, receipts }; }
-      // Release the stale claim FIRST through the adapter saga — the blocked
-      // transition validates the claimed state, so releasing before blocking
-      // would make blockAfterRelease reject. Instead the release runs here,
-      // then agent:blocked is added on the proven released state.
-      let noBranchRelease: TransitionOutcome;
-      try {
-        noBranchRelease = await gh.releaseClaim(issue.number);
-      } catch (e) { return { reconciled: false, reason: `failed to release claim for #${issue.number}: ${e}`, factoryError: true, decision, receipts }; }
-      collectTransitionReceipts(noBranchRelease, receipts);
-      if (noBranchRelease.kind !== "committed") {
-        return { reconciled: false, reason: transitionFailureReason(noBranchRelease, "release claim", issue.number), factoryError: true, decision, receipts };
+      } catch (e) {
+        return { reconciled: false, reason: `absent-branch cleanup failed for ${branch}: ${e}`, factoryError: true, decision, receipts };
       }
-      let noBranchBlocked: TransitionOutcome;
-      try {
-        noBranchBlocked = await gh.addBlockedAfterRelease(issue.number);
-      } catch (e) { return { reconciled: false, reason: `failed to add blocked for #${issue.number}: ${e}`, factoryError: true, decision, receipts }; }
-      collectTransitionReceipts(noBranchBlocked, receipts);
-      if (noBranchBlocked.kind !== "committed") {
-        return { reconciled: false, reason: transitionFailureReason(noBranchBlocked, "add-blocked", issue.number), factoryError: true, decision, receipts };
+      // Branch cleanup proved — now release the stale claim and block.
+      const noBranchFailed = await releaseThenBlock("no_branch");
+      if (noBranchFailed) return noBranchFailed;
+      const noBranchCommentError = await recoveryComment(gh, issue.number, `Sandcastle reconciliation: no branch \`${branch}\` or batch PR for #${issue.number} — stale claim after crash. To retry, remove \`agent:blocked\` and re-add \`agent:implement\`.`);
+      if (noBranchCommentError) {
+        return { reconciled: false, reason: `state transition committed for #${issue.number}, but recovery comment failed (separate recovery evidence): ${noBranchCommentError}`, factoryError: true, decision, receipts };
       }
       return { reconciled: false, reason: decision.reason, decision, receipts };
     }
@@ -463,27 +506,11 @@ export async function executeReconciliation(
       const body = decision.contaminated
         ? `Sandcastle reconciliation: branch \`${branch}\` for #${issue.number} has contaminated/legacy provenance (${decision.reason}) — fail closed, preserving/blocking.`
         : `Sandcastle reconciliation: branch \`${branch}\` for #${issue.number} has invalid provenance (${decision.reason}) — blocking.`;
-      try {
-        const ok = await gh.comment(issue.number, body);
-        if (!ok) return { reconciled: false, reason: `failed to comment for #${issue.number}`, factoryError: true, decision, receipts };
-      } catch (e) { return { reconciled: false, reason: `failed to comment for #${issue.number}: ${e}`, factoryError: true, decision, receipts }; }
-      // Release the stale claim FIRST through the adapter saga, then add
-      // agent:blocked on the proven released state.
-      let invalidReleased: TransitionOutcome;
-      try {
-        invalidReleased = await gh.releaseClaim(issue.number);
-      } catch (e) { return { reconciled: false, reason: `failed to release claim for #${issue.number}: ${e}`, factoryError: true, decision, receipts }; }
-      collectTransitionReceipts(invalidReleased, receipts);
-      if (invalidReleased.kind !== "committed") {
-        return { reconciled: false, reason: transitionFailureReason(invalidReleased, "release claim", issue.number), factoryError: true, decision, receipts };
-      }
-      let invalidBlocked: TransitionOutcome;
-      try {
-        invalidBlocked = await gh.addBlockedAfterRelease(issue.number);
-      } catch (e) { return { reconciled: false, reason: `failed to add blocked for #${issue.number}: ${e}`, factoryError: true, decision, receipts }; }
-      collectTransitionReceipts(invalidBlocked, receipts);
-      if (invalidBlocked.kind !== "committed") {
-        return { reconciled: false, reason: transitionFailureReason(invalidBlocked, "add-blocked", issue.number), factoryError: true, decision, receipts };
+      const invalidFailed = await releaseThenBlock("invalid_provenance");
+      if (invalidFailed) return invalidFailed;
+      const invalidCommentError = await recoveryComment(gh, issue.number, body);
+      if (invalidCommentError) {
+        return { reconciled: false, reason: `state transition committed for #${issue.number}, but recovery comment failed (separate recovery evidence): ${invalidCommentError}`, factoryError: true, decision, receipts };
       }
       return { reconciled: false, reason: decision.reason, decision, receipts };
     }
@@ -508,33 +535,20 @@ export async function executeReconciliation(
       if (releaseOutcome.kind !== "committed") {
         return { reconciled: false, reason: transitionFailureReason(releaseOutcome, "release claim", issue.number), factoryError: true, decision, receipts };
       }
-      let commented = false;
-      try { commented = await gh.comment(issue.number, `Sandcastle reconciliation: stale implementation claim for \`${branch}\` was interrupted (empty branch). Released assignee and \`${AGENT_IN_PROGRESS}\` without restoring \`${AGENT_IMPLEMENT}\`. Branch \`${branch}\` cleaned. To retry, re-add \`${AGENT_IMPLEMENT}\` explicitly.`); } catch (e) { return { reconciled: false, reason: `failed to comment for #${issue.number}: ${e}`, factoryError: true, decision, receipts }; }
-      if (!commented) return { reconciled: false, reason: `failed to comment for #${issue.number}`, factoryError: true, decision, receipts };
+      // Comment AFTER the committed release — the message describes what was
+      // released, so it must not precede the receipted transition.
+      const emptyCommentError = await recoveryComment(gh, issue.number, `Sandcastle reconciliation: stale implementation claim for \`${branch}\` was interrupted (empty branch). Released assignee and \`${AGENT_IN_PROGRESS}\` without restoring \`${AGENT_IMPLEMENT}\`. Branch \`${branch}\` cleaned. To retry, re-add \`${AGENT_IMPLEMENT}\` explicitly.`);
+      if (emptyCommentError) {
+        return { reconciled: false, reason: `release committed for #${issue.number}, but recovery comment failed (separate recovery evidence): ${emptyCommentError}`, factoryError: true, decision, receipts };
+      }
       return { reconciled: true, reason: decision.reason, decision, receipts };
     }
     case "absent_with_work": {
-      try {
-        const ok = await gh.comment(issue.number, `Sandcastle reconciliation: branch \`${branch}\` for #${issue.number} exists with work but no batch PR — crash before PR creation. Preserving branch. To retry, remove \`agent:blocked\` and re-add \`agent:implement\`.`);
-        if (!ok) return { reconciled: false, reason: `failed to comment for #${issue.number}`, factoryError: true, decision, receipts };
-      } catch (e) { return { reconciled: false, reason: `failed to comment for #${issue.number}: ${e}`, factoryError: true, decision, receipts }; }
-      // Release the stale claim FIRST through the adapter saga, then add
-      // agent:blocked on the proven released state.
-      let workReleased: TransitionOutcome;
-      try {
-        workReleased = await gh.releaseClaim(issue.number);
-      } catch (e) { return { reconciled: false, reason: `failed to release claim for #${issue.number}: ${e}`, factoryError: true, decision, receipts }; }
-      collectTransitionReceipts(workReleased, receipts);
-      if (workReleased.kind !== "committed") {
-        return { reconciled: false, reason: transitionFailureReason(workReleased, "release claim", issue.number), factoryError: true, decision, receipts };
-      }
-      let workBlocked: TransitionOutcome;
-      try {
-        workBlocked = await gh.addBlockedAfterRelease(issue.number);
-      } catch (e) { return { reconciled: false, reason: `failed to add blocked for #${issue.number}: ${e}`, factoryError: true, decision, receipts }; }
-      collectTransitionReceipts(workBlocked, receipts);
-      if (workBlocked.kind !== "committed") {
-        return { reconciled: false, reason: transitionFailureReason(workBlocked, "add-blocked", issue.number), factoryError: true, decision, receipts };
+      const workFailed = await releaseThenBlock("absent_with_work");
+      if (workFailed) return workFailed;
+      const workCommentError = await recoveryComment(gh, issue.number, `Sandcastle reconciliation: branch \`${branch}\` for #${issue.number} exists with work but no batch PR — crash before PR creation. Preserving branch. To retry, remove \`agent:blocked\` and re-add \`agent:implement\`.`);
+      if (workCommentError) {
+        return { reconciled: false, reason: `state transition committed for #${issue.number}, but recovery comment failed (separate recovery evidence): ${workCommentError}`, factoryError: true, decision, receipts };
       }
       return { reconciled: false, reason: decision.reason, decision, receipts };
     }
@@ -658,23 +672,4 @@ export async function reconcileStaleResearch(
     return { reconciled: false, reason: `failed to release stale research claim for #${issue.number}`, factoryError: true };
   }
   return { reconciled: true, reason: `released stale research claim for #${issue.number}, preserved ${branch}` };
-}
-
-/**
- * Closed-issue cleanup
- */
-export async function cleanupClosedIssue(
-  issue: IssueInput,
-  ops: { removeLabel: (id: string, label: string) => Promise<boolean> },
-): Promise<{ cleaned: boolean; removed: string[] }> {
-  if (issue.state !== "closed") return { cleaned: false, removed: [] };
-  const toRemove = [AGENT_IN_PROGRESS, AGENT_IMPLEMENT, AGENT_BLOCKED].filter((l) => issue.labels.includes(l));
-  const removed: string[] = [];
-  for (const label of toRemove) {
-    try {
-      const ok = await ops.removeLabel(String(issue.number), label);
-      if (ok) removed.push(label);
-    } catch {}
-  }
-  return { cleaned: removed.length > 0, removed };
 }

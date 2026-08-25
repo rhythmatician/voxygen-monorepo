@@ -24,21 +24,18 @@ export interface ReconcileAdapterDeps {
   runGit: GitRunner;
   repoRoot: string;
   claimantLogin: string;
-}
-
-function parseOwnerRepo(runGit: GitRunner): { owner:string, repo:string } | null {
-  const res = runGit(["remote", "get-url", "origin"]);
-  if (res.exitCode !== 0) return null;
-  const out = res.stdout.trim();
-  const m = out.match(/github\.com[:\/]([^\/]+)\/([^\/\.]+)/);
-  if (m) return { owner: m[1], repo: m[2].replace(/\.git$/, "") };
-  return null;
+  /**
+   * Repository identity, owned by the single GhTransport. Required — this
+   * adapter never parses git remotes locally (one-authority rule).
+   */
+  ownerRepo: { owner: string; repo: string } | null;
 }
 
 export function createProductionReconcileOps(deps: ReconcileAdapterDeps): ReconcileInspectionOps {
   const { runGh, repoRoot, claimantLogin, runGit } = deps;
   if (!runGit) throw new Error("runGit is required for production adapter");
-  const ownerRepo = parseOwnerRepo(runGit);
+  // Transport-owned identity only — no local remote parsing.
+  const ownerRepo = deps.ownerRepo;
 
   async function fetchIssueFresh(issueId: string): Promise<IssueInput> {
     const rawJson = await runGh(["issue","view",issueId,"--json","number,title,body,labels,assignees,state"]);

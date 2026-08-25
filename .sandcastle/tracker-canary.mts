@@ -9,7 +9,7 @@ import {
   AGENT_BLOCKED,
   type IssueInput,
 } from "./tracker-policy.mts";
-import { createTrackerAdapter, makeMemoryReceiptSink, makeIssueLabelMutationPort } from "./tracker-adapter.mts";
+import { createTrackerAdapter, makeIssueLabelMutationPort, type ReceiptSink } from "./tracker-adapter.mts";
 import { withTemporaryIssueFixtures, withAtomicJsonReceipt } from "./resource-scopes.mts";
 import { createGhTransport, type GhTransport } from "./gh-transport.mts";
 import * as fs2 from "node:fs";
@@ -42,6 +42,23 @@ export interface CanaryOps {
   cleanupIssue?: (id: number) => Promise<void>;
   removeAssignee?: (id: number) => Promise<void>;
   removeLabel?: (id: number, label: string) => Promise<void>;
+}
+
+/**
+ * Durable typed-transition-receipt sink for live canary runs — atomic writes
+ * via withAtomicJsonReceipt under .sandcastle/logs/canary-transitions/.
+ * Persistence failures THROW so the saga converts an unpersistable required
+ * receipt into indeterminate FACTORY_ERROR.
+ */
+function makeFileReceiptSink(repoRoot: string): ReceiptSink {
+  const dir = path2.join(repoRoot, ".sandcastle", "logs", "canary-transitions");
+  return {
+    persist(receipt: unknown): void {
+      const name = `${Date.now()}-${(receipt as { transition?: string }).transition ?? "transition"}-${(receipt as { issueNumber?: number }).issueNumber ?? "x"}.json`;
+      withAtomicJsonReceipt(path2.join(dir, name), () => receipt);
+      JSON.parse(fs2.readFileSync(path2.join(dir, name), "utf8"));
+    },
+  };
 }
 
 function uniqueTitle(prefix: string): string {
@@ -105,6 +122,8 @@ export function createLiveCanaryOps(opts: {
   runGit?: (args: string[]) => { exitCode: number; stdout: string; stderr: string };
   /** Stable repository root for the local git runner. Defaults to CANARY_REPO_ROOT. */
   repoRoot?: string;
+  /** Receipt sink override for tests. Production defaults to a durable atomic file sink. */
+  receiptSink?: ReceiptSink;
 }): CanaryOps {
   const { owner, repo, runGh: runGhFn, claimantLogin } = opts;
   const fetchReal = opts.fetchIssueRealFn ?? ((id:number)=>fetchIssueReal(id, runGhFn));
@@ -122,8 +141,10 @@ export function createLiveCanaryOps(opts: {
   });
   // ONE adapter per ops instance — every tracker mutation (claims,
   // reconciliation transitions, fixture cleanup) flows through it with typed
-  // receipts persisted to the shared sink.
-  const receiptSink = makeMemoryReceiptSink();
+  // receipts persisted to the shared sink. PRODUCTION uses a durable atomic
+  // file sink (typed transition receipts survive the process); tests may
+  // inject an in-memory sink.
+  const receiptSink: ReceiptSink = opts.receiptSink ?? makeFileReceiptSink(canaryRepoRoot);
   const canaryTransport = transportFromRunner(runGhFn, claimantLogin);
   const adapter = createTrackerAdapter({
     gh: canaryTransport,
