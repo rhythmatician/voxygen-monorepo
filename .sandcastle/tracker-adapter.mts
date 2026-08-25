@@ -6,6 +6,7 @@ import {
   AGENT_BLOCKED,
   detectContradictions,
   validateResearchTicketInput,
+  validateImplementationTicketInput,
 } from "./tracker-policy.mts";
 import {
   claimImplementation,
@@ -19,6 +20,7 @@ import {
 } from "./tracker-operations.mts";
 import { createProductionReconcileOps } from "./reconcile-adapter.mts";
 import type { GhTransport } from "./gh-transport.mts";
+import { isHttp404 } from "./gh-errors.mts";
 import { createHash } from "node:crypto";
 
 /**
@@ -258,6 +260,27 @@ function validateBothPresentClaim(
   if (!fresh.labels.includes(AGENT_IN_PROGRESS)) return `${AGENT_IN_PROGRESS} absent on pre-mutation read — nothing to compensate`;
   if (!fresh.labels.includes(AGENT_IMPLEMENT)) return `${AGENT_IMPLEMENT} absent on pre-mutation read — not a both-present contradiction`;
   if (!fresh.assignees.includes(claimantLogin)) return `claimant ${claimantLogin} not assigned on #${issueNumber} — refusing to compensate another actor's claim`;
+  return null;
+}
+
+/**
+ * UNCONDITIONAL closed-cleanup terminal invariant. Regardless of the initial
+ * hasClaimant value or which mutation steps were selected, the final and
+ * terminal verifier must prove ALL of: state closed; authenticated claimant
+ * absent; agent:in-progress absent; agent:implement absent; agent:blocked
+ * absent. A claimant that appears AFTER the initial read (concurrent) is
+ * caught here — cleanup must not report cleaned.
+ */
+function verifyClosedCleanupInvariant(
+  after: IssueInput,
+  issueNumber: number,
+  claimantLogin: string,
+): string | null {
+  if (after.state !== "closed") return `issue #${issueNumber} no longer closed — reopen during transition`;
+  if (after.assignees.includes(claimantLogin)) return `claimant ${claimantLogin} still assigned on closed issue #${issueNumber}`;
+  for (const l of [AGENT_IN_PROGRESS, AGENT_IMPLEMENT, AGENT_BLOCKED]) {
+    if (after.labels.includes(l)) return `${l} still present on closed issue #${issueNumber}`;
+  }
   return null;
 }
 
@@ -614,6 +637,11 @@ async function proveTerminalClaimState(
     if (!final.labels.includes(READY_FOR_AGENT)) violations.push(`${READY_FOR_AGENT} absent`);
     if (!final.labels.includes(AGENT_IN_PROGRESS)) violations.push(`${AGENT_IN_PROGRESS} absent`);
     if (!final.assignees.includes(claimantLogin)) violations.push(`claimant ${claimantLogin} not assigned`);
+    // Reject unexpected assignees: the claimant is the single concurrency
+    // owner of the claim. Any additional assignee is concurrent drift — the
+    // terminal state must not be committed with an unowned assignee present.
+    const unexpectedAssignees = final.assignees.filter((a) => a !== claimantLogin);
+    if (unexpectedAssignees.length > 0) violations.push(`unexpected assignee(s) ${unexpectedAssignees.join(",")} present`);
     if (final.labels.includes(AGENT_IMPLEMENT)) violations.push(`${AGENT_IMPLEMENT} present`);
     if (final.labels.includes(AGENT_BLOCKED)) violations.push(`${AGENT_BLOCKED} present`);
     if (final.blockedByCount === undefined) violations.push(`blocked_by unknown`);
@@ -623,7 +651,11 @@ async function proveTerminalClaimState(
     // carries in-progress + assignee, which isImplementationEligible rejects.)
     const implContra = detectContradictions(final);
     if (implContra.contradictions.length > 0) violations.push(`contradiction: ${implContra.contradictions[0].reason}`);
-    if (!final.body || final.body.trim().length === 0) violations.push(`implementation body empty`);
+    // Reuse the canonical implementation body contract — the SAME validator
+    // isImplementationEligible uses, so the terminal claim proof can never
+    // drift from the eligibility body contract.
+    const implBody = validateImplementationTicketInput(final.body);
+    if (!implBody.valid) violations.push(`implementation body invalid: ${implBody.reason ?? "unknown"}`);
   } else {
     if (!final.labels.includes("wayfinder:research")) violations.push(`wayfinder:research absent`);
     if (!final.labels.includes(AGENT_IN_PROGRESS)) violations.push(`${AGENT_IN_PROGRESS} absent`);
@@ -1240,16 +1272,14 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
       const hasClaimant = fresh.assignees.includes(claimantLogin);
 
       // Fast path: nothing listed to remove AND claimant not assigned. Prove
-      // residue absence (labels + claimant) on a fresh read anyway. The fresh
-      // read must ALSO confirm the issue is still closed — a reopened issue is
-      // not clean, even with no residue.
+      // the FULL unconditional invariant (closed + claimant absent + all three
+      // machine labels absent) on a fresh read anyway. A claimant that appears
+      // after the initial read is caught here — not clean.
       if (staleLabels.length === 0 && !hasClaimant) {
         try {
           const fresh2 = await fetchById(String(issueNumber));
-          if (fresh2.state !== "closed") return { cleaned: false, removed: [] };
-          const residue = [AGENT_IN_PROGRESS, AGENT_IMPLEMENT, AGENT_BLOCKED].filter((l) => fresh2.labels.includes(l));
-          if (residue.length > 0) return { cleaned: false, removed: [] };
-          if (fresh2.assignees.includes(claimantLogin)) return { cleaned: false, removed: [] };
+          const violation = verifyClosedCleanupInvariant(fresh2, issueNumber, claimantLogin);
+          if (violation) return { cleaned: false, removed: [] };
           return { cleaned: true, removed: [] };
         } catch {
           return { cleaned: false, removed: [] };
@@ -1258,9 +1288,11 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
 
       // Two-step saga: (1) remove stale machine labels, (2) remove the
       // authenticated claimant assignee while preserving unrelated assignees.
-      // The final invariant — closed + claimant absent + all three machine
-      // labels absent — is proven by the LAST step's verifyAfter and the
-      // terminal revalidation.
+      // The FINAL and TERMINAL verifier is the UNCONDITIONAL invariant — it
+      // proves closed + claimant absent + all three machine labels absent
+      // regardless of which steps were selected, so a claimant that appears
+      // after the initial read is never reported cleaned. Intermediate steps
+      // use partial verifyAfter (the claimant is removed by a LATER step).
       const steps: SagaStep[] = [];
       if (staleLabels.length > 0) {
         steps.push({
@@ -1270,8 +1302,10 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
             return null;
           },
           mutate: () => editIssue(issueNumber, staleLabels.flatMap((l) => ["--remove-label", l])),
+          // Partial intermediate verifier: labels + closed only. The claimant
+          // is removed by the later assignee step (or was never assigned).
           verifyAfter: (after) => {
-            if (after.state !== "closed") return `issue #${issueNumber} no longer closed after label cleanup — reopen during transition`;
+            if (after.state !== "closed") return `issue #${issueNumber} no longer closed — reopen during transition`;
             for (const l of [AGENT_IN_PROGRESS, AGENT_IMPLEMENT, AGENT_BLOCKED]) {
               if (after.labels.includes(l)) return `${l} still present on closed issue #${issueNumber}`;
             }
@@ -1287,22 +1321,20 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
             if (fresh2.state !== "closed") return `issue #${issueNumber} is ${fresh2.state}, not closed — refusing assignee cleanup`;
             // Only remove the AUTHENTICATED claimant; unrelated assignees are
             // preserved. If the claimant is no longer assigned, nothing to do.
-            if (!fresh2.assignees.includes(claimantLogin)) return null;
             return null;
           },
           mutate: () => editIssue(issueNumber, ["--remove-assignee", claimantLogin]),
-          verifyAfter: (after) => {
-            if (after.state !== "closed") return `issue #${issueNumber} no longer closed after assignee cleanup — reopen during transition`;
-            if (after.assignees.includes(claimantLogin)) return `claimant ${claimantLogin} still assigned on closed issue #${issueNumber}`;
-            // Final invariant: closed + claimant absent + all three machine
-            // labels absent.
-            for (const l of [AGENT_IN_PROGRESS, AGENT_IMPLEMENT, AGENT_BLOCKED]) {
-              if (after.labels.includes(l)) return `${l} still present on closed issue #${issueNumber}`;
-            }
-            return null;
-          },
+          // UNCONDITIONAL terminal verifier: closed + claimant absent + all
+          // three machine labels absent. This is the LAST step, so runSaga's
+          // terminal revalidation re-proves the full invariant.
+          verifyAfter: (after) => verifyClosedCleanupInvariant(after, issueNumber, claimantLogin),
           // No compensation: re-adding the claimant to a closed issue is unsafe.
         });
+      } else if (staleLabels.length > 0) {
+        // No claimant to remove — the label-removal step IS the last step, so
+        // its verifyAfter must be the UNCONDITIONAL invariant to catch a
+        // claimant that appears after the initial read.
+        steps[steps.length - 1].verifyAfter = (after) => verifyClosedCleanupInvariant(after, issueNumber, claimantLogin);
       }
 
       const result = await runSaga(gh, issueNumber, "cleanupClosedStaleLabels", steps, receiptSink);
@@ -1328,12 +1360,16 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
      * write (drift between review and apply is evidence loss). The PATCH is
      * applied, then the label is read back on a fresh read to prove the
      * description actually landed. A read-back that fails or shows a
-     * mismatched description is NOT committed. Receipt persistence failure =>
-     * indeterminate/not committed.
+     * mismatched description is NOT committed — it is INDETERMINATE and
+     * receipted as durable recovery evidence. Every path persists a typed
+     * committed/rejected/indeterminate receipt.
      */
     async updateCanonicalLabelDescription(name, description, expectedOldDescription) {
       const ownerRepo = gh.resolveOwnerRepo();
-      if (!ownerRepo) return { committed: false, reason: "repository identity unavailable" };
+      if (!ownerRepo) {
+        persistReceipt(receiptSink, { transition: "updateCanonicalLabelDescription", issueNumber: 0, kind: "indeterminate", reason: "repository identity unavailable", code: "REPO_UNKNOWN" });
+        return { committed: false, reason: "repository identity unavailable" };
+      }
       const encoded = encodeURIComponent(name);
       const url = `repos/${ownerRepo.owner}/${ownerRepo.repo}/labels/${encoded}`;
       // Bind to the REVIEWED old description: the port's own fresh pre-mutation
@@ -1343,25 +1379,32 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
           const raw = await gh.run(["api", url, "--jq", ".description"]);
           const live = raw.trim();
           if (live !== expectedOldDescription) {
+            persistReceipt(receiptSink, { transition: "updateCanonicalLabelDescription", issueNumber: 0, kind: "rejected", reason: `label ${name} description drifted from reviewed: expected "${expectedOldDescription}", live "${live}"`, code: "PRECONDITION_FAILED" });
             return { committed: false, reason: `label ${name} description drifted from reviewed: expected "${expectedOldDescription}", live "${live}"` };
           }
         } catch (e) {
+          persistReceipt(receiptSink, { transition: "updateCanonicalLabelDescription", issueNumber: 0, kind: "indeterminate", reason: `label ${name} pre-mutation read failed: ${getMsg(e)}`, code: "FETCH_FAILED" });
           return { committed: false, reason: `label ${name} pre-mutation read failed: ${getMsg(e)}` };
         }
       }
       try {
         await gh.run(["api", "--method", "PATCH", url, "-f", `description=${description}`]);
       } catch (e) {
+        persistReceipt(receiptSink, { transition: "updateCanonicalLabelDescription", issueNumber: 0, kind: "rejected", reason: `label description PATCH failed for ${name}: ${getMsg(e)}`, code: "MUTATE_FAILED" });
         return { committed: false, reason: `label description PATCH failed for ${name}: ${getMsg(e)}` };
       }
-      // Fresh read-back: prove the description actually landed.
+      // Fresh read-back: prove the description actually landed. A failed
+      // read-back after a SUCCESSFUL PATCH is INDETERMINATE — the external
+      // mutation may have applied, so durable recovery evidence is required.
       try {
         const raw = await gh.run(["api", url, "--jq", ".description"]);
         const live = raw.trim();
         if (live !== description) {
+          persistReceipt(receiptSink, { transition: "updateCanonicalLabelDescription", issueNumber: 0, kind: "indeterminate", reason: `label description read-back mismatch for ${name}: expected "${description}", live "${live}"`, code: "READBACK_MISMATCH" });
           return { committed: false, reason: `label description read-back mismatch for ${name}: expected "${description}", live "${live}"` };
         }
       } catch (e) {
+        persistReceipt(receiptSink, { transition: "updateCanonicalLabelDescription", issueNumber: 0, kind: "indeterminate", reason: `label description read-back failed for ${name}: ${getMsg(e)}`, code: "READBACK_FAILED" });
         return { committed: false, reason: `label description read-back failed for ${name}: ${getMsg(e)}` };
       }
       // Receipt persistence failure => indeterminate/not committed.
@@ -1374,29 +1417,47 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
 
     /**
      * Delete a retired repository label — adapter-owned repository port. Binds
-     * to the REVIEWED existence: the port's own fresh pre-mutation read must
-     * confirm the label exists before any write. Proves ZERO current open
-     * users immediately before deletion. The DELETE is applied, then the
-     * label's absence is proved on a fresh read — ONLY an authoritative 404
-     * confirms deletion; auth/network/timeout/5xx => indeterminate. Receipt
-     * persistence failure => indeterminate.
+     * to the REVIEWED existence via `expectedExists`: true + absent = drift;
+     * false + exists = drift and zero DELETE; false + authoritative 404 =
+     * no-op; unknown = indeterminate. Proves ZERO current open users
+     * immediately before deletion. The DELETE is applied, then the label's
+     * absence is proved on a fresh read — ONLY an authoritative HTTP 404
+     * confirms deletion; auth/network/timeout/5xx => indeterminate. Every path
+     * persists a typed committed/rejected/indeterminate receipt.
      */
     async deleteRetiredLabel(name, expectedExists) {
       const ownerRepo = gh.resolveOwnerRepo();
-      if (!ownerRepo) return { committed: false, reason: "repository identity unavailable" };
+      if (!ownerRepo) {
+        persistReceipt(receiptSink, { transition: "deleteRetiredLabel", issueNumber: 0, kind: "indeterminate", reason: "repository identity unavailable", code: "REPO_UNKNOWN" });
+        return { committed: false, reason: "repository identity unavailable" };
+      }
       const encoded = encodeURIComponent(name);
       const url = `repos/${ownerRepo.owner}/${ownerRepo.repo}/labels/${encoded}`;
-      // Bind to the REVIEWED existence: the port's own fresh pre-mutation read
-      // must confirm the label exists before any write.
+      // Bind to the REVIEWED existence. Only an authoritative HTTP 404 proves
+      // absence — never a generic "not found" message substring.
       if (expectedExists !== undefined) {
         try {
           await gh.run(["api", url]);
         } catch (e) {
-          const msg = String(e).toLowerCase();
-          if (msg.includes("404") || msg.includes("not found")) {
-            return { committed: false, reason: `label ${name} no longer exists (reviewed as existing) — drift before delete` };
+          if (isHttp404(e)) {
+            if (expectedExists) {
+              // true + absent = drift before delete.
+              persistReceipt(receiptSink, { transition: "deleteRetiredLabel", issueNumber: 0, kind: "rejected", reason: `label ${name} no longer exists (reviewed as existing) — drift before delete`, code: "PRECONDITION_FAILED" });
+              return { committed: false, reason: `label ${name} no longer exists (reviewed as existing) — drift before delete` };
+            }
+            // false + authoritative 404 = no-op (already absent).
+            persistReceipt(receiptSink, { transition: "deleteRetiredLabel", issueNumber: 0, kind: "rejected", reason: `label ${name} already absent (expected absent) — no-op`, code: "ALREADY_ABSENT" });
+            return { committed: false, reason: `label ${name} already absent (expected absent) — no-op` };
           }
+          // Unknown existence — indeterminate, never a clean rejection.
+          persistReceipt(receiptSink, { transition: "deleteRetiredLabel", issueNumber: 0, kind: "indeterminate", reason: `label ${name} pre-mutation existence read failed: ${getMsg(e)}`, code: "FETCH_FAILED" });
           return { committed: false, reason: `label ${name} pre-mutation existence read failed: ${getMsg(e)}` };
+        }
+        // The label EXISTS on the pre-mutation read.
+        if (!expectedExists) {
+          // false + exists = drift and zero DELETE.
+          persistReceipt(receiptSink, { transition: "deleteRetiredLabel", issueNumber: 0, kind: "rejected", reason: `label ${name} exists but was reviewed as absent — drift, zero DELETE`, code: "PRECONDITION_FAILED" });
+          return { committed: false, reason: `label ${name} exists but was reviewed as absent — drift, zero DELETE` };
         }
       }
       // Prove ZERO current open users immediately before deletion.
@@ -1404,28 +1465,34 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
         const rawJson = await gh.run(["issue", "list", "--state", "open", "--label", name, "--limit", "100", "--json", "number"]);
         const users: any[] = JSON.parse(rawJson);
         if (users.length > 0) {
+          persistReceipt(receiptSink, { transition: "deleteRetiredLabel", issueNumber: 0, kind: "rejected", reason: `label ${name} still has ${users.length} open users — refusing deletion`, code: "OPEN_USERS" });
           return { committed: false, reason: `label ${name} still has ${users.length} open users — refusing deletion` };
         }
       } catch (e) {
+        persistReceipt(receiptSink, { transition: "deleteRetiredLabel", issueNumber: 0, kind: "indeterminate", reason: `failed to verify zero open users for ${name}: ${getMsg(e)}`, code: "FETCH_FAILED" });
         return { committed: false, reason: `failed to verify zero open users for ${name}: ${getMsg(e)}` };
       }
       try {
         await gh.run(["api", "--method", "DELETE", url]);
       } catch (e) {
+        // A GhTokenMissingError (or any non-404 error) after DELETE is NOT an
+        // authoritative 404 — indeterminate, receipted.
+        persistReceipt(receiptSink, { transition: "deleteRetiredLabel", issueNumber: 0, kind: "indeterminate", reason: `label DELETE failed for ${name}: ${getMsg(e)}`, code: "MUTATE_FAILED" });
         return { committed: false, reason: `label DELETE failed for ${name}: ${getMsg(e)}` };
       }
-      // Fresh read-back: prove the label is gone. ONLY an authoritative 404
-      // confirms deletion; auth/network/timeout/5xx => indeterminate.
+      // Fresh read-back: prove the label is gone. ONLY an authoritative HTTP
+      // 404 confirms deletion; auth/network/timeout/5xx => indeterminate.
       try {
         await gh.run(["api", url]);
+        persistReceipt(receiptSink, { transition: "deleteRetiredLabel", issueNumber: 0, kind: "indeterminate", reason: `label ${name} still exists after DELETE — read-back found it`, code: "READBACK_MISMATCH" });
         return { committed: false, reason: `label ${name} still exists after DELETE — read-back found it` };
       } catch (e) {
-        const msg = String(e).toLowerCase();
-        if (!(msg.includes("404") || msg.includes("not found"))) {
+        if (!isHttp404(e)) {
           // Auth/network/timeout/5xx — indeterminate, not committed.
+          persistReceipt(receiptSink, { transition: "deleteRetiredLabel", issueNumber: 0, kind: "indeterminate", reason: `label ${name} deletion read-back failed (not authoritative 404): ${getMsg(e)}`, code: "READBACK_FAILED" });
           return { committed: false, reason: `label ${name} deletion read-back failed (not authoritative 404): ${getMsg(e)}` };
         }
-        // 404 confirms the label is gone.
+        // Authoritative 404 confirms the label is gone.
       }
       // Receipt persistence failure => indeterminate.
       const persisted = persistReceipt(receiptSink, { transition: "deleteRetiredLabel", issueNumber: 0, kind: "committed", reason: `deleted retired label ${name}` });
@@ -1437,11 +1504,12 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
 
     /**
      * Create a canary fixture issue — adapter-owned port. The POST is applied,
-     * then the created issue is freshly read back to prove its
-     * state/body/labels/assignees. Receipt persistence failure must NOT report
-     * committed. Returns the created fixture id (so cleanup can occur even
-     * after an indeterminate creation) plus a committed flag; throws on
-     * creation failure (never swallows).
+     * then the created issue is freshly read back to prove the EXACT created
+     * state: exact title, exact body, state open, exact expected label set,
+     * no assignees, blocked_by known and zero. Receipt persistence failure
+     * must NOT report committed. Returns the created fixture id (so cleanup
+     * can occur even after an indeterminate creation) plus a committed flag;
+     * throws on creation failure (never swallows).
      */
     async createCanaryFixture(title, body, labels) {
       const ownerRepo = gh.resolveOwnerRepo();
@@ -1452,17 +1520,26 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
       const out = await gh.run(args);
       const n = parseInt(out.trim(), 10);
       if (isNaN(n)) throw new Error(`failed to create canary fixture issue: ${out}`);
-      // Freshly prove the created issue state/body/labels/assignees.
+      // Freshly prove the EXACT created issue state: exact title, exact body,
+      // state open, exact expected label set, no assignees, blocked_by known
+      // and zero.
       try {
         const fresh = await fetchById(String(n));
         if (fresh.state !== "open") throw new Error(`canary fixture #${n} not open after creation`);
+        if (fresh.title !== title) throw new Error(`canary fixture #${n} title mismatch after creation`);
         if (fresh.body !== body) throw new Error(`canary fixture #${n} body mismatch after creation`);
-        for (const l of labels) {
-          if (!fresh.labels.includes(l)) throw new Error(`canary fixture #${n} missing label ${l} after creation`);
-        }
+        const expectedLabels = [...labels].sort();
+        const liveLabels = [...fresh.labels].sort();
+        if (expectedLabels.join(",") !== liveLabels.join(",")) throw new Error(`canary fixture #${n} label set mismatch after creation: expected [${expectedLabels.join(",")}], live [${liveLabels.join(",")}]`);
+        if (fresh.assignees.length > 0) throw new Error(`canary fixture #${n} unexpectedly assigned after creation: ${fresh.assignees.join(",")}`);
+        if (fresh.blockedByCount === undefined) throw new Error(`canary fixture #${n} blocked_by unknown after creation`);
+        if (fresh.blockedByCount > 0) throw new Error(`canary fixture #${n} blocked_by ${fresh.blockedByCount}, not zero after creation`);
       } catch (e) {
-        // Created but not provable — indeterminate, NOT committed. Still return
-        // the id so cleanup can occur.
+        // Created but not provable — indeterminate, NOT committed. Persist a
+        // durable indeterminate recovery receipt (the POST succeeded but
+        // read-back/receipt persistence failed). Still return the id so
+        // cleanup can occur.
+        persistReceipt(receiptSink, { transition: "createCanaryFixture", issueNumber: n, kind: "indeterminate", reason: `canary fixture #${n} created but state not proven: ${getMsg(e)}`, code: "READBACK_FAILED" });
         return { id: n, committed: false, reason: `canary fixture #${n} created but state not proven: ${getMsg(e)}` };
       }
       // Receipt persistence failure must NOT report committed.

@@ -34,7 +34,7 @@ export interface CanaryResult {
 }
 
 export interface CanaryOps {
-  createIssue: (title: string, body: string, labels: string[]) => Promise<number>;
+  createIssue: (title: string, body: string, labels: string[]) => Promise<{ id: number; committed: boolean; reason?: string }>;
   fetchIssue: (id: number) => Promise<IssueInput>;
   closeIssue: (id: number) => Promise<void>;
   claimImplementation: (issue: IssueInput) => Promise<{ success: boolean; reason?: string }>;
@@ -159,9 +159,10 @@ export function createLiveCanaryOps(opts: {
       // Adapter-owned canary fixture creation — never a raw gh POST. The
       // adapter freshly proves the created state and returns the fixture id
       // even when creation is indeterminate (receipt persistence failure), so
-      // the fixture is still registered for cleanup.
-      const created = await adapter.createCanaryFixture(title, body, labels);
-      return created.id;
+      // the fixture is still registered for cleanup. The full outcome
+      // (id + committed + reason) is returned so runCanary can record the id
+      // immediately and then throw when creation was not committed.
+      return adapter.createCanaryFixture(title, body, labels);
     },
     fetchIssue: fetchReal,
     closeIssue: async (id) => {
@@ -214,19 +215,25 @@ export async function runCanary(ops: CanaryOps, opts: { live: boolean }): Promis
       const implTitle = uniqueTitle("Canary impl");
       const implBody = "Scope bounded observable outcome\nno unresolved design decided\nacceptance criteria done when\nverification path verify\ndependencies blocked by none\nsmall enough for one session\nvertical tracer bullet slice";
       const implOnlyReady = await ops.createIssue(implTitle + " ready-only", implBody, [READY_FOR_AGENT]);
-      record(implOnlyReady); result.fixtureIds.push(implOnlyReady);
-      let issueReadyOnly = await ops.fetchIssue(implOnlyReady);
+      // Record the fixture id IMMEDIATELY so finally cleanup owns it even when
+      // creation was not committed (POST succeeded but read-back/receipt
+      // persistence failed). Then throw when committed is false — the canary
+      // must fail closed on an uncommitted fixture.
+      record(implOnlyReady.id); result.fixtureIds.push(implOnlyReady.id);
+      if (!implOnlyReady.committed) throw new Error(`canary fixture #${implOnlyReady.id} not committed: ${implOnlyReady.reason ?? "unknown"}`);
+      let issueReadyOnly = await ops.fetchIssue(implOnlyReady.id);
       const eligibleReadyOnly = isImplementationEligible(issueReadyOnly);
       if (eligibleReadyOnly.eligible) throw new Error("ready-only should not be implementation eligible");
       const implReadyImplement = await ops.createIssue(implTitle + " ready+implement", implBody, [READY_FOR_AGENT, AGENT_IMPLEMENT]);
-      record(implReadyImplement); result.fixtureIds.push(implReadyImplement);
-      let issueReadyImplement = await ops.fetchIssue(implReadyImplement);
+      record(implReadyImplement.id); result.fixtureIds.push(implReadyImplement.id);
+      if (!implReadyImplement.committed) throw new Error(`canary fixture #${implReadyImplement.id} not committed: ${implReadyImplement.reason ?? "unknown"}`);
+      let issueReadyImplement = await ops.fetchIssue(implReadyImplement.id);
       const eligibleReadyImplement = isImplementationEligible(issueReadyImplement);
       if (!eligibleReadyImplement.eligible) throw new Error("ready+implement should be eligible");
       result.implementationDiscoverableOnlyWithReadyAndImplement = true;
       const claimResult = await ops.claimImplementation(issueReadyImplement);
       if (!claimResult.success) throw new Error(`claim should succeed: ${claimResult.reason ?? "unknown"}`);
-      let afterClaim = await ops.fetchIssue(implReadyImplement);
+      let afterClaim = await ops.fetchIssue(implReadyImplement.id);
       const hasReady = afterClaim.labels.includes(READY_FOR_AGENT);
       const hasImplement = afterClaim.labels.includes(AGENT_IMPLEMENT);
       const hasInProgress = afterClaim.labels.includes(AGENT_IN_PROGRESS);
@@ -235,22 +242,24 @@ export async function runCanary(ops: CanaryOps, opts: { live: boolean }): Promis
       result.successfulClaimConsumesImplement = true;
       const reconciled = await ops.reconcile(afterClaim);
       if (!reconciled) throw new Error("reconciliation should succeed");
-      let afterReconcile = await ops.fetchIssue(implReadyImplement);
+      let afterReconcile = await ops.fetchIssue(implReadyImplement.id);
       if (afterReconcile.labels.includes(AGENT_IN_PROGRESS) || afterReconcile.assignees.length > 0 || afterReconcile.labels.includes(AGENT_IMPLEMENT)) throw new Error("reconcile should release");
       if (!afterReconcile.labels.includes(READY_FOR_AGENT)) throw new Error("ready-for-agent should remain after reconcile");
       result.staleReconciliationReleasesWithoutRestoring = true;
       const researchTitle = uniqueTitle("Canary research");
       const researchBody = "## Question\n\nCanary research question with substantive details for validation, part of #190 with evidence needed and mechanism to be investigated.";
       const researchId = await ops.createIssue(researchTitle, researchBody, [WAYFINDER_RESEARCH]);
-      record(researchId); result.fixtureIds.push(researchId);
-      let researchIssue = await ops.fetchIssue(researchId);
+      record(researchId.id); result.fixtureIds.push(researchId.id);
+      if (!researchId.committed) throw new Error(`canary fixture #${researchId.id} not committed: ${researchId.reason ?? "unknown"}`);
+      let researchIssue = await ops.fetchIssue(researchId.id);
       const researchEligible = isResearchEligible(researchIssue);
       if (!researchEligible.eligible) throw new Error("research should be eligible from wayfinder alone");
       result.researchDiscoverableFromWayfinderAlone = true;
       const contraTitle = uniqueTitle("Canary contra");
       const contraId = await ops.createIssue(contraTitle, implBody, [WAYFINDER_RESEARCH, AGENT_IMPLEMENT, READY_FOR_AGENT]);
-      record(contraId); result.fixtureIds.push(contraId);
-      let contraIssue = await ops.fetchIssue(contraId);
+      record(contraId.id); result.fixtureIds.push(contraId.id);
+      if (!contraId.committed) throw new Error(`canary fixture #${contraId.id} not committed: ${contraId.reason ?? "unknown"}`);
+      let contraIssue = await ops.fetchIssue(contraId.id);
       const contraValidation = detectContradictions(contraIssue);
       if (contraValidation.contradictions.length === 0) throw new Error("contradictory should have contradictions");
       const implEligibleContra = isImplementationEligible(contraIssue);
@@ -307,6 +316,12 @@ export interface CanaryCliDeps {
   resolveClaimantLoginFn?: () => Promise<string>;
   writeFileSync?: (path: string, data: string) => void;
   mkdirSync?: (path: string, opts?: any) => void;
+  /**
+   * Receipt sink override for the live canary ops. Production defaults to a
+   * durable atomic file sink; tests inject a controlled (e.g. throwing) sink
+   * to prove fixture-creation outcome handling on the production path.
+   */
+  receiptSink?: ReceiptSink;
 }
 
 export async function runCanaryCli(args: string[], deps: CanaryCliDeps = {}): Promise<{ exitCode: number; result?: CanaryResult }> {
@@ -317,7 +332,7 @@ export async function runCanaryCli(args: string[], deps: CanaryCliDeps = {}): Pr
   if (!ownerRepo) throw new Error("cannot resolve owner/repo for canary");
   const runGhFn = deps.runGh ?? ((ghArgs: string[]) => canaryTransport.run(ghArgs));
   const claimantLogin = deps.resolveClaimantLoginFn ? await deps.resolveClaimantLoginFn() : await resolveClaimantLogin(runGhFn);
-  const ops = createLiveCanaryOps({ owner: ownerRepo.owner, repo: ownerRepo.repo, runGh: runGhFn, claimantLogin });
+  const ops = createLiveCanaryOps({ owner: ownerRepo.owner, repo: ownerRepo.repo, runGh: runGhFn, claimantLogin, receiptSink: deps.receiptSink });
   let result: CanaryResult | null = null;
   const receiptPath = ".sandcastle/logs/canary-receipt.json";
   try { fs2.mkdirSync(".sandcastle/logs", { recursive: true }); } catch {}

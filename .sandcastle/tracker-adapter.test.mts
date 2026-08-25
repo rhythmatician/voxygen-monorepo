@@ -1769,6 +1769,75 @@ describe("tracker-adapter — terminal claim proof (round 6)", () => {
     expect(result.receipt.code).toBe("TERMINAL_CLAIM_DRIFT");
     expect(sink.receipts.some((r) => r.kind === "committed")).toBe(false);
   });
+
+  it("implementation claim terminal body missing tracer concepts => not committed (shared body contract)", async () => {
+    const { issue, input } = implIssue(1204);
+    const gh = makeFakeGh({ issues: new Map([[1204, issue]]) });
+    // Sabotage: the terminal fresh read observes a NONEMPTY body that is
+    // missing tracer concepts. The canonical body contract (the SAME validator
+    // isImplementationEligible uses) must reject it — TERMINAL_CLAIM_DRIFT.
+    const origRun = gh.run.bind(gh);
+    let viewCount = 0;
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "issue" && args[1] === "view") {
+        viewCount++;
+        const raw = await origRun(args);
+        if (viewCount === 3) {
+          const parsed = JSON.parse(raw);
+          parsed.body = "This is a nonempty body but it has no tracer concepts at all.";
+          return JSON.stringify(parsed);
+        }
+        return raw;
+      }
+      return origRun(args);
+    };
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.claimImplementation(input);
+
+    expect(result.kind).toBe("indeterminate");
+    if (result.kind !== "indeterminate") return;
+    expect(result.factoryError).toBe(true);
+    expect(result.receipt.code).toBe("TERMINAL_CLAIM_DRIFT");
+    expect(result.receipt.reason).toContain("implementation body invalid");
+    // No committed receipt — worker must not launch.
+    expect(sink.receipts.some((r) => r.kind === "committed")).toBe(false);
+  });
+
+  it("implementation claim terminal unexpected assignee => not committed (single concurrency owner)", async () => {
+    const { issue, input } = implIssue(1205);
+    const gh = makeFakeGh({ issues: new Map([[1205, issue]]) });
+    // Sabotage: the terminal fresh read observes an unexpected assignee in
+    // addition to the claimant. The claimant is the single concurrency owner —
+    // any additional assignee is drift.
+    const origRun = gh.run.bind(gh);
+    let viewCount = 0;
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "issue" && args[1] === "view") {
+        viewCount++;
+        const raw = await origRun(args);
+        if (viewCount === 3) {
+          const parsed = JSON.parse(raw);
+          parsed.assignees.push({ login: "intruder" });
+          return JSON.stringify(parsed);
+        }
+        return raw;
+      }
+      return origRun(args);
+    };
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.claimImplementation(input);
+
+    expect(result.kind).toBe("indeterminate");
+    if (result.kind !== "indeterminate") return;
+    expect(result.factoryError).toBe(true);
+    expect(result.receipt.code).toBe("TERMINAL_CLAIM_DRIFT");
+    expect(result.receipt.reason).toContain("unexpected assignee");
+    expect(sink.receipts.some((r) => r.kind === "committed")).toBe(false);
+  });
 });
 
 describe("tracker-adapter — evidence-authoritative repository/creation ports (round 6)", () => {
@@ -1892,7 +1961,10 @@ describe("tracker-adapter — evidence-authoritative repository/creation ports (
       if (args[0] === "api" && args[1].includes("/labels/")) {
         existenceReads++;
         if (existenceReads === 1) return JSON.stringify({ name: "agent:research", description: "retired" });
-        throw new Error("404 Not Found");
+        // Authoritative HTTP 404 — gh CLI reports the status in stderr/message.
+        const err = new Error("gh api repos/rhythmatician/voxygen-monorepo/labels/agent:research failed: HTTP 404: Not Found") as any;
+        err.stderr = "HTTP 404: Not Found";
+        throw err;
       }
       return origRun(args);
     };
@@ -1928,6 +2000,145 @@ describe("tracker-adapter — evidence-authoritative repository/creation ports (
     expect(result.reason).toContain("receipt persistence failed");
     // The fixture id is still exposed so cleanup can occur.
     expect(result.id).toBe(1301);
+  });
+
+  it("deleteRetiredLabel GhTokenMissingError after DELETE is NOT 404 => indeterminate and receipted", async () => {
+    const gh = makeFakeGh({ issues: new Map() });
+    const origRun = gh.run.bind(gh);
+    let deleted = false;
+    let existenceReads = 0;
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "issue" && args[1] === "list" && args.includes("--label")) {
+        return JSON.stringify([]);
+      }
+      if (args[0] === "api" && args[1] === "--method" && args[2] === "DELETE") { deleted = true; return ""; }
+      if (args[0] === "api" && args[1].includes("/labels/")) {
+        existenceReads++;
+        if (existenceReads === 1) return JSON.stringify({ name: "agent:research", description: "retired" });
+        // GhTokenMissingError — its message contains "not found" but it is NOT
+        // an HTTP 404. Must be treated as indeterminate, never absence.
+        const err = new Error("gh token not found in GH_TOKEN or .sandcastle/.env") as any;
+        err.name = "GhTokenMissingError";
+        throw err;
+      }
+      return origRun(args);
+    };
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.deleteRetiredLabel("agent:research", true);
+    expect(result.committed).toBe(false);
+    expect(result.reason).toContain("not authoritative 404");
+    expect(deleted).toBe(true);
+    // Durable indeterminate recovery evidence is receipted.
+    const receipts = sink.receipts.filter((r) => r.transition === "deleteRetiredLabel");
+    expect(receipts.some((r) => r.kind === "indeterminate")).toBe(true);
+  });
+
+  it("deleteRetiredLabel HTTP 500 after DELETE => indeterminate and receipted", async () => {
+    const gh = makeFakeGh({ issues: new Map() });
+    const origRun = gh.run.bind(gh);
+    let deleted = false;
+    let existenceReads = 0;
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "issue" && args[1] === "list" && args.includes("--label")) {
+        return JSON.stringify([]);
+      }
+      if (args[0] === "api" && args[1] === "--method" && args[2] === "DELETE") { deleted = true; return ""; }
+      if (args[0] === "api" && args[1].includes("/labels/")) {
+        existenceReads++;
+        if (existenceReads === 1) return JSON.stringify({ name: "agent:research", description: "retired" });
+        const err = new Error("gh api ... failed: HTTP 500: Internal Server Error") as any;
+        err.stderr = "HTTP 500: Internal Server Error";
+        throw err;
+      }
+      return origRun(args);
+    };
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.deleteRetiredLabel("agent:research", true);
+    expect(result.committed).toBe(false);
+    expect(result.reason).toContain("not authoritative 404");
+    expect(deleted).toBe(true);
+    const receipts = sink.receipts.filter((r) => r.transition === "deleteRetiredLabel");
+    expect(receipts.some((r) => r.kind === "indeterminate")).toBe(true);
+  });
+
+  it("updateCanonicalLabelDescription PATCH success/read-back failure => indeterminate and receipted", async () => {
+    const gh = makeFakeGh({ issues: new Map() });
+    const origRun = gh.run.bind(gh);
+    let patched = false;
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "api" && args[1] === "--method" && args[2] === "PATCH") { patched = true; return ""; }
+      if (args[0] === "api" && args[1].includes("/labels/") && args.includes("--jq")) {
+        // Pre-mutation read succeeds; post-PATCH read-back fails (network).
+        if (patched) throw new Error("network timeout");
+        return "old desc";
+      }
+      return origRun(args);
+    };
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.updateCanonicalLabelDescription("wayfinder:task", "new desc", "old desc");
+    expect(result.committed).toBe(false);
+    expect(result.reason).toContain("read-back failed");
+    expect(patched).toBe(true);
+    // Durable indeterminate recovery evidence is receipted.
+    const receipts = sink.receipts.filter((r) => r.transition === "updateCanonicalLabelDescription");
+    expect(receipts.some((r) => r.kind === "indeterminate")).toBe(true);
+  });
+
+  it("createCanaryFixture POST success/read-back failure => exposes id, indeterminate, and is cleaned", async () => {
+    const gh = makeFakeGh({ issues: new Map() });
+    const origRun = gh.run.bind(gh);
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "api" && args[1] === "--method" && args[2] === "POST") {
+        return "1302";
+      }
+      if (args[0] === "issue" && args[1] === "view") {
+        // Read-back fails — the POST succeeded but the created state cannot be
+        // proven. Indeterminate, but the id is exposed for cleanup.
+        throw new Error("network timeout");
+      }
+      return origRun(args);
+    };
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.createCanaryFixture("t", "body", ["ready-for-agent"]);
+    expect(result.committed).toBe(false);
+    expect(result.reason).toContain("state not proven");
+    // The fixture id is exposed so cleanup can occur.
+    expect(result.id).toBe(1302);
+    // Durable indeterminate recovery evidence is receipted.
+    const receipts = sink.receipts.filter((r) => r.transition === "createCanaryFixture");
+    expect(receipts.some((r) => r.kind === "indeterminate")).toBe(true);
+  });
+
+  it("deleteRetiredLabel expectedExists=false + live label => drift and zero DELETE", async () => {
+    const gh = makeFakeGh({ issues: new Map() });
+    const origRun = gh.run.bind(gh);
+    let deleted = false;
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "api" && args[1] === "--method" && args[2] === "DELETE") { deleted = true; return ""; }
+      if (args[0] === "api" && args[1].includes("/labels/")) {
+        // The label EXISTS on the pre-mutation read, but expectedExists=false.
+        return JSON.stringify({ name: "agent:research", description: "retired" });
+      }
+      return origRun(args);
+    };
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.deleteRetiredLabel("agent:research", false);
+    expect(result.committed).toBe(false);
+    expect(result.reason).toContain("drift");
+    // Zero DELETE — the label exists but was reviewed as absent.
+    expect(deleted).toBe(false);
+    const receipts = sink.receipts.filter((r) => r.transition === "deleteRetiredLabel");
+    expect(receipts.some((r) => r.kind === "rejected")).toBe(true);
   });
 });
 
@@ -2251,5 +2462,50 @@ describe("tracker-adapter — closed cleanup residue regressions (round 6)", () 
     expect(issue.labels.has("agent:implement")).toBe(false);
     expect(issue.labels.has("agent:blocked")).toBe(false);
     expect(sink.receipts[0].kind).toBe("committed");
+  });
+
+  it("claimant appears after initial read (stale label, claimant absent) => not cleaned", async () => {
+    // Initial fresh read: a stale label present but claimant ABSENT. The
+    // cleanup removes the stale label; then the claimant appears concurrently
+    // before the terminal read. The UNCONDITIONAL terminal invariant must
+    // catch the claimant and NOT report cleaned.
+    const issue: FakeIssue = {
+      number: 1605,
+      title: "t",
+      body: TRACER_BODY,
+      state: "closed",
+      labels: new Set(["ready-for-agent", "agent:in-progress"]),
+      assignees: new Set(),
+    };
+    const gh = makeFakeGh({ issues: new Map([[1605, issue]]) });
+    // Sabotage: after the label-removal mutation, the terminal read observes
+    // the claimant assigned. cleanupClosedStaleLabels views: 1=initial fresh
+    // read, 2=post-mutation verifyAfter, 3=terminal revalidation.
+    const origRun = gh.run.bind(gh);
+    let viewCount = 0;
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "issue" && args[1] === "view") {
+        viewCount++;
+        const raw = await origRun(args);
+        if (viewCount === 3) {
+          const parsed = JSON.parse(raw);
+          parsed.assignees.push({ login: "test-bot" });
+          return JSON.stringify(parsed);
+        }
+        return raw;
+      }
+      return origRun(args);
+    };
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const outcome = await tracker.cleanupClosedIssueStaleLabels(1605);
+
+    // The claimant appeared after the initial read — cleanup must NOT report
+    // cleaned (the terminal invariant is unconditional).
+    expect(outcome.cleaned).toBe(false);
+    expect(outcome.removed).toEqual([]);
+    // No committed cleanup receipt.
+    expect(sink.receipts.some((r) => r.kind === "committed")).toBe(false);
   });
 });

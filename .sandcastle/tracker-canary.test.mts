@@ -19,7 +19,7 @@ function makeMockOps() {
         body,
         blockedByCount: 0,
       });
-      return id;
+      return { id, committed: true };
     },
     fetchIssue: async (id: number) => {
       const issue = store.get(id);
@@ -198,18 +198,31 @@ describe("tracker-canary", () => {
   });
   it("live canary constructs exact gh api POST command via injected runner", async () => {
     const calls: string[][] = [];
+    let createdTitle = "";
+    let createdBody = "";
+    let createdLabels: string[] = [];
     const mockRunGh = async (args: string[]) => {
       calls.push(args);
       if (args[0] === "api" && args[1] === "user") return "test-bot";
-      if (args[0] === "api" && args.includes("--method") && args.includes("POST")) return "9999";
-      if (args[0] === "issue" && args[1] === "view") return JSON.stringify({ number: 9999, title: "t", body: "b", labels: [], assignees: [], state: "open" });
-      if (args[0] === "api" && args[1].includes("issues")) return "{}";
+      if (args[0] === "api" && args.includes("--method") && args.includes("POST")) {
+        // Capture the exact title/body/labels from the POST args so the
+        // adapter's exact-state proof can read them back.
+        for (let i = 0; i < args.length; i++) {
+          if (args[i] === "-f" && args[i + 1]?.startsWith("title=")) createdTitle = args[i + 1].slice("title=".length);
+          else if (args[i] === "-f" && args[i + 1]?.startsWith("body=")) createdBody = args[i + 1].slice("body=".length);
+          else if (args[i] === "-f" && args[i + 1]?.startsWith("labels[]=")) createdLabels.push(args[i + 1].slice("labels[]=".length));
+        }
+        return "9999";
+      }
+      if (args[0] === "issue" && args[1] === "view") return JSON.stringify({ number: 9999, title: createdTitle, body: createdBody, labels: createdLabels.map((name) => ({ name })), assignees: [], state: "open" });
+      if (args[0] === "api" && args[1].includes("issues")) return "0";
       return "";
     };
     const { createLiveCanaryOps } = await import("./tracker-canary.mts");
     const ops = createLiveCanaryOps({ owner: "rhythmatician", repo: "voxygen-monorepo", runGh: mockRunGh, claimantLogin: "test-bot" });
-    const id = await ops.createIssue("title", "body", ["ready-for-agent", "agent:implement"]);
-    expect(id).toBe(9999);
+    const created = await ops.createIssue("title", "body", ["ready-for-agent", "agent:implement"]);
+    expect(created.id).toBe(9999);
+    expect(created.committed).toBe(true);
     expect(calls[0]).toEqual(["api", "--method", "POST", "repos/rhythmatician/voxygen-monorepo/issues", "-f", "title=title", "-f", "body=body", "-f", "labels[]=ready-for-agent", "-f", "labels[]=agent:implement", "--jq", ".number"]);
   });
 
@@ -281,8 +294,14 @@ describe("tracker-canary — live path behavioral (item 5)", () => {
         createdIds++;
         const id = 9000+createdIds;
         const labels: string[] = [];
-        for (let i=0;i<args.length;i++) if (args[i]==="labels[]=".slice(0,8) || args[i].startsWith("labels[]=")) labels.push(args[i].slice("labels[]=".length));
-        store.set(id, { number:id, title:"t", body: labels.includes("wayfinder:research") ? RESEARCH_BODY : TRACER, state:"open", labels:[...labels], assignees:[] as string[], blockedByCount:0 });
+        let title = "";
+        let body = "";
+        for (let i=0;i<args.length;i++) {
+          if (args[i]==="-f" && args[i+1]?.startsWith("title=")) title = args[i+1].slice("title=".length);
+          else if (args[i]==="-f" && args[i+1]?.startsWith("body=")) body = args[i+1].slice("body=".length);
+          else if (args[i]==="-f" && args[i+1]?.startsWith("labels[]=")) labels.push(args[i+1].slice("labels[]=".length));
+        }
+        store.set(id, { number:id, title, body, state:"open", labels:[...labels], assignees:[] as string[], blockedByCount:0 });
         return String(id);
       }
       if (args[0]==="issue" && args[1]==="view") {
@@ -375,7 +394,7 @@ describe("tracker-canary — live path behavioral (item 5)", () => {
         const id=nextId++;
         store.set(id, { number:id, title, state:"open" as const, labels:[...labels], assignees:[], body, blockedByCount:0 });
         created.push(id);
-        return id;
+        return { id, committed: true };
       },
       fetchIssue: async (id:number) => {
         const st=store.get(id);
@@ -490,7 +509,7 @@ describe("tracker-canary — live path behavioral (item 5)", () => {
       createIssue: async (title:string, body:string, labels:string[]) => {
         const id=nextId++;
         store.set(id, { number:id, title, state:"open" as const, labels:[...labels], assignees:[], body, blockedByCount:0 });
-        return id;
+        return { id, committed: true };
       },
       fetchIssue: async (id:number) => {
         const st=store.get(id);
@@ -564,4 +583,102 @@ describe("tracker-canary — live path behavioral (item 5)", () => {
     expect(result.cleanupFailures.length).toBeGreaterThan(0);
     expect(result.fixturesCleaned).toBe(false);
   });
+
+  it("runCanaryCli with throwing creation receipt sink: fixture id retained, cleanup proved, primaryError, exit 1", async () => {
+    const { runCanaryCli } = await import("./tracker-canary.mts");
+    const store = new Map<number, any>();
+    let createdIds = 0;
+    const TRACER = "Scope bounded observable outcome\nno unresolved design decided\nacceptance criteria done when\nverification path verify\ndependencies blocked by none\nsmall enough for one session\nvertical tracer bullet slice";
+    const RESEARCH_BODY = "## Question\n\nCanary research question with substantive details for validation, part of #190 with evidence needed and mechanism to be investigated.";
+    const mockRunGh = async (args:string[]) => {
+      if (args[0]==="api" && args[1]==="user") return "test-bot";
+      if (args[0]==="api" && args.includes("--method") && args.includes("POST")) {
+        createdIds++;
+        const id = 9300+createdIds;
+        const labels: string[] = [];
+        let title = "";
+        let body = "";
+        for (let i=0;i<args.length;i++) {
+          if (args[i]==="-f" && args[i+1]?.startsWith("title=")) title = args[i+1].slice("title=".length);
+          else if (args[i]==="-f" && args[i+1]?.startsWith("body=")) body = args[i+1].slice("body=".length);
+          else if (args[i]==="-f" && args[i+1]?.startsWith("labels[]=")) labels.push(args[i+1].slice("labels[]=".length));
+        }
+        store.set(id, { number:id, title, body, state:"open", labels:[...labels], assignees:[] as string[], blockedByCount:0 });
+        return String(id);
+      }
+      if (args[0]==="issue" && args[1]==="view") {
+        if (args.includes("comments")) return "";
+        const id = parseInt(args[2],10);
+        const issue = store.get(id);
+        if (!issue) throw new Error("not found "+id);
+        return JSON.stringify({ number: issue.number, title: issue.title, body: issue.body, labels: issue.labels.map((n:string)=>({name:n})), assignees: issue.assignees.map((l:string)=>({login:l})), state: issue.state });
+      }
+      if (args[0]==="api" && args[1].includes("/issues/") && args.includes("--jq")) return "0";
+      if (args[0]==="issue" && args[1]==="edit") {
+        const id = parseInt(args[2],10);
+        const issue = store.get(id);
+        if (!issue) throw new Error("not found "+id);
+        for (let i=3;i<args.length;i++) {
+          if (args[i]==="--add-label") { const l=args[++i]; if(!issue.labels.includes(l)) issue.labels.push(l); }
+          else if (args[i]==="--remove-label") { const l=args[++i]; issue.labels=issue.labels.filter((x:string)=>x!==l); }
+          else if (args[i]==="--add-assignee") { const l=args[++i]; if(!issue.assignees.includes(l)) issue.assignees.push(l); }
+          else if (args[i]==="--remove-assignee") { const l=args[++i]; issue.assignees=issue.assignees.filter((x:string)=>x!==l); }
+        }
+        return "";
+      }
+      if (args[0]==="issue" && args[1]==="comment") return "";
+      if (args[0]==="issue" && args[1]==="close") {
+        const id = parseInt(args[2],10);
+        const issue = store.get(id);
+        if (issue) issue.state="closed";
+        return "";
+      }
+      if (args[0]==="pr" && args[1]==="list") return "[]";
+      if (args[0]==="api" && args[1].includes("git/refs")) throw new Error("HTTP 404: Not Found");
+      return "";
+    };
+    const cp = await import("node:child_process");
+    const repoRoot = process.cwd();
+    const runGit = (gitArgs:string[]) => {
+      try {
+        const out = cp.execFileSync("git", gitArgs, { encoding:"utf8", cwd: repoRoot } as any);
+        return { exitCode:0, stdout: out as string, stderr:"" };
+      } catch (e:any) {
+        return { exitCode: e?.status ?? 1, stdout: e?.stdout?.toString() ?? "", stderr: e?.stderr?.toString() ?? String(e?.message ?? e) };
+      }
+    };
+    const fsTest = await import("node:fs");
+    // Throwing creation receipt sink: createCanaryFixture's committed receipt
+    // persistence throws, so the fixture is created but NOT committed. The
+    // fixture id must still be retained for cleanup.
+    const { makeMemoryReceiptSink } = await import("./tracker-adapter.mts");
+    const throwingSink = makeMemoryReceiptSink();
+    const origPersist = throwingSink.persist.bind(throwingSink);
+    throwingSink.persist = (r) => { if (r.transition === "createCanaryFixture") throw new Error("sink full"); origPersist(r); };
+    const result = await runCanaryCli(["--live"], {
+      runGh: mockRunGh,
+      resolveClaimantLoginFn: async () => "test-bot",
+      receiptSink: throwingSink,
+      writeFileSync: (path:string, data:string) => { fsTest.writeFileSync(path, data, "utf8"); },
+      mkdirSync: ((p:string, o?:any) => { fsTest.mkdirSync(p, o); }) as any,
+    });
+    // The canary fails closed on the uncommitted fixture.
+    expect(result.exitCode).toBe(1);
+    expect(result.result).toBeDefined();
+    expect(result.result!.primaryError).toBeDefined();
+    expect(result.result!.primaryError).toContain("not committed");
+    // The fixture id is retained so cleanup owns it.
+    expect(result.result!.fixtureIds.length).toBeGreaterThan(0);
+    // Cleanup is PROVED: every recorded fixture is closed and clean.
+    expect(result.result!.fixturesCleaned).toBe(true);
+    expect(result.result!.cleanupFailures).toEqual([]);
+    for (const id of result.result!.fixtureIds) {
+      const after = store.get(id)!;
+      expect(after.state).toBe("closed");
+      expect(after.assignees.length).toBe(0);
+      expect(after.labels).not.toContain("agent:in-progress");
+      expect(after.labels).not.toContain("agent:implement");
+      expect(after.labels).not.toContain("agent:blocked");
+    }
+  }, 15000);
 });

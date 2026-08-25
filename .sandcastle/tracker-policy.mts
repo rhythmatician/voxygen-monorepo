@@ -474,6 +474,21 @@ export function isResearchEligible(issue: IssueInput): EligibilityResult {
 // Eligibility — implementation (including AFK Task)
 // ---------------------------------------------------------------------------
 
+/**
+ * Pure validator for the implementation ticket body contract — the canonical
+ * tracer-bullet contract (all 7 concepts) plus a nonempty body. Owned by the
+ * policy/tracer seam and reused by BOTH isImplementationEligible and the
+ * terminal claim proof so the two never drift on what a valid implementation
+ * body requires.
+ */
+export function validateImplementationTicketInput(body: string | undefined): { valid: boolean; reason?: string; code?: string } {
+  const missing = missingTracerConcepts(body);
+  if (missing.length > 0) {
+    return { valid: false, reason: `tracer contract missing: ${missing.join(", ")} — see docs/agents/tracer-contract.md`, code: "MISSING_TRACER" };
+  }
+  return { valid: true };
+}
+
 export function isImplementationEligible(issue: IssueInput): EligibilityResult {
   if (issue.state.toLowerCase() !== "open") {
     return { eligible: false, reason: `state is ${issue.state}, expected open`, code: "STATE_NOT_OPEN" };
@@ -541,11 +556,12 @@ export function isImplementationEligible(issue: IssueInput): EligibilityResult {
     // No additional wayfinder check needed
   }
 
-  // Tracer-bullet contract — fail-closed
+  // Tracer-bullet contract — fail-closed, via the canonical body-contract
+  // validator shared with the terminal claim proof.
   {
-    const missing = missingTracerConcepts(issue.body);
-    if (missing.length > 0) {
-      return { eligible: false, reason: `tracer contract missing: ${missing.join(", ")} — see docs/agents/tracer-contract.md`, code: "MISSING_TRACER" };
+    const v = validateImplementationTicketInput(issue.body);
+    if (!v.valid) {
+      return { eligible: false, reason: v.reason!, code: v.code! };
     }
   }
 
