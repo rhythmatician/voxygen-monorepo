@@ -159,10 +159,10 @@ export function createLiveCanaryOps(opts: {
       // Adapter-owned canary fixture creation — never a raw gh POST. The
       // adapter freshly proves the created state and returns the fixture id
       // even when creation is indeterminate (receipt persistence failure), so
-      // the fixture is still registered for cleanup. The full outcome
-      // (id + committed + reason) is returned so runCanary can record the id
-      // immediately and then throw when creation was not committed.
-      return adapter.createCanaryFixture(title, body, labels);
+      // the fixture is still registered for cleanup. The typed outcome is
+      // mapped to the canary's committed/reason contract.
+      const { id, outcome } = await adapter.createCanaryFixture(title, body, labels);
+      return { id, committed: outcome.status === "committed", reason: outcome.reason };
     },
     fetchIssue: fetchReal,
     closeIssue: async (id) => {

@@ -335,7 +335,7 @@ describe("tracker-canary — live path behavioral (item 5)", () => {
         return "";
       }
       if (args[0]==="pr" && args[1]==="list") return "[]";
-      if (args[0]==="api" && args[1].includes("git/refs")) throw new Error("404 Not Found");
+      if (args[0]==="api" && args[1].includes("git/refs")) throw new Error("HTTP 404: Not Found");
       return "";
     };
     // REAL local git runner over this workspace — branch absence is PROVED by

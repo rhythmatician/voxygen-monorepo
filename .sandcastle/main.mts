@@ -694,6 +694,22 @@ async function reconcileInProgressIssues(): Promise<void> {
     console.error(`  ${msg}`);
     throw new Error(msg);
   }
+  // Bounded startup recovery for CLAIMANT-ONLY closed residue: closed issues
+  // assigned to the authenticated claimant with NO machine labels. Only
+  // unassigned when Sandcastle-owned evidence exists (typed receipt or exact
+  // audit comment). Ordinary closed issues assigned to the maintainer are
+  // never touched. A listing/read failure is FACTORY_ERROR — never continue
+  // on unknown residue.
+  console.log("  Recovering claimant-only closed residue (Sandcastle-owned evidence)...");
+  const residueRecovery = await tracker.recoverClaimantOnlyClosedResidue(100);
+  if (residueRecovery.errors.length > 0) {
+    const msg = `FACTORY_ERROR recovering claimant-only closed residue: ${residueRecovery.errors.join("; ")}`;
+    console.error(`  ${msg} — stopping before discovery/claim`);
+    throw new Error(msg);
+  }
+  if (residueRecovery.recovered > 0) console.log(`  Recovered ${residueRecovery.recovered} claimant-only closed issue(s).`);
+  if (residueRecovery.skipped > 0) console.log(`  Skipped ${residueRecovery.skipped} closed issue(s) without Sandcastle evidence (left assigned).`);
+  if (residueRecovery.recovered === 0 && residueRecovery.skipped === 0) console.log("  No claimant-only closed residue to recover.");
   for (const number of closedIssueNumbers) {
     const id = String(number);
     console.log(`  closed #${id} still has a stale machine label — cleaning`);

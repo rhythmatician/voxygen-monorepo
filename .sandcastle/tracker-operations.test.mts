@@ -952,7 +952,10 @@ describe("tracker-operations — round 4 regressions", () => {
     expect(mutated).toBe(false);
   });
 
-  it("REGRESSION: multiple assignees including claimant passes ownership gate", async () => {
+  it("REGRESSION: multiple assignees including claimant => zero mutation (sole concurrency owner)", async () => {
+    // The claimant is the SINGLE concurrency owner. An additional assignee
+    // (intruder) is concurrent drift — the claim is not owned and must NOT be
+    // released/blocked. Zero mutation.
     const shared:any = { number: 604, title:"s", state:"open", labels:["ready-for-agent","agent:in-progress"], assignees:["bot","human-reviewer"], body:"body", blockedByCount:0 };
     let released = false;
     const ops = makeOps4({
@@ -962,8 +965,8 @@ describe("tracker-operations — round 4 regressions", () => {
       },
     });
     const r = await reconcileStaleImplementation(shared, "sandcastle/issue-604", ops);
-    expect(released).toBe(true);
-    expect(r.factoryError ?? false).toBe(false);
+    expect(released).toBe(false);
+    expect(r.reason).toMatch(/sole claimant|exactly 1 assignee|ownership drifted/);
   });
 
   it("REGRESSION: claimant removed between inspection and release => zero mutation", async () => {
@@ -1063,7 +1066,7 @@ describe("tracker-operations — production adapter behavioral (item 8)", () => 
         return JSON.stringify({ number:501, title:"s", body:"body", state:"open", labels:[{name:"ready-for-agent"}], assignees:[], });
       }
       if (args[0]==="api" && args[1].includes("issues/")) return "0";
-      if (args[0]==="api" && args[1].includes("git/refs")) throw new Error("404 Not Found");
+      if (args[0]==="api" && args[1].includes("git/refs")) throw new Error("HTTP 404: Not Found");
       return "";
     };
     const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockRunGh, runGit: fakeGit, repoRoot: process.cwd(), claimantLogin: "bot" });
@@ -1142,7 +1145,7 @@ describe("tracker-operations — production adapter behavioral (item 8)", () => 
     const mockRunGh = async (args:string[]) => {
       if (args[0]==="issue" && args[1]==="view") return JSON.stringify({ number:504, title:"s", body:"body", state:"open", labels:[{name:"ready-for-agent"},{name:"agent:in-progress"}], assignees:[{login:"bot"}] });
       if (args[0]==="api" && args[1].includes("issues/") && args.includes("--jq")) return "0";
-      if (args[0]==="api" && args[1].includes("git/refs")) throw new Error("404 Not Found");
+      if (args[0]==="api" && args[1].includes("git/refs")) throw new Error("HTTP 404: Not Found");
       return "";
     };
     const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockRunGh, runGit: fakeGit, repoRoot: "/nonexistent/path/that/will/fail/git", claimantLogin: "bot" });
@@ -1342,7 +1345,7 @@ describe("tracker-operations — production adapter without method replacement (
         }
         if(args[0]==="issue" && args[1]==="edit" && args.includes("agent:in-progress")){ order.push("release"); return ""; }
         if(args[0]==="issue" && args[1]==="comment"){ order.push("comment"); return ""; }
-        if(args[0]==="api" && args[1].includes("git/refs")) throw new Error("404 Not Found");
+        if(args[0]==="api" && args[1].includes("git/refs")) throw new Error("HTTP 404: Not Found");
         if(args[0]==="api" && args[1].includes("/issues/") && args.includes("--jq")) return "0";
         return "";
       };
@@ -1410,7 +1413,7 @@ describe("tracker-operations — production adapter without method replacement (
         if(args[0]==="issue" && args[1]==="edit" && args.includes("agent:in-progress")){ store.labels=store.labels.filter((l:string)=>l!=="agent:in-progress"); store.assignees=[]; return ""; }
         if(args[0]==="issue" && args[1]==="edit" && args.includes("agent:blocked")){ if(!store.labels.includes("agent:blocked")) store.labels.push("agent:blocked"); return ""; }
         if(args[0]==="issue" && args[1]==="comment") return "";
-        if(args[0]==="api" && args[1].includes("git/refs")) throw new Error("404 Not Found");
+        if(args[0]==="api" && args[1].includes("git/refs")) throw new Error("HTTP 404: Not Found");
         if(args[0]==="api" && args[1].includes("/issues/") && args.includes("--jq")) return "0";
         return "";
       };
@@ -1469,7 +1472,7 @@ describe("tracker-operations — production adapter without method replacement (
         if(args[0]==="issue" && args[1]==="view") return JSON.stringify({number:912,title:"t",body:"",state:"open",labels:[{name:"ready-for-agent"},{name:"agent:in-progress"}],assignees:[{login:"bot"}]});
         if(args[0]==="issue" && (args[1]==="edit" || args[1]==="comment" || args[1]==="close")){ writes++; return ""; }
         if(args[0]==="api") { if(args.includes("--method")) writes++; return "0"; }
-        if(args[0]==="api" && args[1].includes("git/refs")) throw new Error("404 Not Found");
+        if(args[0]==="api" && args[1].includes("git/refs")) throw new Error("HTTP 404: Not Found");
         return "";
       };
       const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockGh, runGit: failingRunner, repoRoot, claimantLogin: "bot" });
@@ -1502,7 +1505,7 @@ describe("tracker-operations — production adapter without method replacement (
         if(args[0]==="pr" && args[1]==="list") return "[]";
         if(args[0]==="issue" && args[1]==="view") return JSON.stringify({number:913,title:"t",body:"",state:"open",labels:[{name:"ready-for-agent"},{name:"agent:in-progress"}],assignees:[{login:"bot"}]});
         if(args[0]==="issue" && (args[1]==="edit" || args[1]==="comment")){ writes++; return ""; }
-        if(args[0]==="api" && args[1].includes("git/refs")) throw new Error("404 Not Found");
+        if(args[0]==="api" && args[1].includes("git/refs")) throw new Error("HTTP 404: Not Found");
         if(args[0]==="api" && args[1].includes("/issues/") ) return "0";
         return "";
       };
@@ -1539,7 +1542,7 @@ describe("tracker-operations — production adapter without method replacement (
         if(args[0]==="pr" && args[1]==="list") return "[]";
         if(args[0]==="issue" && args[1]==="view") return JSON.stringify({number:914,title:"t",body:"",state:"open",labels:[{name:"ready-for-agent"},{name:"agent:in-progress"}],assignees:[{login:"bot"}]});
         if(args[0]==="issue" && (args[1]==="edit" || args[1]==="comment")){ writes++; return ""; }
-        if(args[0]==="api" && args[1].includes("git/refs")) throw new Error("404 Not Found");
+        if(args[0]==="api" && args[1].includes("git/refs")) throw new Error("HTTP 404: Not Found");
         if(args[0]==="api") return "0";
         return "";
       };
@@ -1594,7 +1597,7 @@ describe("tracker-operations — production adapter without method replacement (
         if(args[0]==="issue" && args[1]==="edit" && args.includes("agent:in-progress")){ store.labels=store.labels.filter((l:string)=>l!=="agent:in-progress"); store.assignees=[]; return ""; }
         if(args[0]==="issue" && args[1]==="edit" && args.includes("agent:blocked")){ if(!store.labels.includes("agent:blocked")) store.labels.push("agent:blocked"); return ""; }
         if(args[0]==="issue" && args[1]==="comment") return "";
-        if(args[0]==="api" && args[1].includes("git/refs")) throw new Error("404 Not Found");
+        if(args[0]==="api" && args[1].includes("git/refs")) throw new Error("HTTP 404: Not Found");
         if(args[0]==="api" && args[1].includes("/issues/")) return "0";
         return "";
       };
@@ -1695,7 +1698,7 @@ describe("tracker-operations — patch 8 worktree/provenance and empty-branch ve
         if(args[0]==="issue" && (args[1]==="edit"||args[1]==="comment"||args[1]==="close")) ghWrites++;
         if(args[0]==="api" && args.includes("--method")) ghWrites++;
         if(args[0]==="issue" && args[1]==="view") return JSON.stringify({number:920,title:"t",body:"",state:"open",labels:[{name:"ready-for-agent"}],assignees:[]});
-        if(args[0]==="api" && args[1].includes("git/refs")) throw new Error("404 Not Found");
+        if(args[0]==="api" && args[1].includes("git/refs")) throw new Error("HTTP 404: Not Found");
         return "";
       };
       const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockGh, runGit: failingRunner, repoRoot, claimantLogin:"bot" });
@@ -1712,7 +1715,7 @@ describe("tracker-operations — patch 8 worktree/provenance and empty-branch ve
         if(args[0]==="pr" && args[1]==="list") return "[]";
         if(args[0]==="issue" && args[1]==="view") return JSON.stringify({number:920,title:"t",body:"",state:"open",labels:[{name:"ready-for-agent"},{name:"agent:in-progress"}],assignees:[{login:"bot"}]});
         if(args[0]==="issue" && (args[1]==="edit"||args[1]==="comment")){ ghWrites++; return ""; }
-        if(args[0]==="api" && args[1].includes("git/refs")) throw new Error("404 Not Found");
+        if(args[0]==="api" && args[1].includes("git/refs")) throw new Error("HTTP 404: Not Found");
         return "";
       }, runGit: failingRunner, repoRoot, claimantLogin:"bot"});
       let ghWrites2=0;
@@ -1721,7 +1724,7 @@ describe("tracker-operations — patch 8 worktree/provenance and empty-branch ve
         if(args[0]==="pr" && args[1]==="list") return "[]";
         if(args[0]==="issue" && args[1]==="view") return JSON.stringify({number:920,title:"t",body:"",state:"open",labels:[{name:"ready-for-agent"},{name:"agent:in-progress"}],assignees:[{login:"bot"}]});
         if(args[0]==="issue" && (args[1]==="edit"||args[1]==="comment")){ ghWrites2++; return ""; }
-        if(args[0]==="api" && args[1].includes("git/refs")) throw new Error("404 Not Found");
+        if(args[0]==="api" && args[1].includes("git/refs")) throw new Error("HTTP 404: Not Found");
         if(args[0]==="api" && args[1].includes("/issues/")) return "0";
         return "";
       };
@@ -1806,7 +1809,7 @@ describe("tracker-operations — patch 8 worktree/provenance and empty-branch ve
         return baseRunner(args);
       };
       const mockGh = async (args:string[])=>{
-        if(args[0]==="api" && args[1].includes("git/refs")) throw new Error("404 Not Found");
+        if(args[0]==="api" && args[1].includes("git/refs")) throw new Error("HTTP 404: Not Found");
         return "";
       };
       const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockGh, runGit: trackingRunner, repoRoot, claimantLogin:"bot" });
@@ -1842,7 +1845,7 @@ describe("tracker-operations — patch 8 worktree/provenance and empty-branch ve
         }
         if(args[0]==="issue" && args[1]==="edit" && args.includes("agent:in-progress")) return "";
         if(args[0]==="issue" && args[1]==="comment"){ commentCalled=true; return ""; }
-        if(args[0]==="api" && args[1].includes("git/refs")) throw new Error("404 Not Found");
+        if(args[0]==="api" && args[1].includes("git/refs")) throw new Error("HTTP 404: Not Found");
         if(args[0]==="api" && args[1].includes("/issues/")) return "0";
         return "";
       };
@@ -1900,7 +1903,7 @@ describe("tracker-operations — patch 8 worktree/provenance and empty-branch ve
         if(args[0]==="issue" && args[1]==="edit" && args.includes("agent:in-progress")){ store.labels=store.labels.filter((l:string)=>l!=="agent:in-progress"); store.assignees=[]; return ""; }
         if(args[0]==="issue" && args[1]==="edit" && args.includes("agent:blocked")){ if(!store.labels.includes("agent:blocked")) store.labels.push("agent:blocked"); return ""; }
         if(args[0]==="issue" && args[1]==="comment") return "";
-        if(args[0]==="api" && args[1].includes("git/refs")) throw new Error("404 Not Found");
+        if(args[0]==="api" && args[1].includes("git/refs")) throw new Error("HTTP 404: Not Found");
         if(args[0]==="api" && args[1].includes("/issues/")) return "0";
         return "";
       };
@@ -1990,7 +1993,7 @@ describe("tracker-operations — patch 9 dirty worktree preservation and deleteB
         if(args[0]==="issue" && args[1]==="edit" && args.includes("agent:in-progress")){ store.labels=store.labels.filter((l:string)=>l!=="agent:in-progress"); store.assignees=[]; return ""; }
         if(args[0]==="issue" && args[1]==="edit" && args.includes("agent:blocked")){ if(!store.labels.includes("agent:blocked")) store.labels.push("agent:blocked"); return ""; }
         if(args[0]==="issue" && args[1]==="comment") return "";
-        if(args[0]==="api" && args[1].includes("git/refs")) throw new Error("404 Not Found");
+        if(args[0]==="api" && args[1].includes("git/refs")) throw new Error("HTTP 404: Not Found");
         if(args[0]==="api" && args[1].includes("/issues/")) return "0";
         return "";
       };
@@ -2055,7 +2058,7 @@ describe("tracker-operations — patch 9 dirty worktree preservation and deleteB
         if(args[0]==="issue" && args[1]==="edit" && args.includes("agent:in-progress")){ store.labels=store.labels.filter((l:string)=>l!=="agent:in-progress"); store.assignees=[]; return ""; }
         if(args[0]==="issue" && args[1]==="edit" && args.includes("agent:blocked")){ if(!store.labels.includes("agent:blocked")) store.labels.push("agent:blocked"); return ""; }
         if(args[0]==="issue" && args[1]==="comment") return "";
-        if(args[0]==="api" && args[1].includes("git/refs")) throw new Error("404 Not Found");
+        if(args[0]==="api" && args[1].includes("git/refs")) throw new Error("HTTP 404: Not Found");
         if(args[0]==="api" && args[1].includes("/issues/")) return "0";
         return "";
       };
@@ -2098,7 +2101,7 @@ describe("tracker-operations — patch 9 dirty worktree preservation and deleteB
         if(args[0]==="pr" && args[1]==="list") return "[]";
         if(args[0]==="issue" && args[1]==="view") return JSON.stringify({number:932,title:"t",body:"",state:"open",labels:[{name:"ready-for-agent"},{name:"agent:in-progress"}],assignees:[{login:"bot"}]});
         if(args[0]==="issue" && (args[1]==="edit"||args[1]==="comment")){ ghWrites++; return ""; }
-        if(args[0]==="api" && args[1].includes("git/refs")) throw new Error("404 Not Found");
+        if(args[0]==="api" && args[1].includes("git/refs")) throw new Error("HTTP 404: Not Found");
         if(args[0]==="api" && args[1].includes("/issues/")) return "0";
         return "";
       };
@@ -2151,7 +2154,7 @@ describe("tracker-operations — patch 9 dirty worktree preservation and deleteB
         }
         if(args[0]==="issue" && args[1]==="edit" && args.includes("agent:in-progress")){ store.labels=store.labels.filter((l:string)=>l!=="agent:in-progress"); store.assignees=[]; return ""; }
         if(args[0]==="issue" && args[1]==="comment"){ commentCalled=true; return ""; }
-        if(args[0]==="api" && args[1].includes("git/refs")) throw new Error("404 Not Found");
+        if(args[0]==="api" && args[1].includes("git/refs")) throw new Error("HTTP 404: Not Found");
         if(args[0]==="api" && args[1].includes("/issues/")) return "0";
         return "";
       };
@@ -2208,7 +2211,7 @@ describe("tracker-operations — patch 9 dirty worktree preservation and deleteB
         if(args[0]==="pr" && args[1]==="list") return "[]";
         if(args[0]==="issue" && args[1]==="view") return JSON.stringify({number:934,title:"t",body:"",state:"open",labels:[{name:"ready-for-agent"},{name:"agent:in-progress"}],assignees:[{login:"bot"}]});
         if(args[0]==="issue" && args[1]==="edit" && args.includes("agent:in-progress")){ released=true; return ""; }
-        if(args[0]==="api" && args[1].includes("git/refs")) throw new Error("404 Not Found");
+        if(args[0]==="api" && args[1].includes("git/refs")) throw new Error("HTTP 404: Not Found");
         if(args[0]==="api" && args[1].includes("/issues/")) return "0";
         return "";
       };
@@ -2253,7 +2256,7 @@ describe("tracker-operations — patch 9 dirty worktree preservation and deleteB
         if(args[0]==="issue" && args[1]==="view") return JSON.stringify({number:935,title:"t",body:"",state:"open",labels:[{name:"ready-for-agent"},{name:"agent:in-progress"}],assignees:[{login:"bot"}]});
         if(args[0]==="issue" && args[1]==="edit" && args.includes("agent:in-progress")){ released=true; return ""; }
         if(args[0]==="issue" && args[1]==="comment"){ commented=true; return ""; }
-        if(args[0]==="api" && args[1].includes("git/refs")) throw new Error("404 Not Found");
+        if(args[0]==="api" && args[1].includes("git/refs")) throw new Error("HTTP 404: Not Found");
         if(args[0]==="api" && args[1].includes("/issues/")) return "0";
         return "";
       };
@@ -2279,5 +2282,55 @@ describe("tracker-operations — patch 9 dirty worktree preservation and deleteB
       // cleanup directory for next
       try { fsSync.rmdirSync(provPath); } catch {}
     } finally { cleanup(); }
+  });
+});
+
+describe("tracker-operations — round 8 authoritative absence (no error-text inference)", () => {
+  it("getPrState uses REST pulls endpoint; authoritative HTTP 404 => CLOSED/found:false", async () => {
+    const { createProductionReconcileOps } = await import("./reconcile-adapter.mts");
+    let usedREST = false;
+    const mockGh = async (args: string[]) => {
+      // The REST pulls endpoint must be used (not `gh pr view`).
+      if (args[0] === "api" && args[1].includes("/pulls/")) {
+        usedREST = true;
+        const err = new Error("gh api ... failed: HTTP 404: Not Found") as any;
+        err.stderr = "HTTP 404: Not Found";
+        throw err;
+      }
+      return "";
+    };
+    const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockGh, runGit: fakeGit, repoRoot: process.cwd(), claimantLogin: "bot" });
+    const r = await ops.getPrState("999");
+    expect(usedREST).toBe(true);
+    expect(r).toEqual({ state: "CLOSED", mergedAt: null, found: false });
+  });
+
+  it("getPrState non-HTTP-404 error => UNKNOWN (never inferred absent)", async () => {
+    const { createProductionReconcileOps } = await import("./reconcile-adapter.mts");
+    const mockGh = async (args: string[]) => {
+      if (args[0] === "api" && args[1].includes("/pulls/")) {
+        // A generic "not found" message WITHOUT the HTTP status must NOT be
+        // treated as absence — it is UNKNOWN.
+        throw new Error("gh api ... failed: not found");
+      }
+      return "";
+    };
+    const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockGh, runGit: fakeGit, repoRoot: process.cwd(), claimantLogin: "bot" });
+    const r = await ops.getPrState("999");
+    expect(r).toEqual({ state: "UNKNOWN", mergedAt: null, found: false, unknown: true });
+  });
+
+  it("checkBranchExists non-HTTP-404 remote error => unknown (never inferred absent)", async () => {
+    const { createProductionReconcileOps } = await import("./reconcile-adapter.mts");
+    const mockGh = async (args: string[]) => {
+      if (args[0] === "api" && args[1].includes("git/refs")) {
+        // Generic "not found" without HTTP status => unknown, not absent.
+        throw new Error("gh api ... failed: not found");
+      }
+      return "";
+    };
+    const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockGh, runGit: fakeGit, repoRoot: process.cwd(), claimantLogin: "bot" });
+    const r = await ops.checkBranchExists("sandcastle/issue-999");
+    expect(r).toBe("unknown");
   });
 });

@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { createGhTransport, type GhTransport } from "./gh-transport.mts";
+import { isHttp404 } from "./gh-errors.mts";
 import { withAtomicJsonReceipt } from "./resource-scopes.mts";
 import { createTrackerAdapter, makeIssueLabelMutationPort, type ReceiptSink, type TrackerAdapter, type ReviewedIssueSnapshot } from "./tracker-adapter.mts";
 import {
@@ -727,8 +728,10 @@ export async function runTrackerMigrationCli(args: string[], deps: CliDeps = {})
         }
         return map;
       } catch (e) {
-        const msg = String(e).toLowerCase();
-        if (msg.includes("404") || msg.includes("not found")) {
+        // ONLY an authoritative HTTP 404 proves the label set is absent.
+        // Auth/network/timeout/403/429/5xx => unknown — never inferred from a
+        // message substring like "not found".
+        if (isHttp404(e)) {
           throw new Error(`failed to fetch repository labels (bulk): ${e}`);
         }
         // For bulk failure, try per-label with 404 vs unknown
@@ -738,8 +741,8 @@ export async function runTrackerMigrationCli(args: string[], deps: CliDeps = {})
             const desc = await runGhFn(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/labels/${encodeURIComponent(name)}`, "--jq", ".description"]);
             map[name] = desc ?? "";
           } catch (err) {
-            const m2 = String(err).toLowerCase();
-            if (m2.includes("404") || m2.includes("not found")) {
+            // ONLY an authoritative HTTP 404 proves the label is absent.
+            if (isHttp404(err)) {
               map[name] = "";
             } else {
               throw new Error(`failed to fetch label description for ${name}: ${err}`);
@@ -761,20 +764,12 @@ export async function runTrackerMigrationCli(args: string[], deps: CliDeps = {})
           await runGhFn(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/labels/${encodeURIComponent(label)}`]);
           result[label] = true;
         } catch (e) {
-          const msg = String(e).toLowerCase();
-          if (msg.includes("404") || msg.includes("not found")) {
+          // ONLY an authoritative HTTP 404 proves the label is absent.
+          if (isHttp404(e)) {
             result[label] = false;
           } else {
-            // Try to distinguish via second call message
-            try {
-              const msg2 = await runGhFn(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/labels/${encodeURIComponent(label)}`, "--jq", ".message"]);
-              if (msg2.toLowerCase().includes("not found")) result[label] = false;
-              else throw e;
-            } catch (e2) {
-              const m2 = String(e2).toLowerCase();
-              if (m2.includes("404") || m2.includes("not found")) result[label] = false;
-              else throw new Error(`failed to check retired label ${label}: ${e}`);
-            }
+            // Unknown existence — fail closed (do not assume absent).
+            throw new Error(`failed to check retired label ${label}: ${e}`);
           }
         }
       }
@@ -800,7 +795,7 @@ export async function runTrackerMigrationCli(args: string[], deps: CliDeps = {})
       // the reviewed old description, fresh read-back proves the description
       // landed, typed receipt persisted.
       const result = await adapter.updateCanonicalLabelDescription(name, description, expectedOldDescription);
-      if (!result.committed) {
+      if (result.status !== "committed" && result.status !== "unchanged") {
         throw new Error(`label description update failed for ${name}: ${result.reason}`);
       }
     },
@@ -809,7 +804,7 @@ export async function runTrackerMigrationCli(args: string[], deps: CliDeps = {})
       // the reviewed existence, proves zero open users before deletion, fresh
       // read-back proves the label is gone, typed receipt persisted.
       const result = await adapter.deleteRetiredLabel(name, expectedExists);
-      if (!result.committed) {
+      if (result.status !== "committed" && result.status !== "unchanged") {
         throw new Error(`retired label delete failed for ${name}: ${result.reason}`);
       }
     },

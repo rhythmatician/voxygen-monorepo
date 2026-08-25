@@ -408,7 +408,11 @@ export async function executeReconciliation(
       return { reconciled: false, reason: `${what}: fresh ownership read failed for #${issue.number}: ${e}`, factoryError: true, decision, receipts };
     }
     const problems: string[] = [];
-    if (!fresh.assignees.includes(ops.claimantLogin)) problems.push(`expected claimant ${ops.claimantLogin} not assigned`);
+    // The claimant is the SINGLE concurrency owner — any additional assignee
+    // is concurrent drift and the claim is not owned. This is the SAME
+    // sole-claimant rule the adapter's release/block/finalize sagas enforce.
+    if (fresh.assignees.length !== 1) problems.push(`expected exactly 1 assignee (sole claimant ${ops.claimantLogin}), found ${fresh.assignees.length}`);
+    else if (fresh.assignees[0] !== ops.claimantLogin) problems.push(`sole assignee is ${fresh.assignees[0]}, not claimant ${ops.claimantLogin}`);
     if (!fresh.labels.includes(AGENT_IN_PROGRESS)) problems.push(`${AGENT_IN_PROGRESS} absent`);
     if (!fresh.labels.includes(READY_FOR_AGENT)) problems.push(`${READY_FOR_AGENT} absent`);
     if (fresh.labels.includes(AGENT_IMPLEMENT)) problems.push(`${AGENT_IMPLEMENT} present`);

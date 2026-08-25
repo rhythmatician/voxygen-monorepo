@@ -249,7 +249,7 @@ describe("tracker-migration — authoritative verdicts via CLI (item 1)", () => 
       }
       if (args[0] === "api" && args[1].includes("repos/") && args[1].includes("/labels") && args.includes("--paginate")) {
         // bulk labels fetch — return canonical with provided descriptions, or throw 404 if flagged
-        if ((opts as any).bulk404) throw new Error("404 Not Found");
+        if ((opts as any).bulk404) throw new Error("HTTP 404: Not Found");
         const labels = Object.entries(opts.labelDescriptions).map(([name, description])=>({name, description}));
         // ensure at least canonical keys are present in map; if opts.labelDescriptions empty, return empty array to simulate no labels
         return JSON.stringify(labels);
@@ -260,13 +260,13 @@ describe("tracker-migration — authoritative verdicts via CLI (item 1)", () => 
         if (opts.retired[name] !== undefined) {
           // retired label existence check — 404 if false, success if true
           if (opts.retired[name]) return JSON.stringify({ name, description: "" });
-          throw new Error("404 Not Found");
+          throw new Error("HTTP 404: Not Found");
         }
         if (opts.labelDescriptions[name] !== undefined) {
           return opts.labelDescriptions[name];
         }
         // For label description per-label fetch fallback
-        throw new Error("404 Not Found");
+        throw new Error("HTTP 404: Not Found");
       }
       if (args[0] === "api" && args[1].includes("/issues/") && args.includes("--jq")) {
         // blocked_by fetch — return 0
@@ -545,7 +545,7 @@ describe("tracker-migration — blocked_by unknown fail-closed (item 6)", () => 
         const enc=args[1].split("/labels/")[1];
         const name=decodeURIComponent(enc);
         if (CANONICAL_LABEL_DESCRIPTIONS[name]!==undefined) return CANONICAL_LABEL_DESCRIPTIONS[name];
-        throw new Error("404 Not Found");
+        throw new Error("HTTP 404: Not Found");
       }
       if (args[0]==="api" && args[1].includes("/issues/88") && args.includes("--jq")) {
         // Simulate blocked_by API failure -> throw, which inventory will turn into undefined

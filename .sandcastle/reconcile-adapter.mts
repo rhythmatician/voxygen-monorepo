@@ -3,10 +3,7 @@ import * as path from "node:path";
 import { inspectProvenance, inspectCommitsAhead, type GitResult, type GitRunner } from "./branch-helpers.mts";
 import type { IssueInput } from "./tracker-policy.mts";
 import type { ReconcileInspectionOps } from "./tracker-operations.mts";
-
-function errMessage(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
+import { isHttp404 } from "./gh-errors.mts";
 
 /**
  * Production reconciliation INSPECTION adapter — internal to TrackerAdapter.
@@ -75,9 +72,12 @@ export function createProductionReconcileOps(deps: ReconcileAdapterDeps): Reconc
         const match = commentsJson.match(/Batch PR #(\d+)/);
         if (match) batchPrNumber=match[1];
       } catch (e) {
-        const msg=errMessage(e).toLowerCase();
-        const isNotFound=msg.includes("not found")||msg.includes("no pull")||msg.includes("404");
-        if (!isNotFound) commentsUnknown=true;
+        // The issue is KNOWN to exist (we are reconciling it). A comments
+        // fetch failure for a known-existing issue is NEVER an authoritative
+        // absence — it is unknown. Only an actual HTTP 404 on the issue itself
+        // would prove absence, but `gh issue view` on a known issue cannot
+        // legitimately 404. Auth/network/timeout/403/429/5xx => unknown.
+        commentsUnknown=true;
       }
       if (commentsUnknown) return { prNumber:null, state:"unknown" as const };
       if (batchPrNumber) return { prNumber:batchPrNumber, state:"found" as const };
@@ -94,14 +94,20 @@ export function createProductionReconcileOps(deps: ReconcileAdapterDeps): Reconc
     },
 
     getPrState: async (prNumber:string) => {
+      // Use the REST pull-request endpoint — it exposes an AUTHORITATIVE HTTP
+      // 404 when the PR does not exist. `gh pr view` does not reliably expose
+      // the HTTP status, so absence is proven only by the REST endpoint's
+      // structured 404. Auth/network/timeout/403/429/5xx => unknown.
+      if (!ownerRepo) return { state:"UNKNOWN", mergedAt:null, found:false, unknown:true };
       try {
-        const prJson=await runGh(["pr","view",prNumber,"--json","state,mergedAt,number"]);
+        const prJson=await runGh(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/pulls/${prNumber}`, "--jq", "{state,merged_at,number}"]);
         const pr=JSON.parse(prJson);
-        return { state: pr.state, mergedAt: pr.mergedAt ?? null, found:true };
+        // Normalize to the uppercase state contract the decision logic expects
+        // ("OPEN"/"CLOSED"), matching the prior `gh pr view` output.
+        const state = String(pr.state ?? "").toUpperCase();
+        return { state, mergedAt: pr.merged_at ?? null, found:true };
       } catch (e) {
-        const msg=errMessage(e).toLowerCase();
-        const isNotFound=msg.includes("not found")||msg.includes("could not find")||msg.includes("404");
-        if (isNotFound) return { state:"CLOSED", mergedAt:null, found:false };
+        if (isHttp404(e)) return { state:"CLOSED", mergedAt:null, found:false };
         return { state:"UNKNOWN", mergedAt:null, found:false, unknown:true };
       }
     },
@@ -118,8 +124,10 @@ export function createProductionReconcileOps(deps: ReconcileAdapterDeps): Reconc
         if (ref && ref.includes(branchName)) return "present";
         return "absent";
       } catch (e) {
-        const msg=String(e).toLowerCase();
-        if (msg.includes("404")||msg.includes("not found")) return "absent";
+        // ONLY an authoritative HTTP 404 proves remote absence. Auth/network/
+        // timeout/403/429/5xx => unknown — never inferred from a message
+        // substring like "not found".
+        if (isHttp404(e)) return "absent";
         return "unknown";
       }
     },
@@ -200,22 +208,23 @@ export function createProductionReconcileOps(deps: ReconcileAdapterDeps): Reconc
         const ref = await runGh(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/git/refs/heads/${branchName}`, "--jq", ".ref"]);
         remotePresent = (ref && ref.includes(branchName)) ? "present" : "absent";
       } catch (e) {
-        const msg=String(e).toLowerCase();
-        if (msg.includes("404")||msg.includes("not found")) remotePresent="absent";
+        // ONLY an authoritative HTTP 404 proves remote absence.
+        if (isHttp404(e)) remotePresent="absent";
         else remotePresent="unknown";
       }
       if (remotePresent==="unknown") return false;
       if (remotePresent==="present") {
         try { await runGh(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/git/refs/heads/${branchName}`, "--method","DELETE"]); } catch (e) {
-          const msg=String(e).toLowerCase();
-          if (!(msg.includes("404")||msg.includes("not found"))) return false;
+          // A non-404 error after DELETE is NOT an authoritative absence — the
+          // remote may still exist. Fail closed (no provenance deletion).
+          if (!isHttp404(e)) return false;
         }
         try {
           await runGh(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/git/refs/heads/${branchName}`, "--jq",".ref"]);
           return false;
         } catch (e) {
-          const msg=String(e).toLowerCase();
-          if (!(msg.includes("404")||msg.includes("not found"))) return false;
+          // ONLY an authoritative HTTP 404 proves the remote ref is gone.
+          if (!isHttp404(e)) return false;
         }
       }
       // Verify local and remote both absent before deleting provenance
@@ -226,8 +235,8 @@ export function createProductionReconcileOps(deps: ReconcileAdapterDeps): Reconc
         const ref = await runGh(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/git/refs/heads/${branchName}`, "--jq",".ref"]);
         if (ref && ref.includes(branchName)) return false;
       } catch (e) {
-        const msg=String(e).toLowerCase();
-        if (!(msg.includes("404")||msg.includes("not found"))) return false;
+        // ONLY an authoritative HTTP 404 proves remote absence.
+        if (!isHttp404(e)) return false;
       }
       // provenance — only after branch absence proved
       try {
