@@ -1544,6 +1544,13 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
       // normal owned close mutation for an already-closed-and-clean issue
       // (explicit idempotent no-op: ZERO issue-close commands).
       let closeFresh: IssueInput | null = null;
+      // Set when the saga selects the closed-no-op path (first read was
+      // closed-and-clean). Once selected, EVERY subsequent fresh read must
+      // prove state == closed + zero assignees + no machine labels — a reopen
+      // at either boundary is concurrent drift and must be indeterminate with
+      // zero mutation, never reinterpreted as the normal stripped-open
+      // integration state.
+      let closedNoOp = false;
       return runSaga(gh, issueNumber, "finalizeIntegrated", [
         {
           name: "strip-transient",
@@ -1563,7 +1570,10 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
                 && !fresh.labels.includes(AGENT_IN_PROGRESS)
                 && !fresh.labels.includes(AGENT_IMPLEMENT)
                 && !fresh.labels.includes(AGENT_BLOCKED);
-              if (clean) return null; // idempotent no-op
+              if (clean) {
+                closedNoOp = true; // record the closed-no-op path explicitly
+                return null; // idempotent no-op
+              }
               return `issue #${issueNumber} is closed but not clean (assignees: ${fresh.assignees.join(", ") || "none"}, transient labels present) — closed-cleanup requires explicit authority, zero mutation`;
             }
             return soleClaimantViolation(fresh, issueNumber, claimantLogin);
@@ -1571,13 +1581,17 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
           mutate: async () => {
             // Idempotent no-op: an already-closed-and-clean issue must NOT pass
             // through the normal owned edit mutation (ZERO issue-edit commands).
-            if (stripFresh && stripFresh.state === "closed") return;
+            if (closedNoOp || (stripFresh && stripFresh.state === "closed")) return;
             for (const label of [AGENT_IN_PROGRESS, AGENT_IMPLEMENT, AGENT_BLOCKED]) {
               try { await editIssue(issueNumber, ["--remove-label", label]); } catch {}
             }
             try { await editIssue(issueNumber, ["--remove-assignee", claimantLogin]); } catch {}
           },
           verifyAfter: (after) => {
+            // On the closed-no-op path the issue must REMAIN closed — a reopen
+            // here is concurrent drift (indeterminate, zero mutation), never
+            // reinterpreted as the normal stripped-open integration state.
+            if (closedNoOp && after.state !== "closed") return `issue #${issueNumber} reopened during closed-no-op strip — concurrent drift, zero mutation`;
             if (after.labels.includes(AGENT_IN_PROGRESS)) return `${AGENT_IN_PROGRESS} still present`;
             if (after.labels.includes(AGENT_IMPLEMENT)) return `${AGENT_IMPLEMENT} still present`;
             if (after.labels.includes(AGENT_BLOCKED)) return `${AGENT_BLOCKED} still present`;
@@ -1600,12 +1614,24 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
           // (the terminal verifier re-proves the closed-and-clean invariant).
           validateBefore: (fresh) => {
             closeFresh = fresh;
+            // On the closed-no-op path the issue must STILL be closed — a
+            // reopen here is concurrent drift (indeterminate, zero mutation),
+            // never reinterpreted as the normal stripped-open integration state
+            // that the normal owned close mutation may close.
+            if (closedNoOp) {
+              if (fresh.state !== "closed") return `issue #${issueNumber} reopened during closed-no-op close — concurrent drift, zero mutation`;
+              if (fresh.assignees.length > 0) return `issue #${issueNumber} has ${fresh.assignees.length} assignee(s) on closed-no-op close: ${fresh.assignees.join(", ")} — concurrent drift, zero close commands`;
+              if (fresh.labels.includes(AGENT_IN_PROGRESS)) return `${AGENT_IN_PROGRESS} present on closed-no-op close — concurrent drift, zero close commands`;
+              if (fresh.labels.includes(AGENT_IMPLEMENT)) return `${AGENT_IMPLEMENT} present on closed-no-op close — concurrent drift, zero close commands`;
+              if (fresh.labels.includes(AGENT_BLOCKED)) return `${AGENT_BLOCKED} present on closed-no-op close — concurrent drift, zero close commands`;
+              return null;
+            }
             return validateClosePrecondition(fresh, issueNumber);
           },
           mutate: async () => {
             // Idempotent no-op: an already-closed issue must NOT pass through
             // the normal owned close mutation.
-            if (closeFresh && closeFresh.state === "closed") return;
+            if (closedNoOp || (closeFresh && closeFresh.state === "closed")) return;
             try {
               await gh.run(["issue", "close", String(issueNumber), "--comment",
                 `Completed by Sandcastle -- branch \`${branch}\` merged and integrated. Auto-merged to main after verification.`]);

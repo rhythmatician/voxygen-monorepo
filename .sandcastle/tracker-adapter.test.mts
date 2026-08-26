@@ -1040,6 +1040,95 @@ describe("tracker-adapter — exact ownership for stale reconciliation (round 4)
     expect(result.receipt.kind).toBe("committed");
   });
 
+  it("REGRESSION: closed+clean reopened before strip postcondition read => indeterminate, zero edits/closes, issue remains open", async () => {
+    // The saga selects the closed-no-op path (first read closed+clean). A human
+    // reopens the issue before the strip postcondition read. The strip
+    // postcondition must require state == closed on the closed-no-op path — a
+    // reopen is concurrent drift (indeterminate, zero mutation), never
+    // reinterpreted as the normal stripped-open integration state.
+    const issue: FakeIssue = {
+      number: 819,
+      title: "t",
+      body: TRACER_BODY,
+      state: "closed", // closed and clean
+      labels: new Set(["ready-for-agent"]),
+      assignees: new Set(),
+    };
+    const gh = makeFakeGh({ issues: new Map([[819, issue]]) });
+    const origRun = gh.run.bind(gh);
+    let viewCalls = 0;
+    let closeCalls = 0;
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "issue" && args[1] === "view") {
+        viewCalls++;
+        // Read #2 is the strip-transient postcondition read. Reopen the issue
+        // so that read sees state == open (still clean and unassigned).
+        if (viewCalls === 2) issue.state = "open";
+      }
+      if (args[0] === "issue" && args[1] === "close") closeCalls++;
+      return origRun(args);
+    };
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.finalizeIntegrated(819, "sandcastle/issue-819");
+
+    // The strip postcondition rejects the reopen on the closed-no-op path —
+    // indeterminate with ZERO issue-edit and ZERO issue-close commands; the
+    // issue remains open.
+    expect(result.kind).toBe("indeterminate");
+    if (result.kind !== "indeterminate") return;
+    expect(result.factoryError).toBe(true);
+    expect(gh.editCalls.length).toBe(0);
+    expect(closeCalls).toBe(0);
+    expect(issue.state).toBe("open");
+  });
+
+  it("REGRESSION: closed+clean reopened before close-step precondition read => indeterminate, zero edits/closes, issue remains open", async () => {
+    // The saga selects the closed-no-op path (first read closed+clean), and the
+    // strip postcondition reads closed+clean. A human reopens the issue before
+    // the close-step precondition read. The close step must require state ==
+    // closed on the closed-no-op path — a reopen is concurrent drift
+    // (indeterminate, zero mutation), never reinterpreted as the normal
+    // stripped-open integration state that the owned close mutation may close.
+    const issue: FakeIssue = {
+      number: 820,
+      title: "t",
+      body: TRACER_BODY,
+      state: "closed", // closed and clean
+      labels: new Set(["ready-for-agent"]),
+      assignees: new Set(),
+    };
+    const gh = makeFakeGh({ issues: new Map([[820, issue]]) });
+    const origRun = gh.run.bind(gh);
+    let viewCalls = 0;
+    let closeCalls = 0;
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "issue" && args[1] === "view") {
+        viewCalls++;
+        // Read #3 is the close-step precondition read. Reopen the issue so
+        // that read sees state == open (still clean and unassigned).
+        if (viewCalls === 3) issue.state = "open";
+      }
+      if (args[0] === "issue" && args[1] === "close") closeCalls++;
+      return origRun(args);
+    };
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.finalizeIntegrated(820, "sandcastle/issue-820");
+
+    // The close-step precondition rejects the reopen on the closed-no-op path —
+    // indeterminate with ZERO issue-edit and ZERO issue-close commands; the
+    // issue remains open.
+    expect(result.kind).toBe("indeterminate");
+    if (result.kind !== "indeterminate") return;
+    expect(result.factoryError).toBe(true);
+    expect(gh.editCalls.length).toBe(0);
+    expect(closeCalls).toBe(0);
+    expect(issue.state).toBe("open");
+  });
+
   it("REGRESSION: closed issue with unrelated assignee/transient label => zero mutation, rejected without closed-cleanup authority", async () => {
     // A closed issue that is NOT already clean must NOT be mutated through the
     // normal integration saga without explicit closed-cleanup authority. The
