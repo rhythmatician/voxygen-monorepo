@@ -115,6 +115,33 @@ class LodGenerationServiceRebindTest {
     }
 
     @Test
+    void rebindBackToEndReplaysDurableVanillaObservationsIntoTheFreshSession() throws Exception {
+        LodGenerationService svc = new LodGenerationService();
+        svc.startForTest(END_KEY, null);
+        Thread.sleep(50);
+        forceRunning(svc.getSessionForTest());
+        try {
+            svc.observeVanillaChunkColumnForTest(END_KEY, 0, 0);
+            svc.observeVanillaChunkColumnForTest(END_KEY, 1, 0);
+            svc.observeVanillaChunkColumnForTest(END_KEY, 0, 1);
+            svc.observeVanillaChunkColumnForTest(END_KEY, 1, 1);
+            assertTrue(svc.getSessionForTest().isFullyVanillaForTest(0, 0, 0, 0));
+
+            assertTrue(svc.checkAndRebindIfNeeded(OVERWORLD_KEY, null, null));
+            Thread.sleep(50);
+            forceRunning(svc.getSessionForTest());
+            assertTrue(svc.checkAndRebindIfNeeded(END_KEY, null, null));
+            Thread.sleep(50);
+            forceRunning(svc.getSessionForTest());
+
+            assertTrue(svc.getSessionForTest().isFullyVanillaForTest(0, 0, 0, 0),
+                    "a new End session must replay observations loaded before the dimension round-trip");
+        } finally {
+            svc.stop();
+        }
+    }
+
+    @Test
     void noRebind_whenSameDimensionOrNotRunning() throws Exception {
         LodGenerationService svc = new LodGenerationService();
         assertFalse(svc.checkAndRebindIfNeeded(OVERWORLD_KEY, null, null));

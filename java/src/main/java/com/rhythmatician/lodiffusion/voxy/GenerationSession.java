@@ -2,6 +2,7 @@ package com.rhythmatician.lodiffusion.voxy;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -22,6 +23,8 @@ import com.rhythmatician.lodiffusion.world.noise.NoiseRouterSampler;
 import com.rhythmatician.lodiffusion.world.noise.NoiseRouterSamplerFactory;
 import com.rhythmatician.lodiffusion.world.noise.SectionNoiseData;
 import net.lodiffusion.shadow.ShadowRouterJobQueue;
+import net.lodiffusion.shadow.VoxyDemandKind;
+import net.lodiffusion.shadow.VoxyDemandSource;
 import net.lodiffusion.shadow.VoxyRequestDecoder;
 
 import net.minecraft.registry.Registry;
@@ -97,10 +100,6 @@ public final class GenerationSession {
             private static final int NEAR_SEED_MAX_QUEUE_DEPTH =
                 Config.getInt("nearSeedMaxQueueDepth", 384);
 
-            /** Interval between partial-fill scans (ms). */
-            private static final int PARTIAL_FILL_SCAN_INTERVAL_MS =
-                Config.getInt("partialFillScanIntervalMs", 5000);
-
             /** Minimum time between re-seeding the exact same (lod, wsX, wsY, wsZ). */
             private static final int NEAR_SEED_REENQUEUE_MS =
                 Config.getInt("nearSeedReenqueueMs", 8000);
@@ -114,18 +113,6 @@ public final class GenerationSession {
              * Because finer levels have smaller world-sections, this naturally shrinks
              * the block radius at each finer level without creating giant gaps.
              */
-            private static final int NEAR_SEED_L3_RADIUS =
-                Math.max(1, Config.getInt("nearSeedL3Radius", NEAR_SEED_L4_RADIUS));
-
-            private static final int NEAR_SEED_L2_RADIUS =
-                Math.max(1, Config.getInt("nearSeedL2Radius", NEAR_SEED_L4_RADIUS));
-
-            private static final int NEAR_SEED_L1_RADIUS =
-                Math.max(1, Config.getInt("nearSeedL1Radius", NEAR_SEED_L4_RADIUS));
-
-            private static final int NEAR_SEED_L0_RADIUS =
-                Math.max(1, Config.getInt("nearSeedL0Radius", NEAR_SEED_L4_RADIUS));
-
     /**
      * Mysterious-Name fix: {@code +4} is the voxel-center offset.
      * One WorldSection is 32 blocks; L0 is 16 blocks. Centering the sample
@@ -177,13 +164,15 @@ public final class GenerationSession {
     private final AtomicInteger tracerWritten = new AtomicInteger(0);
     private final AtomicInteger tracerSkipped = new AtomicInteger(0);
     private final AtomicInteger tracerFailed = new AtomicInteger(0);
-    /** Stage 2: L3..L1 refinement regions written this session. */
+    /** Stage 2: L3..L0 refinement regions written this session. */
     private final AtomicInteger refinementWritten = new AtomicInteger(0);
     private final AtomicInteger refinementFailed = new AtomicInteger(0);
     private final AtomicBoolean tracerTerminalEmitted = new AtomicBoolean(false);
     private volatile TracerCompletion tracerCompletion = null;
     /** Stage 2: last selection-pass time, throttles refinement demand passes. */
     private volatile long lastSelectionPassMs = 0;
+    private int lastSelectionPlayerSectionX = Integer.MIN_VALUE;
+    private int lastSelectionPlayerSectionZ = Integer.MIN_VALUE;
 
     boolean isEndL4TracerMode() {
         return endL4TracerMode;
@@ -248,6 +237,9 @@ public final class GenerationSession {
     /** Max refinement requests emitted per selection pass (budget). */
     static final int REFINEMENT_BUDGET_PER_PASS =
             Config.getInt("endRefinementBudgetPerPass", 256);
+    /** Small refillable set of nearest visual transactions awaiting service. */
+    static final int VISUAL_WORKING_SET_TARGET = Math.max(1,
+            Config.getInt("endRefinementVisualOutstandingTarget", 16));
     /** XZ render distance (blocks) for refinement culling; matches Voxy's
      *  cylindrical test scaled to our slice until fly-around evidence tunes it. */
     static final double DEFAULT_REFINEMENT_RENDER_DISTANCE =
@@ -272,7 +264,7 @@ public final class GenerationSession {
 
     /**
      * Run one screen-space-error selection pass over the given covered L4
-     * regions and enqueue L3..L1 refinement requests (nearest-first, budget-
+     * regions and enqueue L3..L0 refinement requests (nearest-first, budget-
      * capped, deduplicated). Pure demand — production happens in the
      * pipeline loop exactly as for ring requests.
      *
@@ -298,27 +290,51 @@ public final class GenerationSession {
                         REFINEMENT_FOCAL_PX, REFINEMENT_SUB_DIV_PX,
                         finestLevelValue, renderDistanceBlocks, budget,
                         coveredL4Regions));
-        int enqueued = 0;
+        int considered = 0;
+        int newlyScheduled = 0;
+        int alreadyRepresented = 0;
+        int rejected = 0;
+        int schedulingBudget = Math.max(0, budget);
         for (var e : selections) {
             var nr = e.request();
-            if (!emittedRefinements.add(refinementKey(nr.level(), nr.wsX(), nr.wsY(), nr.wsZ()))) {
+            long key = refinementKey(nr.level(), nr.wsX(), nr.wsY(), nr.wsZ());
+            if (emittedRefinements.contains(key)) {
+                considered++;
+                alreadyRepresented++;
                 continue;
             }
+            if (newlyScheduled >= schedulingBudget) {
+                break;
+            }
+            considered++;
             VoxyRequestDecoder.VoxyNodeRequest req = new VoxyRequestDecoder.VoxyNodeRequest();
             req.lodLevel = nr.level();
             req.worldX = nr.wsX();
             req.worldY = nr.wsY();
             req.worldZ = nr.wsZ();
-            ShadowRouterJobQueue.enqueue(req);
-            enqueued++;
+            req.demandKind = VoxyDemandKind.VISUAL_REFINEMENT;
+            req.workKind = net.lodiffusion.shadow.VoxyWorkKind.PARENT_REFINEMENT;
+            req.demandSource = VoxyDemandSource.SCREEN_SPACE_SELECTOR;
+            ShadowRouterJobQueue.EnqueueResult result = ShadowRouterJobQueue.enqueue(req);
+            switch (result) {
+                case QUEUED, UPGRADED -> {
+                    emittedRefinements.add(key);
+                    newlyScheduled++;
+                }
+                case DUPLICATE, IN_FLIGHT -> {
+                    emittedRefinements.add(key);
+                    alreadyRepresented++;
+                }
+                case REJECTED -> rejected++;
+            }
         }
-        if (enqueued > 0) {
+        if (considered > 0) {
             HelloTerrainMod.LOGGER.info(
-                    "[LodGen][Refine] pass enqueued={} selected={} deduped={} queueDepth={}",
-                    enqueued, selections.size(), selections.size() - enqueued,
-                    ShadowRouterJobQueue.size());
+                    "[LodGen][Refine] pass considered={} newlyScheduled={} alreadyRepresented={} rejected={} outstanding={}",
+                    considered, newlyScheduled, alreadyRepresented, rejected,
+                    visualOutstanding());
         }
-        return enqueued;
+        return newlyScheduled;
     }
 
     /**
@@ -352,41 +368,146 @@ public final class GenerationSession {
     }
 
     /**
-     * Service one L3..L1 refinement request via the multi-level End scaffold
-     * and {@link VoxelVolumeWriter#writeRegion}. Package-private single-request
+     * Admits one bounded refinement pass when its timer expires or the player enters a new
+     * section. The worker calls this before every dequeue, so admission does not depend on an
+     * empty H/G queue. Repeated worker iterations in the same epoch are no-ops.
+     */
+    private synchronized int runScheduledEndSelection(long nowMs, int budget) {
+        if (!positionReady.get()) {
+            return 0;
+        }
+        boolean movedSection = playerSectionX != lastSelectionPlayerSectionX
+                || playerSectionZ != lastSelectionPlayerSectionZ;
+        boolean timerElapsed = lastSelectionPassMs == 0
+                || nowMs - lastSelectionPassMs >= NEAR_SEED_INTERVAL_MS;
+        if (!movedSection && !timerElapsed) {
+            return 0;
+        }
+        lastSelectionPassMs = nowMs;
+        lastSelectionPlayerSectionX = playerSectionX;
+        lastSelectionPlayerSectionZ = playerSectionZ;
+        int remainingCapacity = VISUAL_WORKING_SET_TARGET - visualOutstanding();
+        if (remainingCapacity <= 0) {
+            return 0;
+        }
+        return runEndSelectionPassForTest(
+                Level.L0.value(), DEFAULT_REFINEMENT_RENDER_DISTANCE,
+                Math.min(Math.max(0, budget), remainingCapacity));
+    }
+
+    int runScheduledEndSelectionForTest(long nowMs, int budget) {
+        return runScheduledEndSelection(nowMs, budget);
+    }
+
+    static int selectionIntervalMsForTest() {
+        return NEAR_SEED_INTERVAL_MS;
+    }
+
+    static int visualWorkingSetTargetForTest() {
+        return VISUAL_WORKING_SET_TARGET;
+    }
+
+    private static int visualOutstanding() {
+        ShadowRouterJobQueue.DemandMetrics visual =
+                ShadowRouterJobQueue.demandMetrics().visual();
+        return visual.queuedDepth() + visual.inFlightDepth();
+    }
+
+    /**
+     * Service one L3..L0 refinement request via the multi-level End scaffold
+     * and {@link VoxelVolumeWriter#commitParentRefinement}. Package-private single-request
      * seam mirroring {@link #processTracerRequestForTest}; the pipeline loop
      * routes non-L4 tracer-mode requests here.
      *
-     * @return write outcome, or null if the request is not a refinement
-     *         (level outside L1..L3)
+     * @return refinement status; non-refinement requests are reported as failed
      */
-    WriteOutcome processRefinementRequestForTest(VoxyRequestDecoder.VoxyNodeRequest req,
-                                                 VoxelVolumeWriter writer) {
+    RefinementOutcome processEndRefinementRequest(VoxyRequestDecoder.VoxyNodeRequest req,
+                                                  VoxelVolumeWriter writer) {
         if (req == null || writer == null || noiseAccess == null) {
-            return null;
+            return RefinementOutcome.failed();
+        }
+        if (req.workKind == net.lodiffusion.shadow.VoxyWorkKind.PARENT_REFINEMENT) {
+            return processParentRefinement(req, writer);
         }
         int lvl = req.lodLevel;
-        if (lvl < Level.L1.value() || lvl > Level.L3.value()) {
-            return null;
+        if (lvl < Level.L0.value() || lvl > Level.L3.value()) {
+            return RefinementOutcome.failed();
         }
-        Level level = Level.values()[lvl];
-        if (isOutOfWorldY(lvl, req.worldY)) {
-            return WriteOutcome.skippedExists();
+        VoxyRequestDecoder.VoxyNodeRequest parent = new VoxyRequestDecoder.VoxyNodeRequest();
+        parent.lodLevel = lvl + 1;
+        parent.worldX = req.worldX >> 1;
+        parent.worldY = req.worldY >> 1;
+        parent.worldZ = req.worldZ >> 1;
+        parent.demandKind = VoxyDemandKind.VISUAL_REFINEMENT;
+        parent.workKind = net.lodiffusion.shadow.VoxyWorkKind.PARENT_REFINEMENT;
+        parent.demandSource = VoxyDemandSource.PARENT_DEPENDENCY;
+        return processParentRefinement(parent, writer);
+    }
+
+    private RefinementOutcome processParentRefinement(
+            VoxyRequestDecoder.VoxyNodeRequest req, VoxelVolumeWriter writer) {
+        int parentLevelValue = req.lodLevel;
+        if (parentLevelValue < Level.L1.value() || parentLevelValue > Level.L4.value()) {
+            return RefinementOutcome.failed();
         }
-        int sx0 = WorldSectionCoord.worldSectionToBlockMin(req.worldX, lvl) >> 4;
-        int sy0 = WorldSectionCoord.worldSectionToBlockMin(req.worldY, lvl) >> 4;
-        int sz0 = WorldSectionCoord.worldSectionToBlockMin(req.worldZ, lvl) >> 4;
-        SectionPos origin = new SectionPos(sx0, sy0, sz0);
+        Level parentLevel = Level.values()[parentLevelValue];
+        if (isOutOfWorldY(parentLevelValue, req.worldY)) {
+            return RefinementOutcome.alreadyCovered();
+        }
+        SectionPos parentOrigin = new SectionPos(
+                WorldSectionCoord.worldSectionToBlockMin(req.worldX, parentLevelValue) >> 4,
+                WorldSectionCoord.worldSectionToBlockMin(req.worldY, parentLevelValue) >> 4,
+                WorldSectionCoord.worldSectionToBlockMin(req.worldZ, parentLevelValue) >> 4);
+        int childLevelValue = parentLevelValue - 1;
+        EndL4DeterministicCandidate candidate = new EndL4DeterministicCandidate(noiseAccess);
         try {
-            EndL4DeterministicCandidate candidate = new EndL4DeterministicCandidate(noiseAccess);
-            VoxelVolume vol = candidate.produceRegion(level, origin);
-            return writer.writeRegion(origin, level, vol);
+            ParentRefinementResult result = writer.refineParent(new ParentRefinementIntent(
+                    parentOrigin, parentLevel, (childLevel, childOrigin) -> {
+                        int childWsY = WorldSectionCoord.sectionToWorldSection(
+                                childOrigin.y(), childLevelValue);
+                        return isOutOfWorldY(childLevelValue, childWsY)
+                                ? VoxelVolume.uniform(
+                                        32, EndL4DeterministicCandidate.BLOCK_AIR, 0)
+                                : candidate.produceRegion(childLevel, childOrigin);
+                    }));
+            if (result.status() == ParentRefinementResult.Status.PARENT_MISSING) {
+                enqueueParentPrerequisite(req);
+                return RefinementOutcome.blockedParent(parentOrigin);
+            }
+            return RefinementOutcome.published();
         } catch (Exception e) {
             HelloTerrainMod.LOGGER.warn(
-                    "[LodGen][Refine] write failed lvl={} ws=({},{},{}): {}",
-                    lvl, req.worldX, req.worldY, req.worldZ, e.getMessage());
-            return null;
+                    "[LodGen][Refine] parent transaction failed lvl={} ws=({},{},{}): {}",
+                    parentLevelValue, req.worldX, req.worldY, req.worldZ, e.getMessage());
+            return RefinementOutcome.failed();
         }
+    }
+
+    private static void enqueueParentPrerequisite(VoxyRequestDecoder.VoxyNodeRequest req) {
+        int parentLevelValue = req.lodLevel;
+        VoxyRequestDecoder.VoxyNodeRequest prerequisite = new VoxyRequestDecoder.VoxyNodeRequest();
+        boolean guardUrgency = req.demandKind == VoxyDemandKind.VANILLA_FRONTIER_GUARD;
+        if (parentLevelValue == Level.L4.value()) {
+            prerequisite.lodLevel = Level.L4.value();
+            prerequisite.worldX = req.worldX;
+            prerequisite.worldY = req.worldY;
+            prerequisite.worldZ = req.worldZ;
+            prerequisite.demandKind = guardUrgency
+                    ? VoxyDemandKind.VANILLA_FRONTIER_GUARD
+                    : VoxyDemandKind.HORIZON_COVERAGE;
+            prerequisite.workKind = net.lodiffusion.shadow.VoxyWorkKind.HORIZON_LEAF;
+        } else {
+            prerequisite.lodLevel = parentLevelValue + 1;
+            prerequisite.worldX = req.worldX >> 1;
+            prerequisite.worldY = req.worldY >> 1;
+            prerequisite.worldZ = req.worldZ >> 1;
+            prerequisite.demandKind = guardUrgency
+                    ? VoxyDemandKind.VANILLA_FRONTIER_GUARD
+                    : VoxyDemandKind.VISUAL_REFINEMENT;
+            prerequisite.workKind = net.lodiffusion.shadow.VoxyWorkKind.PARENT_REFINEMENT;
+        }
+        prerequisite.demandSource = VoxyDemandSource.PARENT_DEPENDENCY;
+        ShadowRouterJobQueue.enqueue(prerequisite);
     }
 
     /**
@@ -414,6 +535,9 @@ public final class GenerationSession {
                 req.worldX = wsX;
                 req.worldY = wsY;
                 req.worldZ = wsZ;
+                req.demandKind = VoxyDemandKind.HORIZON_COVERAGE;
+                req.workKind = net.lodiffusion.shadow.VoxyWorkKind.HORIZON_LEAF;
+                req.demandSource = VoxyDemandSource.HORIZON_SEED;
                 ShadowRouterJobQueue.enqueue(req);
                 enqueued++;
             }
@@ -586,6 +710,14 @@ public final class GenerationSession {
     private volatile int lastSeedPlayerSectionX = Integer.MIN_VALUE;
     private volatile int lastSeedPlayerSectionZ = Integer.MIN_VALUE;
     private final ConcurrentHashMap<Long, Long> recentSeededAtMs = new ConcurrentHashMap<>();
+    private final VanillaOccupancyPyramid vanillaOccupancy = new VanillaOccupancyPyramid();
+
+    private record FrontierEpoch(int playerL1X, int playerL1Z,
+                                 int vanillaRadiusBlocks, int leadBlocks) {}
+
+    private FrontierEpoch lastFrontierEpoch;
+    private final Set<VanillaFrontierGuardPlanner.ParentTransaction> plannedFrontierTransactions =
+            new HashSet<>();
 
     /** Tracks which (section) positions we've already generated. Thread-safe. */
     private final Set<Long> generatedSections = ConcurrentHashMap.newKeySet();
@@ -682,8 +814,12 @@ public final class GenerationSession {
 
         stopRequested.set(false);
         positionReady.set(false);
+        lastSelectionPassMs = 0;
+        lastSelectionPlayerSectionX = Integer.MIN_VALUE;
+        lastSelectionPlayerSectionZ = Integer.MIN_VALUE;
         generatedSections.clear();
         columnContextCache.clear();
+        resetFrontierGuardState();
         activeQueue = null;
         realDataSections.set(0);
         syntheticDataSections.set(0);
@@ -716,7 +852,6 @@ public final class GenerationSession {
         if (!running.get()) return;
 
         stopRequested.set(true);
-
         // Signal population done so stage workers can drain and exit
         LodGenerationQueue q = activeQueue;
         if (q != null) q.signalPopulationDone();
@@ -731,6 +866,7 @@ public final class GenerationSession {
         running.set(false);
         generatedSections.clear();
         columnContextCache.clear();
+        resetFrontierGuardState();
         if (q != null) q.clear();
         activeQueue = null;
         if (samplerFactory != null) {
@@ -761,6 +897,162 @@ public final class GenerationSession {
         }
     }
 
+    /**
+     * Client-tick frontier update with only scalar values at the core boundary.
+     * Vanilla generation and Voxy ingestion remain entirely outside this planner.
+     */
+    public void updatePlayerPosition(BlockPos pos, double horizontalVelocityX,
+                                     double horizontalVelocityZ, int clientViewDistanceChunks,
+                                     int simulationDistanceChunks) {
+        updatePlayerPosition(pos);
+        if (running.get() && endL4TracerMode) {
+            enqueueVanillaFrontierGuardForTest(
+                    new VanillaFrontierGuardPlanner.FrontierSnapshot(pos.getX(), pos.getZ(),
+                            horizontalVelocityX, horizontalVelocityZ,
+                            clientViewDistanceChunks, simulationDistanceChunks),
+                    Config.getInt("vanillaFrontierLeadTicks", 20));
+        }
+    }
+
+    synchronized int enqueueVanillaFrontierGuardForTest(
+            VanillaFrontierGuardPlanner.FrontierSnapshot snapshot, int leadTicks) {
+        VanillaFrontierGuardPlanner.Input input = snapshot.toInput(leadTicks);
+        FrontierEpoch epoch = new FrontierEpoch(
+                WorldSectionCoord.blockToWorldSection(input.playerBlockX(), Level.L1.value()),
+                WorldSectionCoord.blockToWorldSection(input.playerBlockZ(), Level.L1.value()),
+                input.vanillaRadiusBlocks(), input.leadBlocks());
+        if (epoch.equals(lastFrontierEpoch)) {
+            return 0;
+        }
+        lastFrontierEpoch = epoch;
+
+        int enqueued = 0;
+        for (VanillaFrontierGuardPlanner.ParentTransaction parent
+                : VanillaFrontierGuardPlanner.plan(input)) {
+            if (plannedFrontierTransactions.contains(parent)) {
+                continue;
+            }
+            VoxyRequestDecoder.VoxyNodeRequest request = new VoxyRequestDecoder.VoxyNodeRequest();
+            request.lodLevel = parent.level();
+            request.worldX = parent.wsX();
+            request.worldY = parent.wsY();
+            request.worldZ = parent.wsZ();
+            request.demandKind = VoxyDemandKind.VANILLA_FRONTIER_GUARD;
+            request.workKind = net.lodiffusion.shadow.VoxyWorkKind.PARENT_REFINEMENT;
+            request.demandSource = VoxyDemandSource.VANILLA_RADIUS_ANNULUS;
+            ShadowRouterJobQueue.EnqueueResult result = ShadowRouterJobQueue.enqueue(request);
+            if (result.representsScheduledWork()) {
+                plannedFrontierTransactions.add(parent);
+            }
+            if (result == ShadowRouterJobQueue.EnqueueResult.QUEUED) {
+                enqueued++;
+            }
+        }
+        return enqueued;
+    }
+
+    private synchronized void resetFrontierGuardState() {
+        lastFrontierEpoch = null;
+        plannedFrontierTransactions.clear();
+    }
+
+    static int l0WorldSectionForChunk(int chunkCoordinate) {
+        return Math.floorDiv(chunkCoordinate, 2);
+    }
+
+    static int chunkColumnOwnershipMask(int chunkX, int chunkZ) {
+        int quadrant = Math.floorMod(chunkX, 2) | (Math.floorMod(chunkZ, 2) << 1);
+        return (1 << quadrant) | (1 << (quadrant + 4));
+    }
+
+    synchronized void observeVanillaChunkColumnForTest(int chunkX, int chunkZ) {
+        observeVanillaChunkColumn(chunkX, chunkZ);
+    }
+
+    /** Records a post-load vanilla chunk observation; this never participates in chunk loading. */
+    synchronized void observeVanillaChunkColumn(int chunkX, int chunkZ) {
+        int l0X = l0WorldSectionForChunk(chunkX);
+        int l0Z = l0WorldSectionForChunk(chunkZ);
+        int mask = chunkColumnOwnershipMask(chunkX, chunkZ);
+        for (int l0Y = 0; l0Y < 4; l0Y++) {
+            enqueueOccupancyDelta(vanillaOccupancy.observeVanillaL0Octants(l0X, l0Y, l0Z, mask));
+        }
+    }
+
+    synchronized boolean isFullyVanillaForTest(int level, int wsX, int wsY, int wsZ) {
+        return vanillaOccupancy.classify(new VanillaOccupancyPyramid.Cell(level, wsX, wsY, wsZ))
+                == VanillaOccupancyPyramid.Occupancy.FULL_VANILLA;
+    }
+
+    private void enqueueOccupancyDelta(VanillaOccupancyPyramid.Delta delta) {
+        for (VanillaOccupancyPyramid.Cell mixed : delta.newlyMixedParents()) {
+            if (mixed.level() > Level.L0.value()) enqueueOccupancyParent(mixed);
+        }
+        for (VanillaOccupancyPyramid.Cell boundary : delta.addedUrgent()) {
+            if (vanillaOccupancy.classify(boundary) == VanillaOccupancyPyramid.Occupancy.FULL_VANILLA) {
+                continue;
+            }
+            if (boundary.level() == Level.L4.value()
+                    && vanillaOccupancy.classify(boundary) == VanillaOccupancyPyramid.Occupancy.NONE) {
+                enqueueOccupancyHorizon(boundary);
+            } else if (boundary.level() <= Level.L3.value()) {
+                enqueueOccupancyParent(boundary.parent());
+            }
+        }
+    }
+
+    void enqueueOccupancyDeltaForTest(VanillaOccupancyPyramid.Delta delta) {
+        enqueueOccupancyDelta(delta);
+    }
+
+    private void enqueueOccupancyParent(VanillaOccupancyPyramid.Cell parent) {
+        if (parent.level() < Level.L1.value() || parent.level() > Level.L4.value()) return;
+        VoxyRequestDecoder.VoxyNodeRequest request = new VoxyRequestDecoder.VoxyNodeRequest();
+        request.lodLevel = parent.level();
+        request.worldX = parent.x();
+        request.worldY = parent.y();
+        request.worldZ = parent.z();
+        request.demandKind = VoxyDemandKind.VANILLA_FRONTIER_GUARD;
+        request.workKind = net.lodiffusion.shadow.VoxyWorkKind.PARENT_REFINEMENT;
+        request.demandSource = VoxyDemandSource.VANILLA_OCCUPANCY_BOUNDARY;
+        ShadowRouterJobQueue.enqueue(request);
+    }
+
+    private void enqueueOccupancyHorizon(VanillaOccupancyPyramid.Cell cell) {
+        VoxyRequestDecoder.VoxyNodeRequest request = new VoxyRequestDecoder.VoxyNodeRequest();
+        request.lodLevel = Level.L4.value();
+        request.worldX = cell.x();
+        request.worldY = cell.y();
+        request.worldZ = cell.z();
+        request.demandKind = VoxyDemandKind.VANILLA_FRONTIER_GUARD;
+        request.workKind = net.lodiffusion.shadow.VoxyWorkKind.HORIZON_LEAF;
+        request.demandSource = VoxyDemandSource.VANILLA_OCCUPANCY_BOUNDARY;
+        ShadowRouterJobQueue.enqueue(request);
+    }
+
+    private synchronized boolean isFullyVanillaOccupancyRequest(VoxyRequestDecoder.VoxyNodeRequest request) {
+        return request.demandSource == VoxyDemandSource.VANILLA_OCCUPANCY_BOUNDARY
+                && vanillaOccupancy.classify(new VanillaOccupancyPyramid.Cell(
+                        request.lodLevel, request.worldX, request.worldY, request.worldZ))
+                == VanillaOccupancyPyramid.Occupancy.FULL_VANILLA;
+    }
+
+    synchronized boolean isFullyVanillaOccupancyRequestForTest(
+            VoxyRequestDecoder.VoxyNodeRequest request) {
+        return isFullyVanillaOccupancyRequest(request);
+    }
+
+    synchronized void recordFrontierGuardOutcomeForTest(
+            VoxyRequestDecoder.VoxyNodeRequest request, RefinementOutcome outcome) {
+        if (request == null || outcome == null
+                || request.demandKind != VoxyDemandKind.VANILLA_FRONTIER_GUARD
+                || outcome.status() != RefinementOutcome.Status.FAILED) {
+            return;
+        }
+        plannedFrontierTransactions.remove(new VanillaFrontierGuardPlanner.ParentTransaction(
+                request.lodLevel, request.worldX, request.worldY, request.worldZ));
+    }
+
     private void seedNearPlayerDemandIfNeeded() {
         if (!running.get()) {
             return;
@@ -782,12 +1074,7 @@ public final class GenerationSession {
             return;
         }
 
-        int enqueuedL4 = enqueueLocalSeedRing(4, NEAR_SEED_L4_RADIUS, now);
-        int enqueuedL3 = enqueueLocalSeedRing(3, NEAR_SEED_L3_RADIUS, now);
-        int enqueuedL2 = enqueueLocalSeedRing(2, NEAR_SEED_L2_RADIUS, now);
-        int enqueuedL1 = enqueueLocalSeedRing(1, NEAR_SEED_L1_RADIUS, now);
-        int enqueuedL0 = enqueueLocalSeedRing(0, NEAR_SEED_L0_RADIUS, now);
-        int enqueued = enqueuedL4 + enqueuedL3 + enqueuedL2 + enqueuedL1 + enqueuedL0;
+        int enqueued = enqueueLocalSeedRing(Level.L4.value(), NEAR_SEED_L4_RADIUS, now);
 
         lastSeedPlayerSectionX = playerSectionX;
         lastSeedPlayerSectionZ = playerSectionZ;
@@ -800,11 +1087,8 @@ public final class GenerationSession {
 
         if (enqueued > 0 && (movedSection || (now % 5000L) < NEAR_SEED_INTERVAL_MS)) {
             HelloTerrainMod.LOGGER.info(
-                    "[LodGen][Seed] enqueued={} L4={} L3={} L2={} L1={} L0={} radii=[{},{},{},{},{}] queueDepth={} player=({}, {}, {})",
-                    enqueued,
-                    enqueuedL4, enqueuedL3, enqueuedL2, enqueuedL1, enqueuedL0,
-                    NEAR_SEED_L4_RADIUS, NEAR_SEED_L3_RADIUS, NEAR_SEED_L2_RADIUS,
-                    NEAR_SEED_L1_RADIUS, NEAR_SEED_L0_RADIUS,
+                    "[LodGen][Seed] enqueued={} L4 radius={} queueDepth={} player=({}, {}, {})",
+                    enqueued, NEAR_SEED_L4_RADIUS,
                     queueDepth,
                     playerSectionX, playerSectionY, playerSectionZ);
         }
@@ -816,14 +1100,9 @@ public final class GenerationSession {
         int centerY = WorldSectionCoord.sectionToWorldSection(playerSectionY, level);
 
         int enqueued = 0;
-        // At L4, only wsY=0 produces a valid yPosition for the model.
-        // At finer levels, scan ±1 in Y.
-        int minDy = level >= 4 ? 0 : -1;
-        int maxDy = level >= 4 ? 0 : 1;
-        for (int dy = minDy; dy <= maxDy; dy++) {
-            int wsY = centerY + dy;
-            for (int dz = -radius; dz <= radius; dz++) {
-                for (int dx = -radius; dx <= radius; dx++) {
+        int wsY = centerY;
+        for (int dz = -radius; dz <= radius; dz++) {
+            for (int dx = -radius; dx <= radius; dx++) {
                     int wsX = centerX + dx;
                     int wsZ = centerZ + dz;
                     long seedKey = seedKey(level, wsX, wsY, wsZ);
@@ -837,10 +1116,12 @@ public final class GenerationSession {
                     req.worldX = wsX;
                     req.worldY = wsY;
                     req.worldZ = wsZ;
+                    req.demandKind = VoxyDemandKind.HORIZON_COVERAGE;
+                    req.workKind = net.lodiffusion.shadow.VoxyWorkKind.HORIZON_LEAF;
+                    req.demandSource = VoxyDemandSource.HORIZON_SEED;
                     ShadowRouterJobQueue.enqueue(req);
                     recentSeededAtMs.put(seedKey, nowMs);
                     enqueued++;
-                }
             }
         }
         return enqueued;
@@ -908,6 +1189,12 @@ public final class GenerationSession {
                 boolean tracerProduced = runEndL4TracerPipeline(world, tracerWriter);
                 HelloTerrainMod.LOGGER.info(
                         "[LodGen] End L4 tracer pipeline stopped: produced={}", tracerProduced);
+                return;
+            }
+
+            if (decideEndL4TracerMode(world)) {
+                HelloTerrainMod.LOGGER.error(
+                        "[LodGen] End session escaped the typed tracer gate; refusing alternate generation");
                 return;
             }
 
@@ -1182,8 +1469,8 @@ public final class GenerationSession {
      * from the center, limited to the given radius.
      *
      * <p>Every pass covers a <em>full disc</em> — finer LOD passes
-     * naturally overwrite our earlier coarser data.  Voxy-native sections
-     * (from real chunk loading) are protected in {@link VoxySectionWriter}.
+     * naturally overwrite our earlier coarser data. Existing Voxy-native
+     * sections from real chunk loading are preserved by the writer seam.
      *
      * @param distantFirst if true, sort furthest-from-center first so
      *                     distant horizon terrain appears immediately.
@@ -1291,6 +1578,11 @@ public final class GenerationSession {
      * caching, surface Y-range filtering, and deduplication.
      */
     private void runFallbackPipeline(World world, VoxelVolumeWriter writer) {
+        if (decideEndL4TracerMode(world)) {
+            HelloTerrainMod.LOGGER.error(
+                    "[LodGen] Refusing heightmap fallback writes in The End");
+            return;
+        }
         Object worldEngine = (writer instanceof RealVoxyVolumeWriter r) ? r.getWorldEngine() : null;
         int totalSections = 0;
         int skippedAir = 0;
@@ -1452,11 +1744,36 @@ public final class GenerationSession {
                 columnsProcessed, skippedAir, skippedExisting);
     }
 
-    private enum DemandProcessResult {
+    enum DemandProcessResult {
         WRITTEN,
         SKIPPED,
         DEFERRED,
         FAILED,
+    }
+
+    @FunctionalInterface
+    interface HorizonLeafProcessor {
+        DemandProcessResult process();
+    }
+
+    DemandProcessResult processEndPhysicalWork(
+            VoxyRequestDecoder.VoxyNodeRequest req,
+            VoxelVolumeWriter writer,
+            HorizonLeafProcessor l4HorizonLeaf) {
+        if (req == null || writer == null || l4HorizonLeaf == null || req.workKind == null) {
+            return DemandProcessResult.FAILED;
+        }
+        return switch (req.workKind) {
+            case HORIZON_LEAF -> req.lodLevel == Level.L4.value()
+                    ? l4HorizonLeaf.process()
+                    : DemandProcessResult.SKIPPED;
+            case PARENT_REFINEMENT -> switch (processEndRefinementRequest(req, writer).status()) {
+                case PUBLISHED -> DemandProcessResult.WRITTEN;
+                case ALREADY_COVERED -> DemandProcessResult.SKIPPED;
+                case BLOCKED_PARENT -> DemandProcessResult.DEFERRED;
+                case FAILED -> DemandProcessResult.FAILED;
+            };
+        };
     }
 
     private record Noise3dBundle(float[] noise3d, long[] biome3d, int[][] biomeForWrite) {}
@@ -1468,7 +1785,6 @@ public final class GenerationSession {
      * ShadowRouterJobQueue and servicing them through VoxyModelRunner.
      */
     private boolean runDemandVoxyPipeline(World world, VoxelVolumeWriter writer) {
-        Object worldEngine = (writer instanceof RealVoxyVolumeWriter r) ? r.getWorldEngine() : null;
         int dequeued = 0;
         int written = 0;
         int skipped = 0;
@@ -1476,29 +1792,8 @@ public final class GenerationSession {
         int failed = 0;
         long startMs = System.currentTimeMillis();
         long lastProgressLogMs = startMs;
-        long lastPartialFillScanMs = 0;
-
-        // Initial partial-fill scan across ALL levels before entering the main loop.
-        int initialFill = scanAndEnqueuePartialFillAllLevels(world, worldEngine, NEAR_SEED_L4_RADIUS);
-        if (initialFill > 0) {
-            HelloTerrainMod.LOGGER.info(
-                    "[LodGen][PartialFill] initial scan enqueued {} fill requests across all levels",
-                    initialFill);
-        }
 
         while (!stopRequested.get()) {
-            long now = System.currentTimeMillis();
-            if (!ShadowRouterJobQueue.hasPartialFillWork()
-                    && now - lastPartialFillScanMs >= PARTIAL_FILL_SCAN_INTERVAL_MS) {
-                int filled = scanAndEnqueuePartialFillAllLevels(world, worldEngine, NEAR_SEED_L4_RADIUS);
-                lastPartialFillScanMs = now;
-                if (filled > 0) {
-                    HelloTerrainMod.LOGGER.info(
-                            "[LodGen][PartialFill] rescan enqueued {} fill requests across all levels",
-                            filled);
-                }
-            }
-
             VoxyRequestDecoder.VoxyNodeRequest req = ShadowRouterJobQueue.dequeueAny();
             if (req == null) {
                 try {
@@ -1512,7 +1807,14 @@ public final class GenerationSession {
 
             dequeued++;
 
+            if (isFullyVanillaOccupancyRequest(req)) {
+                ShadowRouterJobQueue.markSkippedFull(req);
+                skipped++;
+                continue;
+            }
+
             boolean requeued = false;
+            boolean failedRequest = false;
             try {
                 DemandProcessResult result =
                         processDemandRequest(world, writer, req);
@@ -1524,7 +1826,10 @@ public final class GenerationSession {
                         ShadowRouterJobQueue.requeue(req);
                         requeued = true;
                     }
-                    case FAILED -> failed++;
+                    case FAILED -> {
+                        failed++;
+                        failedRequest = true;
+                    }
                 }
 
                 long progressNow = System.currentTimeMillis();
@@ -1535,7 +1840,9 @@ public final class GenerationSession {
                     lastProgressLogMs = progressNow;
                 }
             } finally {
-                if (!requeued) {
+                if (failedRequest) {
+                    ShadowRouterJobQueue.markFailed(req);
+                } else if (!requeued) {
                     ShadowRouterJobQueue.markCompleted(req);
                 }
             }
@@ -1548,153 +1855,15 @@ public final class GenerationSession {
         return written > 0;
     }
 
-    /**
-     * Scan ALL levels for partial WorldSections and enqueue fill requests.
-     * L0 must be discovered from actual voxel occupancy; L1-L4 can use child masks.
-     */
-    private int scanAndEnqueuePartialFillAllLevels(World world, Object worldEngine, int radius) {
-        int total = scanAndEnqueueL0PartialFill(world, worldEngine, NEAR_SEED_L0_RADIUS);
-        for (int parentLevel = 1; parentLevel <= 4; parentLevel++) {
-            total += scanAndEnqueuePartialFill(worldEngine, parentLevel, radius);
-        }
-        return total;
-    }
-
-    /**
-     * L0 has no child-existence mask for its internal 16^3 octants, so hybrid
-     * vanilla sections must be discovered by looking at actual voxel occupancy.
-     */
-    private int scanAndEnqueueL0PartialFill(World world, Object worldEngine, int radius) {
-        int centerX = WorldSectionCoord.sectionToWorldSection(playerSectionX, 0);
-        int centerZ = WorldSectionCoord.sectionToWorldSection(playerSectionZ, 0);
-        int centerY = WorldSectionCoord.sectionToWorldSection(playerSectionY, 0);
-
-        int enqueued = 0;
-        for (int dy = -1; dy <= 1; dy++) {
-            int wsY = centerY + dy;
-            if (isOutOfWorldY(0, wsY)) {
-                continue;
-            }
-            for (int dz = -radius; dz <= radius; dz++) {
-                for (int dx = -radius; dx <= radius; dx++) {
-                    int wsX = centerX + dx;
-                    int wsZ = centerZ + dz;
-
-                    byte loadedMask = loadedChunkOctantMask(world, 0, wsX, wsY, wsZ);
-                    if (loadedMask == 0 || loadedMask == (byte) 0xFF) {
-                        continue;
-                    }
-
-                    // Non-vanilla octants: the ones LODiffusion is responsible for filling.
-                    // getOccupiedOctantMask returns 0 when the section doesn't exist yet, so
-                    // we also enqueue when Voxy hasn't created the section yet (which is correct
-                    // — processDemandRequest will create it, writing only the non-vanilla octants).
-                    byte nonVanillaMask = (byte)(~loadedMask & 0xFF);
-                    byte occupiedMask = VoxyCompat.getOccupiedOctantMask(worldEngine, 0, wsX, wsY, wsZ);
-                    if ((occupiedMask & nonVanillaMask) == nonVanillaMask) {
-                        // All non-vanilla octants already have LODiffusion predictions.
-                        continue;
-                    }
-
-                    VoxyRequestDecoder.VoxyNodeRequest req = new VoxyRequestDecoder.VoxyNodeRequest();
-                    req.lodLevel = 0;
-                    req.worldX = wsX;
-                    req.worldY = wsY;
-                    req.worldZ = wsZ;
-                    req.isPartialFill = true;
-                    ShadowRouterJobQueue.enqueue(req);
-                    enqueued++;
-                }
-            }
-        }
-        return enqueued;
-    }
-
-    /**
-     * Scan existing WorldSections at {@code parentLevel} around the player and
-     * enqueue child-level generation requests for any octant that is missing.
-     *
-     * <p>This fills the "holes" in WorldSections that have partial child
-     * existence (0 &lt; NEC &lt; 0xFF), such as L4 sections with some vanilla
-     * L3 children.  The GPU descends into children when NEC bits are set; if
-     * only some children exist, the missing octants render as blank terrain.
-     *
-     * @return number of child-level requests enqueued
-     */
-    private int scanAndEnqueuePartialFill(Object worldEngine,
-                                           int parentLevel, int radius) {
-        if (parentLevel < 1 || parentLevel > 4) return 0;
-
-        int centerX = WorldSectionCoord.sectionToWorldSection(playerSectionX, parentLevel);
-        int centerZ = WorldSectionCoord.sectionToWorldSection(playerSectionZ, parentLevel);
-        int centerY = WorldSectionCoord.sectionToWorldSection(playerSectionY, parentLevel);
-
-        int childLevel = parentLevel - 1;
-        int enqueued = 0;
-
-        // At L4, only wsY=0 is valid for the model.
-        int minDy = parentLevel >= 4 ? 0 : -1;
-        int maxDy = parentLevel >= 4 ? 0 : 1;
-
-        for (int dy = minDy; dy <= maxDy; dy++) {
-            int wsY = centerY + dy;
-            for (int dz = -radius; dz <= radius; dz++) {
-                for (int dx = -radius; dx <= radius; dx++) {
-                    int wsX = centerX + dx;
-                    int wsZ = centerZ + dz;
-
-                    byte childMask = VoxyCompat.getChildExistenceMask(
-                            worldEngine, parentLevel, wsX, wsY, wsZ);
-                    if (childMask == (byte) 0xFF) {
-                        continue; // fully populated — nothing to fill
-                    }
-                    // childMask==0 could mean truly empty OR a written parent
-                    // with no children yet.  Only descend when the parent
-                    // section actually exists in Voxy.
-                    if (childMask == 0
-                            && !VoxyCompat.sectionExistsAtLevel(
-                                    worldEngine, parentLevel, wsX, wsY, wsZ)) {
-                        continue;
-                    }
-
-                    // Partial section — enqueue generation for missing children.
-                    for (int octant = 0; octant < 8; octant++) {
-                        if ((childMask & (1 << octant)) != 0) {
-                            continue; // this child already exists
-                        }
-
-                        int childWsX = (wsX << 1) + (octant & 1);
-                        int childWsY = (wsY << 1) + ((octant >> 2) & 1);
-                        int childWsZ = (wsZ << 1) + ((octant >> 1) & 1);
-
-                        if (isOutOfWorldY(childLevel, childWsY)) {
-                            continue;
-                        }
-
-                        VoxyRequestDecoder.VoxyNodeRequest req =
-                                new VoxyRequestDecoder.VoxyNodeRequest();
-                        req.lodLevel = childLevel;
-                        req.worldX = childWsX;
-                        req.worldY = childWsY;
-                        req.worldZ = childWsZ;
-                        req.isPartialFill = true;
-                        ShadowRouterJobQueue.enqueue(req);
-                        enqueued++;
-                    }
-                }
-            }
-        }
-        return enqueued;
-    }
-
     private void logDemandProgress(long startMs, int dequeued,
                                    int written, int skipped,
                                    int deferred, int failed) {
         long elapsedMs = Math.max(1L, System.currentTimeMillis() - startMs);
         HelloTerrainMod.LOGGER.info(
-                "[LodGen][Demand] dequeued={} written={} skipped={} deferred={} failed={} inFlight={} elapsed={}s",
+                "[LodGen][Demand] dequeued={} written={} skipped={} deferred={} failed={} inFlight={} demand={} elapsed={}s",
                 dequeued, written, skipped, deferred, failed,
-                ShadowRouterJobQueue.inFlightSize(), elapsedMs / 1000);
+                ShadowRouterJobQueue.inFlightSize(), ShadowRouterJobQueue.demandMetrics().compact(),
+                elapsedMs / 1000);
     }
 
     /**
@@ -1710,8 +1879,21 @@ public final class GenerationSession {
     private DemandProcessResult processDemandRequest(World world,
                                                      VoxelVolumeWriter writer,
                                                      VoxyRequestDecoder.VoxyNodeRequest req) {
+        if (req == null || writer == null) {
+            return DemandProcessResult.FAILED;
+        }
+        if (decideEndL4TracerMode(world)) {
+            return processEndPhysicalWork(
+                    req, writer, () -> processDemandLeaf(world, writer, req));
+        }
+        return processDemandLeaf(world, writer, req);
+    }
+
+    private DemandProcessResult processDemandLeaf(World world,
+                                                   VoxelVolumeWriter writer,
+                                                   VoxyRequestDecoder.VoxyNodeRequest req) {
         Object worldEngine = (writer instanceof RealVoxyVolumeWriter r) ? r.getWorldEngine() : null;
-        if (req == null || voxyModelRunner == null || samplerFactory == null) {
+        if (voxyModelRunner == null || samplerFactory == null) {
             return DemandProcessResult.FAILED;
         }
 
@@ -2011,6 +2193,9 @@ public final class GenerationSession {
         parentReq.worldX = pX;
         parentReq.worldY = pY;
         parentReq.worldZ = pZ;
+        parentReq.demandKind = VoxyDemandKind.HORIZON_COVERAGE;
+        parentReq.workKind = net.lodiffusion.shadow.VoxyWorkKind.HORIZON_LEAF;
+        parentReq.demandSource = VoxyDemandSource.PARENT_DEPENDENCY;
         ShadowRouterJobQueue.enqueue(parentReq);
     }
 
@@ -2111,7 +2296,8 @@ public final class GenerationSession {
      * L4 only — disables L3/L2/L1/L0 seeding and partial-fill descent.
      * Reuses dedup/backpressure via {@link ShadowRouterJobQueue}.
      * Direct full-WorldSection path via {@link VoxyWorldBinding#writeFullWorldSection}
-     * (owns dirtying/preservation); does not fake nonEmptyChildren on leaf.
+     * owns completed geometry publication; future refinement comes from the
+     * screen-space selector.
      *
      * @return true if at least one region was written
      */
@@ -2128,23 +2314,15 @@ public final class GenerationSession {
         long lastProgressLogMs = startMs;
 
         while (!stopRequested.get()) {
+            try {
+                runScheduledEndSelection(
+                        System.currentTimeMillis(), REFINEMENT_BUDGET_PER_PASS);
+            } catch (Exception e) {
+                HelloTerrainMod.LOGGER.warn(
+                        "[LodGen][Refine] selection pass failed: {}", e.getMessage());
+            }
             VoxyRequestDecoder.VoxyNodeRequest req = ShadowRouterJobQueue.dequeueAny();
             if (req == null) {
-                // Stage 2: idle time is selection-pass time. Throttled by
-                // NEAR_SEED_INTERVAL_MS; budget-capped inside the pass.
-                long nowIdle = System.currentTimeMillis();
-                if (nowIdle - lastSelectionPassMs >= NEAR_SEED_INTERVAL_MS
-                        && positionReady.get()) {
-                    lastSelectionPassMs = nowIdle;
-                    try {
-                        runEndSelectionPassForTest(
-                                Level.L1.value(), DEFAULT_REFINEMENT_RENDER_DISTANCE,
-                                REFINEMENT_BUDGET_PER_PASS);
-                    } catch (Exception e) {
-                        HelloTerrainMod.LOGGER.warn(
-                                "[LodGen][Refine] selection pass failed: {}", e.getMessage());
-                    }
-                }
                 try {
                     Thread.sleep(DEMAND_IDLE_SLEEP_MS);
                 } catch (InterruptedException ie) {
@@ -2156,36 +2334,39 @@ public final class GenerationSession {
                 continue;
             }
 
-            // Route by level: L4 ring requests vs L3..L1 refinements (Stage 2).
-            if (req.lodLevel == 4) {
-                if (req.worldY != END_L4_TRACER_WS_Y) {
-                    ShadowRouterJobQueue.markCompleted(req);
+            if (isFullyVanillaOccupancyRequest(req)) {
+                ShadowRouterJobQueue.markSkippedFull(req);
+                // Boundary work is outside the fixed initial L4 tracer batch.
+                // It must not advance that batch's terminal accounting.
+                if (req.demandSource != VoxyDemandSource.VANILLA_OCCUPANCY_BOUNDARY) {
                     tracerSkipped.incrementAndGet();
                     maybeEmitTracerTerminal();
-                    continue;
-                }
-            } else if (req.lodLevel >= Level.L1.value() && req.lodLevel <= Level.L3.value()) {
-                // Stage 2 refinement demand (ADR 0011): produce at requested level.
-                WriteOutcome refOutcome = processRefinementRequestForTest(req, writer);
-                ShadowRouterJobQueue.markCompleted(req);
-                if (refOutcome != null && refOutcome.status() == WriteOutcome.Status.WRITTEN) {
-                    refinementWritten.incrementAndGet();
-                } else if (refOutcome == null) {
-                    refinementFailed.incrementAndGet();
-                } else {
-                    tracerSkipped.incrementAndGet();
-                }
-                long nowRef = System.currentTimeMillis();
-                if (nowRef - lastProgressLogMs >= DEMAND_PROGRESS_LOG_MS) {
-                    HelloTerrainMod.LOGGER.info(
-                            "[LodGen][Refine] progress written={} skipped={} failed={} inFlight={}",
-                            refinementWritten.get(), tracerSkipped.get(),
-                            refinementFailed.get(), ShadowRouterJobQueue.inFlightSize());
-                    lastProgressLogMs = nowRef;
                 }
                 continue;
-            } else {
-                // L0 or invalid: not ours in End slice.
+            }
+
+            // Route complete parent transactions before native L4 horizon work.
+            if (req.workKind == net.lodiffusion.shadow.VoxyWorkKind.PARENT_REFINEMENT) {
+                RefinementOutcome refOutcome = processEndRefinementRequest(req, writer);
+                recordFrontierGuardOutcomeForTest(req, refOutcome);
+                if (refOutcome.status() == RefinementOutcome.Status.BLOCKED_PARENT) {
+                    ShadowRouterJobQueue.requeue(req);
+                } else if (refOutcome.status() == RefinementOutcome.Status.FAILED) {
+                    ShadowRouterJobQueue.markFailed(req);
+                } else {
+                    ShadowRouterJobQueue.markCompleted(req);
+                }
+                if (refOutcome.status() == RefinementOutcome.Status.PUBLISHED) {
+                    refinementWritten.incrementAndGet();
+                } else if (refOutcome.status() == RefinementOutcome.Status.FAILED) {
+                    refinementFailed.incrementAndGet();
+                }
+                continue;
+            }
+
+            if (req.workKind != net.lodiffusion.shadow.VoxyWorkKind.HORIZON_LEAF
+                    || req.lodLevel != Level.L4.value()
+                    || req.worldY != END_L4_TRACER_WS_Y) {
                 ShadowRouterJobQueue.markCompleted(req);
                 tracerSkipped.incrementAndGet();
                 maybeEmitTracerTerminal();
@@ -2206,7 +2387,7 @@ public final class GenerationSession {
             // Preserve vanilla octants where present (Handoff Q7 B zero-gap: vanilla wins)
             byte preserveMask = loadedChunkOctantMask(world, 4, wsX, wsY, wsZ);
             if (preserveMask == (byte) 0xFF) {
-                ShadowRouterJobQueue.markCompleted(req);
+                ShadowRouterJobQueue.markSkippedFull(req);
                 tracerSkipped.incrementAndGet();
                 maybeEmitTracerTerminal();
                 continue;
@@ -2224,6 +2405,7 @@ public final class GenerationSession {
                 continue;
             }
 
+            boolean writeFailed = false;
             try {
                 VoxelVolume vol = tracerCandidate.produceRegion(Level.L4, origin);
                 WriteOutcome outcome = writer.writeRegion(origin, Level.L4, vol);
@@ -2237,8 +2419,13 @@ public final class GenerationSession {
                         "[LodGen][Tracer] write failed ws=({},{},{}): {}",
                         wsX, wsY, wsZ, e.getMessage());
                 tracerFailed.incrementAndGet();
+                writeFailed = true;
             } finally {
-                ShadowRouterJobQueue.markCompleted(req);
+                if (writeFailed) {
+                    ShadowRouterJobQueue.markFailed(req);
+                } else {
+                    ShadowRouterJobQueue.markCompleted(req);
+                }
             }
             maybeEmitTracerTerminal();
 
@@ -2248,15 +2435,17 @@ public final class GenerationSession {
             int f = tracerFailed.get();
             if (w == 1 || now - lastProgressLogMs >= DEMAND_PROGRESS_LOG_MS) {
                 HelloTerrainMod.LOGGER.info(
-                        "[LodGen][Tracer] dequeued written={} skipped={} failed={} inFlight={}",
-                        w, s, f, ShadowRouterJobQueue.inFlightSize());
+                        "[LodGen][Tracer] dequeued written={} skipped={} failed={} inFlight={} demand={}",
+                        w, s, f, ShadowRouterJobQueue.inFlightSize(),
+                        ShadowRouterJobQueue.demandMetrics().compact());
                 lastProgressLogMs = now;
             }
         }
 
         HelloTerrainMod.LOGGER.info(
-                "[LodGen][Tracer] stopped: written={} skipped={} failed={}",
-                tracerWritten.get(), tracerSkipped.get(), tracerFailed.get());
+                "[LodGen][Tracer] stopped: written={} skipped={} failed={} demand={}",
+                tracerWritten.get(), tracerSkipped.get(), tracerFailed.get(),
+                ShadowRouterJobQueue.demandMetrics().compact());
         return tracerWritten.get() > 0;
     }
 

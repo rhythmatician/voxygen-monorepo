@@ -1,0 +1,11 @@
+{
+  "required": false,
+  "package": "net.lodiffusion.mixin.voxy",
+  "compatibilityLevel": "JAVA_21",
+  "client": [
+    "VoxyTopologyOwnershipMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 0
+  }
+}

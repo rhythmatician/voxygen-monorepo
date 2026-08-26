@@ -16,14 +16,14 @@ package com.rhythmatician.lodiffusion.voxy;
  *       {@code composeVoxel}, {@code isAir}, {@code l0Index}).</li>
  * </ul>
  *
- * <p>This facade exists solely so that all existing callers ({@code VoxySectionWriter},
- * {@code LodGenerationService}, etc.) continue to compile and run without modification.
+ * <p>This facade keeps production writers and compatibility tooling on the same
+ * low-level bindings while migration to {@link VoxelVolumeWriter} completes.
  *
  * <p><b>Seam boundary — internal migration facade.</b> The intended deep module seam is
  * {@link VoxelVolumeWriter}; new code must use that interface. This facade is retained
  * solely for backwards compatibility during migration ( {@code LoDiffusionClient},
- * {@code ShaderSectionWriter}, {@code WorldGenEventHandler} and the in-package
- * {@code VoxySectionWriter} / {@code LodGenerationService} still call through here).
+ * {@code ShaderSectionWriter}, {@code WorldGenEventHandler}, and
+ * {@code LodGenerationService} still call through here).
  * It will be reduced to package-private / removed in a follow-up PR once all callers
  * are funneled through {@link RealVoxyVolumeWriter} / {@link VoxelVolumeWriter}.
  *

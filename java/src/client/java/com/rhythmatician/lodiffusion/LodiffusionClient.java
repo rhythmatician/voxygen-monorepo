@@ -12,6 +12,7 @@ import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientChunkEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandManager;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
@@ -32,7 +33,6 @@ public class LodiffusionClient implements ClientModInitializer {
 
     private static final LodGenerationService LOD_SERVICE = new LodGenerationService();
     private static VoxyDatasetExportService DATASET_EXPORT_SERVICE = null;
-
     @Override
     public void onInitializeClient() {
         HelloTerrainMod.LOGGER.info("[LODiffusion] Client initializer starting");
@@ -77,6 +77,11 @@ public class LodiffusionClient implements ClientModInitializer {
             stopDatasetExportService();
         });
 
+        // This runs after vanilla has loaded a chunk. It records ownership only;
+        // it neither queues nor delays vanilla's ingestion path.
+        ClientChunkEvents.CHUNK_LOAD.register((world, chunk) ->
+                LOD_SERVICE.observeVanillaChunkColumn(world, chunk.getPos().x, chunk.getPos().z));
+
         // --- Client tick: update player position + dimension-change-aware rebind + drain GPU noise queue ---
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             // Dimension-change-aware rebind — teleport to the_end activates tracer without rejoin.
@@ -87,7 +92,11 @@ public class LodiffusionClient implements ClientModInitializer {
                 LOD_SERVICE.checkAndRebindIfNeeded(client.world, client.getServer());
             }
             if (LOD_SERVICE.isRunning() && client.player != null) {
-                LOD_SERVICE.updatePlayerPosition(client.player.getBlockPos());
+                var velocity = client.player.getVelocity();
+                int viewDistance = client.options.getViewDistance().getValue();
+                int simulationDistance = client.options.getSimulationDistance().getValue();
+                LOD_SERVICE.updatePlayerPosition(client.player.getBlockPos(), velocity.x, velocity.z,
+                        viewDistance, simulationDistance);
             }
             // Drain pending GPU noise requests on the render thread (GL context).
             // No-ops if the dispatch queue hasn't been initialised yet.
@@ -196,4 +205,3 @@ public class LodiffusionClient implements ClientModInitializer {
         }
     }
 }
-

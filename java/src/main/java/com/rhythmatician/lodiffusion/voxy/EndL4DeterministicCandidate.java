@@ -1,7 +1,7 @@
 package com.rhythmatician.lodiffusion.voxy;
 
 /**
- * Model-free deterministic End base-terrain producer for Render L1..L4.
+ * Model-free deterministic End base-terrain producer for Render L0..L4.
  *
  * <p><b>Deterministic approximation — centre-sample rasterization.</b>
  * Converts cell occupancy from density by a single centre-sample at the
@@ -53,14 +53,14 @@ final class EndL4DeterministicCandidate {
      * finer Levels. Honest omission of placed features (pillars, gateways)
      * is intentional and recorded; do not gloss as end_stone.
      *
-     * @param level  Level L1..L4 (L0 rejected — vanilla owns the finest band)
+     * @param level  Level L0..L4
      * @param origin SectionPos aligned to {@code level.regionSections()}
      * @return VoxelVolume extent 32 with air|end_stone, air-padded outside [0,128)
      */
     VoxelVolume produceRegion(Level level, SectionPos origin) {
-        if (level == null || level.value() < Level.L1.value() || level.value() > Level.L4.value()) {
+        if (level == null || level.value() < Level.L0.value() || level.value() > Level.L4.value()) {
             throw new IllegalArgumentException(
-                    "End scaffold supports L1..L4 only, got " + level);
+                    "End scaffold supports L0..L4 only, got " + level);
         }
         if (!level.isAligned(origin)) {
             throw new IllegalArgumentException(
@@ -68,7 +68,7 @@ final class EndL4DeterministicCandidate {
                     + " regionSections=" + level.regionSections());
         }
         // Blocks per voxel at this Level (Voxy node geometry: node = 32<<L
-        // blocks, always 32^3 voxels): L4=16, L3=8, L2=4, L1=2.
+        // blocks, always 32^3 voxels): L4=16, L3=8, L2=4, L1=2, L0=1.
         int voxelBlocks = 1 << level.value();
         int centreOffset = voxelBlocks / 2;
 

@@ -4,137 +4,225 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import java.util.List;
 import net.lodiffusion.shadow.ShadowRouterJobQueue;
+import net.lodiffusion.shadow.VoxyDemandKind;
+import net.lodiffusion.shadow.VoxyDemandSource;
+import net.lodiffusion.shadow.VoxyWorkKind;
+import net.minecraft.util.math.BlockPos;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 
-/**
- * Stage 2 session wiring (ADR 0011): in End tracer mode the session runs
- * screen-space-error selection passes that enqueue L3..L1 refinement
- * requests for covered L4 regions. The fixed 11×11 L4 ring remains the only
- * radius; finer demand comes from the selector, budgeted and deduplicated
- * by {@link ShadowRouterJobQueue}.
- */
 class EndRefinementDemandTest {
-
-    @BeforeEach
-    void setUp() {
+    @BeforeEach void setUp() {
         ShadowRouterJobQueue.clear();
+        ShadowRouterJobQueue.updatePlayerSection(0, 0);
+    }
+    @AfterEach void tearDown() { ShadowRouterJobQueue.clear(); }
+
+    @Test
+    void selectorQueuesParentTransactionsWithCoarseCoverageFirst() {
+        GenerationSession session = new GenerationSession();
+        session.setNoiseAccessForTest(solidNoise());
+        int enqueued = session.enqueueEndRefinementsForTest(
+                List.of(new SectionPos(0, 0, 0)), 256, 96, 256,
+                Level.L1.value(), 1e9, 64);
+        assertEquals(64, enqueued);
+        var first = ShadowRouterJobQueue.dequeueAny();
+        assertNotNull(first);
+        assertEquals(4, first.lodLevel);
+        assertEquals(VoxyDemandKind.VISUAL_REFINEMENT, first.demandKind);
+        ShadowRouterJobQueue.markCompleted(first);
+        var next = ShadowRouterJobQueue.dequeueAny();
+        assertNotNull(next);
+        assertEquals(3, next.lodLevel);
     }
 
-    @AfterEach
-    void tearDown() {
-        ShadowRouterJobQueue.clear();
+    @Test
+    void budgetAppliesAfterDedupAndLaterPassAdvances() {
+        GenerationSession session = new GenerationSession();
+        session.setNoiseAccessForTest(solidNoise());
+        var regions = List.of(new SectionPos(0, 0, 0));
+        int first = session.enqueueEndRefinementsForTest(regions, 256, 96, 256,
+                Level.L1.value(), 1e9, 8);
+        var firstKeys = drain(first);
+        int second = session.enqueueEndRefinementsForTest(regions, 256, 96, 256,
+                Level.L1.value(), 1e9, 8);
+        var secondKeys = drain(second);
+        assertEquals(8, first);
+        assertEquals(8, second);
+        assertTrue(firstKeys.stream().noneMatch(secondKeys::contains));
+    }
+
+    @Test
+    void scheduledSelectionAdmitsBoundedVisualWorkWhileCoverageQueueIsBusy() {
+        GenerationSession session = new GenerationSession();
+        session.updatePlayerPosition(new BlockPos(0, 96, 0));
+        for (int x = 0; x < 32; x++) {
+            ShadowRouterJobQueue.enqueue(
+                    request(Level.L4.value(), x, VoxyDemandKind.HORIZON_COVERAGE));
+        }
+
+        int first = session.runScheduledEndSelectionForTest(10_000L, 7);
+        int depthAfterFirst = ShadowRouterJobQueue.size();
+        int throttled = session.runScheduledEndSelectionForTest(10_001L, 7);
+        int second = session.runScheduledEndSelectionForTest(
+                10_000L + GenerationSession.selectionIntervalMsForTest(), 7);
+
+        assertEquals(7, first);
+        assertEquals(0, throttled, "a busy worker loop must not select on every iteration");
+        assertEquals(depthAfterFirst, ShadowRouterJobQueue.size() - second);
+        assertEquals(7, second, "the next bounded pass should advance after the cadence interval");
+        assertEquals(14, ShadowRouterJobQueue.demandMetrics().visual().queued());
+        assertTrue(ShadowRouterJobQueue.demandMetrics().horizon().queuedDepth() > 0,
+                "visual admission must not require an empty coverage queue");
+    }
+
+    @Test
+    void scheduledSelectionCapsVisualOutstandingAtConfiguredTarget() {
+        GenerationSession session = new GenerationSession();
+        session.updatePlayerPosition(new BlockPos(0, 96, 0));
+
+        int first = session.runScheduledEndSelectionForTest(10_000L, 256);
+        int whileFull = session.runScheduledEndSelectionForTest(
+                10_000L + GenerationSession.selectionIntervalMsForTest(), 256);
+        var visual = ShadowRouterJobQueue.demandMetrics().visual();
+
+        assertEquals(GenerationSession.visualWorkingSetTargetForTest(), first);
+        assertEquals(0, whileFull);
+        assertEquals(GenerationSession.visualWorkingSetTargetForTest(),
+                visual.queuedDepth() + visual.inFlightDepth());
+    }
+
+    @Test
+    void scheduledSelectionRefillsOnlyCapacityOpenedByCompletions() {
+        GenerationSession session = new GenerationSession();
+        session.updatePlayerPosition(new BlockPos(0, 96, 0));
+        assertEquals(16, session.runScheduledEndSelectionForTest(10_000L, 256));
+
+        for (int completed = 0; completed < 5; completed++) {
+            var request = ShadowRouterJobQueue.dequeueAny();
+            assertNotNull(request);
+            assertEquals(VoxyDemandKind.VISUAL_REFINEMENT, request.demandKind);
+            ShadowRouterJobQueue.markCompleted(request);
+        }
+
+        int refill = session.runScheduledEndSelectionForTest(
+                10_000L + GenerationSession.selectionIntervalMsForTest(), 256);
+        var visual = ShadowRouterJobQueue.demandMetrics().visual();
+        assertEquals(5, refill);
+        assertEquals(16, visual.queuedDepth() + visual.inFlightDepth());
+    }
+
+    @Test
+    void guardOverlapIsRememberedWithoutConsumingVisualCapacityOrFlooding() {
+        GenerationSession session = new GenerationSession();
+        session.updatePlayerPosition(new BlockPos(0, 96, 0));
+        for (var emission : originSelections().subList(0, 6)) {
+            var node = emission.request();
+            var guard = request(node.level(), node.wsX(), VoxyDemandKind.VANILLA_FRONTIER_GUARD);
+            guard.worldY = node.wsY();
+            guard.worldZ = node.wsZ();
+            guard.workKind = VoxyWorkKind.PARENT_REFINEMENT;
+            guard.demandSource = VoxyDemandSource.VANILLA_OCCUPANCY_BOUNDARY;
+            assertEquals(ShadowRouterJobQueue.EnqueueResult.QUEUED,
+                    ShadowRouterJobQueue.enqueue(guard));
+        }
+
+        int scheduled = session.runScheduledEndSelectionForTest(10_000L, 256);
+        int repeated = session.runScheduledEndSelectionForTest(
+                10_000L + GenerationSession.selectionIntervalMsForTest(), 256);
+        var visual = ShadowRouterJobQueue.demandMetrics().visual();
+
+        assertEquals(16, scheduled);
+        assertEquals(0, repeated);
+        assertEquals(16, visual.queuedDepth() + visual.inFlightDepth());
+        assertEquals(22, ShadowRouterJobQueue.size(),
+                "six represented guards plus the sixteen-item visual working set");
+    }
+
+    @Test
+    void rejectedSelectorCandidateCanBeRetriedAfterPlayerMovesIntoRange() {
+        GenerationSession session = new GenerationSession();
+        var farRegion = List.of(new SectionPos(10, 0, 0));
+        ShadowRouterJobQueue.updatePlayerSection(0, 0);
+
+        int rejected = session.enqueueEndRefinementsForTest(
+                farRegion, 5_376, 96, 256, Level.L3.value(), 1e9, 1);
+        ShadowRouterJobQueue.updatePlayerSection(320, 0);
+        int accepted = session.enqueueEndRefinementsForTest(
+                farRegion, 5_376, 96, 256, Level.L3.value(), 1e9, 1);
+
+        assertEquals(0, rejected);
+        assertEquals(1, accepted,
+                "a rejected candidate must not enter permanent selector dedup");
+    }
+
+    @Test
+    void queuedL0RefinementReachesAnL1ToL0BatchDespiteRenewedL4Coverage() {
+        GenerationSession session = new GenerationSession();
+        session.setNoiseAccessForTest(solidNoise());
+        InMemoryVolumeWriter writer = new InMemoryVolumeWriter();
+        writer.writeRegion(new SectionPos(0, 0, 0), Level.L1, solidVolume());
+
+        ShadowRouterJobQueue.enqueue(request(Level.L1.value(), 0, VoxyDemandKind.VISUAL_REFINEMENT));
+        ShadowRouterJobQueue.enqueue(request(Level.L4.value(), 0, VoxyDemandKind.HORIZON_COVERAGE));
+        ShadowRouterJobQueue.markCompleted(ShadowRouterJobQueue.dequeueAny());
+
+        var refinement = ShadowRouterJobQueue.dequeueAny();
+        assertNotNull(refinement);
+        assertEquals(Level.L1.value(), refinement.lodLevel);
+        assertEquals(VoxyDemandKind.VISUAL_REFINEMENT, refinement.demandKind);
+        assertEquals(RefinementOutcome.Status.PUBLISHED,
+                session.processEndRefinementRequest(refinement, writer).status());
+        ShadowRouterJobQueue.markCompleted(refinement);
+
+        assertEquals(0xFF, writer.committedChildMask(new SectionPos(0, 0, 0), Level.L1));
+        assertEquals(9, writer.regionRecords().size());
+        assertTrue(writer.regionRecords().stream().skip(1).allMatch(r -> r.level() == Level.L0));
+    }
+
+    private static net.lodiffusion.shadow.VoxyRequestDecoder.VoxyNodeRequest request(
+            int level, int x, VoxyDemandKind demandKind) {
+        var request = new net.lodiffusion.shadow.VoxyRequestDecoder.VoxyNodeRequest();
+        request.lodLevel = level;
+        request.worldX = x;
+        request.demandKind = demandKind;
+        request.workKind = demandKind == VoxyDemandKind.HORIZON_COVERAGE
+                ? net.lodiffusion.shadow.VoxyWorkKind.HORIZON_LEAF
+                : net.lodiffusion.shadow.VoxyWorkKind.PARENT_REFINEMENT;
+        return request;
+    }
+
+    private static List<RefinementDemandSelector.Emission> originSelections() {
+        return RefinementDemandSelector.select(new RefinementDemandSelector.Params(
+                8, 104, 8,
+                GenerationSession.REFINEMENT_FOCAL_PX,
+                GenerationSession.REFINEMENT_SUB_DIV_PX,
+                Level.L0.value(), GenerationSession.DEFAULT_REFINEMENT_RENDER_DISTANCE,
+                256, List.of(new SectionPos(0, 0, 0))));
+    }
+
+    private static java.util.Set<String> drain(int count) {
+        var keys = new java.util.HashSet<String>();
+        for (int i = 0; i < count; i++) {
+            var request = ShadowRouterJobQueue.dequeueAny();
+            assertNotNull(request);
+            keys.add(request.lodLevel + ":" + request.worldX + ":"
+                    + request.worldY + ":" + request.worldZ);
+            ShadowRouterJobQueue.markCompleted(request);
+        }
+        return keys;
     }
 
     private static WorldNoiseAccess solidNoise() {
-        WorldNoiseAccess mockNa = Mockito.mock(WorldNoiseAccess.class);
-        Mockito.when(mockNa.sampleFinalDensity(Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt()))
+        WorldNoiseAccess noise = Mockito.mock(WorldNoiseAccess.class);
+        Mockito.when(noise.sampleFinalDensity(Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt()))
                 .thenReturn(1.0);
-        return mockNa;
+        return noise;
     }
 
-    @Test
-    void selectionPass_enqueuesRefinements_forCoveredL4Regions_only() {
-        GenerationSession session = new GenerationSession();
-        setSection(session, 0, 0);
-        session.setEndL4TracerModeForTest(true);
-        session.setNoiseAccessForTest(solidNoise());
-
-        // Covered L4 regions: just the centre region (player-section coords).
-        int enqueued = session.enqueueEndRefinementsForTest(
-                List.of(new SectionPos(0, 0, 0)),
-                256.0 /* camX blocks */, 96.0, 256.0,
-                Level.L1.value(), 1e9 /* render distance */, 4096 /* budget */);
-
-        assertTrue(enqueued > 0, "refinements must be enqueued");
-        assertEquals(enqueued, ShadowRouterJobQueue.size());
-
-        // All requests must be L3..L1 — never L4 (ring owns that) or L0.
-        boolean[] seenLevel = new boolean[5];
-        for (int i = 0; i < enqueued; i++) {
-            var req = ShadowRouterJobQueue.dequeueAny();
-            assertNotNull(req);
-            int lvl = req.lodLevel;
-            assertTrue(lvl >= 1 && lvl <= 3, "level must be 1..3, got " + lvl);
-            seenLevel[lvl] = true;
-        }
-        assertTrue(seenLevel[3], "L3 refinements present");
-        assertTrue(seenLevel[2], "L2 refinements present");
-        assertTrue(seenLevel[1], "L1 refinements present");
-    }
-
-    @Test
-    void selectionPass_budgetCapsEnqueue() {
-        GenerationSession session = new GenerationSession();
-        setSection(session, 0, 0);
-        session.setEndL4TracerModeForTest(true);
-        session.setNoiseAccessForTest(solidNoise());
-
-        int enqueued = session.enqueueEndRefinementsForTest(
-                List.of(new SectionPos(0, 0, 0)),
-                256.0, 96.0, 256.0,
-                Level.L1.value(), 1e9, 10 /* tiny budget */);
-        assertEquals(10, enqueued, "budget caps emissions");
-        assertEquals(10, ShadowRouterJobQueue.size());
-    }
-
-    @Test
-    void selectionPass_deduplicatesAcrossPasses() {
-        GenerationSession session = new GenerationSession();
-        setSection(session, 0, 0);
-        session.setEndL4TracerModeForTest(true);
-        session.setNoiseAccessForTest(solidNoise());
-
-        var regions = List.of(new SectionPos(0, 0, 0));
-        int first = session.enqueueEndRefinementsForTest(
-                regions, 256.0, 96.0, 256.0, Level.L1.value(), 1e9, 4096);
-        // Drain into a side set to simulate completed work, then re-run the
-        // pass with an empty queue: dedup state must suppress re-emission.
-        ShadowRouterJobQueue.clear();
-
-        int second = session.enqueueEndRefinementsForTest(
-                regions, 256.0, 96.0, 256.0, Level.L1.value(), 1e9, 4096);
-        assertEquals(0, second, "same camera + same coverage must not re-enqueue");
-    }
-
-    @Test
-    void selectionPass_extendedDepth_emitsNewDemand() {
-        GenerationSession session = new GenerationSession();
-        setSection(session, 0, 0);
-        session.setEndL4TracerModeForTest(true);
-        session.setNoiseAccessForTest(solidNoise());
-
-        var regions = List.of(new SectionPos(0, 0, 0));
-        // Pass 1 refines only to L2: emits the L3 (8) + L2 (64) cascade.
-        int first = session.enqueueEndRefinementsForTest(
-                regions, 256.0, 96.0, 256.0, Level.L2.value(), 1e9, 4096);
-        assertEquals(72, first, "L3+L2 cascade from region centre");
-        ShadowRouterJobQueue.clear();
-
-        // Repeat pass adds nothing — dedup holds across passes.
-        int repeat = session.enqueueEndRefinementsForTest(
-                regions, 256.0, 96.0, 256.0, Level.L2.value(), 1e9, 4096);
-        assertEquals(0, repeat, "same depth must not re-enqueue");
-
-        // Extending refinement depth to L1 emits genuinely new demand
-        // (512 L1 nodes) without re-emitting L3/L2.
-        int deeper = session.enqueueEndRefinementsForTest(
-                regions, 256.0, 96.0, 256.0, Level.L1.value(), 1e9, 4096);
-        assertEquals(512, deeper, "only the new L1 layer is emitted");
-    }
-
-    private void setSection(GenerationSession session, int x, int z) {
-        try {
-            var f = GenerationSession.class.getDeclaredField("playerSectionX");
-            f.setAccessible(true);
-            f.setInt(session, x);
-            var g = GenerationSession.class.getDeclaredField("playerSectionZ");
-            g.setAccessible(true);
-            g.setInt(session, z);
-        } catch (ReflectiveOperationException e) {
-            throw new RuntimeException(e);
-        }
+    private static VoxelVolume solidVolume() {
+        return VoxelVolume.uniform(32, EndL4DeterministicCandidate.BLOCK_END_STONE, 0);
     }
 }

@@ -140,9 +140,8 @@ class EndL4RuntimeTracerTest {
         assertThrows(IllegalArgumentException.class, () -> cand.produceRegion(Level.L4, bad));
         // Stage 2: L3 is now supported; origin (0,0,0) aligned to all levels.
         assertDoesNotThrow(() -> cand.produceRegion(Level.L3, new SectionPos(0, 0, 0)));
-        // L0 remains rejected (vanilla owns the finest band).
-        assertThrows(IllegalArgumentException.class,
-                () -> cand.produceRegion(Level.L0, new SectionPos(0, 0, 0)));
+        // L0 now closes the final generated coverage seam.
+        assertDoesNotThrow(() -> cand.produceRegion(Level.L0, new SectionPos(0, 0, 0)));
     }
 
     @Test
@@ -235,19 +234,6 @@ class EndL4RuntimeTracerTest {
     }
 
     @Test
-    void generationSession_tracerModeDisablesLowerLevels() throws Exception {
-        Path p = findPath("java/src/main/java/com/rhythmatician/lodiffusion/voxy/GenerationSession.java");
-        String src = Files.readString(p);
-        assertTrue(src.contains("121 L4 requests") || src.contains("121 L4"),
-                "Must document 121 L4 requests");
-        assertTrue(src.contains("disable") || src.contains("disables"),
-                "Must mention disabling L3/L2/L1/L0");
-        // Verify seedNearPlayerDemandIfNeeded early returns in tracer mode
-        assertTrue(src.contains("endL4TracerMode") && src.contains("seedNearPlayerDemandIfNeeded"),
-                "Tracer mode must gate seeding");
-    }
-
-    @Test
     void generationSession_earlyGateBeforePreloadAndResolve() throws Exception {
         Path p = findPath("java/src/main/java/com/rhythmatician/lodiffusion/voxy/GenerationSession.java");
         String src = Files.readString(p);
@@ -303,7 +289,7 @@ class EndL4RuntimeTracerTest {
         assertEquals(1, writer.regionRecords().size());
         var rec = writer.regionRecords().get(0);
         assertEquals(Level.L4, rec.level());
-        // No fake nonEmptyChildren: InMemory writer doesn't track it, RealVoxy would own it
+        // InMemory writer models completed region publication, not refinement demand.
         // Verify volume is not all air and uses only allowed IDs
         VoxelVolume vol = rec.volume();
         assertEquals(32, vol.extent());
@@ -316,8 +302,8 @@ class EndL4RuntimeTracerTest {
         String src = Files.readString(p);
         assertTrue(src.contains("Tracer-only") || src.contains("tracer-only"),
                 "BIOME_UNKNOWN->plains must be documented as tracer-only concession");
-        assertTrue(src.contains("does not fake nonEmptyChildren") || src.contains("does not fake"),
-                "Must document not faking nonEmptyChildren on leaf");
+        assertTrue(src.contains("only parent advertisement seam"),
+                "Must document the atomic parent-refinement publication seam");
     }
 
     // --- Helpers ---

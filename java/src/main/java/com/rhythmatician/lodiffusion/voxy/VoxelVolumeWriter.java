@@ -21,7 +21,7 @@ package com.rhythmatician.lodiffusion.voxy;
  * {@link WorldSectionCoord}.
  *
  * <p><b>Spec extension &mdash; new types not in original scope:</b> The 4 shallow modules
- * ({@code VoxyCompat}, {@code VoxyEngine}, {@code VoxyWorldBinding}, {@code VoxySectionWriter})
+ * ({@code VoxyCompat}, {@code VoxyEngine}, and {@code VoxyWorldBinding})
  * are retained as a migration facade (package-private after follow-up PR). The new
  * semantic types added alongside this seam ({@link VoxelVolume}, {@link SectionPos},
  * {@link Level}, {@link WriteOutcome}, {@link CanonicalRegistries},
@@ -63,6 +63,14 @@ public interface VoxelVolumeWriter {
      * @throws VolumeUnavailableException if backend is not available
      */
     WriteOutcome writeRegion(SectionPos origin, Level level, VoxelVolume volume);
+
+    /**
+     * Write all children of one parent, then publish the exact non-empty child
+     * mask once every child outcome is terminal. No partial mask may escape.
+     */
+    default ParentRefinementResult refineParent(ParentRefinementIntent intent) {
+        throw new UnsupportedOperationException("parent refinement transactions are not supported");
+    }
     /**
      * Returns save-queue depth for backpressure, or 0 if unavailable.
      * Default returns 0 (no backpressure signal).
@@ -85,4 +93,15 @@ public interface VoxelVolumeWriter {
      * speculative until a second production writer needs it.     */
     default boolean isRegionFullyPopulated(SectionPos origin, Level level) {
         return false;
-    }}
+    }
+
+    /**
+     * True when coarse fallback coverage exists at this exact region.
+     * Refinement callers use this as an admission rule; renderer publication
+     * remains an implementation obligation of {@link #writeRegion}.
+     */
+    default boolean hasRegionCoverage(SectionPos origin, Level level) {
+        return false;
+    }
+
+}

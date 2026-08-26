@@ -2,7 +2,9 @@ package com.rhythmatician.lodiffusion.voxy;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * CPU-side screen-space-error refinement demand selector (ADR 0011).
@@ -10,7 +12,7 @@ import java.util.List;
  * <p>Replaces fixed per-Level radii with Voxy-style projected screen-space
  * descent: from each covered L4 region, a child node emits a refinement
  * request at the next-finer Level iff its projected screen area exceeds the
- * subdivision threshold. Recurses L4→L3→L2→L1 (never finer than configured).
+ * subdivision threshold. Recurses L4→L3→L2→L1→L0 (never finer than configured).
  *
  * <p>Geometry mirrors Voxy's {@code screenspace.glsl}:
  * <ul>
@@ -26,7 +28,7 @@ import java.util.List;
  */
 final class RefinementDemandSelector {
 
-    /** A demanded refinement: region index == world-section coord at level. */
+    /** A demanded transaction: this parent is replaced by all eight children. */
     public record NodeRequest(int level, int wsX, int wsY, int wsZ) { }
 
     /** One emitted demand with its selection-time distance (for ordering). */
@@ -44,11 +46,12 @@ final class RefinementDemandSelector {
     private RefinementDemandSelector() { }
 
     /**
-     * Select refinement demands for covered L4 regions, nearest-first,
-     * capped at {@code budget}. Deterministic.
+     * Select all eligible refinement demands for covered L4 regions in
+     * normalized screen-space order. The caller owns deduplication and the
+     * per-pass budget, so truncation is deliberately not performed here.
      */
     public static List<Emission> select(Params p) {
-        List<Emission> out = new ArrayList<>();
+        Map<NodeRequest, Double> selected = new LinkedHashMap<>();
         // Threshold as squared distance per unit size²: descend iff
         // size² * focal² / dist² > subDiv²  <=>  dist < size * focal / subDiv.
         double refDistPerSize = p.focalPx() / p.subDivisionPx();
@@ -64,23 +67,31 @@ final class RefinementDemandSelector {
                 for (int cz = 0; cz < 2; cz++) {
                     for (int cx = 0; cx < 2; cx++) {
                         descend(p, 3, l4.x() * 2 + cx, l4.y() * 2 + cy,
-                                l4.z() * 2 + cz, refDistPerSize, out);
+                                l4.z() * 2 + cz, refDistPerSize, selected);
                     }
                 }
             }
         }
 
-        out.sort(Comparator.comparingDouble((Emission e) -> e.distBlocks())
-                .thenComparingInt(e -> e.request().hashCode()));
-        if (out.size() > p.budget()) {
-            out = new ArrayList<>(out.subList(0, p.budget()));
-        }
+        List<Emission> out = new ArrayList<>();
+        selected.forEach((request, distance) -> out.add(new Emission(request, distance)));
+        out.sort(Comparator
+                .comparingDouble(RefinementDemandSelector::normalizedDistance)
+                .thenComparing(Comparator.comparingInt(
+                        (Emission e) -> e.request().level()).reversed())
+                .thenComparingInt(e -> e.request().wsX())
+                .thenComparingInt(e -> e.request().wsY())
+                .thenComparingInt(e -> e.request().wsZ()));
         return out;
     }
 
-    /** Recursive descent: emit request for node (level,x,y,z), then children. */
+    private static double normalizedDistance(Emission emission) {
+        return emission.distBlocks() / (32.0 * (1 << emission.request().level()));
+    }
+
+    /** Recursive descent: select the parent transaction for each demanded child. */
     private static void descend(Params p, int level, int x, int y, int z,
-                                double refDistPerSize, List<Emission> out) {
+                                double refDistPerSize, Map<NodeRequest, Double> selected) {
         if (level < p.finestLevelValue()) {
             return;
         }
@@ -90,13 +101,14 @@ final class RefinementDemandSelector {
         if (!shouldDescend) {
             return;
         }
-        out.add(new Emission(new NodeRequest(level, x, y, z), dist));
+        NodeRequest parent = new NodeRequest(level + 1, x >> 1, y >> 1, z >> 1);
+        selected.merge(parent, dist, Math::min);
         if (level - 1 >= p.finestLevelValue()) {
             for (int cy = 0; cy < 2; cy++) {
                 for (int cz = 0; cz < 2; cz++) {
                     for (int cx = 0; cx < 2; cx++) {
                         descend(p, level - 1, x * 2 + cx, y * 2 + cy, z * 2 + cz,
-                                refDistPerSize, out);
+                                refDistPerSize, selected);
                     }
                 }
             }

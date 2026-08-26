@@ -41,6 +41,62 @@ public final class RealVoxyVolumeWriter implements VoxelVolumeWriter {
     // Data Clumps fix: two maps travel together — grouped as VoxyIdMaps (see below).
     private final int[] canonicalBiomeToVoxy;
     private final int[] canonicalBlockToVoxy;
+    private final RegionBackend regionBackend;
+
+    interface RegionBackend {
+        boolean isAvailable();
+
+        boolean isFullyPopulated(Object worldEngine, SectionPos origin, Level level);
+
+        boolean hasCoverage(Object worldEngine, SectionPos origin, Level level);
+
+        int writeFullWorldSection(
+                Object worldEngine, Level level, int wsX, int wsY, int wsZ, long[] voxels);
+
+        void publishCompleteChildMask(
+                Object worldEngine, Level parentLevel, int wsX, int wsY, int wsZ, int mask);
+    }
+
+    private static final RegionBackend VOXY_REGION_BACKEND = new RegionBackend() {
+        @Override
+        public boolean isAvailable() {
+            return VoxyCompat.isAvailable();
+        }
+
+        @Override
+        public boolean isFullyPopulated(Object worldEngine, SectionPos origin, Level level) {
+            int wsX = WorldSectionCoord.sectionToWorldSection(origin.x(), level.value());
+            int wsY = WorldSectionCoord.sectionToWorldSection(origin.y(), level.value());
+            int wsZ = WorldSectionCoord.sectionToWorldSection(origin.z(), level.value());
+            if (level == Level.L0) {
+                return checkExistsViaAcquire(worldEngine, level.value(), wsX, wsY, wsZ);
+            }
+            return VoxyCompat.allOctantsPopulated(worldEngine, level.value(), wsX, wsY, wsZ);
+        }
+
+        @Override
+        public boolean hasCoverage(Object worldEngine, SectionPos origin, Level level) {
+            int wsX = WorldSectionCoord.sectionToWorldSection(origin.x(), level.value());
+            int wsY = WorldSectionCoord.sectionToWorldSection(origin.y(), level.value());
+            int wsZ = WorldSectionCoord.sectionToWorldSection(origin.z(), level.value());
+            return VoxyCompat.sectionExistsAtLevel(
+                    worldEngine, level.value(), wsX, wsY, wsZ);
+        }
+
+        @Override
+        public int writeFullWorldSection(
+                Object worldEngine, Level level, int wsX, int wsY, int wsZ, long[] voxels) {
+            return VoxyCompat.writeFullWorldSection(
+                    worldEngine, level.value(), wsX, wsY, wsZ, voxels);
+        }
+
+        @Override
+        public void publishCompleteChildMask(
+                Object worldEngine, Level parentLevel, int wsX, int wsY, int wsZ, int mask) {
+            VoxyWorldBinding.publishCompleteChildMask(
+                    worldEngine, parentLevel.value(), wsX, wsY, wsZ, mask);
+        }
+    };
 
     /**
      * @param worldEngine Voxy WorldEngine (from {@link VoxyCompat#getWorldEngine})
@@ -50,12 +106,22 @@ public final class RealVoxyVolumeWriter implements VoxelVolumeWriter {
      */
     public RealVoxyVolumeWriter(
             Object worldEngine, Object voxyMapper, int[] canonicalBiomeToVoxy, int[] canonicalBlockToVoxy) {
+        this(worldEngine, voxyMapper, canonicalBiomeToVoxy, canonicalBlockToVoxy, VOXY_REGION_BACKEND);
+    }
+
+    RealVoxyVolumeWriter(
+            Object worldEngine,
+            Object voxyMapper,
+            int[] canonicalBiomeToVoxy,
+            int[] canonicalBlockToVoxy,
+            RegionBackend regionBackend) {
         this.worldEngine = Objects.requireNonNull(worldEngine, "worldEngine");
         this.voxyMapper = Objects.requireNonNull(voxyMapper, "voxyMapper");
         this.canonicalBiomeToVoxy =
                 Objects.requireNonNull(canonicalBiomeToVoxy, "canonicalBiomeToVoxy").clone();
         this.canonicalBlockToVoxy =
                 Objects.requireNonNull(canonicalBlockToVoxy, "canonicalBlockToVoxy").clone();
+        this.regionBackend = Objects.requireNonNull(regionBackend, "regionBackend");
         if (this.canonicalBiomeToVoxy.length != CanonicalRegistries.BIOME_COUNT) {
             throw new IllegalArgumentException(
                     "canonicalBiomeToVoxy must be size " + CanonicalRegistries.BIOME_COUNT);
@@ -140,13 +206,7 @@ public final class RealVoxyVolumeWriter implements VoxelVolumeWriter {
     public boolean isRegionFullyPopulated(SectionPos origin, Level level) {
         Objects.requireNonNull(origin, "origin");
         Objects.requireNonNull(level, "level");
-        int wsX = WorldSectionCoord.sectionToWorldSection(origin.x(), level.value());
-        int wsY = WorldSectionCoord.sectionToWorldSection(origin.y(), level.value());
-        int wsZ = WorldSectionCoord.sectionToWorldSection(origin.z(), level.value());
-        if (level == Level.L0) {
-            return checkExistsViaAcquire(level.value(), wsX, wsY, wsZ);
-        }
-        return VoxyCompat.allOctantsPopulated(worldEngine, level.value(), wsX, wsY, wsZ);
+        return regionBackend.isFullyPopulated(worldEngine, origin, level);
     }
 
     @Override
@@ -191,25 +251,58 @@ public final class RealVoxyVolumeWriter implements VoxelVolumeWriter {
                     "origin " + origin + " not aligned to " + level + " regionSections=" + level.regionSections());
         }
         try {
-            if (!VoxyCompat.isAvailable()) {
-                throw new VolumeUnavailableException("Voxy not available");
-            }
-            if (isRegionFullyPopulated(origin, level)) {
-                return WriteOutcome.skippedExists();
-            }
-            if (volume.isAllAir()) {
-                return WriteOutcome.skippedAir();
-            }
-            int nonAir = writeRegionInternal(origin, level, volume);
-            if (nonAir == 0) {
-                return WriteOutcome.skippedAir();
-            }
-            return WriteOutcome.written(nonAir);
+            return materializeRegion(origin, level, volume).asWriteOutcome();
         } catch (VolumeUnavailableException e) {
             throw e;
         } catch (IllegalStateException | LinkageError e) {
             throw new VolumeUnavailableException("Voxy not available: " + e.getMessage(), e);
         }
+    }
+
+    @Override
+    public ParentRefinementResult refineParent(ParentRefinementIntent intent) {
+        Objects.requireNonNull(intent, "intent");
+        if (!hasRegionCoverage(intent.parentOrigin(), intent.parentLevel())) {
+            return ParentRefinementResult.parentMissing();
+        }
+        ParentRefinementBatch batch = ParentRefinementBatch.materialize(intent);
+        return ParentRefinementResult.published(commitParentRefinement(batch));
+    }
+
+    private WriteOutcome commitParentRefinement(ParentRefinementBatch batch) {
+        int nonAir = 0;
+        for (ParentRefinementBatch.Child child : batch.children()) {
+            ChildMaterializationOutcome outcome = materializeRegion(
+                    child.origin(), Level.values()[batch.childLevel()], child.volume());
+            batch.recordTerminal(child.octant(), outcome);
+            nonAir += outcome.nonAirWritten();
+        }
+        if (!batch.isComplete()) {
+            throw new IllegalStateException("parent refinement completed without all child outcomes");
+        }
+
+        int parentLevel = batch.parentLevel().value();
+        int parentWsX = WorldSectionCoord.sectionToWorldSection(
+                batch.parentOrigin().x(), parentLevel);
+        int parentWsY = WorldSectionCoord.sectionToWorldSection(
+                batch.parentOrigin().y(), parentLevel);
+        int parentWsZ = WorldSectionCoord.sectionToWorldSection(
+                batch.parentOrigin().z(), parentLevel);
+        // This is the only parent advertisement seam. Child writes above have
+        // already dirtied their geometry; no partial mask is ever published.
+        regionBackend.publishCompleteChildMask(
+                worldEngine, batch.parentLevel(), parentWsX, parentWsY, parentWsZ,
+                batch.nonEmptyMask());
+        return batch.nonEmptyMask() == 0
+                ? WriteOutcome.skippedAir()
+                : WriteOutcome.written(nonAir);
+    }
+
+    @Override
+    public boolean hasRegionCoverage(SectionPos origin, Level level) {
+        Objects.requireNonNull(origin, "origin");
+        Objects.requireNonNull(level, "level");
+        return regionBackend.hasCoverage(worldEngine, origin, level);
     }
 
     /**
@@ -218,7 +311,8 @@ public final class RealVoxyVolumeWriter implements VoxelVolumeWriter {
      * to {@link VoxyCompat#sectionExists} on reflection failure and logs the failure
      * so SKIPPED_EXISTS is not silently lost.
      */
-    private boolean checkExistsViaAcquire(int lvl, int wsX, int wsY, int wsZ) {
+    private static boolean checkExistsViaAcquire(
+            Object worldEngine, int lvl, int wsX, int wsY, int wsZ) {
         try {
             Object sec = VoxyEngine.acquireIfExists(worldEngine, lvl, wsX, wsY, wsZ);
             if (sec != null) {
@@ -264,7 +358,22 @@ public final class RealVoxyVolumeWriter implements VoxelVolumeWriter {
         return nonAir;
     }
 
-    private int writeRegionInternal(SectionPos origin, Level level, VoxelVolume volume) {
+    private ChildMaterializationOutcome materializeRegion(
+            SectionPos origin, Level level, VoxelVolume volume) {
+        if (!regionBackend.isAvailable()) {
+            throw new VolumeUnavailableException("Voxy not available");
+        }
+        if (isRegionFullyPopulated(origin, level)) {
+            return ChildMaterializationOutcome.preservedExisting();
+        }
+        if (volume.isAllAir()) {
+            return ChildMaterializationOutcome.empty();
+        }
+        return writeRegionInternal(origin, level, volume);
+    }
+
+    private ChildMaterializationOutcome writeRegionInternal(
+            SectionPos origin, Level level, VoxelVolume volume) {
         long[] voxels = new long[32 * 32 * 32];
         int nonAir = 0;
         for (int y = 0; y < 32; y++) {
@@ -278,13 +387,18 @@ public final class RealVoxyVolumeWriter implements VoxelVolumeWriter {
                 }
             }
         }
-        if (nonAir == 0) return 0;
+        if (nonAir == 0) return ChildMaterializationOutcome.empty();
         int wsX = WorldSectionCoord.sectionToWorldSection(origin.x(), level.value());
         int wsY = WorldSectionCoord.sectionToWorldSection(origin.y(), level.value());
         int wsZ = WorldSectionCoord.sectionToWorldSection(origin.z(), level.value());
-        VoxyCompat.writeFullWorldSection(worldEngine, level.value(), wsX, wsY, wsZ, voxels);
-        LOGGER.debug("[RealVoxy] writeRegion {} {} ws=({},{},{}) nonAir={}", origin, level, wsX, wsY, wsZ, nonAir);
-        return nonAir;
+        int written = regionBackend.writeFullWorldSection(
+                worldEngine, level, wsX, wsY, wsZ, voxels);
+        if (written == 0) {
+            return ChildMaterializationOutcome.preservedExisting();
+        }
+        LOGGER.debug("[RealVoxy] writeRegion {} {} ws=({},{},{}) nonAir={}",
+                origin, level, wsX, wsY, wsZ, written);
+        return ChildMaterializationOutcome.generatedFallback(written);
     }
 
     /** YZX index for 32^3 WorldSection: (y<<10)|(z<<5)|x. Single source of truth. */
@@ -312,5 +426,6 @@ public final class RealVoxyVolumeWriter implements VoxelVolumeWriter {
         return canonicalBiomeToVoxy[canonical];
     }
 
-    // Direct full-WorldSection path owns dirtying/preservation via VoxyWorldBinding.writeFullWorldSection; leaf L4 writes does not fake nonEmptyChildren — SKIPPED_EXISTS / WRITTEN via allOctantsPopulated only.
+    // Direct writes publish completed geometry only; refinement demand is
+    // owned by the screen-space selector and generation scheduler.
 }

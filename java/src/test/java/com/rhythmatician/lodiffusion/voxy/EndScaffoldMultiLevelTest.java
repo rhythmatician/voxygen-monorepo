@@ -7,8 +7,8 @@ import org.mockito.Mockito;
 
 /**
  * Stage 2 behavior spec (ADR 0011): the model-free End scaffold produces
- * semantic regions at every Level L1..L4 via centre-sample rasterization at
- * that Level's voxel size ({@code 16 << level} blocks/voxel). Same honest
+ * semantic regions at every Level L0..L4 via centre-sample rasterization at
+ * that Level's voxel size ({@code 1 << level} blocks/voxel). Same honest
  * omissions and Y-padding rules as Stage 1's L4-only tracer.
  */
 class EndScaffoldMultiLevelTest {
@@ -21,22 +21,15 @@ class EndScaffoldMultiLevelTest {
     }
 
     @Test
-    void producesRegions_atEveryLevelL1ToL4() {
+    void producesRegions_atEveryLevelL0ToL4() {
         var cand = new EndL4DeterministicCandidate(solidNoise());
-        for (Level level : new Level[] {Level.L4, Level.L3, Level.L2, Level.L1}) {
+        for (Level level : new Level[] {Level.L4, Level.L3, Level.L2, Level.L1, Level.L0}) {
             int rs = level.regionSections();
             SectionPos origin = new SectionPos(0, 0, 0); // aligned to all levels
             VoxelVolume vol = cand.produceRegion(level, origin);
             assertEquals(32, vol.extent(), "extent 32 at " + level);
             assertFalse(vol.isAllAir(), "solid noise must produce terrain at " + level);
         }
-    }
-
-    @Test
-    void rejectsLevelsFinerThanL1() {
-        var cand = new EndL4DeterministicCandidate(solidNoise());
-        assertThrows(IllegalArgumentException.class,
-                () -> cand.produceRegion(Level.L0, new SectionPos(0, 0, 0)));
     }
 
     @Test
@@ -53,6 +46,10 @@ class EndScaffoldMultiLevelTest {
         assertDoesNotThrow(() -> cand.produceRegion(Level.L1, new SectionPos(4, 0, 0)));
         assertThrows(IllegalArgumentException.class,
                 () -> cand.produceRegion(Level.L1, new SectionPos(2, 0, 0)));
+        // L0 regionSections=2: origin x=2 aligned; x=1 is not.
+        assertDoesNotThrow(() -> cand.produceRegion(Level.L0, new SectionPos(2, 0, 0)));
+        assertThrows(IllegalArgumentException.class,
+                () -> cand.produceRegion(Level.L0, new SectionPos(1, 0, 0)));
     }
 
     @Test
@@ -63,7 +60,7 @@ class EndScaffoldMultiLevelTest {
         var cand = new EndL4DeterministicCandidate(na);
 
         // Voxy geometry: node at level L = (32<<L) blocks, always 32^3 voxels,
-        // so voxel = 2^L blocks: L4=16, L3=8, L2=4, L1=2.
+        // so voxel = 2^L blocks: L4=16, L3=8, L2=4, L1=2, L0=1.
         // L3: origin (16,0,0) -> baseBlockX = 256; first centre = 256+0*8+4 = 260; y=z=4.
         cand.produceRegion(Level.L3, new SectionPos(16, 0, 0));
         Mockito.verify(na).sampleFinalDensity(260, 4, 4);
@@ -74,6 +71,12 @@ class EndScaffoldMultiLevelTest {
                 .thenReturn(1.0);
         cand.produceRegion(Level.L1, new SectionPos(4, 0, 0));
         Mockito.verify(na).sampleFinalDensity(65, 1, 1);
+
+        Mockito.reset(na);
+        Mockito.when(na.sampleFinalDensity(Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt()))
+                .thenReturn(1.0);
+        cand.produceRegion(Level.L0, new SectionPos(2, 0, 0));
+        Mockito.verify(na).sampleFinalDensity(32, 0, 0);
     }
 
     @Test
@@ -103,7 +106,7 @@ class EndScaffoldMultiLevelTest {
     @Test
     void yPaddingOutsideEndRange_airAtEveryLevel() {
         var cand = new EndL4DeterministicCandidate(solidNoise());
-        for (Level level : new Level[] {Level.L3, Level.L2, Level.L1}) {
+        for (Level level : new Level[] {Level.L3, Level.L2, Level.L1, Level.L0}) {
             VoxelVolume vol = cand.produceRegion(level, new SectionPos(0, 0, 0));
             int voxelBlocks = 1 << level.value();
             int activeSlices = Math.min(32, (128 + voxelBlocks - 1) / voxelBlocks);
@@ -119,7 +122,7 @@ class EndScaffoldMultiLevelTest {
     @Test
     void vocabulary_reducedToAirAndEndStone_atEveryLevel() {
         var cand = new EndL4DeterministicCandidate(solidNoise());
-        for (Level level : new Level[] {Level.L4, Level.L3, Level.L2, Level.L1}) {
+        for (Level level : new Level[] {Level.L4, Level.L3, Level.L2, Level.L1, Level.L0}) {
             VoxelVolume vol = cand.produceRegion(level, new SectionPos(0, 0, 0));
             for (int y = 0; y < 32; y += 7) {
                 for (int z = 0; z < 32; z += 5) {
