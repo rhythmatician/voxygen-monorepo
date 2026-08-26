@@ -2,8 +2,19 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { inspectProvenance, inspectCommitsAhead, type GitResult, type GitRunner } from "./branch-helpers.mts";
 import type { IssueInput } from "./tracker-policy.mts";
-import type { ReconcileInspectionOps } from "./tracker-operations.mts";
+import type { ReconcileInspectionOps, BranchCleanupResult } from "./tracker-operations.mts";
 import { isHttp404 } from "./gh-errors.mts";
+
+/**
+ * Strict RFC3339 timestamp validation (e.g. `2024-01-15T10:30:00Z` or
+ * `2024-01-15T10:30:00+00:00`). Used to validate a PR's `merged_at` before it
+ * is trusted for a merged-PR decision. A malformed timestamp is UNKNOWN, never
+ * treated as a merge.
+ */
+function isValidRfc3339(s: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/.test(s)) return false;
+  return !isNaN(Date.parse(s));
+}
 
 /**
  * Production reconciliation INSPECTION adapter — internal to TrackerAdapter.
@@ -136,8 +147,30 @@ export function createProductionReconcileOps(deps: ReconcileAdapterDeps): Reconc
         // Normalize to the uppercase state contract the decision logic expects
         // ("OPEN"/"CLOSED"), matching the prior `gh pr view` output.
         const state = rawState.toUpperCase();
-        const mergedAt = typeof obj.merged_at === "string" && obj.merged_at.length > 0 ? obj.merged_at : null;
-        return { state, mergedAt, found:true };
+        // Validate merged_at SEMANTICALLY before trusting it for a merged-PR
+        // decision. OPEN + merged_at null is valid; CLOSED + merged_at null is
+        // valid; CLOSED + a valid RFC3339 timestamp is valid. A non-string,
+        // non-null merged_at, a malformed timestamp, or an OPEN PR carrying a
+        // merged_at is INCONSISTENT => UNKNOWN and zero tracker mutation.
+        const rawMergedAt = obj.merged_at;
+        if (rawMergedAt === null || rawMergedAt === undefined) {
+          // merged_at null/absent — valid for both OPEN and CLOSED.
+          return { state, mergedAt: null, found: true };
+        }
+        if (typeof rawMergedAt !== "string") {
+          // Non-string, non-null merged_at — malformed.
+          return { state: "UNKNOWN", mergedAt: null, found: false, unknown: true };
+        }
+        if (!isValidRfc3339(rawMergedAt)) {
+          // String but not a valid RFC3339 timestamp — malformed.
+          return { state: "UNKNOWN", mergedAt: null, found: false, unknown: true };
+        }
+        if (state === "OPEN") {
+          // OPEN PR carrying a merged_at — inconsistent.
+          return { state: "UNKNOWN", mergedAt: null, found: false, unknown: true };
+        }
+        // CLOSED + valid RFC3339 merged_at.
+        return { state, mergedAt: rawMergedAt, found: true };
       } catch (e) {
         if (isHttp404(e)) return { state:"CLOSED", mergedAt:null, found:false };
         return { state:"UNKNOWN", mergedAt:null, found:false, unknown:true };
@@ -188,12 +221,42 @@ export function createProductionReconcileOps(deps: ReconcileAdapterDeps): Reconc
       return inspectCommitsAhead(repoRoot, base, branchName, runGit);
     },
 
-    deleteBranch: async (branchName:string): Promise<boolean> => {
-      // If owner/repo cannot be resolved, remote state is unknown — do not delete anything
-      if (!ownerRepo) return false;
+    deleteBranch: async (branchName:string): Promise<BranchCleanupResult> => {
+      // Effect evidence accumulator — every mutation is recorded so the caller
+      // can distinguish a full cleanup from a partial/indeterminate one.
+      const effects = { worktreeRemoved: false, localBranchRemoved: false, remoteBranchRemoved: false, provenanceRemoved: false };
+      const untouched = (reason: string): BranchCleanupResult => ({ cleaned: false, untouched: true, effects, reason });
+      const partial = (reason: string): BranchCleanupResult => ({ cleaned: false, untouched: false, effects, reason });
+
+      // If owner/repo cannot be resolved, remote state is unknown — do not
+      // delete anything (zero mutation).
+      if (!ownerRepo) return untouched("repository identity unavailable — remote state unknown, zero mutation");
+
+      // PREFLIGHT: authoritatively inspect REMOTE state BEFORE any destructive
+      // local cleanup (worktree/local/provenance). Initial unknown remote state
+      // => zero worktree/local/provenance/tracker mutation. Only an
+      // authoritative HTTP 404 proves remote absence; auth/network/timeout/5xx
+      // (including GhTokenMissingError) => unknown => untouched.
+      let remotePresent: "present"|"absent"|"unknown" = "unknown";
+      try {
+        const ref = await runGh(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/git/refs/heads/${branchName}`, "--jq", ".ref"]);
+        // Present ONLY when the response exactly equals the expected ref.
+        // Empty/mismatched/malformed success is UNKNOWN, never absent.
+        remotePresent = classifyRefResponse(ref, branchName);
+      } catch (e) {
+        // ONLY an authoritative HTTP 404 proves remote absence.
+        if (isHttp404(e)) remotePresent = "absent";
+        else remotePresent = "unknown";
+      }
+      if (remotePresent === "unknown") {
+        // Initial remote state unknown — zero worktree/local/provenance/tracker
+        // mutation. Preserve provenance and the claim.
+        return untouched(`remote state unknown for ${branchName} — zero mutation`);
+      }
+
       // Worktree cleanup fail closed: nonzero worktree inventory before any mutation
       const wtListRes = runGit(["worktree", "list", "--porcelain"]);
-      if (wtListRes.exitCode !== 0) return false;
+      if (wtListRes.exitCode !== 0) return partial(`worktree inventory failed for ${branchName}`);
       // Parse porcelain blocks to locate exact worktree path for this branch
       const wtBlocks = wtListRes.stdout.split("\n\n");
       let exactWtPath: string | null = null;
@@ -213,76 +276,67 @@ export function createProductionReconcileOps(deps: ReconcileAdapterDeps): Reconc
       if (exactWtPath) {
         // Defensive recheck: dirty worktree must never be force-removed (close inspection/removal race)
         const dirtyRes = runGit(["-C", exactWtPath, "status", "--porcelain=v1", "--untracked-files=all"]);
-        if (dirtyRes.exitCode !== 0) return false;
-        if (dirtyRes.stdout.trim()) return false;
+        if (dirtyRes.exitCode !== 0) return partial(`worktree status failed for ${branchName}`);
+        if (dirtyRes.stdout.trim()) return partial(`worktree ${exactWtPath} is dirty — refusing removal`);
         const rmRes = runGit(["worktree", "remove", "--force", exactWtPath]);
-        if (rmRes.exitCode !== 0) return false;
+        if (rmRes.exitCode !== 0) return partial(`worktree removal failed for ${branchName}`);
+        effects.worktreeRemoved = true;
         // Re-run inventory and prove no worktree still references the branch
         const wtVerify = runGit(["worktree", "list", "--porcelain"]);
-        if (wtVerify.exitCode !== 0) return false;
+        if (wtVerify.exitCode !== 0) return partial(`worktree verification failed for ${branchName}`);
         const verifyBlocks = wtVerify.stdout.split("\n\n");
         for (const block of verifyBlocks) {
           for (const line of block.split("\n")) {
-            if (line.trim() === `branch refs/heads/${branchName}`) return false;
+            if (line.trim() === `branch refs/heads/${branchName}`) return partial(`worktree still references ${branchName} after removal`);
           }
         }
       }
       // local
       const localList = runGit(["branch", "--list", branchName]);
-      if (localList.exitCode !== 0) return false;
+      if (localList.exitCode !== 0) return partial(`local branch inventory failed for ${branchName}`);
       const localPresent = !!localList.stdout.trim();
       if (localPresent) {
         const del = runGit(["branch", "-D", branchName]);
-        if (del.exitCode !== 0) return false;
+        if (del.exitCode !== 0) return partial(`local branch deletion failed for ${branchName}`);
+        effects.localBranchRemoved = true;
       }
-      // remote — ownerRepo already verified, now check remote presence
-      let remotePresent: "present"|"absent"|"unknown" = "unknown";
-      try {
-        const ref = await runGh(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/git/refs/heads/${branchName}`, "--jq", ".ref"]);
-        // Present ONLY when the response exactly equals the expected ref.
-        // Empty/mismatched/malformed success is UNKNOWN, never absent.
-        remotePresent = classifyRefResponse(ref, branchName);
-      } catch (e) {
-        // ONLY an authoritative HTTP 404 proves remote absence.
-        if (isHttp404(e)) remotePresent="absent";
-        else remotePresent="unknown";
-      }
-      if (remotePresent==="unknown") return false;
-      if (remotePresent==="present") {
+      // remote — preflighted above; now delete if present
+      if (remotePresent === "present") {
         try { await runGh(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/git/refs/heads/${branchName}`, "--method","DELETE"]); } catch (e) {
           // A non-404 error after DELETE is NOT an authoritative absence — the
           // remote may still exist. Fail closed (no provenance deletion).
-          if (!isHttp404(e)) return false;
+          if (!isHttp404(e)) return partial(`remote branch DELETE failed for ${branchName}`);
         }
+        effects.remoteBranchRemoved = true;
         try {
           await runGh(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/git/refs/heads/${branchName}`, "--jq",".ref"]);
-          return false;
+          return partial(`remote branch ${branchName} still exists after DELETE`);
         } catch (e) {
           // ONLY an authoritative HTTP 404 proves the remote ref is gone.
-          if (!isHttp404(e)) return false;
+          if (!isHttp404(e)) return partial(`remote branch ${branchName} deletion read-back failed`);
         }
       }
       // Verify local and remote both absent before deleting provenance
       const verifyLocal = runGit(["branch", "--list", branchName]);
-      if (verifyLocal.exitCode !== 0) return false;
-      if (verifyLocal.stdout.trim()) return false;
+      if (verifyLocal.exitCode !== 0) return partial(`local branch verification failed for ${branchName}`);
+      if (verifyLocal.stdout.trim()) return partial(`local branch ${branchName} still present after deletion`);
       try {
         const ref = await runGh(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/git/refs/heads/${branchName}`, "--jq",".ref"]);
         // Present (exact ref match) => not absent, fail closed. An empty,
         // mismatched, or malformed successful response is UNKNOWN — fail
         // closed (do not delete provenance on ambiguous remote state).
-        if (classifyRefResponse(ref, branchName) === "present") return false;
-        if (classifyRefResponse(ref, branchName) === "unknown") return false;
+        if (classifyRefResponse(ref, branchName) === "present") return partial(`remote branch ${branchName} still present after deletion`);
+        if (classifyRefResponse(ref, branchName) === "unknown") return partial(`remote branch ${branchName} state unknown after deletion`);
       } catch (e) {
         // ONLY an authoritative HTTP 404 proves remote absence.
-        if (!isHttp404(e)) return false;
+        if (!isHttp404(e)) return partial(`remote branch ${branchName} verification failed after deletion`);
       }
       // provenance — only after branch absence proved
       try {
         const provPath = path.join(repoRoot, ".sandcastle","provenance", `${branchName.replace(/[^a-zA-Z0-9-]/g,"-")}.json`);
-        if (fs.existsSync(provPath)) fs.unlinkSync(provPath);
-      } catch { return false; }
-      return true;
+        if (fs.existsSync(provPath)) { fs.unlinkSync(provPath); effects.provenanceRemoved = true; }
+      } catch { return partial(`provenance deletion failed for ${branchName}`); }
+      return { cleaned: true, untouched: false, effects };
     },
   };
 }

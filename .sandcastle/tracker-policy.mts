@@ -72,6 +72,12 @@ export interface IssueInput {
   assignees: string[];
   blockedByCount?: number;
   body?: string;
+  /**
+   * Authoritative issue-state generation — GitHub's updatedAt timestamp.
+   * Fresh reads populate it; recovery requires it to bind a receipt to the
+   * current issue-state generation.
+   */
+  updatedAt?: string;
 }
 
 // ---------------------------------------------------------------------------

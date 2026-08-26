@@ -40,6 +40,31 @@ export interface ReconcileOps {
 }
 
 /**
+ * Typed result of a branch cleanup operation, carrying effect evidence rather
+ * than a bare boolean. `cleaned` is true only when the branch is fully removed
+ * (worktree, local, remote, and provenance all absent). `untouched` is true
+ * when NO mutation occurred because the initial remote state was unknown (fail
+ * closed — zero worktree/local/provenance/tracker mutation). A partial or
+ * indeterminate cleanup is neither `cleaned` nor `untouched` — the caller must
+ * fail closed and preserve provenance and the claim.
+ */
+export interface BranchCleanupResult {
+  /** True when the branch is fully cleaned (worktree, local, remote, provenance all absent). */
+  cleaned: boolean;
+  /** True when NO mutation occurred (initial remote state unknown — fail closed). */
+  untouched: boolean;
+  /** Effect evidence: what was actually removed. */
+  effects: {
+    worktreeRemoved: boolean;
+    localBranchRemoved: boolean;
+    remoteBranchRemoved: boolean;
+    provenanceRemoved: boolean;
+  };
+  /** Reason for partial/indeterminate cleanup or the untouched fail-closed. */
+  reason?: string;
+}
+
+/**
  * Inspection + cleanup operations for stale-implementation reconciliation.
  * Contains NO GitHub state-transition authority — release/block/integrate
  * flow through the TrackerAdapter's verified saga via ReconcileGitHubTransitions.
@@ -52,8 +77,13 @@ export interface ReconcileInspectionOps {
   checkBranchExists: (branch: string) => Promise<"present" | "absent" | "unknown">;
   checkProvenanceValid: (branch: string) => Promise<ProvenanceInspection>;
   hasCommitsAhead: (branch: string) => Promise<"has-work" | "empty" | "unknown">;
-  /** Proven worktree/local/remote branch deletion incl. orphaned provenance cleanup. */
-  deleteBranch: (branch: string) => Promise<boolean>;
+  /**
+   * Proven worktree/local/remote branch deletion incl. orphaned provenance
+   * cleanup. Authoritatively inspects REMOTE state BEFORE any destructive
+   * local cleanup; initial unknown remote state => zero mutation (untouched).
+   * Returns a typed result with effect evidence.
+   */
+  deleteBranch: (branch: string) => Promise<BranchCleanupResult>;
 }
 
 export type ClaimResult =
@@ -483,10 +513,18 @@ export async function executeReconciliation(
       const ownedBeforeDelete = await validateStillOwned("no_branch");
       if (ownedBeforeDelete) return ownedBeforeDelete;
       // Recovery: authoritative absent-branch cleanup for orphaned provenance crash window.
-      // deleteBranch proves worktree/local/remote absence before provenance deletion.
+      // deleteBranch preflights remote state BEFORE any destructive local
+      // cleanup; initial unknown remote state => untouched (zero mutation).
       try {
-        const cleaned = await ops.deleteBranch(branch);
-        if (!cleaned) {
+        const cleanup = await ops.deleteBranch(branch);
+        if (!cleanup.cleaned) {
+          // Untouched: initial remote state unknown — zero worktree/local/
+          // provenance/tracker mutation. Preserve provenance and the claim.
+          if (cleanup.untouched) {
+            return { reconciled: false, reason: `branch ${branch} remote state unknown — zero mutation (${cleanup.reason ?? "untouched"})`, factoryError: true, decision, receipts };
+          }
+          // Partial/indeterminate cleanup — fail closed and preserve provenance
+          // and the claim.
           try {
             const state = await ops.checkBranchExists(branch);
             if (state === "present") return { reconciled: false, reason: `branch ${branch} still present after cleanup — fail closed`, factoryError: true, decision, receipts };
@@ -501,7 +539,7 @@ export async function executeReconciliation(
               return { reconciled: false, reason: `provenance cleanup verification failed for ${branch}: ${prov.reason}`, factoryError: true, decision, receipts };
             }
           } catch {}
-          return { reconciled: false, reason: `failed to clean up orphaned provenance for ${branch} — fail closed`, factoryError: true, decision, receipts };
+          return { reconciled: false, reason: `failed to clean up orphaned provenance for ${branch} — fail closed (${cleanup.reason ?? "partial cleanup"})`, factoryError: true, decision, receipts };
         }
       } catch (e) {
         return { reconciled: false, reason: `absent-branch cleanup failed for ${branch}: ${e}`, factoryError: true, decision, receipts };
@@ -532,10 +570,15 @@ export async function executeReconciliation(
       // never clean up a branch for a claim that no longer belongs to us.
       const ownedBeforeDelete = await validateStillOwned("absent_empty_branch");
       if (ownedBeforeDelete) return ownedBeforeDelete;
-      let deleted = false;
-      try { deleted = await ops.deleteBranch(branch); } catch (e) { return { reconciled: false, reason: `failed to delete branch ${branch}: ${e}`, factoryError: true, decision, receipts }; }
-      if (!deleted) {
-        return { reconciled: false, reason: `failed to delete branch ${branch} — cleanup not proved`, factoryError: true, decision, receipts };
+      let cleanup: BranchCleanupResult;
+      try { cleanup = await ops.deleteBranch(branch); } catch (e) { return { reconciled: false, reason: `failed to delete branch ${branch}: ${e}`, factoryError: true, decision, receipts }; }
+      if (!cleanup.cleaned) {
+        // Untouched: initial remote state unknown — zero worktree/local/
+        // provenance/tracker mutation. Preserve provenance and the claim.
+        if (cleanup.untouched) {
+          return { reconciled: false, reason: `branch ${branch} remote state unknown — zero mutation (${cleanup.reason ?? "untouched"})`, factoryError: true, decision, receipts };
+        }
+        return { reconciled: false, reason: `failed to delete branch ${branch} — cleanup not proved (${cleanup.reason ?? "partial cleanup"})`, factoryError: true, decision, receipts };
       }
       // Verify branch truly absent after delete (both local and remote)
       try {

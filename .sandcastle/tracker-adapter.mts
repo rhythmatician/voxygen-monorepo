@@ -21,6 +21,7 @@ import {
 import { createProductionReconcileOps } from "./reconcile-adapter.mts";
 import type { GhTransport } from "./gh-transport.mts";
 import { isHttp404 } from "./gh-errors.mts";
+import type { FixtureHandle } from "./resource-scopes.mts";
 import { createHash } from "node:crypto";
 
 /**
@@ -67,6 +68,13 @@ export interface IssueSnapshot {
   labels: string[];
   assignees: string[];
   state: "open" | "closed";
+  /**
+   * Authoritative issue-state generation — GitHub's updatedAt timestamp. Fresh
+   * snapshots always carry it; older receipts may lack it. Claimant-only
+   * residue recovery REQUIRES it (rejects receipts lacking generation
+   * identity).
+   */
+  updatedAt?: string;
 }
 
 export interface TransitionReceipt {
@@ -145,7 +153,19 @@ export function makeIssueLabelMutationPort(
     const args: string[] = [];
     for (const a of addLabels) args.push("--add-label", a);
     for (const r of removeLabels) args.push("--remove-label", r);
-    if (args.length === 0) return { committed: true };
+    if (args.length === 0) {
+      // No-op: nothing to mutate. Persist an `unchanged` receipt so the no-op
+      // is evidenced — outcome-determining persistence on EVERY path,
+      // including no-op. If the unchanged receipt fails to persist, the helper
+      // returns indeterminate and the migration must NOT accept it
+      // (committed:false so the caller throws).
+      const outcome = persistRepoOpOutcome(sink, {
+        transition: "migrationLabelMutation", issueNumber, status: "unchanged",
+        reason: `no label mutation needed for #${issueNumber} — no add/remove labels`,
+        code: "NO_MUTATION",
+      });
+      return { committed: outcome.status === "unchanged", reason: outcome.reason };
+    }
     const result = await runSaga(gh, issueNumber, "migrationLabelMutation", [
       {
         name: "apply-label-mutation",
@@ -399,6 +419,7 @@ function snapshot(issue: IssueInput): IssueSnapshot {
     labels: [...issue.labels],
     assignees: [...issue.assignees],
     state: issue.state,
+    updatedAt: issue.updatedAt,
   };
 }
 
@@ -409,7 +430,7 @@ function snapshot(issue: IssueInput): IssueSnapshot {
  */
 async function fetchFresh(gh: GhTransport, issueNumber: number): Promise<IssueInput> {
   const rawJson = await gh.run([
-    "issue", "view", String(issueNumber), "--json", "number,title,body,labels,assignees,state",
+    "issue", "view", String(issueNumber), "--json", "number,title,body,labels,assignees,state,updatedAt",
   ]);
   let raw: any;
   try { raw = JSON.parse(rawJson); } catch { throw new Error(`failed to parse issue view for #${issueNumber}`); }
@@ -433,6 +454,7 @@ async function fetchFresh(gh: GhTransport, issueNumber: number): Promise<IssueIn
     assignees: (raw.assignees ?? []).map((a: any) => a.login),
     blockedByCount,
     body: raw.body,
+    updatedAt: typeof raw.updatedAt === "string" && raw.updatedAt.length > 0 ? raw.updatedAt : undefined,
   };
 }
 
@@ -625,6 +647,66 @@ function persistReceipt(sink: ReceiptSink, partial: Omit<TransitionReceipt, "at"
     try { sink.persist(failureReceipt); } catch {}
     return { receipt: failureReceipt, persistFailed: true };
   }
+}
+
+/**
+ * Construct AND persist a RepoOpOutcome in ONE place — the outcome status and
+ * the receipt kind are a single truth, never two. This is the ONLY helper the
+ * adapter-owned repository/resource operations use to produce a typed outcome,
+ * so the invariant holds on every path:
+ *
+ *   status committed     <=> receipt.kind committed
+ *   status unchanged     <=> receipt.kind unchanged
+ *   status rejected      <=> receipt.kind rejected
+ *   status indeterminate <=> receipt.kind indeterminate
+ *
+ * Any sink failure FORCES status indeterminate + receipt.code
+ * RECEIPT_PERSIST_FAILED regardless of the intended status — a committed,
+ * unchanged, or rejected result can never lack durable evidence. The caller
+ * never inspects persistFailed or re-derives the status from the receipt; the
+ * returned outcome is authoritative.
+ */
+function persistRepoOpOutcome(
+  sink: ReceiptSink,
+  partial: {
+    transition: string;
+    issueNumber: number;
+    status: RepoOpOutcome["status"];
+    reason?: string;
+    code?: string;
+    before?: IssueSnapshot;
+    after?: IssueSnapshot;
+    lastObserved?: IssueSnapshot | null;
+  },
+): RepoOpOutcome {
+  const persisted = persistReceipt(sink, {
+    transition: partial.transition,
+    issueNumber: partial.issueNumber,
+    kind: partial.status,
+    reason: partial.reason,
+    code: partial.code,
+    before: partial.before,
+    after: partial.after,
+    lastObserved: partial.lastObserved,
+  });
+  if (persisted.persistFailed) {
+    // Sink failure forces indeterminate + RECEIPT_PERSIST_FAILED. The receipt
+    // already carries kind indeterminate and the RECEIPT_PERSIST_FAILED code.
+    return {
+      status: "indeterminate",
+      reason: persisted.receipt.reason ?? partial.reason ?? "receipt persistence failed",
+      receipt: persisted.receipt,
+    };
+  }
+  // The persisted receipt kind equals the intended status — the invariant
+  // holds by construction. The status is the caller's intended literal; the
+  // cast is safe because persistReceipt returns the same kind when it did not
+  // fail.
+  return {
+    status: partial.status,
+    reason: partial.reason,
+    receipt: persisted.receipt,
+  } as RepoOpOutcome;
 }
 
 /**
@@ -840,11 +922,12 @@ export interface TrackerAdapter {
   /**
    * Create a canary fixture issue — adapter-owned port. Freshly proves the
    * created issue state/body/labels/assignees. Receipt persistence failure
-   * must NOT report committed. Returns the created fixture id (so cleanup can
-   * occur even after an indeterminate creation) plus a typed outcome; throws
-   * on creation failure (never swallows).
+   * must NOT report committed. Returns a handle (title always present, id
+   * enriched when known) plus a typed outcome; throws on creation failure
+   * (never swallows). The handle's title is the recovery key for finally
+   * cleanup when the POST is uncertain and no id is recovered.
    */
-  createCanaryFixture(title: string, body: string, labels: string[]): Promise<{ id: number; outcome: RepoOpOutcome }>;
+  createCanaryFixture(title: string, body: string, labels: string[]): Promise<{ handle: FixtureHandle; outcome: RepoOpOutcome }>;
   /**
    * Clean up a canary fixture — adapter-owned port. Removes stale machine
    * labels, removes the authenticated claimant assignee, and closes the issue,
@@ -872,22 +955,33 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
 
   /**
    * Sandcastle-owned evidence gate for claimant-only closed residue recovery.
-   * Returns true ONLY when a CURRENT, RELEVANT indeterminate cleanup or
+   * Returns true ONLY when the LATEST relevant indeterminate cleanup or
    * integration receipt for this issue proves Sandcastle owned it AND its
-   * observed state matches the live claimant-only residue. A historical
-   * receipt (committed/rejected/compensated/unchanged) is NEVER ownership
-   * proof — only an indeterminate cleanup/integration receipt whose observed
-   * state (closed + claimant assigned + no machine labels) matches the live
-   * residue authorizes recovery. Generic comment-substring evidence is NOT
-   * used — evidence is machine-readable via the typed receipt.
+   * observed state matches the live claimant-only residue AT THE SAME ISSUE
+   * GENERATION. A historical receipt (committed/rejected/compensated/
+   * unchanged) is NEVER ownership proof — only an indeterminate
+   * cleanup/integration receipt whose observed state (closed + claimant
+   * assigned + no machine labels) matches the live residue authorizes
+   * recovery. Generic comment-substring evidence is NOT used — evidence is
+   * machine-readable via the typed receipt.
+   *
+   * Generation binding: the receipt's observed state must carry an
+   * authoritative updatedAt that EXACTLY equals the live residue's updatedAt.
+   * A receipt lacking generation identity, or whose observed generation
+   * differs from the live generation (e.g. a later manual assignment bumped
+   * updatedAt), is REJECTED — the residue may no longer be Sandcastle-owned.
    * An ordinary closed issue assigned to the authenticated maintainer WITHOUT
-   * such state-specific evidence is never treated as Sandcastle residue.
+   * such state-specific, generation-bound evidence is never treated as
+   * Sandcastle residue.
    */
   async function hasSandcastleOwnershipEvidence(
     issueNumber: number,
     liveResidue: IssueSnapshot,
   ): Promise<boolean> {
     const receipts = deps.readReceipts ? deps.readReceipts() : [];
+    // Collect all relevant indeterminate cleanup/integration receipts for this
+    // issue, then choose the LATEST by its `at` timestamp.
+    let latest: TransitionReceipt | null = null;
     for (const r of receipts) {
       if (Number(r.issueNumber) !== issueNumber) continue;
       // Only an INDETERMINATE receipt is recovery evidence — a committed /
@@ -898,30 +992,54 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
       // residue. A claim/release transition's indeterminate receipt does not
       // describe a closed residue.
       if (!isCleanupOrIntegrationTransition(r.transition)) continue;
-      // The receipt's observed state must match the live claimant-only residue.
-      const observed = r.lastObserved ?? r.after;
-      if (!observed) continue;
-      if (!observedMatchesResidue(observed, liveResidue)) continue;
-      return true;
+      if (!latest || r.at > latest.at) latest = r;
     }
-    return false;
+    if (!latest) return false;
+    // The receipt's observed state must match the live claimant-only residue
+    // at the SAME issue generation.
+    const observed = latest.lastObserved ?? latest.after;
+    if (!observed) return false;
+    return observedMatchesResidue(observed, liveResidue);
   }
 
   /**
    * True when the receipt's observed state matches the live claimant-only
-   * residue: closed, the claimant assigned, and no machine labels. The
-   * observed state must be consistent with the residue we are seeing NOW —
-   * a receipt describing a different state (open, unassigned, or still
-   * carrying machine labels) does not authorize recovery.
+   * residue AT THE SAME ISSUE GENERATION: exact updatedAt, closed state,
+   * machine-label state, and assignee state, with the authenticated claimant
+   * specifically. The observed state must be consistent with the residue we
+   * are seeing NOW — a receipt describing a different generation (updatedAt
+   * bumped by a later manual assignment), a different state (open,
+   * unassigned, or still carrying machine labels), or lacking generation
+   * identity does not authorize recovery.
    */
   function observedMatchesResidue(observed: IssueSnapshot, live: IssueSnapshot): boolean {
+    // Generation identity is REQUIRED — a receipt lacking updatedAt is rejected.
+    if (!observed.updatedAt) return false;
+    if (!live.updatedAt) return false;
+    // Exact generation match: the observed state must be the SAME issue-state
+    // generation as the live residue. A later manual assignment bumps
+    // updatedAt, so an old receipt's observed generation will differ and be
+    // rejected.
+    if (observed.updatedAt !== live.updatedAt) return false;
+    // Exact closed state.
     if (observed.state !== "closed") return false;
     if (observed.state !== live.state) return false;
-    // The observed residue must carry the same claimant-only pattern: the
-    // claimant assigned and no machine labels.
-    const hasMachineLabel = [AGENT_IN_PROGRESS, AGENT_IMPLEMENT, AGENT_BLOCKED].some((l) => observed.labels.includes(l));
-    if (hasMachineLabel) return false;
-    // The observed assignees must include the claimant (matching live).
+    // Exact machine-label state: both must have NO machine labels (claimant-only
+    // residue). A receipt describing a state still carrying machine labels does
+    // not match.
+    const observedHasMachineLabel = [AGENT_IN_PROGRESS, AGENT_IMPLEMENT, AGENT_BLOCKED].some((l) => observed.labels.includes(l));
+    const liveHasMachineLabel = [AGENT_IN_PROGRESS, AGENT_IMPLEMENT, AGENT_BLOCKED].some((l) => live.labels.includes(l));
+    if (observedHasMachineLabel || liveHasMachineLabel) return false;
+    // Exact assignee state: the observed assignees must EXACTLY equal the live
+    // assignees, and the authenticated claimant must be specifically assigned.
+    // An unrelated assignee shared between observed and live is NOT sufficient —
+    // the claimant must be present and the assignee sets must match exactly.
+    const observedAssignees = [...observed.assignees].sort().join(",");
+    const liveAssignees = [...live.assignees].sort().join(",");
+    if (observedAssignees !== liveAssignees) return false;
+    // The authenticated claimant specifically — the live residue must carry the
+    // claimant (which, given exact assignee equality, means the observed state
+    // carries it too).
     const claimant = live.assignees.find((a) => observed.assignees.includes(a));
     if (!claimant) return false;
     return true;
@@ -1455,23 +1573,21 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
       } catch (e) {
         // Unreadable state — fail closed, zero mutation. Persist an
         // indeterminate receipt so the failure is evidenced.
-        const persisted = persistReceipt(receiptSink, {
-          transition: "cleanupClosedStaleLabels", issueNumber, kind: "indeterminate",
+        return persistRepoOpOutcome(receiptSink, {
+          transition: "cleanupClosedStaleLabels", issueNumber, status: "indeterminate",
           reason: `closed cleanup initial read failed for #${issueNumber}: ${getMsg(e)}`,
           code: "FETCH_FAILED",
         });
-        return { status: "indeterminate", reason: `closed cleanup initial read failed for #${issueNumber}: ${getMsg(e)}`, receipt: persisted.receipt };
       }
       if (fresh.state !== "closed") {
         // Reopened issue — refuse cleanup mutation with zero writes. Persist a
         // rejected receipt so the rejection is evidenced.
         const beforeSnap = snapshot(fresh);
-        const persisted = persistReceipt(receiptSink, {
-          transition: "cleanupClosedStaleLabels", issueNumber, kind: "rejected",
+        return persistRepoOpOutcome(receiptSink, {
+          transition: "cleanupClosedStaleLabels", issueNumber, status: "rejected",
           reason: `issue #${issueNumber} is ${fresh.state}, not closed — refusing cleanup mutation`,
           code: "PRECONDITION_FAILED", before: beforeSnap, after: beforeSnap,
         });
-        return { status: "rejected", reason: `issue #${issueNumber} is ${fresh.state}, not closed — refusing cleanup mutation`, receipt: persisted.receipt };
       }
       const staleLabels = [AGENT_IN_PROGRESS, AGENT_IMPLEMENT, AGENT_BLOCKED].filter((l) => fresh.labels.includes(l));
       const hasClaimant = fresh.assignees.includes(claimantLogin);
@@ -1487,26 +1603,23 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
           const fresh2 = await fetchById(String(issueNumber));
           const violation = verifyClosedCleanupInvariant(fresh2, issueNumber, claimantLogin);
           if (violation) {
-            const persisted = persistReceipt(receiptSink, {
-              transition: "cleanupClosedStaleLabels", issueNumber, kind: "indeterminate",
+            return persistRepoOpOutcome(receiptSink, {
+              transition: "cleanupClosedStaleLabels", issueNumber, status: "indeterminate",
               reason: `closed cleanup fast-path invariant violated for #${issueNumber}: ${violation}`,
               code: "INVARIANT_VIOLATED", before: snapshot(fresh2), after: snapshot(fresh2),
             });
-            return { status: "indeterminate", reason: `closed cleanup fast-path invariant violated for #${issueNumber}: ${violation}`, receipt: persisted.receipt };
           }
-          const persisted = persistReceipt(receiptSink, {
-            transition: "cleanupClosedStaleLabels", issueNumber, kind: "unchanged",
+          return persistRepoOpOutcome(receiptSink, {
+            transition: "cleanupClosedStaleLabels", issueNumber, status: "unchanged",
             reason: `closed issue #${issueNumber} already clean — no mutation needed`,
             code: "ALREADY_CLEAN", before: snapshot(fresh2), after: snapshot(fresh2),
           });
-          return { status: "unchanged", reason: `closed issue #${issueNumber} already clean — no mutation needed`, receipt: persisted.receipt };
         } catch (e) {
-          const persisted = persistReceipt(receiptSink, {
-            transition: "cleanupClosedStaleLabels", issueNumber, kind: "indeterminate",
+          return persistRepoOpOutcome(receiptSink, {
+            transition: "cleanupClosedStaleLabels", issueNumber, status: "indeterminate",
             reason: `closed cleanup fast-path verification read failed for #${issueNumber}: ${getMsg(e)}`,
             code: "FETCH_FAILED",
           });
-          return { status: "indeterminate", reason: `closed cleanup fast-path verification read failed for #${issueNumber}: ${getMsg(e)}`, receipt: persisted.receipt };
         }
       }
 
@@ -1713,8 +1826,7 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
     async updateCanonicalLabelDescription(name, description, expectedOldDescription) {
       const ownerRepo = gh.resolveOwnerRepo();
       if (!ownerRepo) {
-        const persisted = persistReceipt(receiptSink, { transition: "updateCanonicalLabelDescription", issueNumber: 0, kind: "indeterminate", reason: "repository identity unavailable", code: "REPO_UNKNOWN" });
-        return { status: "indeterminate", reason: "repository identity unavailable", receipt: persisted.receipt };
+        return persistRepoOpOutcome(receiptSink, { transition: "updateCanonicalLabelDescription", issueNumber: 0, status: "indeterminate", reason: "repository identity unavailable", code: "REPO_UNKNOWN" });
       }
       const encoded = encodeURIComponent(name);
       const url = `repos/${ownerRepo.owner}/${ownerRepo.repo}/labels/${encoded}`;
@@ -1725,12 +1837,10 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
           const raw = await gh.run(["api", url, "--jq", ".description"]);
           const live = raw.trim();
           if (live !== expectedOldDescription) {
-            const persisted = persistReceipt(receiptSink, { transition: "updateCanonicalLabelDescription", issueNumber: 0, kind: "rejected", reason: `label ${name} description drifted from reviewed: expected "${expectedOldDescription}", live "${live}"`, code: "PRECONDITION_FAILED" });
-            return { status: "rejected", reason: `label ${name} description drifted from reviewed: expected "${expectedOldDescription}", live "${live}"`, receipt: persisted.receipt };
+            return persistRepoOpOutcome(receiptSink, { transition: "updateCanonicalLabelDescription", issueNumber: 0, status: "rejected", reason: `label ${name} description drifted from reviewed: expected "${expectedOldDescription}", live "${live}"`, code: "PRECONDITION_FAILED" });
           }
         } catch (e) {
-          const persisted = persistReceipt(receiptSink, { transition: "updateCanonicalLabelDescription", issueNumber: 0, kind: "indeterminate", reason: `label ${name} pre-mutation read failed: ${getMsg(e)}`, code: "FETCH_FAILED" });
-          return { status: "indeterminate", reason: `label ${name} pre-mutation read failed: ${getMsg(e)}`, receipt: persisted.receipt };
+          return persistRepoOpOutcome(receiptSink, { transition: "updateCanonicalLabelDescription", issueNumber: 0, status: "indeterminate", reason: `label ${name} pre-mutation read failed: ${getMsg(e)}`, code: "FETCH_FAILED" });
         }
       }
       // Authoritative no-op: if the live description already matches the target,
@@ -1740,8 +1850,7 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
         const raw = await gh.run(["api", url, "--jq", ".description"]);
         const live = raw.trim();
         if (live === description) {
-          const persisted = persistReceipt(receiptSink, { transition: "updateCanonicalLabelDescription", issueNumber: 0, kind: "unchanged", reason: `label ${name} description already "${description}" — no mutation needed`, code: "ALREADY_MATCHES" });
-          return { status: "unchanged", reason: `label ${name} description already "${description}"`, receipt: persisted.receipt };
+          return persistRepoOpOutcome(receiptSink, { transition: "updateCanonicalLabelDescription", issueNumber: 0, status: "unchanged", reason: `label ${name} description already "${description}" — no mutation needed`, code: "ALREADY_MATCHES" });
         }
       } catch {
         // Pre-mutation read failed — fall through to PATCH (the description is
@@ -1752,8 +1861,7 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
       } catch (e) {
         // An attempted PATCH whose result is uncertain is INDETERMINATE, never
         // rejected — the external mutation may have applied.
-        const persisted = persistReceipt(receiptSink, { transition: "updateCanonicalLabelDescription", issueNumber: 0, kind: "indeterminate", reason: `label description PATCH failed for ${name}: ${getMsg(e)}`, code: "MUTATE_FAILED" });
-        return { status: "indeterminate", reason: `label description PATCH failed for ${name}: ${getMsg(e)}`, receipt: persisted.receipt };
+        return persistRepoOpOutcome(receiptSink, { transition: "updateCanonicalLabelDescription", issueNumber: 0, status: "indeterminate", reason: `label description PATCH failed for ${name}: ${getMsg(e)}`, code: "MUTATE_FAILED" });
       }
       // Fresh read-back: prove the description actually landed. A failed
       // read-back after a SUCCESSFUL PATCH is INDETERMINATE — the external
@@ -1762,19 +1870,14 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
         const raw = await gh.run(["api", url, "--jq", ".description"]);
         const live = raw.trim();
         if (live !== description) {
-          const persisted = persistReceipt(receiptSink, { transition: "updateCanonicalLabelDescription", issueNumber: 0, kind: "indeterminate", reason: `label description read-back mismatch for ${name}: expected "${description}", live "${live}"`, code: "READBACK_MISMATCH" });
-          return { status: "indeterminate", reason: `label description read-back mismatch for ${name}: expected "${description}", live "${live}"`, receipt: persisted.receipt };
+          return persistRepoOpOutcome(receiptSink, { transition: "updateCanonicalLabelDescription", issueNumber: 0, status: "indeterminate", reason: `label description read-back mismatch for ${name}: expected "${description}", live "${live}"`, code: "READBACK_MISMATCH" });
         }
       } catch (e) {
-        const persisted = persistReceipt(receiptSink, { transition: "updateCanonicalLabelDescription", issueNumber: 0, kind: "indeterminate", reason: `label description read-back failed for ${name}: ${getMsg(e)}`, code: "READBACK_FAILED" });
-        return { status: "indeterminate", reason: `label description read-back failed for ${name}: ${getMsg(e)}`, receipt: persisted.receipt };
+        return persistRepoOpOutcome(receiptSink, { transition: "updateCanonicalLabelDescription", issueNumber: 0, status: "indeterminate", reason: `label description read-back failed for ${name}: ${getMsg(e)}`, code: "READBACK_FAILED" });
       }
-      // Receipt persistence failure => indeterminate/not committed.
-      const persisted = persistReceipt(receiptSink, { transition: "updateCanonicalLabelDescription", issueNumber: 0, kind: "committed", reason: `updated description for label ${name}` });
-      if (persisted.persistFailed) {
-        return { status: "indeterminate", reason: `label description updated for ${name} but receipt persistence failed: ${persisted.receipt.reason}`, receipt: persisted.receipt };
-      }
-      return { status: "committed", receipt: persisted.receipt };
+      // Receipt persistence failure => indeterminate/not committed (enforced by
+      // the helper).
+      return persistRepoOpOutcome(receiptSink, { transition: "updateCanonicalLabelDescription", issueNumber: 0, status: "committed", reason: `updated description for label ${name}` });
     },
 
     /**
@@ -1790,8 +1893,7 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
     async deleteRetiredLabel(name, expectedExists) {
       const ownerRepo = gh.resolveOwnerRepo();
       if (!ownerRepo) {
-        const persisted = persistReceipt(receiptSink, { transition: "deleteRetiredLabel", issueNumber: 0, kind: "indeterminate", reason: "repository identity unavailable", code: "REPO_UNKNOWN" });
-        return { status: "indeterminate", reason: "repository identity unavailable", receipt: persisted.receipt };
+        return persistRepoOpOutcome(receiptSink, { transition: "deleteRetiredLabel", issueNumber: 0, status: "indeterminate", reason: "repository identity unavailable", code: "REPO_UNKNOWN" });
       }
       const encoded = encodeURIComponent(name);
       const url = `repos/${ownerRepo.owner}/${ownerRepo.repo}/labels/${encoded}`;
@@ -1804,24 +1906,20 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
           if (isHttp404(e)) {
             if (expectedExists) {
               // true + absent = drift before delete.
-              const persisted = persistReceipt(receiptSink, { transition: "deleteRetiredLabel", issueNumber: 0, kind: "rejected", reason: `label ${name} no longer exists (reviewed as existing) — drift before delete`, code: "PRECONDITION_FAILED" });
-              return { status: "rejected", reason: `label ${name} no longer exists (reviewed as existing) — drift before delete`, receipt: persisted.receipt };
+              return persistRepoOpOutcome(receiptSink, { transition: "deleteRetiredLabel", issueNumber: 0, status: "rejected", reason: `label ${name} no longer exists (reviewed as existing) — drift before delete`, code: "PRECONDITION_FAILED" });
             }
             // false + authoritative 404 = authoritative no-op (already absent).
             // Idempotent, NOT a migration failure. Persists an ACTUAL
             // `unchanged` receipt (never `rejected`).
-            const persisted = persistReceipt(receiptSink, { transition: "deleteRetiredLabel", issueNumber: 0, kind: "unchanged", reason: `label ${name} already absent (expected absent) — no-op`, code: "ALREADY_ABSENT" });
-            return { status: "unchanged", reason: `label ${name} already absent (expected absent) — no-op`, receipt: persisted.receipt };
+            return persistRepoOpOutcome(receiptSink, { transition: "deleteRetiredLabel", issueNumber: 0, status: "unchanged", reason: `label ${name} already absent (expected absent) — no-op`, code: "ALREADY_ABSENT" });
           }
           // Unknown existence — indeterminate, never a clean rejection.
-          const persisted = persistReceipt(receiptSink, { transition: "deleteRetiredLabel", issueNumber: 0, kind: "indeterminate", reason: `label ${name} pre-mutation existence read failed: ${getMsg(e)}`, code: "FETCH_FAILED" });
-          return { status: "indeterminate", reason: `label ${name} pre-mutation existence read failed: ${getMsg(e)}`, receipt: persisted.receipt };
+          return persistRepoOpOutcome(receiptSink, { transition: "deleteRetiredLabel", issueNumber: 0, status: "indeterminate", reason: `label ${name} pre-mutation existence read failed: ${getMsg(e)}`, code: "FETCH_FAILED" });
         }
         // The label EXISTS on the pre-mutation read.
         if (!expectedExists) {
           // false + exists = drift and zero DELETE.
-          const persisted = persistReceipt(receiptSink, { transition: "deleteRetiredLabel", issueNumber: 0, kind: "rejected", reason: `label ${name} exists but was reviewed as absent — drift, zero DELETE`, code: "PRECONDITION_FAILED" });
-          return { status: "rejected", reason: `label ${name} exists but was reviewed as absent — drift, zero DELETE`, receipt: persisted.receipt };
+          return persistRepoOpOutcome(receiptSink, { transition: "deleteRetiredLabel", issueNumber: 0, status: "rejected", reason: `label ${name} exists but was reviewed as absent — drift, zero DELETE`, code: "PRECONDITION_FAILED" });
         }
       }
       // Prove ZERO current open users immediately before deletion.
@@ -1829,12 +1927,10 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
         const rawJson = await gh.run(["issue", "list", "--state", "open", "--label", name, "--limit", "100", "--json", "number"]);
         const users: any[] = JSON.parse(rawJson);
         if (users.length > 0) {
-          const persisted = persistReceipt(receiptSink, { transition: "deleteRetiredLabel", issueNumber: 0, kind: "rejected", reason: `label ${name} still has ${users.length} open users — refusing deletion`, code: "OPEN_USERS" });
-          return { status: "rejected", reason: `label ${name} still has ${users.length} open users — refusing deletion`, receipt: persisted.receipt };
+          return persistRepoOpOutcome(receiptSink, { transition: "deleteRetiredLabel", issueNumber: 0, status: "rejected", reason: `label ${name} still has ${users.length} open users — refusing deletion`, code: "OPEN_USERS" });
         }
       } catch (e) {
-        const persisted = persistReceipt(receiptSink, { transition: "deleteRetiredLabel", issueNumber: 0, kind: "indeterminate", reason: `failed to verify zero open users for ${name}: ${getMsg(e)}`, code: "FETCH_FAILED" });
-        return { status: "indeterminate", reason: `failed to verify zero open users for ${name}: ${getMsg(e)}`, receipt: persisted.receipt };
+        return persistRepoOpOutcome(receiptSink, { transition: "deleteRetiredLabel", issueNumber: 0, status: "indeterminate", reason: `failed to verify zero open users for ${name}: ${getMsg(e)}`, code: "FETCH_FAILED" });
       }
       try {
         await gh.run(["api", "--method", "DELETE", url]);
@@ -1842,29 +1938,22 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
         // A GhTokenMissingError (or any non-404 error) after DELETE is NOT an
         // authoritative 404 — indeterminate, receipted. An attempted DELETE
         // whose result is uncertain is indeterminate, never rejected.
-        const persisted = persistReceipt(receiptSink, { transition: "deleteRetiredLabel", issueNumber: 0, kind: "indeterminate", reason: `label DELETE failed for ${name}: ${getMsg(e)}`, code: "MUTATE_FAILED" });
-        return { status: "indeterminate", reason: `label DELETE failed for ${name}: ${getMsg(e)}`, receipt: persisted.receipt };
+        return persistRepoOpOutcome(receiptSink, { transition: "deleteRetiredLabel", issueNumber: 0, status: "indeterminate", reason: `label DELETE failed for ${name}: ${getMsg(e)}`, code: "MUTATE_FAILED" });
       }
       // Fresh read-back: prove the label is gone. ONLY an authoritative HTTP
       // 404 confirms deletion; auth/network/timeout/5xx => indeterminate.
       try {
         await gh.run(["api", url]);
-        const persisted = persistReceipt(receiptSink, { transition: "deleteRetiredLabel", issueNumber: 0, kind: "indeterminate", reason: `label ${name} still exists after DELETE — read-back found it`, code: "READBACK_MISMATCH" });
-        return { status: "indeterminate", reason: `label ${name} still exists after DELETE — read-back found it`, receipt: persisted.receipt };
+        return persistRepoOpOutcome(receiptSink, { transition: "deleteRetiredLabel", issueNumber: 0, status: "indeterminate", reason: `label ${name} still exists after DELETE — read-back found it`, code: "READBACK_MISMATCH" });
       } catch (e) {
         if (!isHttp404(e)) {
           // Auth/network/timeout/5xx — indeterminate, not committed.
-          const persisted = persistReceipt(receiptSink, { transition: "deleteRetiredLabel", issueNumber: 0, kind: "indeterminate", reason: `label ${name} deletion read-back failed (not authoritative 404): ${getMsg(e)}`, code: "READBACK_FAILED" });
-          return { status: "indeterminate", reason: `label ${name} deletion read-back failed (not authoritative 404): ${getMsg(e)}`, receipt: persisted.receipt };
+          return persistRepoOpOutcome(receiptSink, { transition: "deleteRetiredLabel", issueNumber: 0, status: "indeterminate", reason: `label ${name} deletion read-back failed (not authoritative 404): ${getMsg(e)}`, code: "READBACK_FAILED" });
         }
         // Authoritative 404 confirms the label is gone.
       }
-      // Receipt persistence failure => indeterminate.
-      const persisted = persistReceipt(receiptSink, { transition: "deleteRetiredLabel", issueNumber: 0, kind: "committed", reason: `deleted retired label ${name}` });
-      if (persisted.persistFailed) {
-        return { status: "indeterminate", reason: `retired label ${name} deleted but receipt persistence failed: ${persisted.receipt.reason}`, receipt: persisted.receipt };
-      }
-      return { status: "committed", receipt: persisted.receipt };
+      // Receipt persistence failure => indeterminate (enforced by the helper).
+      return persistRepoOpOutcome(receiptSink, { transition: "deleteRetiredLabel", issueNumber: 0, status: "committed", reason: `deleted retired label ${name}` });
     },
 
     /**
@@ -1890,28 +1979,41 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
         // command failed (response lost, timeout, network). The preallocated
         // unique title is the recovery handle — do a BOUNDED exact-title
         // lookup to recover the created issue id. If exactly one match is
-        // found, register it (so cleanup can occur) and propagate the failure
-        // as indeterminate with durable evidence. Zero or multiple matches =>
-        // indeterminate with durable evidence (no id to register).
+        // found, enrich the handle with it (so cleanup can occur) and
+        // propagate the failure as indeterminate with durable evidence. Zero
+        // or multiple matches => indeterminate with durable evidence; the
+        // handle still carries the title so finally cleanup can retry
+        // resolution by exact title.
         const recovered = await recoverCanaryFixtureByTitle(title, ownerRepo);
         if (recovered !== null) {
-          // Exactly one exact-title match recovered — RETURN the id so the
-          // registrar can own it for cleanup. Do NOT throw: the fixture must
-          // be registered even though creation is indeterminate. The typed
-          // outcome is indeterminate (the POST result is uncertain), and the
-          // caller (runCanary) records the id then fails on the indeterminate
-          // outcome, allowing finally-cleanup to own it.
-          const persisted = persistReceipt(receiptSink, { transition: "createCanaryFixture", issueNumber: recovered, kind: "indeterminate", reason: `canary fixture POST uncertain for title "${title}" but recovered id #${recovered} — registered for cleanup`, code: "POST_UNCERTAIN_RECOVERED" });
-          if (persisted.persistFailed) {
-            return { id: recovered, outcome: { status: "indeterminate", reason: `canary fixture POST uncertain for title "${title}" (recovered id #${recovered}) but receipt persistence failed: ${persisted.receipt.reason}`, receipt: persisted.receipt } };
-          }
-          return { id: recovered, outcome: { status: "indeterminate", reason: `canary fixture POST uncertain for title "${title}" (recovered id #${recovered})`, receipt: persisted.receipt } };
+          // Exactly one exact-title match recovered — RETURN the enriched
+          // handle so the registrar can own it for cleanup. Do NOT throw: the
+          // fixture must be registered even though creation is indeterminate.
+          // The typed outcome is indeterminate (the POST result is uncertain),
+          // and the caller (runCanary) records the handle then fails on the
+          // indeterminate outcome, allowing finally-cleanup to own it.
+          const outcome = persistRepoOpOutcome(receiptSink, { transition: "createCanaryFixture", issueNumber: recovered, status: "indeterminate", reason: `canary fixture POST uncertain for title "${title}" but recovered id #${recovered} — registered for cleanup`, code: "POST_UNCERTAIN_RECOVERED" });
+          return { handle: { title, id: recovered }, outcome };
         }
-        const persisted = persistReceipt(receiptSink, { transition: "createCanaryFixture", issueNumber: 0, kind: "indeterminate", reason: `canary fixture POST uncertain for title "${title}" and no exact-title match recovered: ${getMsg(e)}`, code: "POST_UNCERTAIN" });
+        const outcome = persistRepoOpOutcome(receiptSink, { transition: "createCanaryFixture", issueNumber: 0, status: "indeterminate", reason: `canary fixture POST uncertain for title "${title}" and no exact-title match recovered: ${getMsg(e)}`, code: "POST_UNCERTAIN" });
         throw new Error(`canary fixture POST uncertain for title "${title}" and no exact-title match recovered: ${getMsg(e)}`);
       }
       const n = parseInt(out.trim(), 10);
-      if (isNaN(n)) throw new Error(`failed to create canary fixture issue: ${out}`);
+      if (isNaN(n)) {
+        // MALFORMED successful POST output: the POST succeeded but the
+        // response did not carry a parseable issue number. Use exact-title
+        // recovery to find the created id. Exactly one match => enrich the
+        // handle and report indeterminate (the id was not directly returned).
+        // Zero/multiple/unreadable => indeterminate with durable evidence; the
+        // handle still carries the title for finally cleanup.
+        const recovered = await recoverCanaryFixtureByTitle(title, ownerRepo);
+        if (recovered !== null) {
+          const outcome = persistRepoOpOutcome(receiptSink, { transition: "createCanaryFixture", issueNumber: recovered, status: "indeterminate", reason: `canary fixture POST output malformed for title "${title}" but recovered id #${recovered}`, code: "POST_MALFORMED_RECOVERED" });
+          return { handle: { title, id: recovered }, outcome };
+        }
+        const outcome = persistRepoOpOutcome(receiptSink, { transition: "createCanaryFixture", issueNumber: 0, status: "indeterminate", reason: `canary fixture POST output malformed for title "${title}" and no exact-title match recovered: ${out}`, code: "POST_MALFORMED" });
+        throw new Error(`failed to create canary fixture issue: ${out}`);
+      }
       // Freshly prove the EXACT created issue state: exact title, exact body,
       // state open, exact expected label set, no assignees, blocked_by known
       // and zero.
@@ -1929,17 +2031,15 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
       } catch (e) {
         // Created but not provable — indeterminate, NOT committed. Persist a
         // durable indeterminate recovery receipt (the POST succeeded but
-        // read-back/receipt persistence failed). Still return the id so
-        // cleanup can occur.
-        const persisted = persistReceipt(receiptSink, { transition: "createCanaryFixture", issueNumber: n, kind: "indeterminate", reason: `canary fixture #${n} created but state not proven: ${getMsg(e)}`, code: "READBACK_FAILED" });
-        return { id: n, outcome: { status: "indeterminate", reason: `canary fixture #${n} created but state not proven: ${getMsg(e)}`, receipt: persisted.receipt } };
+        // read-back/receipt persistence failed). Still return the enriched
+        // handle so cleanup can occur.
+        const outcome = persistRepoOpOutcome(receiptSink, { transition: "createCanaryFixture", issueNumber: n, status: "indeterminate", reason: `canary fixture #${n} created but state not proven: ${getMsg(e)}`, code: "READBACK_FAILED" });
+        return { handle: { title, id: n }, outcome };
       }
-      // Receipt persistence failure must NOT report committed.
-      const persisted = persistReceipt(receiptSink, { transition: "createCanaryFixture", issueNumber: n, kind: "committed", reason: `created canary fixture #${n}` });
-      if (persisted.persistFailed) {
-        return { id: n, outcome: { status: "indeterminate", reason: `canary fixture #${n} created but receipt persistence failed: ${persisted.receipt.reason}`, receipt: persisted.receipt } };
-      }
-      return { id: n, outcome: { status: "committed", receipt: persisted.receipt } };
+      // Receipt persistence failure must NOT report committed (enforced by the
+      // helper).
+      const outcome = persistRepoOpOutcome(receiptSink, { transition: "createCanaryFixture", issueNumber: n, status: "committed", reason: `created canary fixture #${n}` });
+      return { handle: { title, id: n }, outcome };
     },
 
     /**

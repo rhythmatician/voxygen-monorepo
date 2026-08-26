@@ -14,6 +14,7 @@ interface FakeIssue {
   state: "open" | "closed";
   labels: Set<string>;
   assignees: Set<string>;
+  updatedAt?: string;
 }
 
 function makeFakeGh(opts: {
@@ -41,6 +42,7 @@ function makeFakeGh(opts: {
           state: issue.state,
           labels: [...issue.labels].map((name) => ({ name })),
           assignees: [...issue.assignees].map((login) => ({ login })),
+          updatedAt: issue.updatedAt,
         });
       }
       if (args[0] === "issue" && args[1] === "edit") {
@@ -833,7 +835,7 @@ describe("tracker-adapter — phase-aware second-step preconditions (round 4)", 
       checkBranchExists: async () => "absent" as const,
       checkProvenanceValid: async () => ({ state: "valid" as const, reason: "valid" }) as any,
       hasCommitsAhead: async () => "empty" as const,
-      deleteBranch: async () => true,
+      deleteBranch: async () => ({ cleaned: true, untouched: false, effects: { worktreeRemoved: true, localBranchRemoved: true, remoteBranchRemoved: true, provenanceRemoved: true } }),
       github: {
         releaseAndBlockOwnedImplementation: async () => {
           throw new Error("release+block must not run after observed drift");
@@ -1547,7 +1549,7 @@ describe("tracker-adapter — exact ownership inside release mutation (round 5)"
       checkBranchExists: async () => "absent" as const,
       checkProvenanceValid: async () => ({ state: "valid" as const, reason: "valid" }) as any,
       hasCommitsAhead: async () => "empty" as const,
-      deleteBranch: async () => true,
+      deleteBranch: async () => ({ cleaned: true, untouched: false, effects: { worktreeRemoved: true, localBranchRemoved: true, remoteBranchRemoved: true, provenanceRemoved: true } }),
       github: {
         releaseAndBlockOwnedImplementation: (n) => tracker.releaseAndBlockOwnedImplementation(n),
         releaseOwnedImplementationClaim: (n) => tracker.releaseOwnedImplementationClaim(n),
@@ -2138,7 +2140,7 @@ describe("tracker-adapter — evidence-authoritative repository/creation ports (
     expect(result.outcome.status).toBe("indeterminate");
     expect(result.outcome.reason).toContain("receipt persistence failed");
     // The fixture id is still exposed so cleanup can occur.
-    expect(result.id).toBe(1301);
+    expect(result.handle.id).toBe(1301);
   });
 
   it("deleteRetiredLabel GhTokenMissingError after DELETE is NOT 404 => indeterminate and receipted", async () => {
@@ -2250,7 +2252,7 @@ describe("tracker-adapter — evidence-authoritative repository/creation ports (
     expect(result.outcome.status).toBe("indeterminate");
     expect(result.outcome.reason).toContain("state not proven");
     // The fixture id is exposed so cleanup can occur.
-    expect(result.id).toBe(1302);
+    expect(result.handle.id).toBe(1302);
     // Durable indeterminate recovery evidence is receipted.
     const receipts = sink.receipts.filter((r) => r.transition === "createCanaryFixture");
     expect(receipts.some((r) => r.kind === "indeterminate")).toBe(true);
@@ -2735,10 +2737,12 @@ describe("tracker-adapter — claimant-only residue recovery (round 8)", () => {
   it("recovers claimant-only closed residue with state-specific receipt evidence, skips without", async () => {
     // Two closed issues assigned to the claimant with NO machine labels.
     // #1801 has a CURRENT, RELEVANT indeterminate cleanup receipt whose
-    // observed state matches the live claimant-only residue => recovered.
-    // #1802 has no such evidence => skipped (ordinary closed issue).
-    const issue1801: FakeIssue = { number: 1801, title: "t", body: "body", state: "closed", labels: new Set(), assignees: new Set(["test-bot"]) };
-    const issue1802: FakeIssue = { number: 1802, title: "t", body: "body", state: "closed", labels: new Set(), assignees: new Set(["test-bot"]) };
+    // observed state matches the live claimant-only residue AT THE SAME
+    // GENERATION => recovered. #1802 has no such evidence => skipped (ordinary
+    // closed issue).
+    const gen = "2026-08-25T10:00:00Z";
+    const issue1801: FakeIssue = { number: 1801, title: "t", body: "body", state: "closed", labels: new Set(), assignees: new Set(["test-bot"]), updatedAt: gen };
+    const issue1802: FakeIssue = { number: 1802, title: "t", body: "body", state: "closed", labels: new Set(), assignees: new Set(["test-bot"]), updatedAt: gen };
     const gh = makeFakeGh({ issues: new Map([[1801, issue1801], [1802, issue1802]]) });
     const origRun = gh.run.bind(gh);
     (gh as any).run = async (args: string[]) => {
@@ -2750,11 +2754,12 @@ describe("tracker-adapter — claimant-only residue recovery (round 8)", () => {
     };
     const sink = makeMemoryReceiptSink();
     // #1801 has a current indeterminate cleanup receipt whose observed state
-    // matches the live claimant-only residue (closed + claimant + no labels).
+    // matches the live claimant-only residue at the SAME generation (closed +
+    // claimant + no labels + exact updatedAt).
     sink.receipts.push({
       transition: "cleanupClosedStaleLabels", issueNumber: 1801, at: new Date().toISOString(),
       kind: "indeterminate", code: "UNSAFE_TO_RESTORE",
-      lastObserved: { number: 1801, state: "closed", labels: [], assignees: ["test-bot"] },
+      lastObserved: { number: 1801, state: "closed", labels: [], assignees: ["test-bot"], updatedAt: gen },
     });
     const tracker = createTrackerAdapter({ gh, receiptSink: sink, readReceipts: () => sink.receipts });
 
@@ -2827,7 +2832,8 @@ describe("tracker-adapter — claimant-only residue recovery (round 8)", () => {
     // A closed issue assigned to the claimant with an indeterminate cleanup
     // receipt whose observed state does NOT match the live residue (the
     // receipt observed the claimant ABSENT) — NOT recovery evidence.
-    const issue: FakeIssue = { number: 1805, title: "t", body: "body", state: "closed", labels: new Set(), assignees: new Set(["test-bot"]) };
+    const gen = "2026-08-25T10:00:00Z";
+    const issue: FakeIssue = { number: 1805, title: "t", body: "body", state: "closed", labels: new Set(), assignees: new Set(["test-bot"]), updatedAt: gen };
     const gh = makeFakeGh({ issues: new Map([[1805, issue]]) });
     const origRun = gh.run.bind(gh);
     (gh as any).run = async (args: string[]) => {
@@ -2838,11 +2844,12 @@ describe("tracker-adapter — claimant-only residue recovery (round 8)", () => {
     };
     const sink = makeMemoryReceiptSink();
     // Indeterminate cleanup receipt, but the observed state has the claimant
-    // ABSENT — does not match the live claimant-only residue.
+    // ABSENT — does not match the live claimant-only residue (assignee state
+    // differs even at the same generation).
     sink.receipts.push({
       transition: "cleanupClosedStaleLabels", issueNumber: 1805, at: new Date().toISOString(),
       kind: "indeterminate", code: "UNSAFE_TO_RESTORE",
-      lastObserved: { number: 1805, state: "closed", labels: [], assignees: [] },
+      lastObserved: { number: 1805, state: "closed", labels: [], assignees: [], updatedAt: gen },
     });
     const tracker = createTrackerAdapter({ gh, receiptSink: sink, readReceipts: () => sink.receipts });
 
@@ -2882,6 +2889,109 @@ describe("tracker-adapter — claimant-only residue recovery (round 8)", () => {
     expect(result.skipped).toBe(1);
     expect(issue.assignees.has("test-bot")).toBe(true);
     expect(gh.editCalls.length).toBe(0);
+  });
+
+  it("old matching indeterminate receipt + later manual assignment => untouched (generation drift)", async () => {
+    // The receipt observed the claimant-only residue at an OLD generation. A
+    // later manual assignment bumped updatedAt, so the live residue is a NEW
+    // generation. The old receipt's observed generation differs from live —
+    // the residue may no longer be Sandcastle-owned. NOT recovered.
+    const oldGen = "2026-08-25T10:00:00Z";
+    const newGen = "2026-08-25T11:00:00Z";
+    const issue: FakeIssue = { number: 1807, title: "t", body: "body", state: "closed", labels: new Set(), assignees: new Set(["test-bot"]), updatedAt: newGen };
+    const gh = makeFakeGh({ issues: new Map([[1807, issue]]) });
+    const origRun = gh.run.bind(gh);
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "issue" && args[1] === "list" && args.includes("--assignee")) {
+        return JSON.stringify([{ number: 1807 }]);
+      }
+      return origRun(args);
+    };
+    const sink = makeMemoryReceiptSink();
+    // The receipt observed the residue at the OLD generation (claimant-only,
+    // closed, no labels). The live residue is at the NEW generation (a later
+    // manual assignment bumped updatedAt). Generation mismatch => NOT evidence.
+    sink.receipts.push({
+      transition: "cleanupClosedStaleLabels", issueNumber: 1807, at: new Date().toISOString(),
+      kind: "indeterminate", code: "UNSAFE_TO_RESTORE",
+      lastObserved: { number: 1807, state: "closed", labels: [], assignees: ["test-bot"], updatedAt: oldGen },
+    });
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink, readReceipts: () => sink.receipts });
+
+    const result = await tracker.recoverClaimantOnlyClosedResidue(100);
+
+    expect(result.recovered).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(issue.assignees.has("test-bot")).toBe(true);
+    expect(gh.editCalls.length).toBe(0);
+  });
+
+  it("observed/live share only an unrelated assignee => untouched (claimant not specifically assigned)", async () => {
+    // The live residue is assigned to the claimant (so it is in the recovery
+    // listing). The receipt's observed state carries an UNRELATED assignee
+    // (not the claimant). The observed and live do NOT share the claimant —
+    // the observed assignee is unrelated, so the assignee state does not
+    // match. The authenticated claimant is not specifically assigned in the
+    // observed state. NOT recovered.
+    const gen = "2026-08-25T10:00:00Z";
+    const issue: FakeIssue = { number: 1808, title: "t", body: "body", state: "closed", labels: new Set(), assignees: new Set(["test-bot"]), updatedAt: gen };
+    const gh = makeFakeGh({ issues: new Map([[1808, issue]]) });
+    const origRun = gh.run.bind(gh);
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "issue" && args[1] === "list" && args.includes("--assignee")) {
+        return JSON.stringify([{ number: 1808 }]);
+      }
+      return origRun(args);
+    };
+    const sink = makeMemoryReceiptSink();
+    // The receipt observed an UNRELATED assignee (not the claimant) at the same
+    // generation. The observed assignee set differs from the live claimant-only
+    // residue — the claimant is not specifically assigned in the observed state.
+    sink.receipts.push({
+      transition: "cleanupClosedStaleLabels", issueNumber: 1808, at: new Date().toISOString(),
+      kind: "indeterminate", code: "UNSAFE_TO_RESTORE",
+      lastObserved: { number: 1808, state: "closed", labels: [], assignees: ["someone-else"], updatedAt: gen },
+    });
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink, readReceipts: () => sink.receipts });
+
+    const result = await tracker.recoverClaimantOnlyClosedResidue(100);
+
+    expect(result.recovered).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(issue.assignees.has("test-bot")).toBe(true);
+    expect(gh.editCalls.length).toBe(0);
+  });
+
+  it("current exact residue receipt => recovered (generation-bound)", async () => {
+    // The receipt observed the claimant-only residue at the SAME generation as
+    // the live residue (exact updatedAt, closed, claimant assigned, no machine
+    // labels). The authenticated claimant is specifically assigned. Recovered.
+    const gen = "2026-08-25T10:00:00Z";
+    const issue: FakeIssue = { number: 1809, title: "t", body: "body", state: "closed", labels: new Set(), assignees: new Set(["test-bot"]), updatedAt: gen };
+    const gh = makeFakeGh({ issues: new Map([[1809, issue]]) });
+    const origRun = gh.run.bind(gh);
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "issue" && args[1] === "list" && args.includes("--assignee")) {
+        return JSON.stringify([{ number: 1809 }]);
+      }
+      return origRun(args);
+    };
+    const sink = makeMemoryReceiptSink();
+    // Exact generation match: the receipt observed the residue at the SAME
+    // updatedAt as the live residue, with the claimant specifically assigned.
+    sink.receipts.push({
+      transition: "cleanupClosedStaleLabels", issueNumber: 1809, at: new Date().toISOString(),
+      kind: "indeterminate", code: "UNSAFE_TO_RESTORE",
+      lastObserved: { number: 1809, state: "closed", labels: [], assignees: ["test-bot"], updatedAt: gen },
+    });
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink, readReceipts: () => sink.receipts });
+
+    const result = await tracker.recoverClaimantOnlyClosedResidue(100);
+
+    expect(result.recovered).toBe(1);
+    expect(result.skipped).toBe(0);
+    expect(result.errors).toEqual([]);
+    expect(issue.assignees.has("test-bot")).toBe(false);
   });
 });
 
@@ -2925,5 +3035,84 @@ describe("tracker-adapter — typed repository/resource outcomes (round 8)", () 
     const result = await tracker.updateCanonicalLabelDescription("wayfinder:task", "new desc");
     expect(result.status).toBe("unchanged");
     expect(patched).toBe(false);
+  });
+
+  it("THROWING SINK: unchanged outcome receipt fails to persist => indeterminate + RECEIPT_PERSIST_FAILED", async () => {
+    const gh = makeFakeGh({ issues: new Map() });
+    const origRun = gh.run.bind(gh);
+    let patched = false;
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "api" && args[1] === "--method" && args[2] === "PATCH") { patched = true; return ""; }
+      if (args[0] === "api" && args[1].includes("/labels/") && args.includes("--jq")) {
+        return "new desc"; // already matches the target — would be unchanged
+      }
+      return origRun(args);
+    };
+    const throwingSink: ReceiptSink = { persist() { throw new Error("disk full"); } };
+    const tracker = createTrackerAdapter({ gh, receiptSink: throwingSink });
+
+    const result = await tracker.updateCanonicalLabelDescription("wayfinder:task", "new desc");
+    // The intended outcome was unchanged, but the unchanged receipt could not
+    // persist — the outcome must be indeterminate, never unchanged.
+    expect(result.status).toBe("indeterminate");
+    if (result.status !== "indeterminate") return;
+    expect(result.receipt.kind).toBe("indeterminate");
+    expect(result.receipt.code).toBe("RECEIPT_PERSIST_FAILED");
+    expect(patched).toBe(false);
+  });
+
+  it("THROWING SINK: rejected outcome receipt fails to persist => indeterminate + RECEIPT_PERSIST_FAILED", async () => {
+    const gh = makeFakeGh({ issues: new Map() });
+    const origRun = gh.run.bind(gh);
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "api" && args[1].includes("/labels/") && args.includes("--jq")) {
+        return "drifted desc"; // does NOT match the reviewed old description
+      }
+      return origRun(args);
+    };
+    const throwingSink: ReceiptSink = { persist() { throw new Error("disk full"); } };
+    const tracker = createTrackerAdapter({ gh, receiptSink: throwingSink });
+
+    const result = await tracker.updateCanonicalLabelDescription("wayfinder:task", "new desc", "reviewed-old-desc");
+    // The intended outcome was rejected (drift), but the rejected receipt could
+    // not persist — the outcome must be indeterminate, never rejected.
+    expect(result.status).toBe("indeterminate");
+    if (result.status !== "indeterminate") return;
+    expect(result.receipt.kind).toBe("indeterminate");
+    expect(result.receipt.code).toBe("RECEIPT_PERSIST_FAILED");
+  });
+
+  it("THROWING SINK: indeterminate outcome receipt fails to persist => indeterminate + RECEIPT_PERSIST_FAILED", async () => {
+    const gh = makeFakeGh({ issues: new Map() });
+    const origRun = gh.run.bind(gh);
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "api" && args[1].includes("/labels/") && args.includes("--jq")) {
+        // Pre-mutation read fails — intended outcome is indeterminate.
+        throw new Error("network timeout");
+      }
+      return origRun(args);
+    };
+    const throwingSink: ReceiptSink = { persist() { throw new Error("disk full"); } };
+    const tracker = createTrackerAdapter({ gh, receiptSink: throwingSink });
+
+    const result = await tracker.updateCanonicalLabelDescription("wayfinder:task", "new desc", "reviewed-old-desc");
+    // Intended indeterminate + sink failure => indeterminate + RECEIPT_PERSIST_FAILED.
+    expect(result.status).toBe("indeterminate");
+    if (result.status !== "indeterminate") return;
+    expect(result.receipt.kind).toBe("indeterminate");
+    expect(result.receipt.code).toBe("RECEIPT_PERSIST_FAILED");
+  });
+
+  it("THROWING SINK: migration no-op unchanged receipt fails to persist => migration never accepts unchanged", async () => {
+    const gh = makeFakeGh({ issues: new Map() });
+    const throwingSink: ReceiptSink = { persist() { throw new Error("disk full"); } };
+    const { makeIssueLabelMutationPort } = await import("./tracker-adapter.mts");
+    const port = makeIssueLabelMutationPort(gh, throwingSink);
+
+    // No-op mutation (no add/remove labels) — the unchanged receipt must
+    // persist. When it fails, the port must NOT report committed.
+    const result = await port(601, [], []);
+    expect(result.committed).toBe(false);
+    expect(result.reason).toContain("receipt persistence failed");
   });
 });

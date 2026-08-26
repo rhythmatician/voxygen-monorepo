@@ -10,7 +10,7 @@ import {
   type IssueInput,
 } from "./tracker-policy.mts";
 import { createTrackerAdapter, type ReceiptSink } from "./tracker-adapter.mts";
-import { withTemporaryIssueFixtures, withAtomicJsonReceipt } from "./resource-scopes.mts";
+import { withTemporaryIssueFixtures, withAtomicJsonReceipt, type FixtureHandle } from "./resource-scopes.mts";
 import { createGhTransport, type GhTransport } from "./gh-transport.mts";
 import * as fs2 from "node:fs";
 import * as path2 from "node:path";
@@ -42,6 +42,13 @@ export interface CanaryOps {
   cleanupIssue?: (id: number) => Promise<void>;
   removeAssignee?: (id: number) => Promise<void>;
   removeLabel?: (id: number, label: string) => Promise<void>;
+  /**
+   * Resolve a fixture by EXACT title to its numeric id(s). Used by finally
+   * cleanup when a handle has no id (POST uncertain + recovery failed). Return
+   * the matching ids; throw on unreadable lookup (explicit cleanup
+   * uncertainty). Zero or multiple matches are cleanup uncertainty.
+   */
+  findIssueByTitle?: (title: string) => Promise<number[]>;
 }
 
 /**
@@ -65,6 +72,21 @@ function makeFileReceiptSink(repoRoot: string): ReceiptSink {
 
 function uniqueTitle(prefix: string): string {
   return `${prefix} — canary ${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/**
+ * Resolve a fixture handle to its numeric id for cleanup/verification. Uses
+ * handle.id when present; otherwise RETRIES exact-title resolution via
+ * ops.findIssueByTitle. Returns null when the id is unknown (zero or multiple
+ * title matches) — explicit cleanup uncertainty. Throws when the title lookup
+ * itself is unreadable (also explicit cleanup uncertainty).
+ */
+async function resolveFixtureId(handle: { title: string; id?: number }, ops: CanaryOps): Promise<number | null> {
+  if (handle.id !== undefined) return handle.id;
+  if (!ops.findIssueByTitle) throw new Error(`cannot resolve fixture "${handle.title}" to an id: no findIssueByTitle op`);
+  const matches = await ops.findIssueByTitle(handle.title);
+  if (matches.length === 1) return matches[0];
+  return null;
 }
 
 // Single transport — no local ghBinary/ghToken/runGh/parseOwnerRepo duplicates.
@@ -157,12 +179,24 @@ export function createLiveCanaryOps(opts: {
   return {
     createIssue: async (title, body, labels) => {
       // Adapter-owned canary fixture creation — never a raw gh POST. The
-      // adapter freshly proves the created state and returns the fixture id
-      // even when creation is indeterminate (receipt persistence failure), so
-      // the fixture is still registered for cleanup. The typed outcome is
-      // mapped to the canary's committed/reason contract.
-      const { id, outcome } = await adapter.createCanaryFixture(title, body, labels);
-      return { id, committed: outcome.status === "committed", reason: outcome.reason };
+      // adapter freshly proves the created state and returns a handle (title
+      // always present, id enriched when known) even when creation is
+      // indeterminate (receipt persistence failure), so the fixture is still
+      // registered for cleanup. The typed outcome is mapped to the canary's
+      // committed/reason contract. When the adapter returns, the id is always
+      // known (POST uncertainty + failed recovery throws instead).
+      const { handle, outcome } = await adapter.createCanaryFixture(title, body, labels);
+      return { id: handle.id ?? 0, committed: outcome.status === "committed", reason: outcome.reason };
+    },
+    findIssueByTitle: async (title) => {
+      // Exact-title resolution for finally cleanup of a title-only handle.
+      // Unreadable lookup throws (explicit cleanup uncertainty); the caller
+      // treats zero/multiple matches as uncertainty too.
+      const ownerRepo = canaryTransport.resolveOwnerRepo();
+      if (!ownerRepo) return [];
+      const rawJson = await runGhFn(["issue", "list", "--state", "open", "--search", `"${title}" in:title`, "--limit", "10", "--json", "number,title"]);
+      const matches: any[] = JSON.parse(rawJson).filter((r: any) => r.title === title);
+      return matches.map((m: any) => Number(m.number));
     },
     fetchIssue: fetchReal,
     closeIssue: async (id) => {
@@ -209,23 +243,29 @@ export async function runCanary(ops: CanaryOps, opts: { live: boolean }): Promis
 
   // Fixture lifecycle owned by the narrow resource scope: record-at-acquisition
   // (partial acquisition cannot leak), finally-cleanup, required fresh-read
-  // verification, fail closed on uncertainty.
+  // verification, fail closed on uncertainty. Each handle is recorded BEFORE
+  // the POST (title is the recovery key), then enriched with the id when known.
   const fixturesResult = await withTemporaryIssueFixtures(
     async ({ record }) => {
       const implTitle = uniqueTitle("Canary impl");
       const implBody = "Scope bounded observable outcome\nno unresolved design decided\nacceptance criteria done when\nverification path verify\ndependencies blocked by none\nsmall enough for one session\nvertical tracer bullet slice";
-      const implOnlyReady = await ops.createIssue(implTitle + " ready-only", implBody, [READY_FOR_AGENT]);
-      // Record the fixture id IMMEDIATELY so finally cleanup owns it even when
-      // creation was not committed (POST succeeded but read-back/receipt
-      // persistence failed). Then throw when committed is false — the canary
-      // must fail closed on an uncommitted fixture.
-      record(implOnlyReady.id); result.fixtureIds.push(implOnlyReady.id);
+      // Record the handle BEFORE the POST so a lost/uncertain POST still
+      // leaves a structured title handle for finally cleanup.
+      const implOnlyReadyHandle: FixtureHandle = { title: implTitle + " ready-only" };
+      record(implOnlyReadyHandle);
+      const implOnlyReady = await ops.createIssue(implOnlyReadyHandle.title, implBody, [READY_FOR_AGENT]);
+      // Enrich the handle with the id when known, and record the id for the
+      // canary result. Then throw when committed is false — the canary must
+      // fail closed on an uncommitted fixture.
+      implOnlyReadyHandle.id = implOnlyReady.id; result.fixtureIds.push(implOnlyReady.id);
       if (!implOnlyReady.committed) throw new Error(`canary fixture #${implOnlyReady.id} not committed: ${implOnlyReady.reason ?? "unknown"}`);
       let issueReadyOnly = await ops.fetchIssue(implOnlyReady.id);
       const eligibleReadyOnly = isImplementationEligible(issueReadyOnly);
       if (eligibleReadyOnly.eligible) throw new Error("ready-only should not be implementation eligible");
-      const implReadyImplement = await ops.createIssue(implTitle + " ready+implement", implBody, [READY_FOR_AGENT, AGENT_IMPLEMENT]);
-      record(implReadyImplement.id); result.fixtureIds.push(implReadyImplement.id);
+      const implReadyImplementHandle: FixtureHandle = { title: implTitle + " ready+implement" };
+      record(implReadyImplementHandle);
+      const implReadyImplement = await ops.createIssue(implReadyImplementHandle.title, implBody, [READY_FOR_AGENT, AGENT_IMPLEMENT]);
+      implReadyImplementHandle.id = implReadyImplement.id; result.fixtureIds.push(implReadyImplement.id);
       if (!implReadyImplement.committed) throw new Error(`canary fixture #${implReadyImplement.id} not committed: ${implReadyImplement.reason ?? "unknown"}`);
       let issueReadyImplement = await ops.fetchIssue(implReadyImplement.id);
       const eligibleReadyImplement = isImplementationEligible(issueReadyImplement);
@@ -248,16 +288,20 @@ export async function runCanary(ops: CanaryOps, opts: { live: boolean }): Promis
       result.staleReconciliationReleasesWithoutRestoring = true;
       const researchTitle = uniqueTitle("Canary research");
       const researchBody = "## Question\n\nCanary research question with substantive details for validation, part of #190 with evidence needed and mechanism to be investigated.";
-      const researchId = await ops.createIssue(researchTitle, researchBody, [WAYFINDER_RESEARCH]);
-      record(researchId.id); result.fixtureIds.push(researchId.id);
+      const researchHandle: FixtureHandle = { title: researchTitle };
+      record(researchHandle);
+      const researchId = await ops.createIssue(researchHandle.title, researchBody, [WAYFINDER_RESEARCH]);
+      researchHandle.id = researchId.id; result.fixtureIds.push(researchId.id);
       if (!researchId.committed) throw new Error(`canary fixture #${researchId.id} not committed: ${researchId.reason ?? "unknown"}`);
       let researchIssue = await ops.fetchIssue(researchId.id);
       const researchEligible = isResearchEligible(researchIssue);
       if (!researchEligible.eligible) throw new Error("research should be eligible from wayfinder alone");
       result.researchDiscoverableFromWayfinderAlone = true;
       const contraTitle = uniqueTitle("Canary contra");
-      const contraId = await ops.createIssue(contraTitle, implBody, [WAYFINDER_RESEARCH, AGENT_IMPLEMENT, READY_FOR_AGENT]);
-      record(contraId.id); result.fixtureIds.push(contraId.id);
+      const contraHandle: FixtureHandle = { title: contraTitle };
+      record(contraHandle);
+      const contraId = await ops.createIssue(contraHandle.title, implBody, [WAYFINDER_RESEARCH, AGENT_IMPLEMENT, READY_FOR_AGENT]);
+      contraHandle.id = contraId.id; result.fixtureIds.push(contraId.id);
       if (!contraId.committed) throw new Error(`canary fixture #${contraId.id} not committed: ${contraId.reason ?? "unknown"}`);
       let contraIssue = await ops.fetchIssue(contraId.id);
       const contraValidation = detectContradictions(contraIssue);
@@ -271,7 +315,12 @@ export async function runCanary(ops: CanaryOps, opts: { live: boolean }): Promis
       return true;
     },
     {
-      cleanup: async (id) => {
+      cleanup: async (handle) => {
+        // Resolve the fixture id: by handle.id when present, else by exact
+        // title (retry resolution). Zero/multiple/unreadable title matches are
+        // explicit cleanup uncertainty — throw (fail closed).
+        const id = await resolveFixtureId(handle, ops);
+        if (id === null) throw new Error(`cannot resolve fixture "${handle.title}" to an id for cleanup`);
         // ONE adapter-owned cleanup operation, invoked exactly once per
         // fixture. The adapter's cleanupCanaryFixture removes stale machine
         // labels, removes the authenticated claimant assignee, and closes the
@@ -287,7 +336,9 @@ export async function runCanary(ops: CanaryOps, opts: { live: boolean }): Promis
           await ops.closeIssue(id);
         }
       },
-      verify: async (id) => {
+      verify: async (handle) => {
+        const id = await resolveFixtureId(handle, ops);
+        if (id === null) return `fixture "${handle.title}" could not be resolved to an id for verification`;
         const after = await ops.fetchIssue(id);
         const isClosed = after.state === "closed";
         const isUnassigned = after.assignees.length === 0;
@@ -304,7 +355,7 @@ export async function runCanary(ops: CanaryOps, opts: { live: boolean }): Promis
   // deliberately independent of primaryError — the canary reports primary
   // failures separately via result.primaryError.
   result.cleanupFailures.push(...fixturesResult.cleanupFailures);
-  result.fixturesCleaned = fixturesResult.cleanupFailures.length === 0 && fixturesResult.fixtureIds.length > 0;
+  result.fixturesCleaned = fixturesResult.cleanupFailures.length === 0 && fixturesResult.fixtures.length > 0;
   if (fixturesResult.primaryError) {
     result.primaryError = fixturesResult.primaryError;
   }

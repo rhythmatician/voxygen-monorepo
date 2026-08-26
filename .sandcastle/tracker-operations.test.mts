@@ -364,7 +364,7 @@ describe("tracker-operations — reconciliation full state machine", () => {
       checkBranchExists: async () => "absent" as const,
       checkProvenanceValid: async () => ({ state: "valid" as const, reason: "valid" }),
       hasCommitsAhead: async () => "empty" as const,
-      deleteBranch: async () => true,
+      deleteBranch: async () => ({ cleaned: true, untouched: false, effects: { worktreeRemoved: true, localBranchRemoved: true, remoteBranchRemoved: true, provenanceRemoved: true } }),
       github: {
         releaseAndBlockOwnedImplementation: (n: number) => tracker.releaseAndBlockOwnedImplementation(n),
         releaseOwnedImplementationClaim: (n: number) => tracker.releaseOwnedImplementationClaim(n),
@@ -410,7 +410,7 @@ describe("tracker-operations — reconciliation full state machine", () => {
       checkProvenanceValid: async () => ({ state: "valid" as const, reason: "valid" }),
       hasCommitsAhead: async () => "empty" as const,
       fetchIssue: async () => stale,
-      deleteBranch: async () => true,
+      deleteBranch: async () => ({ cleaned: true, untouched: false, effects: { worktreeRemoved: true, localBranchRemoved: true, remoteBranchRemoved: true, provenanceRemoved: true } }),
       github: {
         releaseAndBlockOwnedImplementation: (n: number) => tracker.releaseAndBlockOwnedImplementation(n),
         releaseOwnedImplementationClaim: (n: number) => tracker.releaseOwnedImplementationClaim(n),
@@ -437,7 +437,7 @@ describe("tracker-operations — reconciliation full state machine", () => {
       checkProvenanceValid: async () => ({ state: "valid" as const, reason: "valid" }),
       hasCommitsAhead: async () => "has-work" as const,
       fetchIssue: async () => stale,
-      deleteBranch: async () => true,
+      deleteBranch: async () => ({ cleaned: true, untouched: false, effects: { worktreeRemoved: true, localBranchRemoved: true, remoteBranchRemoved: true, provenanceRemoved: true } }),
       github: {
         releaseAndBlockOwnedImplementation: (n: number) => tracker.releaseAndBlockOwnedImplementation(n),
         releaseOwnedImplementationClaim: (n: number) => tracker.releaseOwnedImplementationClaim(n),
@@ -480,7 +480,7 @@ describe("tracker-operations — reconciliation full state machine", () => {
       checkProvenanceValid: async () => ({ state: "valid" as const, reason: "valid" }),
       hasCommitsAhead: async () => "empty" as const,
       fetchIssue: async () => stale,
-      deleteBranch: async () => true,
+      deleteBranch: async () => ({ cleaned: true, untouched: false, effects: { worktreeRemoved: true, localBranchRemoved: true, remoteBranchRemoved: true, provenanceRemoved: true } }),
       github: {
         releaseAndBlockOwnedImplementation: (n: number) => tracker.releaseAndBlockOwnedImplementation(n),
         releaseOwnedImplementationClaim: (n: number) => tracker.releaseOwnedImplementationClaim(n),
@@ -522,7 +522,7 @@ describe("tracker-operations — stale reconciliation without command restoratio
       },
       checkProvenanceValid: async () => ({ state: "valid" as const, reason: "valid" }),
       hasCommitsAhead: async () => "empty" as const,
-      deleteBranch: async () => true,
+      deleteBranch: async () => ({ cleaned: true, untouched: false, effects: { worktreeRemoved: true, localBranchRemoved: true, remoteBranchRemoved: true, provenanceRemoved: true } }),
       github: {
         releaseAndBlockOwnedImplementation: (n: number) => tracker.releaseAndBlockOwnedImplementation(n),
         releaseOwnedImplementationClaim: (n: number) => tracker.releaseOwnedImplementationClaim(n),
@@ -577,7 +577,7 @@ describe("tracker-operations — authoritative reconciliation effects (item 4) a
       checkBranchExists: async () => "unknown" as const,
       checkProvenanceValid: async () => ({ state: "valid" as const, reason: "valid" }),
       hasCommitsAhead: async () => "empty" as const,
-      deleteBranch: async () => { mutated=true; return true; },
+      deleteBranch: async () => { mutated=true; return { cleaned: true, untouched: false, effects: { worktreeRemoved: true, localBranchRemoved: true, remoteBranchRemoved: true, provenanceRemoved: true } }; },
       addBlocked: async () => { mutated=true; return true; },
       markIntegrated: async () => true,
     };
@@ -600,7 +600,7 @@ describe("tracker-operations — authoritative reconciliation effects (item 4) a
       checkBranchExists: async () => "present" as const,
       checkProvenanceValid: async () => ({ state: "valid" as const, reason: "valid" }),
       hasCommitsAhead: async () => "unknown" as const,
-      deleteBranch: async () => { mutated=true; return true; },
+      deleteBranch: async () => { mutated=true; return { cleaned: true, untouched: false, effects: { worktreeRemoved: true, localBranchRemoved: true, remoteBranchRemoved: true, provenanceRemoved: true } }; },
       addBlocked: async () => { mutated=true; return true; },
       markIntegrated: async () => true,
     };
@@ -623,7 +623,7 @@ describe("tracker-operations — authoritative reconciliation effects (item 4) a
       checkBranchExists: async () => "present" as const,
       checkProvenanceValid: async () => ({ state: "valid" as const, reason: "valid" }),
       hasCommitsAhead: async () => "empty" as const,
-      deleteBranch: async () => true,
+      deleteBranch: async () => ({ cleaned: true, untouched: false, effects: { worktreeRemoved: true, localBranchRemoved: true, remoteBranchRemoved: true, provenanceRemoved: true } }),
       addBlocked: async () => true,
       markIntegrated: async () => true,
       // Comment failure must surface AFTER the committed release/block
@@ -649,7 +649,7 @@ describe("tracker-operations — authoritative reconciliation effects (item 4) a
       checkBranchExists: async () => "present" as const,
       checkProvenanceValid: async () => ({ state: "valid" as const, reason: "valid" }),
       hasCommitsAhead: async () => "empty" as const,
-      deleteBranch: async () => true,
+      deleteBranch: async () => ({ cleaned: true, untouched: false, effects: { worktreeRemoved: true, localBranchRemoved: true, remoteBranchRemoved: true, provenanceRemoved: true } }),
       github: {
         releaseAndBlockOwnedImplementation: async () => ({ kind: "indeterminate" as const, factoryError: true as const, reason: "failed to release" }),
         releaseOwnedImplementationClaim: (n: number) => tracker.releaseOwnedImplementationClaim(n),
@@ -677,7 +677,7 @@ describe("tracker-operations — authoritative reconciliation effects (item 4) a
       checkBranchExists: async () => "present" as const,
       checkProvenanceValid: async () => ({ state: "valid" as const, reason: "valid" }),
       hasCommitsAhead: async () => "empty" as const,
-      deleteBranch: async () => true,
+      deleteBranch: async () => ({ cleaned: true, untouched: false, effects: { worktreeRemoved: true, localBranchRemoved: true, remoteBranchRemoved: true, provenanceRemoved: true } }),
       github: {
         releaseAndBlockOwnedImplementation: async () => ({ kind: "indeterminate" as const, factoryError: true as const, reason: "failed to add blocked" }),
         releaseOwnedImplementationClaim: (n: number) => tracker.releaseOwnedImplementationClaim(n),
@@ -704,7 +704,7 @@ describe("tracker-operations — authoritative reconciliation effects (item 4) a
       checkBranchExists: async () => "absent" as const,
       checkProvenanceValid: async () => ({ state: "valid" as const, reason: "valid" }),
       hasCommitsAhead: async () => "empty" as const,
-      deleteBranch: async () => true,
+      deleteBranch: async () => ({ cleaned: true, untouched: false, effects: { worktreeRemoved: true, localBranchRemoved: true, remoteBranchRemoved: true, provenanceRemoved: true } }),
       github: {
         releaseAndBlockOwnedImplementation: (n: number) => tracker.releaseAndBlockOwnedImplementation(n),
         releaseOwnedImplementationClaim: (n: number) => tracker.releaseOwnedImplementationClaim(n),
@@ -742,7 +742,7 @@ describe("tracker-operations — authoritative reconciliation effects (item 4) a
       },
       checkProvenanceValid: async () => ({ state: "valid" as const, reason: "valid" }),
       hasCommitsAhead: async () => "empty" as const,
-      deleteBranch: async () => false,
+      deleteBranch: async () => ({ cleaned: false, untouched: false, effects: { worktreeRemoved: false, localBranchRemoved: false, remoteBranchRemoved: false, provenanceRemoved: false } }),
       releaseClaim: async () => { released=true; return true; },
       comment: async () => { commented=true; return true; },
       addBlocked: async () => true,
@@ -766,7 +766,7 @@ describe("tracker-operations — authoritative reconciliation effects (item 4) a
       checkBranchExists: async () => "unknown" as const,
       checkProvenanceValid: async () => ({ state: "valid" as const, reason: "valid" }),
       hasCommitsAhead: async () => "empty" as const,
-      deleteBranch: async () => true,
+      deleteBranch: async () => ({ cleaned: true, untouched: false, effects: { worktreeRemoved: true, localBranchRemoved: true, remoteBranchRemoved: true, provenanceRemoved: true } }),
       releaseClaim: async () => { released=true; return true; },
       comment: async () => true,
       addBlocked: async () => true,
@@ -792,7 +792,7 @@ describe("tracker-operations — authoritative reconciliation effects (item 4) a
       checkBranchExists: async () => "absent" as const,
       checkProvenanceValid: async () => ({ state: "valid" as const, reason: "valid" }),
       hasCommitsAhead: async () => "empty" as const,
-      deleteBranch: async () => true,
+      deleteBranch: async () => ({ cleaned: true, untouched: false, effects: { worktreeRemoved: true, localBranchRemoved: true, remoteBranchRemoved: true, provenanceRemoved: true } }),
       github: {
         releaseAndBlockOwnedImplementation: async () => ({ kind: "indeterminate" as const, factoryError: true as const, reason: "failed to add blocked" }),
         releaseOwnedImplementationClaim: (n: number) => tracker.releaseOwnedImplementationClaim(n),
@@ -815,7 +815,7 @@ describe("tracker-operations — authoritative reconciliation effects (item 4) a
       checkBranchExists: async () => "present" as const,
       checkProvenanceValid: async () => ({ state: "invalid" as const, reason: "contaminated", contaminated: true }),
       hasCommitsAhead: async () => "empty" as const,
-      deleteBranch: async () => true,
+      deleteBranch: async () => ({ cleaned: true, untouched: false, effects: { worktreeRemoved: true, localBranchRemoved: true, remoteBranchRemoved: true, provenanceRemoved: true } }),
       releaseClaim: async () => true,
       comment: async () => true,
       addBlocked: async () => true,
@@ -852,7 +852,7 @@ describe("tracker-operations — authoritative reconciliation effects (item 4) a
       },
       checkProvenanceValid: async () => ({ state: "valid" as const, reason: "valid" }),
       hasCommitsAhead: async () => "empty" as const,
-      deleteBranch: async () => true,
+      deleteBranch: async () => ({ cleaned: true, untouched: false, effects: { worktreeRemoved: true, localBranchRemoved: true, remoteBranchRemoved: true, provenanceRemoved: true } }),
       github: {
         releaseAndBlockOwnedImplementation: (n: number) => tracker.releaseAndBlockOwnedImplementation(n),
         releaseOwnedImplementationClaim: (n: number) => tracker.releaseOwnedImplementationClaim(n),
@@ -886,7 +886,7 @@ describe("tracker-operations — round 4 regressions", () => {
       checkBranchExists: async () => "absent" as const,
       checkProvenanceValid: async () => ({ state: "valid" as const, reason: "valid" }),
       hasCommitsAhead: async () => "empty" as const,
-      deleteBranch: async () => true,
+      deleteBranch: async () => ({ cleaned: true, untouched: false, effects: { worktreeRemoved: true, localBranchRemoved: true, remoteBranchRemoved: true, provenanceRemoved: true } }),
       github: { ...fakeGithubTransitions, ...(githubOverrides ?? {}) },
       ...rest,
     } as any;
@@ -1006,7 +1006,7 @@ describe("tracker-operations — ownership before deletion and executor/saga dri
       checkBranchExists: async () => "absent" as const,
       checkProvenanceValid: async () => ({ state: "valid" as const, reason: "valid" }),
       hasCommitsAhead: async () => "empty" as const,
-      deleteBranch: async () => true,
+      deleteBranch: async () => ({ cleaned: true, untouched: false, effects: { worktreeRemoved: true, localBranchRemoved: true, remoteBranchRemoved: true, provenanceRemoved: true } }),
       github: { ...fakeGithubTransitions, ...(githubOverrides ?? {}) },
       ...rest,
     } as any;
@@ -1018,7 +1018,7 @@ describe("tracker-operations — ownership before deletion and executor/saga dri
     let mutated = false;
     const ops = makeOps5({
       fetchIssue: async () => ({ ...hijacked }),
-      deleteBranch: async () => { deleted = true; return true; },
+      deleteBranch: async () => { deleted = true; return { cleaned: true, untouched: false, effects: { worktreeRemoved: true, localBranchRemoved: true, remoteBranchRemoved: true, provenanceRemoved: true } }; },
       github: {
         releaseAndBlockOwnedImplementation: async () => { mutated = true; return { kind: "committed" as const }; },
         releaseOwnedImplementationClaim: async () => { mutated = true; return { kind: "committed" as const }; },
@@ -1040,7 +1040,7 @@ describe("tracker-operations — ownership before deletion and executor/saga dri
     const ops = makeOps5({
       fetchIssue: async () => ({ ...hijacked }),
       checkBranchExists: async () => "present" as const,
-      deleteBranch: async () => { deleted = true; return true; },
+      deleteBranch: async () => { deleted = true; return { cleaned: true, untouched: false, effects: { worktreeRemoved: true, localBranchRemoved: true, remoteBranchRemoved: true, provenanceRemoved: true } }; },
       github: {
         releaseAndBlockOwnedImplementation: async () => { mutated = true; return { kind: "committed" as const }; },
         releaseOwnedImplementationClaim: async () => { mutated = true; return { kind: "committed" as const }; },
@@ -1092,7 +1092,7 @@ describe("tracker-operations — production adapter behavioral (item 8)", () => 
       checkBranchExists: async () => "present" as const,
       checkProvenanceValid: async () => ({ state: "valid" as const, reason: "valid" }),
       hasCommitsAhead: async () => "empty" as const,
-      deleteBranch: async () => true,
+      deleteBranch: async () => ({ cleaned: true, untouched: false, effects: { worktreeRemoved: true, localBranchRemoved: true, remoteBranchRemoved: true, provenanceRemoved: true } }),
       github: {
         releaseAndBlockOwnedImplementation: (n: number) => tracker.releaseAndBlockOwnedImplementation(n),
         releaseOwnedImplementationClaim: (n: number) => tracker.releaseOwnedImplementationClaim(n),
@@ -1120,7 +1120,7 @@ describe("tracker-operations — production adapter behavioral (item 8)", () => 
       checkBranchExists: async () => "absent" as const,
       checkProvenanceValid: async () => ({ state: "valid" as const, reason: "valid" }),
       hasCommitsAhead: async () => "empty" as const,
-      deleteBranch: async () => true,
+      deleteBranch: async () => ({ cleaned: true, untouched: false, effects: { worktreeRemoved: true, localBranchRemoved: true, remoteBranchRemoved: true, provenanceRemoved: true } }),
       github: {
         releaseAndBlockOwnedImplementation: (n: number) => tracker.releaseAndBlockOwnedImplementation(n),
         releaseOwnedImplementationClaim: (n: number) => tracker.releaseOwnedImplementationClaim(n),
@@ -1157,7 +1157,7 @@ describe("tracker-operations — production adapter behavioral (item 8)", () => 
       checkBranchExists: async () => "present" as const,
       checkProvenanceValid: async () => ({ state: "valid" as const, reason: "valid" }),
       hasCommitsAhead: async () => "unknown" as const,
-      deleteBranch: async () => { deleteCalled=true; return true; },
+      deleteBranch: async () => { deleteCalled=true; return { cleaned: true, untouched: false, effects: { worktreeRemoved: true, localBranchRemoved: true, remoteBranchRemoved: true, provenanceRemoved: true } }; },
       releaseClaim: async () => { releaseCalled=true; return true; },
       addBlocked: async () => { blockedCalled=true; return true; },
       comment: async () => true,
@@ -1185,7 +1185,7 @@ describe("tracker-operations — production adapter behavioral (item 8)", () => 
       checkBranchExists: async () => "present" as const,
       checkProvenanceValid: async () => { throw new Error("provenance read failed"); },
       hasCommitsAhead: async () => "empty" as const,
-      deleteBranch: async () => { deleteCalled=true; return true; },
+      deleteBranch: async () => { deleteCalled=true; return { cleaned: true, untouched: false, effects: { worktreeRemoved: true, localBranchRemoved: true, remoteBranchRemoved: true, provenanceRemoved: true } }; },
       releaseClaim: async () => { releaseCalled=true; return true; },
       comment: async () => true,
       addBlocked: async () => true,
@@ -1212,7 +1212,7 @@ describe("tracker-operations — production adapter behavioral (item 8)", () => 
       checkBranchExists: async () => "present" as const,
       checkProvenanceValid: async () => ({ state: "valid" as const, reason: "valid" }),
       hasCommitsAhead: async () => "empty" as const,
-      deleteBranch: async () => true,
+      deleteBranch: async () => ({ cleaned: true, untouched: false, effects: { worktreeRemoved: true, localBranchRemoved: true, remoteBranchRemoved: true, provenanceRemoved: true } }),
       github: {
         releaseAndBlockOwnedImplementation: (n: number) => tracker.releaseAndBlockOwnedImplementation(n),
         releaseOwnedImplementationClaim: (n: number) => tracker.releaseOwnedImplementationClaim(n),
@@ -1239,7 +1239,7 @@ describe("tracker-operations — production adapter behavioral (item 8)", () => 
       checkBranchExists: async () => "absent" as const,
       checkProvenanceValid: async () => ({ state: "valid" as const, reason: "valid" }),
       hasCommitsAhead: async () => "empty" as const,
-      deleteBranch: async () => true,
+      deleteBranch: async () => ({ cleaned: true, untouched: false, effects: { worktreeRemoved: true, localBranchRemoved: true, remoteBranchRemoved: true, provenanceRemoved: true } }),
       github: {
         releaseAndBlockOwnedImplementation: async () => ({ kind: "indeterminate" as const, factoryError: true as const, reason: "failed to verify blocked" }),
         releaseOwnedImplementationClaim: (n: number) => tracker.releaseOwnedImplementationClaim(n),
@@ -1647,12 +1647,63 @@ describe("tracker-operations — production adapter without method replacement (
       const branchState = await ops.checkBranchExists("sandcastle/issue-916");
       expect(branchState).toBe("present");
       const del = await ops.deleteBranch("sandcastle/issue-916");
-      expect(del).toBe(false);
+      expect(del.cleaned).toBe(false);
+      expect(del.untouched).toBe(true);
       // provenance should remain
       expect(fsSync.existsSync(path.join(provDir, "sandcastle-issue-916.json"))).toBe(true);
       const br = runner(["branch","--list","sandcastle/issue-916"]);
       expect(br.stdout.trim()).not.toBe("");
     } finally { cleanup(); }
+  });
+
+  it("GhTokenMissingError during initial remote lookup leaves worktree, local branch, provenance, and tracker state untouched", async () => {
+    const { createProductionReconcileOps } = await import("./reconcile-adapter.mts");
+    const { GhTokenMissingError } = await import("./gh-transport.mts");
+    const { repoRoot, runner, cleanup } = await createTempRepo();
+    try {
+      const cp = await import("node:child_process");
+      const fsSync = await import("node:fs");
+      const path = await import("node:path");
+      const baseSha = cp.execFileSync("git", ["rev-parse", "main"], { encoding:"utf8", cwd: repoRoot }).toString().trim();
+      cp.execFileSync("git", ["branch", "sandcastle/issue-917", baseSha], { cwd: repoRoot });
+      // Create a real worktree for this branch
+      const wtPath = path.join(repoRoot, ".sandcastle", "worktrees", "sandcastle-issue-917");
+      fsSync.mkdirSync(path.dirname(wtPath), { recursive: true });
+      cp.execFileSync("git", ["worktree", "add", wtPath, "sandcastle/issue-917"], { cwd: repoRoot });
+      const provDir = path.join(repoRoot, ".sandcastle", "provenance");
+      fsSync.mkdirSync(provDir, { recursive: true });
+      const provPath = path.join(provDir, "sandcastle-issue-917.json");
+      fsSync.writeFileSync(provPath, JSON.stringify({ issueId:"917", branch:"sandcastle/issue-917", factoryBaseSha:baseSha, callerBranch:"main", callerSha:baseSha, at:new Date().toISOString() }));
+      // Remote lookup throws GhTokenMissingError => remote state UNKNOWN.
+      const mockGh = async (args: string[]) => {
+        if (args[0] === "api" && args[1].includes("git/refs")) throw new GhTokenMissingError(path.join(repoRoot, ".sandcastle", ".env"));
+        throw new Error("unexpected gh call: " + args.join(" "));
+      };
+      const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockGh, runGit: runner, repoRoot, claimantLogin: "bot" });
+      const del = await ops.deleteBranch("sandcastle/issue-917");
+      // Zero mutation: untouched, no effects, nothing removed.
+      expect(del.cleaned).toBe(false);
+      expect(del.untouched).toBe(true);
+      expect(del.effects.worktreeRemoved).toBe(false);
+      expect(del.effects.localBranchRemoved).toBe(false);
+      expect(del.effects.remoteBranchRemoved).toBe(false);
+      expect(del.effects.provenanceRemoved).toBe(false);
+      // Worktree still present.
+      const wtVerify = runner(["worktree", "list", "--porcelain"]);
+      expect(wtVerify.stdout.includes("sandcastle/issue-917")).toBe(true);
+      // Local branch still present.
+      const br = runner(["branch", "--list", "sandcastle/issue-917"]);
+      expect(br.stdout.trim()).not.toBe("");
+      // Provenance still present.
+      expect(fsSync.existsSync(provPath)).toBe(true);
+    } finally {
+      try {
+        const cp = await import("node:child_process");
+        const path = await import("node:path");
+        cp.execFileSync("git", ["worktree", "remove", "--force", path.join(repoRoot, ".sandcastle", "worktrees", "sandcastle-issue-917")], { cwd: repoRoot });
+      } catch {}
+      cleanup();
+    }
   });
 });
 
@@ -1703,7 +1754,7 @@ describe("tracker-operations — patch 8 worktree/provenance and empty-branch ve
       };
       const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockGh, runGit: failingRunner, repoRoot, claimantLogin:"bot" });
       const deleted = await ops.deleteBranch("sandcastle/issue-920");
-      expect(deleted).toBe(false);
+      expect(deleted.cleaned).toBe(false);
       const br = baseRunner(["branch","--list","sandcastle/issue-920"]);
       expect(br.stdout.trim()).not.toBe("");
       expect(fsSync.existsSync(path.join(provDir,"sandcastle-issue-920.json"))).toBe(true);
@@ -1767,7 +1818,7 @@ describe("tracker-operations — patch 8 worktree/provenance and empty-branch ve
       };
       const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockGh, runGit: failingRemoveRunner, repoRoot, claimantLogin:"bot" });
       const deleted = await ops.deleteBranch("sandcastle/issue-921");
-      expect(deleted).toBe(false);
+      expect(deleted.cleaned).toBe(false);
       const br = baseRunner(["branch","--list","sandcastle/issue-921"]);
       expect(br.stdout.trim()).not.toBe("");
       expect(fsSync.existsSync(path.join(provDir,"sandcastle-issue-921.json"))).toBe(true);
@@ -1814,7 +1865,7 @@ describe("tracker-operations — patch 8 worktree/provenance and empty-branch ve
       };
       const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockGh, runGit: trackingRunner, repoRoot, claimantLogin:"bot" });
       const deleted = await ops.deleteBranch("sandcastle/issue-922");
-      expect(deleted).toBe(true);
+      expect(deleted.cleaned).toBe(true);
       expect(wtRemovePath && path.normalize(wtRemovePath)).toBe(path.normalize(wtPath));
       expect(wtListAfterRemoveChecked).toBe(true);
       const br = baseRunner(["branch","--list","sandcastle/issue-922"]);
@@ -2217,7 +2268,7 @@ describe("tracker-operations — patch 9 dirty worktree preservation and deleteB
       };
       const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockGh, runGit: failingRunner, repoRoot, claimantLogin:"bot" });
       const deleted = await ops.deleteBranch("sandcastle/issue-934");
-      expect(deleted).toBe(false);
+      expect(deleted.cleaned).toBe(false);
       expect(fsSync.existsSync(provPath)).toBe(true);
       expect(released).toBe(false);
       // also via no_branch path
@@ -2262,7 +2313,7 @@ describe("tracker-operations — patch 9 dirty worktree preservation and deleteB
       };
       const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockGh, runGit: baseRunner, repoRoot, claimantLogin:"bot" });
       const deleted = await ops.deleteBranch("sandcastle/issue-935");
-      expect(deleted).toBe(false);
+      expect(deleted.cleaned).toBe(false);
       // branch should be deleted locally but provenance remains as directory
       const brAfter = baseRunner(["branch","--list","sandcastle/issue-935"]);
       expect(brAfter.stdout.trim()).toBe("");
@@ -2446,5 +2497,73 @@ describe("tracker-operations — round 9 unknown-versus-absent parsing", () => {
     const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockGh, runGit: fakeGit, repoRoot: process.cwd(), claimantLogin: "bot" });
     const r = await ops.getPrState("999");
     expect(r).toEqual({ state: "UNKNOWN", mergedAt: null, found: false, unknown: true });
+  });
+
+  it("getPrState CLOSED + valid RFC3339 merged_at => found with mergedAt", async () => {
+    const { createProductionReconcileOps } = await import("./reconcile-adapter.mts");
+    const mockGh = async (args: string[]) => {
+      if (args[0] === "api" && args[1].includes("/pulls/")) {
+        return JSON.stringify({ state: "closed", merged_at: "2024-01-15T10:30:00Z", number: 999 });
+      }
+      return "";
+    };
+    const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockGh, runGit: fakeGit, repoRoot: process.cwd(), claimantLogin: "bot" });
+    const r = await ops.getPrState("999");
+    expect(r).toEqual({ state: "CLOSED", mergedAt: "2024-01-15T10:30:00Z", found: true });
+  });
+
+  it("getPrState CLOSED + malformed merged_at string => unknown (never merged)", async () => {
+    const { createProductionReconcileOps } = await import("./reconcile-adapter.mts");
+    const mockGh = async (args: string[]) => {
+      if (args[0] === "api" && args[1].includes("/pulls/")) {
+        // A non-RFC3339 string (e.g. "2024-01-01") is malformed — UNKNOWN.
+        return JSON.stringify({ state: "closed", merged_at: "2024-01-01", number: 999 });
+      }
+      return "";
+    };
+    const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockGh, runGit: fakeGit, repoRoot: process.cwd(), claimantLogin: "bot" });
+    const r = await ops.getPrState("999");
+    expect(r).toEqual({ state: "UNKNOWN", mergedAt: null, found: false, unknown: true });
+  });
+
+  it("getPrState CLOSED + non-string merged_at => unknown (never merged)", async () => {
+    const { createProductionReconcileOps } = await import("./reconcile-adapter.mts");
+    const mockGh = async (args: string[]) => {
+      if (args[0] === "api" && args[1].includes("/pulls/")) {
+        // A non-string, non-null merged_at (e.g. a number) is malformed.
+        return JSON.stringify({ state: "closed", merged_at: 12345, number: 999 });
+      }
+      return "";
+    };
+    const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockGh, runGit: fakeGit, repoRoot: process.cwd(), claimantLogin: "bot" });
+    const r = await ops.getPrState("999");
+    expect(r).toEqual({ state: "UNKNOWN", mergedAt: null, found: false, unknown: true });
+  });
+
+  it("getPrState OPEN + merged_at (inconsistent) => unknown (never merged)", async () => {
+    const { createProductionReconcileOps } = await import("./reconcile-adapter.mts");
+    const mockGh = async (args: string[]) => {
+      if (args[0] === "api" && args[1].includes("/pulls/")) {
+        // An OPEN PR carrying a merged_at is inconsistent — UNKNOWN.
+        return JSON.stringify({ state: "open", merged_at: "2024-01-15T10:30:00Z", number: 999 });
+      }
+      return "";
+    };
+    const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockGh, runGit: fakeGit, repoRoot: process.cwd(), claimantLogin: "bot" });
+    const r = await ops.getPrState("999");
+    expect(r).toEqual({ state: "UNKNOWN", mergedAt: null, found: false, unknown: true });
+  });
+
+  it("getPrState CLOSED + null merged_at => found with mergedAt null", async () => {
+    const { createProductionReconcileOps } = await import("./reconcile-adapter.mts");
+    const mockGh = async (args: string[]) => {
+      if (args[0] === "api" && args[1].includes("/pulls/")) {
+        return JSON.stringify({ state: "closed", merged_at: null, number: 999 });
+      }
+      return "";
+    };
+    const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockGh, runGit: fakeGit, repoRoot: process.cwd(), claimantLogin: "bot" });
+    const r = await ops.getPrState("999");
+    expect(r).toEqual({ state: "CLOSED", mergedAt: null, found: true });
   });
 });

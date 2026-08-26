@@ -17,22 +17,40 @@ import { getErrorMessage } from "./gh-errors.mts";
 // withTemporaryIssueFixtures
 // ---------------------------------------------------------------------------
 
+/**
+ * A fixture handle is RECORDED at acquisition BEFORE the POST, so a lost or
+ * uncertain POST still leaves a structured recovery handle for finally
+ * cleanup. The unique title is always present (it is the recovery key); the
+ * numeric id is enriched when known (after a successful POST or an exact-title
+ * recovery). Cleanup resolves by id when present, else by exact title.
+ */
+export interface FixtureHandle {
+  /** Unique title recorded BEFORE POST — the recovery handle. */
+  title: string;
+  /** Numeric id, enriched when known (after successful POST or recovery). */
+  id?: number;
+}
+
 export interface FixtureCleanupOps {
-  /** Cleanup a single fixture (remove transient labels/assignee, close, etc.). */
-  cleanup: (id: number) => Promise<void>;
+  /**
+   * Cleanup a single fixture by handle. Resolve by id when present, else by
+   * exact title. Zero/multiple/unreadable title matches are explicit cleanup
+   * uncertainty — throw (fail closed).
+   */
+  cleanup: (handle: FixtureHandle) => Promise<void>;
   /**
    * REQUIRED: verify cleanup postcondition for a fixture on a fresh read;
    * return error string when unclean. Verification failure or unreadable
    * state is a cleanup failure — fail closed on uncertainty.
    */
-  verify: (id: number) => Promise<string | null>;
+  verify: (handle: FixtureHandle) => Promise<string | null>;
 }
 
 export interface FixturesResult<T> {
   value?: T;
   primaryError?: string;
   cleanupFailures: string[];
-  fixtureIds: number[];
+  fixtures: FixtureHandle[];
   /**
    * True when the primary body succeeded AND every fixture is proven clean
    * by fresh-read verification. False when primary failed OR any cleanup
@@ -43,49 +61,52 @@ export interface FixturesResult<T> {
 }
 
 /**
- * Acquire fixtures through the registrar: each created id is RECORDED at the
- * moment of acquisition, so partial acquisition (fixture #1 created, #2
- * throws) still leaves #1 on the cleanup list. Body runs with all recorded
- * ids. Cleanup always runs in `finally`, per-fixture isolated: one fixture's
- * cleanup failure never skips another's. Primary failure and cleanup failures
- * are reported separately. Postcondition verification is required after each
+ * Acquire fixtures through the registrar: each handle is RECORDED at the
+ * moment of acquisition (BEFORE the POST, so a lost/uncertain POST still
+ * leaves a structured title handle for finally cleanup), and enriched with the
+ * id when known. Partial acquisition (fixture #1 created, #2 throws) still
+ * leaves #1 on the cleanup list. Body runs with all recorded handles. Cleanup
+ * always runs in `finally`, per-fixture isolated: one fixture's cleanup
+ * failure never skips another's. Primary failure and cleanup failures are
+ * reported separately. Postcondition verification is required after each
  * successful cleanup; an unverifiable postcondition counts as a cleanup
  * failure.
  */
 export async function withTemporaryIssueFixtures<T>(
-  acquire: (registrar: { record: (id: number) => void }) => Promise<T>,
+  acquire: (registrar: { record: (handle: FixtureHandle) => void }) => Promise<T>,
   ops: FixtureCleanupOps,
 ): Promise<FixturesResult<T>> {
-  const fixtureIds: number[] = [];
+  const fixtures: FixtureHandle[] = [];
   const cleanupFailures: string[] = [];
   let primaryError: string | undefined;
   let value: T | undefined;
 
   try {
-    value = await acquire({ record: (id) => { fixtureIds.push(id); } });
+    value = await acquire({ record: (handle) => { fixtures.push(handle); } });
   } catch (e) {
     primaryError = getErrorMessage(e);
   } finally {
-    for (const id of fixtureIds) {
+    for (const handle of fixtures) {
+      const label = handle.id !== undefined ? `#${handle.id}` : `"${handle.title}"`;
       try {
-        await ops.cleanup(id);
+        await ops.cleanup(handle);
       } catch (e) {
         // Cleanup threw — postcondition cannot be trusted for this fixture.
-        cleanupFailures.push(`cleanup #${id} failed: ${getErrorMessage(e)}`);
+        cleanupFailures.push(`cleanup ${label} failed: ${getErrorMessage(e)}`);
         continue;
       }
       try {
-        const problem = await ops.verify(id);
-        if (problem) cleanupFailures.push(`fixture #${id} postcondition failed: ${problem}`);
+        const problem = await ops.verify(handle);
+        if (problem) cleanupFailures.push(`fixture ${label} postcondition failed: ${problem}`);
       } catch (e) {
         // Verification itself failing means state is UNKNOWN — fail closed.
-        cleanupFailures.push(`fixture #${id} postcondition verification failed: ${getErrorMessage(e)}`);
+        cleanupFailures.push(`fixture ${label} postcondition verification failed: ${getErrorMessage(e)}`);
       }
     }
   }
 
-  const ok = primaryError === undefined && cleanupFailures.length === 0 && fixtureIds.length > 0;
-  return { value, primaryError, cleanupFailures, fixtureIds, ok };
+  const ok = primaryError === undefined && cleanupFailures.length === 0 && fixtures.length > 0;
+  return { value, primaryError, cleanupFailures, fixtures, ok };
 }
 
 // ---------------------------------------------------------------------------
