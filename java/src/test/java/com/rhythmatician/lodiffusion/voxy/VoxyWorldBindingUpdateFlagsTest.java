@@ -8,7 +8,13 @@ class VoxyWorldBindingUpdateFlagsTest {
     @Test
     void fallbackGeometryWithZeroChildMaskPublishesBlocksWithoutChildExistence() {
         assertEquals(VoxyWorldBinding.BLOCK_UPDATE_FLAG,
-                VoxyWorldBinding.generatedFallbackUpdateFlags());
+                VoxyWorldBinding.generatedFallbackUpdateFlags(false));
+    }
+
+    @Test
+    void clearingStaleNativeNecPublishesGeometryAndChildExistenceChange() {
+        assertEquals(VoxyWorldBinding.BLOCK_UPDATE_FLAG | VoxyWorldBinding.CHILD_EXISTENCE_UPDATE_FLAG,
+                VoxyWorldBinding.generatedFallbackUpdateFlags(true));
     }
 
     @Test

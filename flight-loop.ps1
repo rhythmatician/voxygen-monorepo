@@ -6,6 +6,7 @@ param(
     [int]$TimeoutSeconds = 600,
     [int]$ReadinessTimeoutSeconds = 120,
     [int]$DwellTicks = 200,
+    [switch]$DisableRefinementAdmission,
     [switch]$LaunchProofOnly
 )
 
@@ -15,6 +16,24 @@ $runDir = Join-Path $WorktreeJava "run"
 $savesDir = Join-Path $runDir "saves"
 $liveWorld = Join-Path $savesDir "FlightTest"
 $templateDir = Join-Path $WorktreeJava "flight-template"
+
+function Resolve-ValidatedPath([string]$path, [string]$allowedRoot) {
+    $resolvedPath = [IO.Path]::GetFullPath($path).TrimEnd([IO.Path]::DirectorySeparatorChar)
+    $resolvedRoot = [IO.Path]::GetFullPath($allowedRoot).TrimEnd([IO.Path]::DirectorySeparatorChar)
+    $rootPrefix = $resolvedRoot + [IO.Path]::DirectorySeparatorChar
+    if (-not $resolvedPath.Equals($resolvedRoot, [StringComparison]::OrdinalIgnoreCase) -and
+            -not $resolvedPath.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing recursive deletion outside validated root. target=$resolvedPath root=$resolvedRoot"
+    }
+    return $resolvedPath
+}
+
+function Remove-ValidatedTree([string]$path, [string]$allowedRoot) {
+    $resolvedPath = Resolve-ValidatedPath $path $allowedRoot
+    if (Test-Path -LiteralPath $resolvedPath) {
+        Remove-Item -LiteralPath $resolvedPath -Recurse -Force
+    }
+}
 
 function Get-ContaminatedEndRegions([string]$worldDir) {
     $regions = Join-Path $worldDir "DIM1\region"
@@ -86,8 +105,10 @@ if ($CaptureTemplate) {
     if ($flown) {
         throw "Template is contaminated: End corridor regions already exist: $(($flown.Name) -join ', '). Create a fresh FlightTest world."
     }
-    if (Test-Path $templateDir) { Remove-Item $templateDir -Recurse -Force }
+    Remove-ValidatedTree $templateDir $templateDir
     Copy-Item $liveWorld $templateDir -Recurse
+    $capturedVoxyStore = Join-Path $templateDir "voxy"
+    Remove-ValidatedTree $capturedVoxyStore $templateDir
     Write-Host "Captured virgin flight template: $templateDir"
     exit 0
 }
@@ -95,11 +116,13 @@ if ($CaptureTemplate) {
 if (-not (Test-Path $templateDir)) {
     throw "No flight template at $templateDir. Create FlightTest once, then run .\flight-loop.ps1 -CaptureTemplate."
 }
-if (Test-Path $liveWorld) { Remove-Item $liveWorld -Recurse -Force }
+Remove-ValidatedTree $liveWorld $liveWorld
 Copy-Item $templateDir $liveWorld -Recurse
+$copiedVoxyStore = Join-Path $liveWorld "voxy"
+Remove-ValidatedTree $copiedVoxyStore $liveWorld
 
 $voxyCache = Join-Path $runDir "voxy-cache"
-if (Test-Path $voxyCache) { Remove-Item $voxyCache -Recurse -Force }
+Remove-ValidatedTree $voxyCache $runDir
 
 $flightStatus = Join-Path $runDir "flight-tour-status.jsonl"
 $screenshotsDir = Join-Path $runDir "screenshots"
@@ -124,9 +147,10 @@ if ($stale) {
 }
 
 $runId = [Guid]::NewGuid().ToString("N")
+$disableRefinementValue = $DisableRefinementAdmission.IsPresent.ToString().ToLowerInvariant()
 
 Write-Host "Starting AFK tour run: runId=$runId world=FlightTest auto-start enabled (no manual command)"
-Write-Host "AFK preflight: autoStart=true timeout=24000 dwell=$DwellTicks ticks (Gradle JVM properties)"
+Write-Host "AFK preflight: autoStart=true timeout=24000 dwell=$DwellTicks disableRefinementAdmission=$disableRefinementValue (Gradle JVM properties)"
 Push-Location $WorktreeJava
 try {
     $arguments = @(
@@ -138,7 +162,8 @@ try {
         "-PflightTourAutoStart=true",
         "-PflightTourTimeoutTicks=24000",
         "-PflightTourDwellTicks=$DwellTicks",
-        "-PflightTourRunId=$runId"
+        "-PflightTourRunId=$runId",
+        "-PdisableRefinementAdmission=$disableRefinementValue"
     )
     $process = Start-Process -FilePath .\gradlew.bat -ArgumentList $arguments -WorkingDirectory $WorktreeJava -NoNewWindow -PassThru
     $elapsed = [Diagnostics.Stopwatch]::StartNew()

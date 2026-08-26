@@ -426,6 +426,9 @@ public final class GenerationSession {
         if (req == null || writer == null || noiseAccess == null) {
             return RefinementOutcome.failed();
         }
+        if (!RefinementAdmissionGate.allows(req.workKind)) {
+            return RefinementOutcome.alreadyCovered();
+        }
         if (req.workKind == net.lodiffusion.shadow.VoxyWorkKind.PARENT_REFINEMENT) {
             return processParentRefinement(req, writer);
         }
@@ -651,6 +654,7 @@ public final class GenerationSession {
     GenerationSession(VoxelVolumeWriter writerOverride, TerrainCandidate candidateOverride) {
         this.writerOverride = writerOverride;
         this.candidateOverride = candidateOverride;
+        RefinementAdmissionGate.logResolvedModeOnce();
     }
 
     /**
@@ -1762,6 +1766,9 @@ public final class GenerationSession {
             HorizonLeafProcessor l4HorizonLeaf) {
         if (req == null || writer == null || l4HorizonLeaf == null || req.workKind == null) {
             return DemandProcessResult.FAILED;
+        }
+        if (!RefinementAdmissionGate.allows(req.workKind)) {
+            return DemandProcessResult.SKIPPED;
         }
         return switch (req.workKind) {
             case HORIZON_LEAF -> req.lodLevel == Level.L4.value()

@@ -1,5 +1,6 @@
 package net.lodiffusion.shadow;
 
+import com.rhythmatician.lodiffusion.voxy.RefinementAdmissionGate;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.ArrayList;
@@ -93,7 +94,8 @@ public final class ShadowRouterJobQueue {
     private ShadowRouterJobQueue() {}
 
     public static EnqueueResult enqueue(VoxyRequestDecoder.VoxyNodeRequest request) {
-        if (!isValid(request) || !shouldAccept(request)) return EnqueueResult.REJECTED;
+        if (!isValid(request) || !RefinementAdmissionGate.allows(request.workKind)
+                || !shouldAccept(request)) return EnqueueResult.REJECTED;
         lock.writeLock().lock();
         try {
             return enqueueLocked(request);
@@ -107,7 +109,8 @@ public final class ShadowRouterJobQueue {
         lock.writeLock().lock();
         try {
             for (VoxyRequestDecoder.VoxyNodeRequest request : requests) {
-                if (isValid(request) && shouldAccept(request)) enqueueLocked(request);
+                if (isValid(request) && RefinementAdmissionGate.allows(request.workKind)
+                        && shouldAccept(request)) enqueueLocked(request);
             }
         } finally {
             lock.writeLock().unlock();
@@ -171,7 +174,8 @@ public final class ShadowRouterJobQueue {
     }
 
     public static void requeue(VoxyRequestDecoder.VoxyNodeRequest request) {
-        if (!isValid(request) || !shouldAccept(request)) return;
+        if (!isValid(request) || !RefinementAdmissionGate.allows(request.workKind)
+                || !shouldAccept(request)) return;
         lock.writeLock().lock();
         try {
             inFlightRequests.remove(RequestKey.of(request));

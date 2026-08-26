@@ -369,20 +369,26 @@ final class VoxyWorldBinding {
             byte storedChildren = computeStoredChildDataMask(
                     worldEngine, parentLvl, parentWsX, parentWsY, parentWsZ);
             byte finalMask = completeHandoffMask((byte) completeMask, storedChildren);
-            if (shouldPublishCompleteHandoff(finalMask)) {
-                boolean changed = mergeNonEmptyChildren(parentSection, finalMask);
-                // The mask is visible before ownership ends. A native promotion that
-                // observes the release therefore observes a complete topology.
-                boolean released = VoxyTopologyOwnership.releaseAfterHandoff(parentSection);
-                if (changed || released) {
-                    markDirty(worldEngine, parentSection, completeHandoffUpdateFlags(false));
-                }
+            if (publishCompleteChildMaskToSection(parentSection, finalMask)) {
+                markDirty(worldEngine, parentSection, completeHandoffUpdateFlags(false));
             }
             VoxyEngine.worldSectionReleaseMethod.invoke(parentSection);
         } catch (Exception e) {
             throw new RuntimeException("publishCompleteChildMask failed at parent lvl=" + parentLvl
                     + " ws=(" + parentWsX + "," + parentWsY + "," + parentWsZ + ")", e);
         }
+    }
+
+    /** Publish topology before releasing ownership so observers cannot see a handoff void. */
+    private static boolean publishCompleteChildMaskToSection(Object parentSection, byte finalMask) {
+        if (!shouldPublishCompleteHandoff(finalMask)) {
+            return false;
+        }
+        boolean changed = mergeNonEmptyChildren(parentSection, finalMask);
+        // The mask is visible before ownership ends. A native promotion that
+        // observes the release therefore observes a complete topology.
+        boolean released = VoxyTopologyOwnership.releaseAfterHandoff(parentSection);
+        return changed || released;
     }
 
     /**
@@ -473,15 +479,15 @@ final class VoxyWorldBinding {
             // any generated nonterminal fallback can be dirtied for rendering.
             Object worldSection = VoxyEngine.acquireMethod.invoke(
                     worldEngine, lvl, wsX, wsY, wsZ);
-            if (lvl > Level.L0.value()) {
-                claimGeneratedFallback(worldSection, lvl);
-            }
+            boolean topologyChanged = lvl > Level.L0.value()
+                    && claimGeneratedFallback(worldSection, lvl);
             long[] data = (long[]) worldSectionDataField.get(worldSection);
 
             byte preserveMask = preserveOctantsMask;
             if (lvl > 0) {
-                // Preserve physical child data, not the parent's old NEC. An owned
-                // fallback uses its own occupied-octant topology while refinement is pending.
+                // Preserve physical child data, not the parent's advertised topology.
+                // Stored finer sections and this section's coarse voxel octants are
+                // separate representations even when they cover the same space.
                 preserveMask |= computeStoredChildDataMask(worldEngine, lvl, wsX, wsY, wsZ);
             } else {
                 // At L0, preserve octants that already contain vanilla voxel data.
@@ -507,9 +513,9 @@ final class VoxyWorldBinding {
                 }
             }
 
-            // nonEmptyChildren is renderer truth: it advertises only finer
-            // WorldSections that already exist and have non-empty state. The
-            // generation scheduler carries future refinement intent separately.
+            // nonEmptyChildren is renderer topology, not occupancy inside this
+            // 32^3 array. L1-L4 generated fallback remains a leaf with NEC=0
+            // until publishCompleteChildMask atomically advertises finer sections.
             if (lvl == 0) {
                 boolean anyNonAir = false;
                 for (long v : data) {
@@ -522,20 +528,11 @@ final class VoxyWorldBinding {
                     // Never replace NEC with a stale read. Native ingestion may
                     // update it concurrently; this monotonic CAS only adds L0's
                     // terminal nonempty state.
-                    mergeNonEmptyChildren(worldSection, (byte) 0xFF);
+                    topologyChanged |= mergeNonEmptyChildren(worldSection, (byte) 0xFF);
                 }
-            } else {
-                // For generated nonterminal fallbacks, preserve this section's
-                // own coarse occupancy so Voxy can emit leaf requests with a
-                // non-zero existence mask while refinement is in progress.
-                mergeNonEmptyChildren(worldSection, computeOccupiedOctantMask(data));
             }
 
-            LOGGER.info("[NEC-DIAG] L{} ws=({},{},{}) nec=0x{} nonAir={}",
-                    lvl, wsX, wsY, wsZ,
-                    String.format("%02X", Byte.toUnsignedInt(readNec(worldSection))), nonAir);
-
-            markDirty(worldEngine, worldSection, generatedFallbackUpdateFlags());
+            markDirty(worldEngine, worldSection, generatedFallbackUpdateFlags(topologyChanged));
             VoxyEngine.worldSectionReleaseMethod.invoke(worldSection);
 
         } catch (Exception e) {
@@ -547,12 +544,26 @@ final class VoxyWorldBinding {
         return nonAir;
     }
 
-    /** Claim a fallback before clearing its presentation topology. */
-    private static void claimGeneratedFallback(Object worldSection, int lvl) throws Exception {
+    /** Claim a fallback and report whether stale/native child topology was cleared. */
+    private static boolean claimGeneratedFallback(Object worldSection, int lvl) throws Exception {
         if (!VoxyTopologyOwnership.registerGeneratedFallback(worldSection, lvl)) {
-            return;
+            return false;
         }
-        normalizeOwnedFallbackTopology(worldSection);
+        return normalizeOwnedFallbackTopology(worldSection);
+    }
+
+    static boolean claimGeneratedFallbackForTest(Object worldSection, int lvl) {
+        ensureWorldSectionBindings();
+        try {
+            return claimGeneratedFallback(worldSection, lvl);
+        } catch (Exception e) {
+            throw new IllegalStateException("Could not claim raw Voxy section", e);
+        }
+    }
+
+    static boolean publishCompleteChildMaskForTest(Object parentSection, byte finalMask) {
+        ensureWorldSectionBindings();
+        return publishCompleteChildMaskToSection(parentSection, finalMask);
     }
 
     /**
@@ -560,30 +571,22 @@ final class VoxyWorldBinding {
      * populated its descendants. The promotion gate serializes this CAS against
      * native {@code updateEmptyChildState}; voxel and mip data are untouched.
      */
-    private static void normalizeOwnedFallbackTopology(Object worldSection) throws Exception {
+    private static boolean normalizeOwnedFallbackTopology(Object worldSection) throws Exception {
         if (worldSectionNecVarHandle == null) {
             throw new IllegalStateException("Voxy nonEmptyChildren VarHandle is unavailable");
         }
         byte previous;
-        byte normalized;
         do {
             previous = (byte) worldSectionNecVarHandle.getVolatile(worldSection);
-            byte occupied = computeOccupiedOctantMask((long[]) worldSectionDataField.get(worldSection));
-            normalized = fallbackPresentationNec(
-                    VoxyTopologyOwnership.isOwned(worldSection), previous, occupied);
-            if (previous == normalized) {
-                return;
+            if (previous == 0) {
+                return false;
             }
-        } while (!worldSectionNecVarHandle.compareAndSet(worldSection, previous, normalized));
+        } while (!worldSectionNecVarHandle.compareAndSet(worldSection, previous, (byte) 0));
+        return true;
     }
 
     static byte fallbackPresentationNec(boolean ownedFallback, byte currentNec) {
-        return fallbackPresentationNec(ownedFallback, currentNec, (byte) 0);
-    }
-
-    static byte fallbackPresentationNec(
-            boolean ownedFallback, byte currentNec, byte occupiedOctants) {
-        return ownedFallback ? occupiedOctants : currentNec;
+        return ownedFallback ? 0 : currentNec;
     }
 
     static byte completeHandoffMask(byte generatedChildren, byte storedChildren) {
@@ -697,8 +700,8 @@ final class VoxyWorldBinding {
         return storedChildren;
     }
 
-    static int generatedFallbackUpdateFlags() {
-        return BLOCK_UPDATE_FLAG;
+    static int generatedFallbackUpdateFlags(boolean topologyChanged) {
+        return BLOCK_UPDATE_FLAG | (topologyChanged ? CHILD_EXISTENCE_UPDATE_FLAG : 0);
     }
 
     static int completeHandoffUpdateFlags(boolean parentGeometryChanged) {

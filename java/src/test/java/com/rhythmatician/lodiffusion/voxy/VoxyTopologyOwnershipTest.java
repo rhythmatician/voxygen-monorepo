@@ -61,25 +61,27 @@ class VoxyTopologyOwnershipTest {
     }
 
     @Test
-    void generatedFallbackPresentationPreservesOwnOccupiedOctantMask() {
+    void solidGeneratedL4FallbackRemainsALeafUntilExplicitRefinementPublication() {
         Object generatedChild = new Object();
         byte partialNativeNec = 0b0010_0100;
-        byte occupiedFromOwnData = (byte) 0b0000_1100;
 
         VoxyTopologyOwnership.registerGeneratedFallback(generatedChild, Level.L3.value());
 
-        assertEquals(occupiedFromOwnData, VoxyWorldBinding.fallbackPresentationNec(
-                VoxyTopologyOwnership.isOwned(generatedChild), partialNativeNec, occupiedFromOwnData));
-        assertEquals(partialNativeNec, VoxyWorldBinding.completeHandoffMask(
-                (byte) 0, partialNativeNec));
+        assertEquals((byte) 0, VoxyWorldBinding.fallbackPresentationNec(
+                VoxyTopologyOwnership.isOwned(generatedChild), partialNativeNec));
+        assertFalse(VoxyWorldBinding.shouldPublishCompleteHandoff((byte) 0));
+
+        byte publishedMask = VoxyWorldBinding.completeHandoffMask(
+                (byte) 0b0000_0101, (byte) 0b0100_0000);
+        assertEquals((byte) 0b0100_0101, publishedMask);
+        assertTrue(VoxyWorldBinding.shouldPublishCompleteHandoff(publishedMask));
     }
 
     @Test
     void unownedNativePresentationKeepsItsNecWhenOwnCoarseDataIsEmpty() {
         byte nativeNec = 0x5D;
 
-        assertEquals(nativeNec, VoxyWorldBinding.fallbackPresentationNec(
-                false, nativeNec, (byte) 0));
+        assertEquals(nativeNec, VoxyWorldBinding.fallbackPresentationNec(false, nativeNec));
     }
 
     @Test

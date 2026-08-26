@@ -9,6 +9,37 @@ import org.mockito.Mockito;
 
 class EndPhysicalWorkDispatcherTest {
     @Test
+    void diagnosticAdmissionGateBlocksRefinementButLeavesHorizonMutationEnabled() {
+        String property = RefinementAdmissionGate.DISABLE_PROPERTY;
+        String previous = System.getProperty(property);
+        System.setProperty(property, "true");
+        try {
+            GenerationSession session = session();
+            CountingWriter writer = new CountingWriter();
+            int[] horizonCalls = {0};
+
+            assertEquals(GenerationSession.DemandProcessResult.SKIPPED,
+                    session.processEndPhysicalWork(
+                            request(Level.L4.value(), VoxyWorkKind.PARENT_REFINEMENT),
+                            writer,
+                            () -> GenerationSession.DemandProcessResult.FAILED));
+            assertEquals(GenerationSession.DemandProcessResult.WRITTEN,
+                    session.processEndPhysicalWork(
+                            request(Level.L4.value(), VoxyWorkKind.HORIZON_LEAF),
+                            writer,
+                            () -> {
+                                horizonCalls[0]++;
+                                return GenerationSession.DemandProcessResult.WRITTEN;
+                            }));
+
+            assertEquals(0, writer.refinementIntents);
+            assertEquals(1, horizonCalls[0]);
+        } finally {
+            restoreProperty(property, previous);
+        }
+    }
+
+    @Test
     void finerHorizonLeafCannotReachDirectRegionWrite() {
         GenerationSession session = session();
         CountingWriter writer = new CountingWriter();
@@ -95,6 +126,14 @@ class EndPhysicalWorkDispatcherTest {
         public ParentRefinementResult refineParent(ParentRefinementIntent intent) {
             refinementIntents++;
             return ParentRefinementResult.published(WriteOutcome.written(1));
+        }
+    }
+
+    private static void restoreProperty(String property, String previous) {
+        if (previous == null) {
+            System.clearProperty(property);
+        } else {
+            System.setProperty(property, previous);
         }
     }
 }
