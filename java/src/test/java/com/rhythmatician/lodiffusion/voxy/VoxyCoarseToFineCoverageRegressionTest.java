@@ -17,6 +17,9 @@ class VoxyCoarseToFineCoverageRegressionTest {
 
         topology.writeSolidCoarseGeometry(1L << VoxyWorldBinding.BLOCK_ID_SHIFT);
         topology.assertGeometryBearingLeaf();
+        topology.startRendererAtCoarseLeaf();
+        topology.assertCoarseCoverageRetained();
+        topology.assertNoChildDescent();
         for (int octant = 0; octant < 8; octant++) {
             topology.assertSelectedLevel(octant, 4);
         }
@@ -24,14 +27,20 @@ class VoxyCoarseToFineCoverageRegressionTest {
         topology.storeSolidChild(5, 2L << VoxyWorldBinding.BLOCK_ID_SHIFT);
         topology.assertGeometryBearingLeaf();
         topology.assertSelectedLevel(5, 4);
+        topology.assertCoarseCoverageRetained();
+        topology.assertNoChildDescent();
 
         topology.publishStoredChildren();
+        topology.notifyRendererOfPublishedTopology();
         assertEquals(0x20, Byte.toUnsignedInt(topology.childExistenceMask()));
+        topology.assertCoarseCoverageRetained();
+        topology.assertOnlyChildRequested(5);
         topology.assertSelectedLevel(5, 3);
         for (int octant = 0; octant < 8; octant++) {
             if (octant != 5) {
                 topology.assertSelectedLevel(octant, 4);
             }
         }
+        topology.assertNoNativeBufferLeak();
     }
 }

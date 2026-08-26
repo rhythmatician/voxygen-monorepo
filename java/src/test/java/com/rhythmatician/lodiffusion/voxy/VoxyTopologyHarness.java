@@ -1,6 +1,7 @@
 package com.rhythmatician.lodiffusion.voxy;
 
 import me.cortex.voxy.common.world.WorldSection;
+import me.cortex.voxy.client.core.rendering.hierachical.HeadlessNodeManagerProbe;
 
 import java.util.Arrays;
 
@@ -10,14 +11,15 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 /**
  * Headless coverage observations over real Voxy {@link WorldSection} state.
  *
- * <p>The pinned Voxy NodeManager cannot yet be included in this harness because
- * completing a geometry request requires an LWJGL native {@code MemoryBuffer}.
- * This wrapper deliberately stops at the real WorldSection topology consumed by
- * NodeManager, leaving geometry allocation as the only missing boundary.</p>
+ * <p>The harness drives the pinned real Voxy {@code NodeManager} through a
+ * minimal real nonempty geometry result. Only GPU geometry storage and section
+ * watching are replaced by deterministic test implementations.</p>
  */
 final class VoxyTopologyHarness {
     private final WorldSection coarse;
     private final WorldSection[] children = new WorldSection[8];
+    private final long nativeBytesAtStart = HeadlessNodeManagerProbe.allocatedNativeBytes();
+    private HeadlessNodeManagerProbe nodeManager;
 
     VoxyTopologyHarness(int level, int x, int y, int z) {
         coarse = WorldSection._createRawUntrackedUnsafeSection(level, x, y, z);
@@ -47,6 +49,32 @@ final class VoxyTopologyHarness {
             }
         }
         VoxyWorldBinding.publishCompleteChildMaskForTest(coarse, mask);
+    }
+
+    void startRendererAtCoarseLeaf() {
+        nodeManager = new HeadlessNodeManagerProbe(coarse.key);
+        nodeManager.completeCoarseLeaf(coarse.getNonEmptyChildren());
+        nodeManager.requestRefinement();
+    }
+
+    void notifyRendererOfPublishedTopology() {
+        nodeManager.publishChildExistence(coarse.getNonEmptyChildren());
+    }
+
+    void assertCoarseCoverageRetained() {
+        org.junit.jupiter.api.Assertions.assertTrue(nodeManager.coarseGeometryRetained());
+    }
+
+    void assertNoChildDescent() {
+        assertEquals(java.util.Set.of(), nodeManager.watchedChildren());
+    }
+
+    void assertOnlyChildRequested(int octant) {
+        assertEquals(java.util.Set.of(nodeManager.childPosition(octant)), nodeManager.watchedChildren());
+    }
+
+    void assertNoNativeBufferLeak() {
+        assertEquals(nativeBytesAtStart, HeadlessNodeManagerProbe.allocatedNativeBytes());
     }
 
     void assertGeometryBearingLeaf() {
