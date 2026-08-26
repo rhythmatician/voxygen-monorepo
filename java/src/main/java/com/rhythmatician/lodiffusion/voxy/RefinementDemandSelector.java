@@ -32,7 +32,19 @@ final class RefinementDemandSelector {
     public record NodeRequest(int level, int wsX, int wsY, int wsZ) { }
 
     /** One emitted demand with its selection-time distance (for ordering). */
-    public record Emission(NodeRequest request, double distBlocks) { }
+    public record Emission(NodeRequest request, double distBlocks, int demandedChildMask) {
+        public Emission {
+            if (demandedChildMask <= 0 || (demandedChildMask & ~0xFF) != 0) {
+                throw new IllegalArgumentException("demandedChildMask must contain child bits");
+            }
+        }
+    }
+
+    private record Selection(double distBlocks, int demandedChildMask) {
+        Selection merge(double distance, int childMask) {
+            return new Selection(Math.min(distBlocks, distance), demandedChildMask | childMask);
+        }
+    }
 
     /** Selection inputs. Covered L4 regions are region-index SectionPos values. */
     public record Params(
@@ -51,7 +63,7 @@ final class RefinementDemandSelector {
      * per-pass budget, so truncation is deliberately not performed here.
      */
     public static List<Emission> select(Params p) {
-        Map<NodeRequest, Double> selected = new LinkedHashMap<>();
+        Map<NodeRequest, Selection> selected = new LinkedHashMap<>();
         // Threshold as squared distance per unit size²: descend iff
         // size² * focal² / dist² > subDiv²  <=>  dist < size * focal / subDiv.
         double refDistPerSize = p.focalPx() / p.subDivisionPx();
@@ -74,7 +86,8 @@ final class RefinementDemandSelector {
         }
 
         List<Emission> out = new ArrayList<>();
-        selected.forEach((request, distance) -> out.add(new Emission(request, distance)));
+        selected.forEach((request, selection) -> out.add(new Emission(
+                request, selection.distBlocks(), selection.demandedChildMask())));
         out.sort(Comparator
                 .comparingDouble(RefinementDemandSelector::normalizedDistance)
                 .thenComparing(Comparator.comparingInt(
@@ -91,7 +104,7 @@ final class RefinementDemandSelector {
 
     /** Recursive descent: select the parent transaction for each demanded child. */
     private static void descend(Params p, int level, int x, int y, int z,
-                                double refDistPerSize, Map<NodeRequest, Double> selected) {
+                                double refDistPerSize, Map<NodeRequest, Selection> selected) {
         if (level < p.finestLevelValue()) {
             return;
         }
@@ -102,7 +115,13 @@ final class RefinementDemandSelector {
             return;
         }
         NodeRequest parent = new NodeRequest(level + 1, x >> 1, y >> 1, z >> 1);
-        selected.merge(parent, dist, Math::min);
+        int octant = Math.floorMod(x, 2)
+                | (Math.floorMod(z, 2) << 1)
+                | (Math.floorMod(y, 2) << 2);
+        int childMask = 1 << octant;
+        selected.compute(parent, (ignored, existing) -> existing == null
+                ? new Selection(dist, childMask)
+                : existing.merge(dist, childMask));
         if (level - 1 >= p.finestLevelValue()) {
             for (int cy = 0; cy < 2; cy++) {
                 for (int cz = 0; cz < 2; cz++) {

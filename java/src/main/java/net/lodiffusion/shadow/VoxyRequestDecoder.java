@@ -27,6 +27,8 @@ public class VoxyRequestDecoder {
         public VoxyWorkKind workKind = VoxyWorkKind.HORIZON_LEAF;
         /** Explicit provenance; current vanilla guard uses the radius-annulus source. */
         public VoxyDemandSource demandSource = VoxyDemandSource.VOXY_WATCH_BRIDGE;
+        /** Child octants requested for PARENT_REFINEMENT; ignored for leaf work. */
+        public int demandedChildMask = 0xFF;
         
         @Override
         public String toString() {

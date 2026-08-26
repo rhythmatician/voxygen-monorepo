@@ -39,6 +39,45 @@ class EndRefinementDemandTest {
     }
 
     @Test
+    void frontierSelectorDemandIsAdmittedBeforeOrdinaryVisualWork() {
+        GenerationSession session = new GenerationSession();
+        session.observeVanillaChunkColumnForTest(0, 0);
+        ShadowRouterJobQueue.clear();
+
+        assertEquals(1, session.enqueueEndRefinementsForTest(
+                List.of(new SectionPos(0, 0, 0)), 256, 96, 256,
+                Level.L1.value(), 1e9, 1));
+
+        var first = ShadowRouterJobQueue.dequeueAny();
+        assertNotNull(first);
+        assertEquals(VoxyDemandKind.VANILLA_FRONTIER_GUARD, first.demandKind);
+        assertEquals(VoxyDemandSource.SCREEN_SPACE_SELECTOR, first.demandSource);
+    }
+
+    @Test
+    void fullyVanillaSelectorParentIsSkippedRegardlessOfSource() {
+        GenerationSession session = new GenerationSession();
+        for (int chunkX = 0; chunkX < 4; chunkX++) {
+            for (int chunkZ = 0; chunkZ < 4; chunkZ++) {
+                session.observeVanillaChunkColumnForTest(chunkX, chunkZ);
+            }
+        }
+        ShadowRouterJobQueue.clear();
+
+        session.enqueueEndRefinementsForTest(
+                List.of(new SectionPos(0, 0, 0)), 8, 8, 8,
+                Level.L0.value(), 1e9, Integer.MAX_VALUE);
+
+        while (ShadowRouterJobQueue.hasWork()) {
+            var request = ShadowRouterJobQueue.dequeueAny();
+            assertFalse(request.lodLevel == Level.L1.value()
+                            && request.worldX == 0 && request.worldY == 0 && request.worldZ == 0,
+                    "fully vanilla parent must not consume refinement work");
+            ShadowRouterJobQueue.markCompleted(request);
+        }
+    }
+
+    @Test
     void budgetAppliesAfterDedupAndLaterPassAdvances() {
         GenerationSession session = new GenerationSession();
         session.setNoiseAccessForTest(solidNoise());
@@ -156,6 +195,72 @@ class EndRefinementDemandTest {
         assertEquals(0, rejected);
         assertEquals(1, accepted,
                 "a rejected candidate must not enter permanent selector dedup");
+    }
+
+    @Test
+    void blockedSelectorBitsAreEligibleForARealRetry() {
+        GenerationSession session = new GenerationSession();
+        session.setNoiseAccessForTest(solidNoise());
+        var regions = List.of(new SectionPos(0, 0, 0));
+        assertEquals(1, session.enqueueEndRefinementsForTest(
+                regions, 256, 96, 256, Level.L1.value(), 1e9, 1));
+        var request = ShadowRouterJobQueue.dequeueAny();
+
+        assertEquals(GenerationSession.DemandProcessResult.DEFERRED,
+                session.processEndPhysicalWork(
+                        request, new InMemoryVolumeWriter(),
+                        () -> GenerationSession.DemandProcessResult.FAILED));
+        ShadowRouterJobQueue.markCompleted(request);
+
+        assertEquals(1, session.enqueueEndRefinementsForTest(
+                regions, 256, 96, 256, Level.L1.value(), 1e9, 1));
+    }
+
+    @Test
+    void failedSelectorBitsAreEligibleForARealRetry() {
+        GenerationSession session = new GenerationSession();
+        session.setNoiseAccessForTest(solidNoise());
+        var regions = List.of(new SectionPos(0, 0, 0));
+        assertEquals(1, session.enqueueEndRefinementsForTest(
+                regions, 256, 96, 256, Level.L1.value(), 1e9, 1));
+        var request = ShadowRouterJobQueue.dequeueAny();
+
+        assertEquals(GenerationSession.DemandProcessResult.FAILED,
+                session.processEndPhysicalWork(
+                        request, null,
+                        () -> GenerationSession.DemandProcessResult.FAILED));
+        ShadowRouterJobQueue.markFailed(request);
+
+        assertEquals(1, session.enqueueEndRefinementsForTest(
+                regions, 256, 96, 256, Level.L1.value(), 1e9, 1));
+    }
+
+    @Test
+    void deterministicEmptyPublicationRemainsRepresented() {
+        GenerationSession session = new GenerationSession();
+        session.setNoiseAccessForTest(solidNoise());
+        var regions = List.of(new SectionPos(0, 0, 0));
+        assertEquals(1, session.enqueueEndRefinementsForTest(
+                regions, 256, 96, 256, Level.L1.value(), 1e9, 1));
+        var request = ShadowRouterJobQueue.dequeueAny();
+        VoxelVolumeWriter writer = Mockito.mock(VoxelVolumeWriter.class);
+        Mockito.when(writer.refineParent(Mockito.any()))
+                .thenReturn(ParentRefinementResult.published(WriteOutcome.skippedAir()));
+
+        assertEquals(GenerationSession.DemandProcessResult.WRITTEN,
+                session.processEndPhysicalWork(
+                        request, writer,
+                        () -> GenerationSession.DemandProcessResult.FAILED));
+        ShadowRouterJobQueue.markCompleted(request);
+
+        assertEquals(1, session.enqueueEndRefinementsForTest(
+                regions, 256, 96, 256, Level.L1.value(), 1e9, 1));
+        var next = ShadowRouterJobQueue.dequeueAny();
+        assertFalse(next.lodLevel == request.lodLevel
+                        && next.worldX == request.worldX
+                        && next.worldY == request.worldY
+                        && next.worldZ == request.worldZ,
+                "deterministic empty bits must remain represented");
     }
 
     @Test

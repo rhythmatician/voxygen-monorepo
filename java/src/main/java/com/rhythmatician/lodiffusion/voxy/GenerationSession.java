@@ -254,7 +254,8 @@ public final class GenerationSession {
      * Cleared when coverage changes; keyed on node, not camera, so a moved
      * camera inside covered regions re-emits only genuinely new nodes.
      */
-    private final Set<Long> emittedRefinements = ConcurrentHashMap.newKeySet();
+    private final ConcurrentHashMap<Long, Integer> emittedRefinementMasks =
+            new ConcurrentHashMap<>();
 
     private static long refinementKey(int level, int x, int y, int z) {
         long l = ((long) level) & 0x7L;
@@ -284,7 +285,7 @@ public final class GenerationSession {
      * @param budget max emissions this pass
      * @return number of requests enqueued
      */
-    int enqueueEndRefinementsForTest(List<SectionPos> coveredL4Regions,
+    synchronized int enqueueEndRefinementsForTest(List<SectionPos> coveredL4Regions,
                                      double camX, double camY, double camZ,
                                      int finestLevelValue,
                                      double renderDistanceBlocks, int budget) {
@@ -294,15 +295,37 @@ public final class GenerationSession {
                         REFINEMENT_FOCAL_PX, REFINEMENT_SUB_DIV_PX,
                         finestLevelValue, renderDistanceBlocks, budget,
                         coveredL4Regions));
+        List<RefinementDemandSelector.Emission> frontier = new ArrayList<>();
+        List<RefinementDemandSelector.Emission> ordinary = new ArrayList<>();
         int considered = 0;
         int newlyScheduled = 0;
         int alreadyRepresented = 0;
         int rejected = 0;
+        for (var emission : selections) {
+            var request = emission.request();
+            var cell = new VanillaOccupancyPyramid.Cell(
+                    request.level(), request.wsX(), request.wsY(), request.wsZ());
+            switch (vanillaOccupancy.relation(cell)) {
+                case FULL -> {
+                    emittedRefinementMasks.put(refinementKey(
+                            request.level(), request.wsX(), request.wsY(), request.wsZ()), 0xFF);
+                    alreadyRepresented++;
+                }
+                case FRONTIER -> frontier.add(emission);
+                case ORDINARY -> ordinary.add(emission);
+            }
+        }
+        List<RefinementDemandSelector.Emission> prioritized =
+                new ArrayList<>(frontier.size() + ordinary.size());
+        prioritized.addAll(frontier);
+        prioritized.addAll(ordinary);
         int schedulingBudget = Math.max(0, budget);
-        for (var e : selections) {
+        for (var e : prioritized) {
             var nr = e.request();
             long key = refinementKey(nr.level(), nr.wsX(), nr.wsY(), nr.wsZ());
-            if (emittedRefinements.contains(key)) {
+            int representedMask = emittedRefinementMasks.getOrDefault(key, 0);
+            int newDemandMask = e.demandedChildMask() & ~representedMask;
+            if (newDemandMask == 0) {
                 considered++;
                 alreadyRepresented++;
                 continue;
@@ -316,19 +339,34 @@ public final class GenerationSession {
             req.worldX = nr.wsX();
             req.worldY = nr.wsY();
             req.worldZ = nr.wsZ();
-            req.demandKind = VoxyDemandKind.VISUAL_REFINEMENT;
+            var cell = new VanillaOccupancyPyramid.Cell(
+                    nr.level(), nr.wsX(), nr.wsY(), nr.wsZ());
+            req.demandKind = vanillaOccupancy.relation(cell)
+                    == VanillaOccupancyPyramid.Relation.FRONTIER
+                    ? VoxyDemandKind.VANILLA_FRONTIER_GUARD
+                    : VoxyDemandKind.VISUAL_REFINEMENT;
             req.workKind = net.lodiffusion.shadow.VoxyWorkKind.PARENT_REFINEMENT;
             req.demandSource = VoxyDemandSource.SCREEN_SPACE_SELECTOR;
+            req.demandedChildMask = newDemandMask
+                    & vanillaOccupancy.missingChildOctants(cell);
+            if (req.demandedChildMask == 0) {
+                emittedRefinementMasks.merge(key, newDemandMask, (left, right) -> left | right);
+                alreadyRepresented++;
+                continue;
+            }
             ShadowRouterJobQueue.EnqueueResult result = ShadowRouterJobQueue.enqueue(req);
             switch (result) {
                 case QUEUED, UPGRADED -> {
-                    emittedRefinements.add(key);
+                    emittedRefinementMasks.merge(
+                            key, req.demandedChildMask, (left, right) -> left | right);
                     newlyScheduled++;
                 }
-                case DUPLICATE, IN_FLIGHT -> {
-                    emittedRefinements.add(key);
+                case DUPLICATE -> {
+                    emittedRefinementMasks.merge(
+                            key, req.demandedChildMask, (left, right) -> left | right);
                     alreadyRepresented++;
                 }
+                case IN_FLIGHT -> alreadyRepresented++;
                 case REJECTED -> rejected++;
             }
         }
@@ -448,6 +486,7 @@ public final class GenerationSession {
         parent.demandKind = VoxyDemandKind.VISUAL_REFINEMENT;
         parent.workKind = net.lodiffusion.shadow.VoxyWorkKind.PARENT_REFINEMENT;
         parent.demandSource = VoxyDemandSource.PARENT_DEPENDENCY;
+        parent.demandedChildMask = childOctantMask(req.worldX, req.worldY, req.worldZ);
         return processParentRefinement(parent, writer);
     }
 
@@ -456,7 +495,20 @@ public final class GenerationSession {
         if (request != null
                 && request.workKind == net.lodiffusion.shadow.VoxyWorkKind.PARENT_REFINEMENT) {
             refinementLifecycle.recordAttempt(request.lodLevel, outcome);
+            if (outcome.status() == RefinementOutcome.Status.BLOCKED_PARENT
+                    || outcome.status() == RefinementOutcome.Status.FAILED) {
+                clearEmittedRefinementBits(request);
+            }
         }
+    }
+
+    private void clearEmittedRefinementBits(VoxyRequestDecoder.VoxyNodeRequest request) {
+        long key = refinementKey(
+                request.lodLevel, request.worldX, request.worldY, request.worldZ);
+        emittedRefinementMasks.computeIfPresent(key, (ignored, represented) -> {
+            int remaining = represented & ~request.demandedChildMask;
+            return remaining == 0 ? null : remaining;
+        });
     }
 
     String refinementLifecycleSummaryForTest() {
@@ -478,11 +530,21 @@ public final class GenerationSession {
                 WorldSectionCoord.worldSectionToBlockMin(req.worldY, parentLevelValue) >> 4,
                 WorldSectionCoord.worldSectionToBlockMin(req.worldZ, parentLevelValue) >> 4);
         int childLevelValue = parentLevelValue - 1;
+        var occupancyCell = new VanillaOccupancyPyramid.Cell(
+                parentLevelValue, req.worldX, req.worldY, req.worldZ);
+        int demandedChildMask;
+        synchronized (this) {
+            demandedChildMask = req.demandedChildMask
+                    & vanillaOccupancy.missingChildOctants(occupancyCell);
+        }
+        if (demandedChildMask == 0) {
+            return RefinementOutcome.alreadyCovered();
+        }
         EndL4DeterministicCandidate candidate = new EndL4DeterministicCandidate(noiseAccess);
         ExactEndL1Candidate exactL1 = new ExactEndL1Candidate(noiseAccess, exactL1Sampling);
         try {
             ParentRefinementResult result = writer.refineParent(new ParentRefinementIntent(
-                    parentOrigin, parentLevel, (childLevel, childOrigin) -> {
+                    parentOrigin, parentLevel, demandedChildMask, (childLevel, childOrigin) -> {
                         int childWsY = WorldSectionCoord.sectionToWorldSection(
                                 childOrigin.y(), childLevelValue);
                         return isOutOfWorldY(childLevelValue, childWsY)
@@ -527,6 +589,8 @@ public final class GenerationSession {
                     ? VoxyDemandKind.VANILLA_FRONTIER_GUARD
                     : VoxyDemandKind.VISUAL_REFINEMENT;
             prerequisite.workKind = net.lodiffusion.shadow.VoxyWorkKind.PARENT_REFINEMENT;
+            prerequisite.demandedChildMask = childOctantMask(
+                    req.worldX, req.worldY, req.worldZ);
         }
         prerequisite.demandSource = VoxyDemandSource.PARENT_DEPENDENCY;
         ShadowRouterJobQueue.enqueue(prerequisite);
@@ -1040,6 +1104,8 @@ public final class GenerationSession {
         request.demandKind = VoxyDemandKind.VANILLA_FRONTIER_GUARD;
         request.workKind = net.lodiffusion.shadow.VoxyWorkKind.PARENT_REFINEMENT;
         request.demandSource = VoxyDemandSource.VANILLA_OCCUPANCY_BOUNDARY;
+        request.demandedChildMask = vanillaOccupancy.missingChildOctants(parent);
+        if (request.demandedChildMask == 0) return;
         ShadowRouterJobQueue.enqueue(request);
     }
 
@@ -1056,10 +1122,16 @@ public final class GenerationSession {
     }
 
     private synchronized boolean isFullyVanillaOccupancyRequest(VoxyRequestDecoder.VoxyNodeRequest request) {
-        return request.demandSource == VoxyDemandSource.VANILLA_OCCUPANCY_BOUNDARY
-                && vanillaOccupancy.classify(new VanillaOccupancyPyramid.Cell(
+        return vanillaOccupancy.classify(new VanillaOccupancyPyramid.Cell(
                         request.lodLevel, request.worldX, request.worldY, request.worldZ))
                 == VanillaOccupancyPyramid.Occupancy.FULL_VANILLA;
+    }
+
+    private static int childOctantMask(int childX, int childY, int childZ) {
+        int octant = Math.floorMod(childX, 2)
+                | (Math.floorMod(childZ, 2) << 1)
+                | (Math.floorMod(childY, 2) << 2);
+        return 1 << octant;
     }
 
     synchronized boolean isFullyVanillaOccupancyRequestForTest(

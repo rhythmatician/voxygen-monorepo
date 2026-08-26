@@ -75,12 +75,116 @@ class ShadowRouterJobQueueTest {
 
     @Test
     void guardUpgradesQueuedVisualParentWithoutDuplicatingThePhysicalTransaction() {
-        enqueue(1, 2, VoxyDemandKind.VISUAL_REFINEMENT);
+        var visual = request(1, 2, VoxyDemandKind.VISUAL_REFINEMENT);
+        visual.demandedChildMask = 0x01;
+        ShadowRouterJobQueue.enqueue(visual);
         var guard = request(1, 2, VoxyDemandKind.VANILLA_FRONTIER_GUARD);
+        guard.demandedChildMask = 0x80;
 
         assertEquals(ShadowRouterJobQueue.EnqueueResult.UPGRADED, ShadowRouterJobQueue.enqueue(guard));
         assertEquals(1, ShadowRouterJobQueue.size());
-        assertEquals(VoxyDemandKind.VANILLA_FRONTIER_GUARD, take().demandKind);
+        var merged = take();
+        assertEquals(VoxyDemandKind.VANILLA_FRONTIER_GUARD, merged.demandKind);
+        assertEquals(0x81, merged.demandedChildMask);
+    }
+
+    @Test
+    void duplicateParentRequestsUnionDemandedOctantsWithoutDuplicatingWork() {
+        var first = request(2, 3, VoxyDemandKind.VISUAL_REFINEMENT);
+        first.demandedChildMask = 0x04;
+        var second = request(2, 3, VoxyDemandKind.VISUAL_REFINEMENT);
+        second.demandedChildMask = 0x20;
+
+        assertEquals(ShadowRouterJobQueue.EnqueueResult.QUEUED, ShadowRouterJobQueue.enqueue(first));
+        assertEquals(ShadowRouterJobQueue.EnqueueResult.DUPLICATE, ShadowRouterJobQueue.enqueue(second));
+        assertEquals(1, ShadowRouterJobQueue.size());
+        assertEquals(0x24, take().demandedChildMask);
+    }
+
+    @Test
+    void inFlightParentRemainsImmutableAndLateUrgencyBecomesFollowUpWork() {
+        var visual = request(2, 3, VoxyDemandKind.VISUAL_REFINEMENT);
+        visual.demandedChildMask = 0x02;
+        ShadowRouterJobQueue.enqueue(visual);
+        var inFlight = ShadowRouterJobQueue.dequeueAny();
+
+        var guard = request(2, 3, VoxyDemandKind.VANILLA_FRONTIER_GUARD);
+        guard.demandedChildMask = 0x40;
+        assertEquals(ShadowRouterJobQueue.EnqueueResult.IN_FLIGHT,
+                ShadowRouterJobQueue.enqueue(guard));
+
+        assertEquals(0, ShadowRouterJobQueue.size());
+        assertEquals(0x02, inFlight.demandedChildMask);
+        assertEquals(VoxyDemandKind.VISUAL_REFINEMENT, inFlight.demandKind);
+        ShadowRouterJobQueue.markCompleted(inFlight);
+
+        var followUp = ShadowRouterJobQueue.dequeueAny();
+        assertNotNull(followUp);
+        assertEquals(0x40, followUp.demandedChildMask);
+        assertEquals(VoxyDemandKind.VANILLA_FRONTIER_GUARD, followUp.demandKind);
+        ShadowRouterJobQueue.markCompleted(followUp);
+
+        var metrics = ShadowRouterJobQueue.demandMetrics();
+        assertEquals(1, metrics.visual().queued());
+        assertEquals(1, metrics.visual().dequeued());
+        assertEquals(1, metrics.visual().completed());
+        assertEquals(1, metrics.guard().queued());
+        assertEquals(1, metrics.guard().dequeued());
+        assertEquals(1, metrics.guard().completed());
+    }
+
+    @Test
+    void urgencyOnlyArrivalDoesNotRepeatCompletedOctants() {
+        var visual = request(2, 3, VoxyDemandKind.VISUAL_REFINEMENT);
+        visual.demandedChildMask = 0x10;
+        ShadowRouterJobQueue.enqueue(visual);
+        var active = ShadowRouterJobQueue.dequeueAny();
+
+        var guard = request(2, 3, VoxyDemandKind.VANILLA_FRONTIER_GUARD);
+        guard.demandedChildMask = 0x10;
+        assertEquals(ShadowRouterJobQueue.EnqueueResult.IN_FLIGHT,
+                ShadowRouterJobQueue.enqueue(guard));
+        assertEquals(VoxyDemandKind.VISUAL_REFINEMENT, active.demandKind);
+        ShadowRouterJobQueue.markCompleted(active);
+        assertEquals(0, ShadowRouterJobQueue.size());
+    }
+
+    @Test
+    void urgencyOnlyArrivalUpgradesABlockedRetry() {
+        var visual = request(2, 3, VoxyDemandKind.VISUAL_REFINEMENT);
+        visual.demandedChildMask = 0x10;
+        ShadowRouterJobQueue.enqueue(visual);
+        var active = ShadowRouterJobQueue.dequeueAny();
+
+        var guard = request(2, 3, VoxyDemandKind.VANILLA_FRONTIER_GUARD);
+        guard.demandedChildMask = 0x10;
+        assertEquals(ShadowRouterJobQueue.EnqueueResult.IN_FLIGHT,
+                ShadowRouterJobQueue.enqueue(guard));
+        ShadowRouterJobQueue.requeue(active);
+
+        var retry = ShadowRouterJobQueue.dequeueAny();
+        assertEquals(VoxyDemandKind.VANILLA_FRONTIER_GUARD, retry.demandKind);
+        assertEquals(0x10, retry.demandedChildMask);
+        ShadowRouterJobQueue.markCompleted(retry);
+    }
+
+    @Test
+    void failedInFlightParentStillDispatchesPendingFollowUp() {
+        var active = request(2, 3, VoxyDemandKind.VISUAL_REFINEMENT);
+        active.demandedChildMask = 0x01;
+        ShadowRouterJobQueue.enqueue(active);
+        active = ShadowRouterJobQueue.dequeueAny();
+
+        var late = request(2, 3, VoxyDemandKind.VISUAL_REFINEMENT);
+        late.demandedChildMask = 0x08;
+        assertEquals(ShadowRouterJobQueue.EnqueueResult.IN_FLIGHT,
+                ShadowRouterJobQueue.enqueue(late));
+        ShadowRouterJobQueue.markFailed(active);
+
+        var followUp = ShadowRouterJobQueue.dequeueAny();
+        assertNotNull(followUp);
+        assertEquals(0x08, followUp.demandedChildMask);
+        ShadowRouterJobQueue.markCompleted(followUp);
     }
 
     @Test

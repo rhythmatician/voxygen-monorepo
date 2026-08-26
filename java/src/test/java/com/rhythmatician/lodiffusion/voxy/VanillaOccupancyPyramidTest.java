@@ -64,6 +64,12 @@ class VanillaOccupancyPyramidTest {
         var delta = pyramid.observeVanillaOctant(0, 7, 0, 3);
 
         var occupiedL0 = new VanillaOccupancyPyramid.Cell(0, 0, 7, 0);
+        assertEquals(VanillaOccupancyPyramid.Relation.FRONTIER,
+                pyramid.relation(occupiedL0));
+        assertEquals(VanillaOccupancyPyramid.Relation.FRONTIER,
+                pyramid.relation(new VanillaOccupancyPyramid.Cell(0, 1, 7, 1)));
+        assertEquals(VanillaOccupancyPyramid.Relation.ORDINARY,
+                pyramid.relation(new VanillaOccupancyPyramid.Cell(0, 0, 8, 0)));
         assertTrue(delta.newlyMixedParents().contains(occupiedL0));
         assertTrue(delta.addedUrgent().contains(occupiedL0));
         assertEquals(9, delta.addedUrgent().stream().filter(cell -> cell.level() == 0).count());
@@ -109,5 +115,15 @@ class VanillaOccupancyPyramidTest {
         assertEquals(VanillaOccupancyPyramid.Occupancy.MIXED, pyramid.classify(l0));
         assertEquals(0b0111_1111, pyramid.missingChildOctants(l0));
         assertEquals(VanillaOccupancyPyramid.Occupancy.MIXED, pyramid.classify(parent));
+    }
+
+    @Test
+    void fullVanillaRelationTakesPrecedenceOverFrontierMembership() {
+        var pyramid = new VanillaOccupancyPyramid();
+        var cell = new VanillaOccupancyPyramid.Cell(0, 2, 0, 3);
+
+        pyramid.observeVanillaL0Octants(2, 0, 3, 0xFF);
+
+        assertEquals(VanillaOccupancyPyramid.Relation.FULL, pyramid.relation(cell));
     }
 }

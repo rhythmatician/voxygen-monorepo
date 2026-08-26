@@ -77,6 +77,27 @@ final class VoxyTopologyHarness {
         nodeManager.publishChildExistence(coarse.getNonEmptyChildren());
     }
 
+    void attemptNativePromotion(int octant) {
+        WorldSection nativeChild = WorldSection._createRawUntrackedUnsafeSection(
+                coarse.lvl - 1,
+                (coarse.x << 1) | (octant & 1),
+                (coarse.y << 1) | ((octant >>> 2) & 1),
+                (coarse.z << 1) | ((octant >>> 1) & 1));
+        boolean suppressed = VoxyTopologyOwnership.beginNativePromotion(coarse);
+        try {
+            if (!suppressed) {
+                coarse.updateEmptyChildState(nativeChild);
+            }
+        } finally {
+            VoxyTopologyOwnership.finishNativePromotion();
+        }
+    }
+
+    void assertFallbackOwnershipRetained() {
+        org.junit.jupiter.api.Assertions.assertTrue(VoxyTopologyOwnership.isOwned(coarse),
+                "incomplete child coverage still depends on the coarse fallback");
+    }
+
     void assertCoarseMeshAllocatedAndReferenced() {
         org.junit.jupiter.api.Assertions.assertTrue(nodeManager.coarseMeshAllocated(),
                 "coarse mesh must remain allocated");

@@ -385,9 +385,11 @@ final class VoxyWorldBinding {
             return false;
         }
         boolean changed = mergeNonEmptyChildren(parentSection, finalMask);
-        // The mask is visible before ownership ends. A native promotion that
-        // observes the release therefore observes a complete topology.
-        boolean released = VoxyTopologyOwnership.releaseAfterHandoff(parentSection);
+        byte publishedMask = (byte) worldSectionNecVarHandle.getVolatile(parentSection);
+        // Sparse publication still relies on the parent for every clear bit.
+        // Ownership ends only after every octant has a child fallback.
+        boolean released = publishedMask == (byte) 0xFF
+                && VoxyTopologyOwnership.releaseAfterHandoff(parentSection);
         return changed || released;
     }
 

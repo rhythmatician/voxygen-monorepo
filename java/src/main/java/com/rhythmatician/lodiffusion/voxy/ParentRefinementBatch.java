@@ -32,7 +32,8 @@ final class ParentRefinementBatch {
     private int terminalMask;
     private int nonEmptyMask;
 
-    private ParentRefinementBatch(SectionPos parentOrigin, Level parentLevel, List<Child> children) {
+    private ParentRefinementBatch(
+            SectionPos parentOrigin, Level parentLevel, int requiredMask, List<Child> children) {
         this.parentOrigin = Objects.requireNonNull(parentOrigin, "parentOrigin");
         this.parentLevel = Objects.requireNonNull(parentLevel, "parentLevel");
         if (parentLevel.value() < Level.L1.value() || parentLevel.value() > Level.L4.value()) {
@@ -42,8 +43,8 @@ final class ParentRefinementBatch {
             throw new IllegalArgumentException("parent origin is not aligned to " + parentLevel);
         }
         Objects.requireNonNull(children, "children");
-        if (children.size() != 8) {
-            throw new IllegalArgumentException("a parent refinement requires all 8 child outcomes");
+        if (requiredMask <= 0 || (requiredMask & ~0xFF) != 0) {
+            throw new IllegalArgumentException("requiredMask must contain child bits");
         }
         int mask = 0;
         for (Child child : children) {
@@ -62,7 +63,10 @@ final class ParentRefinementBatch {
             mask |= bit;
         }
         this.children = List.copyOf(children);
-        this.requiredMask = mask;
+        if (mask != requiredMask) {
+            throw new IllegalArgumentException("child octants must exactly match requiredMask");
+        }
+        this.requiredMask = requiredMask;
     }
 
     static ParentRefinementBatch materialize(ParentRefinementIntent intent) {
@@ -71,13 +75,17 @@ final class ParentRefinementBatch {
         List<SectionPos> origins = childOrigins(intent.parentOrigin(), intent.parentLevel());
         java.util.ArrayList<Child> children = new java.util.ArrayList<>(8);
         for (int octant = 0; octant < 8; octant++) {
+            if ((intent.demandedChildMask() & (1 << octant)) == 0) {
+                continue;
+            }
             SectionPos origin = origins.get(octant);
             VoxelVolume volume = Objects.requireNonNull(
                     intent.childVolumes().produce(childLevel, origin),
                     "child volume for octant " + octant);
             children.add(new Child(octant, origin, volume));
         }
-        return new ParentRefinementBatch(intent.parentOrigin(), intent.parentLevel(), children);
+        return new ParentRefinementBatch(
+                intent.parentOrigin(), intent.parentLevel(), intent.demandedChildMask(), children);
     }
 
     static List<SectionPos> childOrigins(SectionPos parentOrigin, Level parentLevel) {

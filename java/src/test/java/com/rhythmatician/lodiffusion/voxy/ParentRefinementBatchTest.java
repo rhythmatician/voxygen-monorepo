@@ -12,22 +12,43 @@ class ParentRefinementBatchTest {
     private static final SectionPos PARENT = new SectionPos(0, 0, 0);
 
     @Test
-    void intentExpandsAllChildrenInOctantOrder() {
+    void intentMaterializesOnlyDemandedChildrenInOctantOrder() {
         InMemoryVolumeWriter writer = writerWithParent();
         List<SectionPos> observed = new ArrayList<>();
 
         ParentRefinementResult result = writer.refineParent(new ParentRefinementIntent(
-                PARENT, Level.L4, (level, origin) -> {
+                PARENT, Level.L4, 0b0010_0101, (level, origin) -> {
                     observed.add(origin);
                     return solid();
                 }));
 
         assertEquals(ParentRefinementResult.Status.PUBLISHED, result.status());
         assertEquals(List.of(
-                new SectionPos(0, 0, 0), new SectionPos(16, 0, 0),
-                new SectionPos(0, 0, 16), new SectionPos(16, 0, 16),
-                new SectionPos(0, 16, 0), new SectionPos(16, 16, 0),
-                new SectionPos(0, 16, 16), new SectionPos(16, 16, 16)), observed);
+                new SectionPos(0, 0, 0),
+                new SectionPos(0, 0, 16),
+                new SectionPos(16, 16, 0)), observed);
+        assertEquals(0b0010_0101, writer.committedChildMask(PARENT, Level.L4));
+    }
+
+    @Test
+    void oneBitDemandInvokesTheProducerOnce() {
+        InMemoryVolumeWriter writer = writerWithParent();
+        int[] calls = {0};
+
+        writer.refineParent(new ParentRefinementIntent(
+                PARENT, Level.L4, 1 << 5, (level, origin) -> {
+                    calls[0]++;
+                    return solid();
+                }));
+
+        assertEquals(1, calls[0]);
+        assertEquals(1 << 5, writer.committedChildMask(PARENT, Level.L4));
+    }
+
+    @Test
+    void emptyDemandMaskIsRejected() {
+        assertThrows(IllegalArgumentException.class, () -> new ParentRefinementIntent(
+                PARENT, Level.L4, 0, (level, origin) -> solid()));
     }
 
     @Test

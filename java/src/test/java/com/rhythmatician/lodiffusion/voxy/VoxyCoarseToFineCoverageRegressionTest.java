@@ -34,8 +34,14 @@ class VoxyCoarseToFineCoverageRegressionTest {
         topology.publishStoredChildren();
         topology.notifyRendererOfPublishedTopology();
         assertEquals(0x20, Byte.toUnsignedInt(topology.childExistenceMask()));
+        topology.assertFallbackOwnershipRetained();
         topology.assertCoarseMeshAllocatedAndReferenced();
         topology.assertOnlyChildRequested(5);
+        topology.assertAllOctantsEffectivelyRenderAtLevel(4);
+
+        topology.attemptNativePromotion(2);
+        topology.notifyRendererOfPublishedTopology();
+        topology.assertFallbackOwnershipRetained();
         topology.assertAllOctantsEffectivelyRenderAtLevel(4);
 
         topology.completeStoredChild(5);

@@ -19,7 +19,7 @@ class EndRefinementPipelineTest {
     @AfterEach void tearDown() { ShadowRouterJobQueue.clear(); }
 
     @Test
-    void parentTransactionWritesEightChildrenAndPublishesExactMask() {
+    void parentTransactionPublishesOnlyRenderableDemandedChildren() {
         GenerationSession session = new GenerationSession();
         session.setNoiseAccessForTest(solidNoise());
         InMemoryVolumeWriter writer = new InMemoryVolumeWriter();
@@ -112,7 +112,8 @@ class EndRefinementPipelineTest {
         writer.writeRegion(new SectionPos(0, 0, 0), Level.L4, solidVolume());
         assertEquals(RefinementOutcome.Status.PUBLISHED,
                 session.processEndRefinementRequest(request(3, false), writer).status());
-        assertEquals(5, writer.regionRecords().size());
+        assertEquals(2, writer.regionRecords().size());
+        assertEquals(0x01, writer.committedChildMask(new SectionPos(0, 0, 0), Level.L4));
     }
 
     @Test
@@ -138,7 +139,7 @@ class EndRefinementPipelineTest {
 
         assertEquals(RefinementOutcome.Status.PUBLISHED,
                 session.processEndRefinementRequest(request(0, false), writer).status());
-        assertEquals(0xFF, writer.committedChildMask(new SectionPos(0, 0, 0), Level.L1));
+        assertEquals(0x01, writer.committedChildMask(new SectionPos(0, 0, 0), Level.L1));
     }
 
     @Test
@@ -212,7 +213,7 @@ class EndRefinementPipelineTest {
     }
 
     @Test
-    void l2TransactionMaterializesAllEightExactChildrenBeforeOneBatchHandoff() {
+    void oneBitL2TransactionMaterializesOneExactChildBeforeOneBatchHandoff() {
         WorldNoiseAccess noise = Mockito.mock(WorldNoiseAccess.class);
         java.util.concurrent.atomic.AtomicInteger chunkColumns =
                 new java.util.concurrent.atomic.AtomicInteger();
@@ -227,14 +228,16 @@ class EndRefinementPipelineTest {
         BatchOnlyWriter writer = new BatchOnlyWriter();
         writer.materializeAllChildren = true;
 
+        VoxyRequestDecoder.VoxyNodeRequest request = request(2, true);
+        request.demandedChildMask = 1 << 3;
         assertEquals(RefinementOutcome.Status.PUBLISHED,
-                session.processEndRefinementRequest(request(2, true), writer).status());
+                session.processEndRefinementRequest(request, writer).status());
 
         assertEquals(1, writer.batchCommits);
         assertEquals(0, writer.directRegionWrites);
-        assertEquals(8, writer.materializedChildLevels.size());
+        assertEquals(1, writer.materializedChildLevels.size());
         assertTrue(writer.materializedChildLevels.stream().allMatch(level -> level == Level.L1));
-        assertEquals(128, chunkColumns.get());
+        assertEquals(16, chunkColumns.get());
     }
 
     private static final class BatchOnlyWriter implements VoxelVolumeWriter {
@@ -277,8 +280,11 @@ class EndRefinementPipelineTest {
             }
             if (materializeAllChildren) {
                 Level childLevel = Level.values()[intent.parentLevel().value() - 1];
-                for (SectionPos childOrigin : ParentRefinementBatch.childOrigins(
-                        intent.parentOrigin(), intent.parentLevel())) {
+                var origins = ParentRefinementBatch.childOrigins(
+                        intent.parentOrigin(), intent.parentLevel());
+                for (int octant = 0; octant < 8; octant++) {
+                    if ((intent.demandedChildMask() & (1 << octant)) == 0) continue;
+                    SectionPos childOrigin = origins.get(octant);
                     intent.childVolumes().produce(childLevel, childOrigin);
                     materializedChildLevels.add(childLevel);
                 }

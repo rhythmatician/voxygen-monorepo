@@ -52,6 +52,30 @@ class RefinementDemandSelectorTest {
     }
 
     @Test
+    void parentDemandRetainsTheExactDemandedChildOctants() {
+        var out = RefinementDemandSelector.select(new RefinementDemandSelector.Params(
+                448, 300, 448, 10, 64, Level.L1.value(), 1e9, Integer.MAX_VALUE,
+                List.of(new SectionPos(0, 0, 0))));
+
+        var l2 = out.stream()
+                .filter(e -> e.request().equals(
+                        new RefinementDemandSelector.NodeRequest(2, 3, 2, 3)))
+                .findFirst().orElseThrow();
+        assertEquals(0x0F, l2.demandedChildMask());
+    }
+
+    @Test
+    void siblingChildDemandsMergeIntoOneParentMask() {
+        var out = RefinementDemandSelector.select(params(Level.L1.value()));
+
+        var containingCamera = out.stream()
+                .filter(e -> e.request().equals(
+                        new RefinementDemandSelector.NodeRequest(2, 0, 0, 0)))
+                .findFirst().orElseThrow();
+        assertEquals(0xFF, containingCamera.demandedChildMask());
+    }
+
+    @Test
     void orderingIsNormalizedAndDeterministic() {
         var a = RefinementDemandSelector.select(params(Level.L1.value()));
         var b = RefinementDemandSelector.select(params(Level.L1.value()));

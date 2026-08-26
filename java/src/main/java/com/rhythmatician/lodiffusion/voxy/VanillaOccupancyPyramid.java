@@ -29,6 +29,12 @@ final class VanillaOccupancyPyramid {
         FULL_VANILLA
     }
 
+    enum Relation {
+        FULL,
+        FRONTIER,
+        ORDINARY
+    }
+
     record Cell(int level, int x, int y, int z) {
         Cell {
             if (level < 0 || level > MAX_LEVEL) {
@@ -147,6 +153,14 @@ final class VanillaOccupancyPyramid {
             return Occupancy.NONE;
         }
         return occupied == capacity(cell.level()) ? Occupancy.FULL_VANILLA : Occupancy.MIXED;
+    }
+
+    Relation relation(Cell cell) {
+        Occupancy occupancy = classify(cell);
+        if (occupancy == Occupancy.FULL_VANILLA) {
+            return Relation.FULL;
+        }
+        return urgentBoundary.contains(cell) ? Relation.FRONTIER : Relation.ORDINARY;
     }
 
     /** Bit set means that child octant is not completely owned by vanilla. */

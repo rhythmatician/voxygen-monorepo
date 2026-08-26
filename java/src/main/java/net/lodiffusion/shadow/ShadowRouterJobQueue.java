@@ -72,7 +72,10 @@ public final class ShadowRouterJobQueue {
     private static int coverageDispatchesSinceVisual;
     private static final Map<RequestKey, VoxyRequestDecoder.VoxyNodeRequest> queuedRequests =
             new HashMap<>();
-    private static final Map<RequestKey, VoxyDemandKind> inFlightRequests = new HashMap<>();
+    private static final Map<RequestKey, VoxyRequestDecoder.VoxyNodeRequest> inFlightRequests =
+            new HashMap<>();
+    private static final Map<RequestKey, VoxyRequestDecoder.VoxyNodeRequest> pendingFollowUps =
+            new HashMap<>();
     private static final long[][] lifecycleCounts = new long[VoxyDemandKind.values().length][5];
 
     static {
@@ -142,8 +145,7 @@ public final class ShadowRouterJobQueue {
         if (request == null) return;
         lock.writeLock().lock();
         try {
-            VoxyDemandKind kind = inFlightRequests.remove(RequestKey.of(request));
-            if (kind != null) count(kind, 2);
+            finishInFlightLocked(request, 2);
         } finally {
             lock.writeLock().unlock();
         }
@@ -154,8 +156,7 @@ public final class ShadowRouterJobQueue {
         if (request == null) return;
         lock.writeLock().lock();
         try {
-            VoxyDemandKind kind = inFlightRequests.remove(RequestKey.of(request));
-            if (kind != null) count(kind, 3);
+            finishInFlightLocked(request, 3);
         } finally {
             lock.writeLock().unlock();
         }
@@ -166,8 +167,7 @@ public final class ShadowRouterJobQueue {
         if (request == null) return;
         lock.writeLock().lock();
         try {
-            VoxyDemandKind kind = inFlightRequests.remove(RequestKey.of(request));
-            if (kind != null) count(kind, 4);
+            finishInFlightLocked(request, 4);
         } finally {
             lock.writeLock().unlock();
         }
@@ -178,8 +178,11 @@ public final class ShadowRouterJobQueue {
                 || !shouldAccept(request)) return;
         lock.writeLock().lock();
         try {
-            inFlightRequests.remove(RequestKey.of(request));
-            enqueueLocked(request);
+            RequestKey key = RequestKey.of(request);
+            VoxyRequestDecoder.VoxyNodeRequest active = inFlightRequests.remove(key);
+            if (active == null) return;
+            VoxyRequestDecoder.VoxyNodeRequest pending = pendingFollowUps.remove(key);
+            enqueueLocked(pending == null ? active : mergeRequests(active, pending));
         } finally {
             lock.writeLock().unlock();
         }
@@ -212,6 +215,7 @@ public final class ShadowRouterJobQueue {
             clear(visualQueues);
             queuedRequests.clear();
             inFlightRequests.clear();
+            pendingFollowUps.clear();
             clearLifecycleCounts();
             guardTurn = false;
             coverageDispatchesSinceVisual = 0;
@@ -269,6 +273,7 @@ public final class ShadowRouterJobQueue {
         RequestKey key = RequestKey.of(request);
         VoxyRequestDecoder.VoxyNodeRequest queued = queuedRequests.get(key);
         if (queued != null) {
+            queued.demandedChildMask |= request.demandedChildMask;
             if (request.demandKind.priority().ordinal() < queued.demandKind.priority().ordinal()) {
                 queueFor(queued)[queued.lodLevel].remove(queued);
                 queued.demandKind = request.demandKind;
@@ -279,7 +284,18 @@ public final class ShadowRouterJobQueue {
             }
             return EnqueueResult.DUPLICATE;
         }
-        if (inFlightRequests.containsKey(key)) return EnqueueResult.IN_FLIGHT;
+        VoxyRequestDecoder.VoxyNodeRequest inFlight = inFlightRequests.get(key);
+        if (inFlight != null) {
+            int pendingMask = request.demandedChildMask & ~inFlight.demandedChildMask;
+            boolean higherUrgency = request.demandKind.priority().ordinal()
+                    < inFlight.demandKind.priority().ordinal();
+            if (pendingMask != 0 || higherUrgency) {
+                VoxyRequestDecoder.VoxyNodeRequest followUp = copyRequest(request);
+                followUp.demandedChildMask = pendingMask;
+                pendingFollowUps.merge(key, followUp, ShadowRouterJobQueue::mergeRequests);
+            }
+            return EnqueueResult.IN_FLIGHT;
+        }
         queueFor(request)[request.lodLevel].offer(request);
         queuedRequests.put(key, request);
         count(request.demandKind, 0);
@@ -390,9 +406,48 @@ public final class ShadowRouterJobQueue {
         if (request == null) return null;
         RequestKey key = RequestKey.of(request);
         queuedRequests.remove(key);
-        inFlightRequests.put(key, request.demandKind);
+        inFlightRequests.put(key, request);
         count(request.demandKind, 1);
         return request;
+    }
+
+    private static void finishInFlightLocked(
+            VoxyRequestDecoder.VoxyNodeRequest request, int lifecycleIndex) {
+        RequestKey key = RequestKey.of(request);
+        VoxyRequestDecoder.VoxyNodeRequest active = inFlightRequests.remove(key);
+        if (active == null) return;
+        count(active.demandKind, lifecycleIndex);
+        VoxyRequestDecoder.VoxyNodeRequest pending = pendingFollowUps.remove(key);
+        if (pending != null && pending.demandedChildMask != 0) {
+            enqueueLocked(pending);
+        }
+    }
+
+    private static VoxyRequestDecoder.VoxyNodeRequest mergeRequests(
+            VoxyRequestDecoder.VoxyNodeRequest left,
+            VoxyRequestDecoder.VoxyNodeRequest right) {
+        VoxyRequestDecoder.VoxyNodeRequest merged = copyRequest(left);
+        merged.demandedChildMask |= right.demandedChildMask;
+        if (right.demandKind.priority().ordinal()
+                < merged.demandKind.priority().ordinal()) {
+            merged.demandKind = right.demandKind;
+            merged.demandSource = right.demandSource;
+        }
+        return merged;
+    }
+
+    private static VoxyRequestDecoder.VoxyNodeRequest copyRequest(
+            VoxyRequestDecoder.VoxyNodeRequest source) {
+        VoxyRequestDecoder.VoxyNodeRequest copy = new VoxyRequestDecoder.VoxyNodeRequest();
+        copy.lodLevel = source.lodLevel;
+        copy.worldX = source.worldX;
+        copy.worldY = source.worldY;
+        copy.worldZ = source.worldZ;
+        copy.demandKind = source.demandKind;
+        copy.workKind = source.workKind;
+        copy.demandSource = source.demandSource;
+        copy.demandedChildMask = source.demandedChildMask;
+        return copy;
     }
 
     private static PriorityQueue<VoxyRequestDecoder.VoxyNodeRequest>[] queueFor(
@@ -431,8 +486,8 @@ public final class ShadowRouterJobQueue {
             PriorityQueue<VoxyRequestDecoder.VoxyNodeRequest>[] queues) {
         long[] counts = lifecycleCounts[kind.ordinal()];
         int inFlight = 0;
-        for (VoxyDemandKind inFlightKind : inFlightRequests.values()) {
-            if (inFlightKind == kind) inFlight++;
+        for (VoxyRequestDecoder.VoxyNodeRequest inFlightRequest : inFlightRequests.values()) {
+            if (inFlightRequest.demandKind == kind) inFlight++;
         }
         return new DemandMetrics(counts[0], counts[1], counts[2], counts[3], counts[4],
                 sizeOf(queues), inFlight);
