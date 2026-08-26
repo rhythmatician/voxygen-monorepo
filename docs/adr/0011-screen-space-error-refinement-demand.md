@@ -1,7 +1,39 @@
 # 0011 — Refinement demand is selected by screen-space error, not per-level radii
 
 Date: 2026-08-24
-Status: Accepted
+Status: Accepted (amended 2026-08-26)
+
+## Amendment (2026-08-26): shipped policy is a fixed-projection approximation
+
+The implementation does not consume runtime projection values. `DefaultEndRefinement`
+uses configured constants (`endRefinementFocalPx` = 1000, `endRefinementSubDivPx` = 64,
+`endRefinementRenderDistanceBlocks` = 8192), so the descent test reduces to a fixed
+per-level distance threshold:
+
+```
+dist < size * focalPx / subDivisionPx
+```
+
+With production defaults this is ~4000 blocks for a 256-block L3 node, ~2000 for L2,
+~1000 for L1, ~500 for L0. Window size, framebuffer dimensions, FOV, camera
+orientation, frustum culling, and Hi-Z occlusion have no effect on selection.
+
+This is a deliberate simplification, not the full viewport-dependent policy described
+in the original Decision below:
+
+- **Kept from Voxy's shape**: one fixed coarsest-level ring; per-node descent ordered
+  near-first; closest-point AABB distance; XZ-cylindrical coverage culling.
+- **Intentionally omitted**: projected-area-vs-viewport-area normalization, frustum
+  culling, Hi-Z occlusion. The CPU selector feeds a deterministic producer, not a
+  render-list builder, so over-selection near the threshold is safe and budgeted.
+- **Consequence**: acceptance evidence should interpret thresholds as fixed distances
+  per level, not as screen-space measurements. Passing actual client projection
+  parameters into the selector remains the future work that would realize the
+  original policy below.
+
+The original Context, Decision, Alternatives, and Consequences are retained as the
+historical rationale. Where they conflict with this amendment, the amendment is
+authoritative for the shipped implementation.
 
 ## Context
 
