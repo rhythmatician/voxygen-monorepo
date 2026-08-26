@@ -141,7 +141,7 @@ public final class GenerationSession {
 
     // End uses only the top-down tracer/exact route. Compatibility publishers
     // (heightmap and ONNX) remain available only in other dimensions.
-    private volatile TerrainPublicationRoute terrainRoute = TerrainPublicationRoute.UNIDENTIFIED;
+    private volatile TerrainPublicationRoute terrainRoute = TerrainPublicationRoute.PUBLICATION_DENIED;
     static final int END_L4_TRACER_RADIUS = 5;
     static final int END_L4_TRACER_WS_Y = 0;
     static final int END_L4_TRACER_TOTAL = 121; // 11*11

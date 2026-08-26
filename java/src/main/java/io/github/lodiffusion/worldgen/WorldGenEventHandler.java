@@ -14,7 +14,6 @@ import java.nio.file.Path;
 import java.util.Map;
 import java.util.WeakHashMap;
 
-import com.rhythmatician.lodiffusion.voxy.TerrainPublicationRoute;
 import com.rhythmatician.lodiffusion.voxy.VoxyCompat;
 import com.rhythmatician.lodiffusion.world.noise.GpuNoiseDispatchQueue;
 
@@ -237,10 +236,6 @@ public class WorldGenEventHandler {
             LOGGER.debug("WS-2: non-world level — skipping block write");
             return;
         }
-        if (!TerrainPublicationRoute.forWorld(world).allowsCompatibilityTerrainPublication()) {
-            LOGGER.debug("WS-2: End terrain belongs to the top-down route; skipping block write");
-            return;
-        }
         if (!VoxyCompat.isAvailable()) {
             LOGGER.debug("WS-2: Voxy not available — skipping block write");
             return;
@@ -267,7 +262,13 @@ public class WorldGenEventHandler {
             Object mapper = VoxyCompat.getMapper(worldEngine);
             int defaultBiome = resolveDefaultBiome(mapper);
 
-            ShaderSectionWriter writer = ShaderSectionWriter.create(world, worldEngine, defaultBiome);
+            ShaderSectionWriter writer;
+            try {
+                writer = ShaderSectionWriter.create(world, worldEngine, defaultBiome);
+            } catch (ShaderSectionWriter.PublicationRejectedException e) {
+                LOGGER.debug("WS-2: compatibility terrain publication skipped: {}", e.getMessage());
+                return;
+            }
             int nonAir = writer.writeColumn(blockMat, 0, 0);
             LOGGER.info("WS-2: wrote GPU chunk (0,0) to Voxy — {} non-air voxels", nonAir);
 

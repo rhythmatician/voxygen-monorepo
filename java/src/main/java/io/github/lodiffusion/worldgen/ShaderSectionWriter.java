@@ -39,6 +39,13 @@ import net.minecraft.world.World;
  */
 public final class ShaderSectionWriter {
 
+    /** Signals that the world's terrain-publication route rejects this publisher. */
+    public static final class PublicationRejectedException extends IllegalArgumentException {
+        private PublicationRejectedException(TerrainPublicationRoute route) {
+            super("Compatibility terrain publication is not allowed for route " + route);
+        }
+    }
+
     private static final Logger LOGGER = LogManager.getLogger();
 
     // ---- Dimensions (must match shader constants) ----
@@ -103,8 +110,7 @@ public final class ShaderSectionWriter {
             World world, Object worldEngine, int defaultBiomeVoxyId) {
         TerrainPublicationRoute route = TerrainPublicationRoute.forWorld(world);
         if (!route.allowsCompatibilityTerrainPublication()) {
-            throw new IllegalArgumentException(
-                    "Compatibility terrain publication is not allowed for route " + route);
+            throw new PublicationRejectedException(route);
         }
         return new ShaderSectionWriter(worldEngine, defaultBiomeVoxyId);
     }

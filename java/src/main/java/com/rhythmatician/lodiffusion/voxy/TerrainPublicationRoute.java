@@ -7,15 +7,15 @@ import net.minecraft.world.World;
 public enum TerrainPublicationRoute {
     END_TOP_DOWN,
     COMPATIBILITY,
-    UNIDENTIFIED;
+    PUBLICATION_DENIED;
 
     public static TerrainPublicationRoute forWorld(World world) {
-        if (world == null || world.getRegistryKey() == null) return UNIDENTIFIED;
+        if (world == null || world.getRegistryKey() == null) return PUBLICATION_DENIED;
         return forDimensionId(world.getRegistryKey().getValue());
     }
 
     public static TerrainPublicationRoute forDimensionId(Identifier dimensionId) {
-        if (dimensionId == null) return UNIDENTIFIED;
+        if (dimensionId == null) return PUBLICATION_DENIED;
         return Identifier.of("minecraft", "the_end").equals(dimensionId)
                 ? END_TOP_DOWN
                 : COMPATIBILITY;

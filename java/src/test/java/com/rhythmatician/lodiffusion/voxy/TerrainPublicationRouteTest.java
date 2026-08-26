@@ -1,5 +1,6 @@
 package com.rhythmatician.lodiffusion.voxy;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -31,6 +32,7 @@ class TerrainPublicationRouteTest {
     void missingDimensionIdentityRejectsEveryTerrainPublisher() {
         TerrainPublicationRoute route = TerrainPublicationRoute.forDimensionId(null);
 
+        assertEquals(TerrainPublicationRoute.PUBLICATION_DENIED, route);
         assertFalse(route.usesTopDownEndRoute());
         assertFalse(route.allowsCompatibilityTerrainPublication());
     }
@@ -39,9 +41,10 @@ class TerrainPublicationRouteTest {
     void missingWorldIdentityRejectsEveryTerrainPublisher() {
         TerrainPublicationRoute route = TerrainPublicationRoute.forWorld(null);
 
+        assertEquals(TerrainPublicationRoute.PUBLICATION_DENIED, route);
         assertFalse(route.usesTopDownEndRoute());
         assertFalse(route.allowsCompatibilityTerrainPublication());
-        assertThrows(IllegalArgumentException.class,
+        assertThrows(ShaderSectionWriter.PublicationRejectedException.class,
                 () -> ShaderSectionWriter.create(null, new Object(), 0));
     }
 }
