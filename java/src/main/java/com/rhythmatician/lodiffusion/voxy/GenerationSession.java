@@ -1010,10 +1010,13 @@ public final class GenerationSession {
                 continue;
             }
             VoxyRequestDecoder.VoxyNodeRequest request = new VoxyRequestDecoder.VoxyNodeRequest();
-            request.lodLevel = parent.level();
-            request.worldX = parent.wsX();
-            request.worldY = parent.wsY();
-            request.worldZ = parent.wsZ();
+            request.lodLevel = Level.L1.value();
+            request.worldX = WorldSectionCoord.sectionToWorldSection(
+                    parent.origin().x(), request.lodLevel);
+            request.worldY = WorldSectionCoord.sectionToWorldSection(
+                    parent.origin().y(), request.lodLevel);
+            request.worldZ = WorldSectionCoord.sectionToWorldSection(
+                    parent.origin().z(), request.lodLevel);
             request.demandKind = VoxyDemandKind.VANILLA_FRONTIER_GUARD;
             request.workKind = net.lodiffusion.shadow.VoxyWorkKind.PARENT_REFINEMENT;
             request.demandSource = VoxyDemandSource.VANILLA_RADIUS_ANNULUS;
@@ -1135,7 +1138,13 @@ public final class GenerationSession {
             return;
         }
         plannedFrontierTransactions.remove(new VanillaFrontierGuardPlanner.ParentTransaction(
-                request.lodLevel, request.worldX, request.worldY, request.worldZ));
+                new SectionPos(
+                        WorldSectionCoord.blockToSection(WorldSectionCoord.worldSectionToBlockMin(
+                                request.worldX, request.lodLevel)),
+                        WorldSectionCoord.blockToSection(WorldSectionCoord.worldSectionToBlockMin(
+                                request.worldY, request.lodLevel)),
+                        WorldSectionCoord.blockToSection(WorldSectionCoord.worldSectionToBlockMin(
+                                request.worldZ, request.lodLevel)))));
     }
 
     private void seedNearPlayerDemandIfNeeded() {

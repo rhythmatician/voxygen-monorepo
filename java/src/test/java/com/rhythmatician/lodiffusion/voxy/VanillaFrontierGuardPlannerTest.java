@@ -14,12 +14,16 @@ class VanillaFrontierGuardPlannerTest {
                 new VanillaFrontierGuardPlanner.Input(0, 0, 0, 0, 128, 64));
 
         assertFalse(plan.isEmpty());
-        assertTrue(plan.stream().allMatch(parent -> parent.level() == Level.L1.value()));
-        assertTrue(plan.stream().allMatch(parent -> parent.wsY() == 0 || parent.wsY() == 1));
-        assertEquals(2, plan.stream().filter(parent -> parent.wsX() == 2 && parent.wsZ() == 0).count());
-        assertEquals(2, plan.stream().filter(parent -> parent.wsX() == -2 && parent.wsZ() == 0).count());
-        assertFalse(plan.stream().anyMatch(parent -> parent.wsX() == 0 && parent.wsZ() == 0));
-        assertFalse(plan.stream().anyMatch(parent -> parent.wsX() == 4 && parent.wsZ() == 0));
+        assertTrue(plan.stream().allMatch(parent ->
+                parent.origin().y() == 0 || parent.origin().y() == 4));
+        assertEquals(2, plan.stream().filter(parent ->
+                parent.origin().x() == 8 && parent.origin().z() == 0).count());
+        assertEquals(2, plan.stream().filter(parent ->
+                parent.origin().x() == -8 && parent.origin().z() == 0).count());
+        assertFalse(plan.stream().anyMatch(parent ->
+                parent.origin().x() == 0 && parent.origin().z() == 0));
+        assertFalse(plan.stream().anyMatch(parent ->
+                parent.origin().x() == 16 && parent.origin().z() == 0));
     }
 
     @Test
@@ -29,8 +33,10 @@ class VanillaFrontierGuardPlannerTest {
         var moving = VanillaFrontierGuardPlanner.plan(
                 new VanillaFrontierGuardPlanner.Input(0, 0, 4, 0, 128, 128));
 
-        assertTrue(minimum.stream().anyMatch(parent -> parent.wsX() == 2 && parent.wsZ() == 0));
-        assertTrue(moving.stream().anyMatch(parent -> parent.wsX() == 4 && parent.wsZ() == 0));
+        assertTrue(minimum.stream().anyMatch(parent ->
+                parent.origin().x() == 8 && parent.origin().z() == 0));
+        assertTrue(moving.stream().anyMatch(parent ->
+                parent.origin().x() == 16 && parent.origin().z() == 0));
         assertEquals(new HashSet<>(minimum).size(), minimum.size(), "transactions are unique");
         assertEquals(new HashSet<>(moving).size(), moving.size(), "transactions are unique");
     }
@@ -40,8 +46,8 @@ class VanillaFrontierGuardPlannerTest {
         var plan = VanillaFrontierGuardPlanner.plan(
                 new VanillaFrontierGuardPlanner.Input(0, 0, 1, 0, 128, 64));
 
-        int leading = indexOf(plan, 2, 0, 0);
-        int trailing = indexOf(plan, -2, 0, 0);
+        int leading = indexOf(plan, new SectionPos(8, 0, 0));
+        int trailing = indexOf(plan, new SectionPos(-8, 0, 0));
         assertTrue(leading < trailing, "leading frontier is scheduled first");
         assertTrue(trailing >= 0, "the complete annulus preserves turn-safe coverage");
     }
@@ -57,10 +63,10 @@ class VanillaFrontierGuardPlannerTest {
 
     private static int indexOf(
             java.util.List<VanillaFrontierGuardPlanner.ParentTransaction> plan,
-            int x, int y, int z) {
+            SectionPos origin) {
         for (int index = 0; index < plan.size(); index++) {
             var transaction = plan.get(index);
-            if (transaction.wsX() == x && transaction.wsY() == y && transaction.wsZ() == z) {
+            if (transaction.origin().equals(origin)) {
                 return index;
             }
         }

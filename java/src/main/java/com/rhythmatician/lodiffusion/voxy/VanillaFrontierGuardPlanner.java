@@ -7,6 +7,8 @@ import java.util.List;
 /** Plans complete L1-to-L0 transactions that keep the vanilla frontier covered. */
 public final class VanillaFrontierGuardPlanner {
     static final int L1_PARENT_WIDTH_BLOCKS = WorldSectionCoord.worldSectionWidth(Level.L1.value());
+    static final int L1_PARENT_WIDTH_SECTIONS =
+            L1_PARENT_WIDTH_BLOCKS / WorldSectionCoord.BLOCKS_PER_SECTION;
     static final int MINIMUM_LEAD_BLOCKS = L1_PARENT_WIDTH_BLOCKS;
 
     private VanillaFrontierGuardPlanner() {}
@@ -46,10 +48,16 @@ public final class VanillaFrontierGuardPlanner {
     }
 
     /** One atomic L1 parent transaction in the End's [0, 128) responsibility. */
-    public record ParentTransaction(int level, int wsX, int wsY, int wsZ) {
+    public record ParentTransaction(SectionPos origin) {
         public ParentTransaction {
-            if (level != Level.L1.value() || wsY != 0 && wsY != 1) {
-                throw new IllegalArgumentException("frontier guards are L1 parents at y=0 or y=1");
+            if (origin == null
+                    || Math.floorMod(origin.x(), L1_PARENT_WIDTH_SECTIONS) != 0
+                    || Math.floorMod(origin.y(), L1_PARENT_WIDTH_SECTIONS) != 0
+                    || Math.floorMod(origin.z(), L1_PARENT_WIDTH_SECTIONS) != 0
+                    || origin.y() != 0 && origin.y() != L1_PARENT_WIDTH_SECTIONS) {
+                throw new IllegalArgumentException(
+                        "frontier guards are aligned L1 parent origins at section y=0 or y="
+                                + L1_PARENT_WIDTH_SECTIONS);
             }
         }
     }
@@ -73,15 +81,19 @@ public final class VanillaFrontierGuardPlanner {
                         input.vanillaRadiusBlocks(), outerRadius)) {
                     continue;
                 }
-                result.add(new ParentTransaction(Level.L1.value(), tileX, 0, tileZ));
-                result.add(new ParentTransaction(Level.L1.value(), tileX, 1, tileZ));
+                result.add(new ParentTransaction(
+                        new SectionPos(tileX * L1_PARENT_WIDTH_SECTIONS, 0,
+                                tileZ * L1_PARENT_WIDTH_SECTIONS)));
+                result.add(new ParentTransaction(new SectionPos(
+                        tileX * L1_PARENT_WIDTH_SECTIONS, L1_PARENT_WIDTH_SECTIONS,
+                        tileZ * L1_PARENT_WIDTH_SECTIONS)));
             }
         }
         result.sort(Comparator
                 .comparingDouble((ParentTransaction parent) -> -projectedDistance(parent, input))
-                .thenComparingInt(ParentTransaction::wsZ)
-                .thenComparingInt(ParentTransaction::wsX)
-                .thenComparingInt(ParentTransaction::wsY));
+                .thenComparingInt(parent -> parent.origin().z())
+                .thenComparingInt(parent -> parent.origin().x())
+                .thenComparingInt(parent -> parent.origin().y()));
         return List.copyOf(result);
     }
 
@@ -109,8 +121,10 @@ public final class VanillaFrontierGuardPlanner {
     }
 
     private static double projectedDistance(ParentTransaction parent, Input input) {
-        double centerX = (parent.wsX() + 0.5) * L1_PARENT_WIDTH_BLOCKS;
-        double centerZ = (parent.wsZ() + 0.5) * L1_PARENT_WIDTH_BLOCKS;
+        double centerX = WorldSectionCoord.sectionToBlockMin(parent.origin().x())
+                + L1_PARENT_WIDTH_BLOCKS / 2.0;
+        double centerZ = WorldSectionCoord.sectionToBlockMin(parent.origin().z())
+                + L1_PARENT_WIDTH_BLOCKS / 2.0;
         return ((centerX - input.playerBlockX()) * input.horizontalVelocityX())
                 + ((centerZ - input.playerBlockZ()) * input.horizontalVelocityZ());
     }
