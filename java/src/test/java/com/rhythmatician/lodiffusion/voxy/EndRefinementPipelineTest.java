@@ -169,7 +169,7 @@ class EndRefinementPipelineTest {
         assertEquals(Level.L2, writer.intent.parentLevel());
         assertEquals(GenerationSession.DemandProcessResult.WRITTEN, result);
         assertTrue(session.refinementLifecycleSummaryForTest()
-                .contains("L2[d1,b0,e1,n0,f0]"));
+                .contains("L2[d1,b0,a0,e1,n0,f0]"));
     }
 
     private static final class BatchOnlyWriter implements VoxelVolumeWriter {

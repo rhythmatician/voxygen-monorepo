@@ -34,7 +34,7 @@ class EndPhysicalWorkDispatcherTest {
 
             assertEquals(0, writer.refinementIntents);
             assertEquals(1, horizonCalls[0]);
-            assertEquals(summaryForLevel4(1, 0, 1, 0, 0),
+            assertEquals(summaryForLevel4(1, 0, 1, 0, 0, 0),
                     session.refinementLifecycleSummaryForTest());
         } finally {
             restoreProperty(property, previous);
@@ -73,7 +73,7 @@ class EndPhysicalWorkDispatcherTest {
         assertEquals(GenerationSession.DemandProcessResult.WRITTEN, result);
         assertEquals(1, writer.refinementIntents);
         assertEquals(0, writer.regionWrites);
-        assertEquals(summaryForLevel4(1, 0, 0, 1, 0),
+        assertEquals(summaryForLevel4(1, 0, 0, 0, 1, 0),
                 session.refinementLifecycleSummaryForTest());
     }
 
@@ -88,8 +88,8 @@ class EndPhysicalWorkDispatcherTest {
                         request(Level.L3.value(), VoxyWorkKind.PARENT_REFINEMENT),
                         blockedWriter,
                         () -> GenerationSession.DemandProcessResult.FAILED));
-        assertEquals("L4[d0,b0,e0,n0,f0] L3[d1,b1,e0,n0,f0] "
-                        + "L2[d0,b0,e0,n0,f0] L1[d0,b0,e0,n0,f0]",
+        assertEquals("L4[d0,b0,a0,e0,n0,f0] L3[d1,b1,a0,e0,n0,f0] "
+                        + "L2[d0,b0,a0,e0,n0,f0] L1[d0,b0,a0,e0,n0,f0]",
                 blockedSession.refinementLifecycleSummaryForTest());
 
         GenerationSession failedSession = session();
@@ -98,8 +98,8 @@ class EndPhysicalWorkDispatcherTest {
                         request(Level.L2.value(), VoxyWorkKind.PARENT_REFINEMENT),
                         null,
                         () -> GenerationSession.DemandProcessResult.FAILED));
-        assertEquals("L4[d0,b0,e0,n0,f0] L3[d0,b0,e0,n0,f0] "
-                        + "L2[d1,b0,e0,n0,f1] L1[d0,b0,e0,n0,f0]",
+        assertEquals("L4[d0,b0,a0,e0,n0,f0] L3[d0,b0,a0,e0,n0,f0] "
+                        + "L2[d1,b0,a0,e0,n0,f1] L1[d0,b0,a0,e0,n0,f0]",
                 failedSession.refinementLifecycleSummaryForTest());
     }
 
@@ -161,10 +161,10 @@ class EndPhysicalWorkDispatcherTest {
     }
 
     private static String summaryForLevel4(
-            int dequeued, int blocked, int empty, int nonempty, int failed) {
-        return "L4[d" + dequeued + ",b" + blocked + ",e" + empty + ",n" + nonempty
-                + ",f" + failed + "] L3[d0,b0,e0,n0,f0] "
-                + "L2[d0,b0,e0,n0,f0] L1[d0,b0,e0,n0,f0]";
+            int dequeued, int blocked, int already, int empty, int nonempty, int failed) {
+        return "L4[d" + dequeued + ",b" + blocked + ",a" + already + ",e" + empty
+                + ",n" + nonempty + ",f" + failed + "] L3[d0,b0,a0,e0,n0,f0] "
+                + "L2[d0,b0,a0,e0,n0,f0] L1[d0,b0,a0,e0,n0,f0]";
     }
 
     private static void restoreProperty(String property, String previous) {

@@ -19,8 +19,8 @@ class RefinementLifecycleTelemetryTest {
         telemetry.recordOutcome(2, RefinementOutcome.failed());
 
         assertEquals(
-                "L4[d0,b0,e0,n0,f0] L3[d0,b0,e0,n0,f0] "
-                        + "L2[d4,b1,e1,n1,f1] L1[d0,b0,e0,n0,f0]",
+                "L4[d0,b0,a0,e0,n0,f0] L3[d0,b0,a0,e0,n0,f0] "
+                        + "L2[d4,b1,a0,e1,n1,f1] L1[d0,b0,a0,e0,n0,f0]",
                 telemetry.compact());
     }
 
@@ -30,12 +30,12 @@ class RefinementLifecycleTelemetryTest {
         telemetry.recordDequeued(1);
         telemetry.recordOutcome(1, RefinementOutcome.alreadyCovered());
 
-        assertEquals("L4[d0,b0,e0,n0,f0] L3[d0,b0,e0,n0,f0] "
-                + "L2[d0,b0,e0,n0,f0] L1[d1,b0,e1,n0,f0]", telemetry.compact());
+        assertEquals("L4[d0,b0,a0,e0,n0,f0] L3[d0,b0,a0,e0,n0,f0] "
+                + "L2[d0,b0,a0,e0,n0,f0] L1[d1,b0,a1,e0,n0,f0]", telemetry.compact());
 
         telemetry.reset();
-        assertEquals("L4[d0,b0,e0,n0,f0] L3[d0,b0,e0,n0,f0] "
-                + "L2[d0,b0,e0,n0,f0] L1[d0,b0,e0,n0,f0]", telemetry.compact());
+        assertEquals("L4[d0,b0,a0,e0,n0,f0] L3[d0,b0,a0,e0,n0,f0] "
+                + "L2[d0,b0,a0,e0,n0,f0] L1[d0,b0,a0,e0,n0,f0]", telemetry.compact());
     }
 
     @Test
@@ -44,7 +44,7 @@ class RefinementLifecycleTelemetryTest {
         telemetry.recordDequeued(3);
         telemetry.recordOutcome(3, RefinementOutcome.published(WriteOutcome.skippedExists()));
 
-        assertEquals("L4[d0,b0,e0,n0,f0] L3[d1,b0,e0,n1,f0] "
-                + "L2[d0,b0,e0,n0,f0] L1[d0,b0,e0,n0,f0]", telemetry.compact());
+        assertEquals("L4[d0,b0,a0,e0,n0,f0] L3[d1,b0,a0,e0,n1,f0] "
+                + "L2[d0,b0,a0,e0,n0,f0] L1[d0,b0,a0,e0,n0,f0]", telemetry.compact());
     }
 }
