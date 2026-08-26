@@ -1,5 +1,6 @@
 package com.rhythmatician.lodiffusion;
 
+import com.rhythmatician.lodiffusion.client.FlightTour;
 import com.rhythmatician.lodiffusion.voxy.LodGenerationService;
 import com.rhythmatician.lodiffusion.voxy.VoxyCompat;
 import com.rhythmatician.lodiffusion.voxy.VoxyDatasetExportService;
@@ -35,6 +36,7 @@ public class LodiffusionClient implements ClientModInitializer {
     @Override
     public void onInitializeClient() {
         HelloTerrainMod.LOGGER.info("[LODiffusion] Client initializer starting");
+        configureFlightTourFromLaunchEnvironment();
 
         // Publish the singleton so server-side command handlers can query stats.
         LodGenerationService.setInstance(LOD_SERVICE);
@@ -90,12 +92,28 @@ public class LodiffusionClient implements ClientModInitializer {
             // Drain pending GPU noise requests on the render thread (GL context).
             // No-ops if the dispatch queue hasn't been initialised yet.
             GpuNoiseDispatchQueue.tickDrain();
+            FlightTour.tick(client);
         });
 
         // register debug toggle command in our own namespace
         ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) -> {
             dispatcher.register(
                 ClientCommandManager.literal("voxygen")
+                    .then(ClientCommandManager.literal("tour")
+                        .executes(ctx -> {
+                            FlightTour.start();
+                            ctx.getSource().sendFeedback(
+                                    Text.literal("Voxygen flight tour started; use /voxygen tour stop to cancel."));
+                            return 1;
+                        })
+                        .then(ClientCommandManager.literal("stop")
+                            .executes(ctx -> {
+                                FlightTour.stop();
+                                ctx.getSource().sendFeedback(Text.literal("Voxygen flight tour stopped."));
+                                return 1;
+                            })
+                        )
+                    )
                     .then(ClientCommandManager.literal("debug")
                         .executes(ctx -> {
                             int next = VoxyDebugState.occlusionDebugState == 0 ? 1 : 0;
@@ -110,6 +128,30 @@ public class LodiffusionClient implements ClientModInitializer {
         });
 
         HelloTerrainMod.LOGGER.info("[LODiffusion] Client initializer complete");
+    }
+
+    private static void configureFlightTourFromLaunchEnvironment() {
+        FlightTourLaunchConfig.ParseResult parsed =
+                FlightTourLaunchConfig.parse(System.getenv(), System.getProperties());
+        if (parsed.invalidTimeout() != null) {
+            HelloTerrainMod.LOGGER.warn("[LODiffusion] Invalid flight tour timeout '{}', using default timeout",
+                    parsed.invalidTimeout());
+        }
+        if (parsed.invalidDwell() != null) {
+            HelloTerrainMod.LOGGER.warn("[LODiffusion] Invalid flight tour dwell '{}', using launch default",
+                    parsed.invalidDwell());
+        }
+
+        FlightTourLaunchConfig config = parsed.config();
+        FlightTour.configureAutoStart(
+                config.autoStart(), config.timeoutTicks(), config.dwellTicks(), config.runId());
+        HelloTerrainMod.LOGGER.info(
+                "[LODiffusion][FlightTourLaunch] resolved runId={} autoStart={} timeout={} dwell={} ticks",
+                config.runId(), config.autoStart(), config.timeoutTicks(), config.dwellTicks());
+        if (config.autoStart()) {
+            HelloTerrainMod.LOGGER.info("[LODiffusion] Flight tour auto-start enabled; dwell={} ticks",
+                    config.dwellTicks());
+        }
     }
 
     /** Get the active LOD generation service (for status commands etc). */
@@ -154,3 +196,4 @@ public class LodiffusionClient implements ClientModInitializer {
         }
     }
 }
+

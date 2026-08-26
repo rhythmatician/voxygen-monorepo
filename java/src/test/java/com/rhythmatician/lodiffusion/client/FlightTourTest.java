@@ -1,0 +1,117 @@
+package com.rhythmatician.lodiffusion.client;
+
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import java.util.List;
+
+import org.junit.jupiter.api.Test;
+
+class FlightTourTest {
+    @Test
+    void tourKeepsTheConfiguredCorridorAndThreeSecondObservationDwell() {
+        assertEquals(6, FlightTour.waypointCountForTest());
+        assertEquals(60, FlightTour.dwellTicksForTest());
+        assertArrayEquals(new int[] {0, 96, 512}, FlightTour.waypointForTest(0));
+        assertArrayEquals(new int[] {0, 96, 1008}, FlightTour.waypointForTest(5));
+    }
+
+    @Test
+    void phaseFlowTeleportsThroughAllWaypointsInOrder() {
+        FlightTour.resetForTest();
+        FlightTour.configureAutoStart(true, 20_000, 60);
+        FlightTour.start();
+        FlightTour.tickForTest(500);
+        assertFalse(FlightTour.isAutoStartEnabled());
+
+        List<String> events = FlightTour.testEventsForTest();
+        assertEquals(30, events.size());
+
+        for (int i = 0; i < FlightTour.waypointCountForTest(); i++) {
+            int waypointIndex = i + 1;
+            int[] waypoint = FlightTour.waypointForTest(i);
+
+            int expectedTeleportEvent = (i * 5);
+            int expectedBeforeCameraLock = expectedTeleportEvent + 1;
+            int expectedBeforeShot = expectedTeleportEvent + 2;
+            int expectedAfterCameraLock = expectedTeleportEvent + 3;
+            int expectedAfterShot = expectedTeleportEvent + 4;
+
+            assertEquals("teleport:" + waypoint[0] + "," + waypoint[1] + "," + waypoint[2] + ",0.0,0.0", events.get(expectedTeleportEvent));
+            assertEquals("camera-lock:0.0,0.0", events.get(expectedBeforeCameraLock));
+            assertEquals("screenshot:tour-waypoint-" + String.format("%02d", waypointIndex) + "-before.png", events.get(expectedBeforeShot));
+            assertEquals("camera-lock:0.0,0.0", events.get(expectedAfterCameraLock));
+            assertEquals("screenshot:tour-waypoint-" + String.format("%02d", waypointIndex) + "-after.png", events.get(expectedAfterShot));
+        }
+
+        String finalStatus = events.get(events.size() - 1);
+        assertTrue(finalStatus.startsWith("screenshot:tour-waypoint-06-after.png"));
+    }
+
+    @Test
+    void autoStartIsDisabledAfterTourCompletion() {
+        FlightTour.resetForTest();
+        FlightTour.configureAutoStart(true, 20_000, 60);
+        FlightTour.start();
+        FlightTour.tickForTest(500);
+
+        assertFalse(FlightTour.isAutoStartEnabled());
+        assertTrue(FlightTour.shutdownRequestedForTest());
+        assertEquals(1, FlightTour.testStatusesForTest().stream()
+                .filter("start:ready"::equals)
+                .count());
+        assertEquals(1, FlightTour.testStatusesForTest().stream()
+                .filter("complete:all_waypoints"::equals)
+                .count());
+    }
+
+    @Test
+    void manuallyStartedTourCompletesWithoutClosingTheClient() {
+        FlightTour.resetForTest();
+        FlightTour.configureAutoStart(false, 20_000, 60);
+        FlightTour.start();
+        FlightTour.tickForTest(500);
+
+        assertFalse(FlightTour.isActive());
+        assertFalse(FlightTour.isAutoStartEnabled());
+        assertFalse(FlightTour.shutdownRequestedForTest());
+        assertEquals(1, FlightTour.testStatusesForTest().stream()
+                .filter("complete:all_waypoints"::equals)
+                .count());
+    }
+
+    @Test
+    void autoStartIsDisabledAfterTimeoutFailure() {
+        FlightTour.resetForTest();
+        FlightTour.configureAutoStart(true, 1, 60);
+        FlightTour.start();
+        FlightTour.tickForTest(10);
+
+        assertFalse(FlightTour.isAutoStartEnabled());
+        assertTrue(FlightTour.shutdownRequestedForTest());
+    }
+
+    @Test
+    void manualTimeoutFailureDoesNotCloseTheClient() {
+        FlightTour.resetForTest();
+        FlightTour.configureAutoStart(false, 1, 60);
+        FlightTour.start();
+        FlightTour.tickForTest(10);
+
+        assertFalse(FlightTour.isAutoStartEnabled());
+        assertFalse(FlightTour.shutdownRequestedForTest());
+    }
+
+    @Test
+    void stoppedTourReleasesTheCameraForManualControl() {
+        FlightTour.resetForTest();
+        FlightTour.configureAutoStart(false, 20_000, 60);
+        FlightTour.start();
+        FlightTour.stop();
+        FlightTour.tickForTest(10);
+
+        assertTrue(FlightTour.testEventsForTest().isEmpty());
+    }
+}

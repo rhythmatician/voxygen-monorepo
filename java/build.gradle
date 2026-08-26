@@ -41,6 +41,33 @@ loom {
 
 	splitEnvironmentSourceSets()
 
+	// Optional local verification convenience. flight-loop.ps1 supplies this
+	// property after restoring its disposable FlightTest save.
+	if (providers.gradleProperty('flightWorld').isPresent()) {
+		def world = providers.gradleProperty('flightWorld').get()
+		if (!world.isEmpty()) {
+			runs {
+				client {
+					programArgs "--quickPlaySingleplayer", world
+				}
+			}
+		}
+	}
+	def autoStartTour = providers.gradleProperty('flightTourAutoStart').map { it.equalsIgnoreCase("true") }.getOrElse(false)
+	if (autoStartTour) {
+		def timeoutTicks = providers.gradleProperty('flightTourTimeoutTicks').orElse("20000").get()
+		def dwellTicks = providers.gradleProperty('flightTourDwellTicks').orElse("200").get()
+		def runId = providers.gradleProperty('flightTourRunId').orElse("").get()
+		runs {
+			client {
+				vmArg "-Dlodiffusion.flightTour.autoStart=true"
+				vmArg "-Dlodiffusion.flightTour.timeoutTicks=${timeoutTicks}"
+				vmArg "-Dlodiffusion.flightTour.dwellTicks=${dwellTicks}"
+				vmArg "-Dlodiffusion.flightTour.runId=${runId}"
+			}
+		}
+	}
+
 	mods {
 		"lodiffusion" {
 			sourceSet sourceSets.main
