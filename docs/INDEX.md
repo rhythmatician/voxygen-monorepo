@@ -33,6 +33,8 @@
 * `docs/adr/0008-factory-iteration-is-one-tested-production-state-machine.md`
 * `docs/adr/0009-factory-review-is-an-independent-evidence-gate.md`
 * `docs/adr/0010-preserve-upstream-wayfinder-triage-and-sandcastle-label-semantics.md`
+* `docs/adr/0011-screen-space-error-refinement-demand.md`
+* `docs/adr/0012-respect-voxy-child-existence-semantics.md`
 
 ### Implementation
 
