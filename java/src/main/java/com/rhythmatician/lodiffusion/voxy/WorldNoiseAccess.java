@@ -11,11 +11,19 @@ import net.minecraft.registry.entry.RegistryEntry;
 import net.minecraft.util.Identifier;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.world.ServerWorld;
+import net.minecraft.structure.StructureStart;
 import net.minecraft.util.math.MathHelper;
+import net.minecraft.util.math.ChunkPos;
 import net.minecraft.world.Heightmap;
 import net.minecraft.world.World;
 import net.minecraft.world.biome.Biome;
 import net.minecraft.world.biome.source.BiomeSource;
+import net.minecraft.world.chunk.Chunk;
+import net.minecraft.world.chunk.ChunkSection;
+import net.minecraft.world.chunk.ProtoChunk;
+import net.minecraft.world.chunk.UpgradeData;
+import net.minecraft.world.gen.GeneratorOptions;
+import net.minecraft.world.gen.StructureAccessor;
 import net.minecraft.world.gen.chunk.AquiferSampler;
 import net.minecraft.world.gen.chunk.Blender;
 import net.minecraft.world.gen.chunk.ChunkGenerator;
@@ -27,8 +35,10 @@ import net.minecraft.world.gen.densityfunction.DensityFunction;
 import net.minecraft.world.gen.densityfunction.DensityFunctionTypes;
 import net.minecraft.world.gen.noise.NoiseConfig;
 import net.minecraft.world.gen.noise.NoiseRouter;
+import net.minecraft.world.gen.structure.Structure;
 
 import java.util.Arrays;
+import java.util.List;
 import java.util.function.Predicate;
 
 
@@ -299,10 +309,7 @@ public final class WorldNoiseAccess {
         return new float[][][] { surface, oceanFloor };
     }
 
-    /**
-     * Samples one virgin noise-stage chunk column with a fresh interpolation state.
-     * No chunk is requested, created, loaded, or cached.
-     */
+    /** Samples one isolated virgin noise-stage chunk column without world insertion. */
     void sampleExactEndBaseTerrainChunk(
             int chunkX,
             int chunkZ,
@@ -310,62 +317,84 @@ public final class WorldNoiseAccess {
             int retainMaxY,
             ExactEndL1Candidate.SolidBlockConsumer consumer,
             ExactL1SamplingTelemetry telemetry) {
-        if (retainMinY > retainMaxY) {
+        if (retainMinY >= retainMaxY) {
             throw new IllegalArgumentException("retainMinY must not exceed retainMaxY");
         }
-        NoiseSamplerSetup setup = createNoiseSampler(chunkX, chunkZ);
-        telemetry.recordChunkSampler();
-        ChunkGeneratorSettings settings = setup.settings();
-        GenerationShapeConfig shape = setup.shape();
-        int horizontalBlocks = shape.horizontalCellBlockCount();
-        int verticalBlocks = shape.verticalCellBlockCount();
-        int horizontalCells = 16 / horizontalBlocks;
-        int minimumCellY = MathHelper.floorDiv(shape.minimumY(), verticalBlocks);
-        int verticalCells = MathHelper.floorDiv(shape.height(), verticalBlocks);
+        if (!(generator instanceof NoiseChunkGenerator noiseGenerator)) {
+            throw new IllegalStateException("exact noise sampling requires NoiseChunkGenerator");
+        }
         int startX = chunkX << 4;
         int startZ = chunkZ << 4;
-        ChunkNoiseSampler sampler = setup.sampler();
-
-        sampler.sampleStartDensity();
-        try {
-            for (int cellX = 0; cellX < horizontalCells; cellX++) {
-                sampler.sampleEndDensity(cellX);
-                for (int cellZ = 0; cellZ < horizontalCells; cellZ++) {
-                    for (int cellY = verticalCells - 1; cellY >= 0; cellY--) {
-                        sampler.onSampledCellCorners(cellY, cellZ);
-                        for (int localY = verticalBlocks - 1; localY >= 0; localY--) {
-                            int blockY = (minimumCellY + cellY) * verticalBlocks + localY;
-                            sampler.interpolateY(blockY, (double) localY / verticalBlocks);
-                            for (int localX = 0; localX < horizontalBlocks; localX++) {
-                                int blockX = startX + cellX * horizontalBlocks + localX;
-                                sampler.interpolateX(blockX, (double) localX / horizontalBlocks);
-                                for (int localZ = 0; localZ < horizontalBlocks; localZ++) {
-                                    int blockZ = startZ + cellZ * horizontalBlocks + localZ;
-                                    sampler.interpolateZ(blockZ, (double) localZ / horizontalBlocks);
-                                    if (blockY >= retainMinY && blockY < retainMaxY) {
-                                        BlockState sampled = sampler.sampleBlockState();
-                                        BlockState actual = sampled == null
-                                                ? settings.defaultBlock() : sampled;
-                                        telemetry.recordRetainedCallback();
-                                        if (sampled == null) {
-                                            telemetry.recordRawDefault();
-                                        } else if (actual.isAir()) {
-                                            telemetry.recordRawAir();
-                                        } else {
-                                            telemetry.recordRawExplicitNonAir();
-                                        }
-                                        consumer.accept(
-                                                blockX, blockY, blockZ, !actual.isAir());
-                                    }
-                                }
-                            }
-                        }
+        if (telemetry.claimHeightOracleProbe()) {
+            telemetry.recordHeightOracle(
+                    chunkX, chunkZ, retainMinY, retainMaxY,
+                    generator.getHeight(
+                    startX + 8,
+                    startZ + 8,
+                    Heightmap.Type.WORLD_SURFACE_WG,
+                    serverWorld,
+                    noiseConfig));
+        }
+        ProtoChunk proto = new ProtoChunk(
+                new ChunkPos(chunkX, chunkZ),
+                UpgradeData.NO_UPGRADE_DATA,
+                serverWorld,
+                serverWorld.getPalettesFactory(),
+                null);
+        Chunk generated = noiseGenerator.populateNoise(
+                Blender.getNoBlending(), noiseConfig,
+                new NoStructuresAccessor(serverWorld), proto).join();
+        telemetry.recordProtoChunk();
+        for (int blockY = retainMinY; blockY < retainMaxY; blockY++) {
+            ChunkSection section = generated.getSection(generated.getSectionIndex(blockY));
+            for (int localX = 0; localX < 16; localX++) {
+                for (int localZ = 0; localZ < 16; localZ++) {
+                    BlockState state = section.getBlockState(localX, blockY & 15, localZ);
+                    telemetry.recordRetainedCallback();
+                    if (state.isAir()) {
+                        telemetry.recordRawAir();
+                    } else {
+                        telemetry.recordRawExplicitNonAir();
                     }
+                    consumer.accept(startX + localX, blockY, startZ + localZ, !state.isAir());
                 }
-                sampler.swapBuffers();
             }
-        } finally {
-            sampler.stopInterpolation();
+        }
+    }
+
+    /**
+     * Runs the real L1 producer against isolated noise-stage chunks and records
+     * whether its sixteen target chunks remained outside the loaded world.
+     */
+    public ExactEndL1Probe probeExactEndL1(SectionPos origin) {
+        if (!Level.L1.isAligned(origin)) {
+            throw new IllegalArgumentException("origin " + origin + " is not aligned to L1");
+        }
+        int firstChunkX = origin.x();
+        int firstChunkZ = origin.z();
+        boolean unloadedBefore = targetChunksAreUnloaded(firstChunkX, firstChunkZ);
+        VoxelVolume volume = new ExactEndL1Candidate(this).produceExactL1(origin);
+        boolean unloadedAfter = targetChunksAreUnloaded(firstChunkX, firstChunkZ);
+        return new ExactEndL1Probe(volume.countNonAir(), unloadedBefore, unloadedAfter);
+    }
+
+    private boolean targetChunksAreUnloaded(int firstChunkX, int firstChunkZ) {
+        for (int chunkX = firstChunkX; chunkX < firstChunkX + 4; chunkX++) {
+            for (int chunkZ = firstChunkZ; chunkZ < firstChunkZ + 4; chunkZ++) {
+                if (serverWorld.isChunkLoaded(chunkX, chunkZ)) return false;
+            }
+        }
+        return true;
+    }
+
+    public record ExactEndL1Probe(
+            int nonAirVoxels,
+            boolean targetChunksUnloadedBefore,
+            boolean targetChunksUnloadedAfter) {
+        public boolean isSuccessfulUnloadedSample() {
+            return nonAirVoxels > 0
+                    && targetChunksUnloadedBefore
+                    && targetChunksUnloadedAfter;
         }
     }
 
@@ -400,6 +429,18 @@ public final class WorldNoiseAccess {
             ChunkNoiseSampler sampler,
             ChunkGeneratorSettings settings,
             GenerationShapeConfig shape) {}
+
+    private static final class NoStructuresAccessor extends StructureAccessor {
+        private NoStructuresAccessor(ServerWorld world) {
+            super(world, new GeneratorOptions(world.getSeed(), false, false), null);
+        }
+
+        @Override
+        public List<StructureStart> getStructureStarts(
+                ChunkPos pos, Predicate<Structure> predicate) {
+            return List.of();
+        }
+    }
 
     /**
      * Sample a heightmap of the given type for a 16×16 section column.

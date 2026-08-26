@@ -6,35 +6,62 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
-import net.minecraft.block.BlockState;
-import net.minecraft.world.gen.chunk.ChunkNoiseSampler;
+import net.minecraft.world.chunk.ProtoChunk;
 import org.junit.jupiter.api.Test;
 
-/** Compile/access smoke test plus an explicitly source-level broad-access guard. */
+/** Compile/access smoke test plus an explicitly source-level no-manager guard. */
 class WorldNoiseAccessExactSamplingSourceGuardTest {
     @Test
-    void pinnedAccessAndSourceGuardKeepTheExactPathNarrow() throws Exception {
-        assertEquals(BlockState.class,
-                ChunkNoiseSampler.class.getDeclaredMethod("sampleBlockState").getReturnType());
+    void pinnedProtoChunkPathKeepsExactSamplingIsolated() throws Exception {
+        assertEquals(ProtoChunk.class.getName(),
+                "net.minecraft.world.chunk.ProtoChunk");
 
         String source = Files.readString(findSource("WorldNoiseAccess.java"));
         int exactStart = source.indexOf("void sampleExactEndBaseTerrainChunk(");
-        String exactMethod = source.substring(
-                exactStart, source.indexOf("private NoiseSamplerSetup", exactStart));
-        int helperStart = source.indexOf("private NoiseSamplerSetup createNoiseSampler(");
-        String constructionHelper = source.substring(
-                helperStart, source.indexOf("private record NoiseSamplerSetup", helperStart));
+        String exactMethod = source.substring(exactStart,
+                source.indexOf("public ExactEndL1Probe probeExactEndL1", exactStart));
 
-        assertTrue(constructionHelper.contains("new ChunkNoiseSampler("));
-        assertTrue(exactMethod.contains("sampler.sampleBlockState()"));
-        assertTrue(exactMethod.contains("sampler.swapBuffers()"));
-        assertTrue(exactMethod.indexOf("blockY >= retainMinY")
-                < exactMethod.indexOf("sampler.sampleBlockState()"));
-        String guardedSource = exactMethod + constructionHelper;
-        assertFalse(guardedSource.contains("getChunk("));
-        assertFalse(guardedSource.contains("getChunkManager("));
-        assertFalse(guardedSource.contains("populateNoise("));
-        assertFalse(guardedSource.contains("cache"));
+        assertTrue(exactMethod.contains("new ProtoChunk("));
+        assertTrue(exactMethod.contains("populateNoise("));
+        assertTrue(exactMethod.contains("Blender.getNoBlending()"));
+        assertTrue(exactMethod.contains("new NoStructuresAccessor"));
+        assertFalse(exactMethod.contains("new ChunkNoiseSampler("));
+        assertFalse(exactMethod.contains("sampleBlockState()"));
+        assertFalse(exactMethod.contains("getChunkManager("));
+        assertFalse(exactMethod.contains("getChunk("));
+
+        String noStructures = source.substring(source.indexOf("private static final class NoStructuresAccessor"));
+        assertTrue(noStructures.contains("getStructureStarts("));
+        assertTrue(noStructures.contains("return List.of()"));
+        assertFalse(exactMethod.contains("getStructureAccessor("));
+    }
+
+    @Test
+    void realWorldProbeRecordsNonemptyAndUnloadedTargetEvidence() throws Exception {
+        String source = Files.readString(findSource("WorldNoiseAccess.java"));
+
+        assertTrue(source.contains("public ExactEndL1Probe probeExactEndL1(SectionPos origin)"));
+        assertTrue(source.contains("new ExactEndL1Candidate(this).produceExactL1(origin)"));
+        assertTrue(source.contains("serverWorld.isChunkLoaded(chunkX, chunkZ)"));
+        assertTrue(source.contains("nonAirVoxels > 0"));
+    }
+
+    @Test
+    void onlyL2ToL1UsesTheExactProducer() throws Exception {
+        String source = Files.readString(findSource("GenerationSession.java"));
+
+        assertTrue(source.contains("childLevel == Level.L1"));
+        assertTrue(source.contains("exactL1.produceExactL1(childOrigin)"));
+        assertTrue(source.contains("candidate.produceRegion(childLevel, childOrigin)"));
+    }
+
+    @Test
+    void afkTourRunsAKnownMainIslandControlSample() throws Exception {
+        String source = Files.readString(findSource("GenerationSession.java"));
+
+        assertTrue(source.contains("Boolean.getBoolean(\"lodiffusion.flightTour.autoStart\")"));
+        assertTrue(source.contains("probeExactEndL1(new SectionPos(0, 4, 0))"));
+        assertTrue(source.contains("[LodGen][ExactL1Control]"));
     }
 
     private static Path findSource(String fileName) {

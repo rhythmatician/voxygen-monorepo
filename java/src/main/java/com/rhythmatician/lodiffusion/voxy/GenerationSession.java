@@ -1187,10 +1187,20 @@ public final class GenerationSession {
             if (noiseAccess == null) {
                 HelloTerrainMod.LOGGER.warn("[LodGen] Noise access unavailable — "
                         + "will fall back to heightmap-only generation");
-            } else {
-                HelloTerrainMod.LOGGER.info("[LodGen] Using REAL noise access — "
-                        + "no synthetic fallback needed");
+        } else {
+            HelloTerrainMod.LOGGER.info("[LodGen] Using REAL noise access — "
+                    + "no synthetic fallback needed");
+            if (Boolean.getBoolean("lodiffusion.flightTour.autoStart")) {
+                WorldNoiseAccess.ExactEndL1Probe probe =
+                        noiseAccess.probeExactEndL1(new SectionPos(0, 4, 0));
+                HelloTerrainMod.LOGGER.info(
+                        "[LodGen][ExactL1Control] main-island nonAir={} "
+                                + "unloadedBefore={} unloadedAfter={}",
+                        probe.nonAirVoxels(),
+                        probe.targetChunksUnloadedBefore(),
+                        probe.targetChunksUnloadedAfter());
             }
+        }
 
             // Early tracer-mode gate: must precede resolveVoxyModel()
             if (endL4TracerMode) {
