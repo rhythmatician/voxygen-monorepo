@@ -6,15 +6,52 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
-import net.minecraft.world.chunk.ProtoChunk;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+import net.minecraft.util.Identifier;
 import org.junit.jupiter.api.Test;
 
-/** Compile/access smoke test plus an explicitly source-level no-manager guard. */
+/** Behavioral exact-L1 checks plus guards for unobservable world-bound details. */
 class WorldNoiseAccessExactSamplingSourceGuardTest {
     @Test
+    void endUsesTheTopDownRouteInsteadOfCompatibilityPublication() {
+        assertTrue(TerrainPublicationRoute.forDimensionId(
+                Identifier.of("minecraft", "the_end")).usesTopDownEndRoute());
+        assertFalse(TerrainPublicationRoute.forDimensionId(
+                Identifier.of("minecraft", "overworld")).usesTopDownEndRoute());
+        assertTrue(TerrainPublicationRoute.forDimensionId(
+                Identifier.of("minecraft", "overworld")).allowsCompatibilityTerrainPublication());
+    }
+
+    @Test
+    void exactL1MapsAllSixteenChunkColumnsIntoTheRequestedRegion() {
+        List<ChunkColumn> requested = new ArrayList<>();
+        ExactEndL1Candidate candidate = new ExactEndL1Candidate(
+                (chunkX, chunkZ, minY, maxY, consumer) -> {
+                    requested.add(new ChunkColumn(chunkX, chunkZ, minY, maxY));
+                    consumer.accept((chunkX << 4) + 15, minY + 1, (chunkZ << 4) + 15, true);
+                    consumer.accept(chunkX << 4, maxY, chunkZ << 4, true);
+                });
+
+        VoxelVolume volume = candidate.produceExactL1(new SectionPos(-4, 0, 8));
+
+        assertEquals(16, requested.size());
+        assertEquals(16, new HashSet<>(requested).size());
+        assertEquals(Set.of(-4, -3, -2, -1), values(requested, true));
+        assertEquals(Set.of(8, 9, 10, 11), values(requested, false));
+        assertTrue(requested.stream().allMatch(column -> column.minY == 0 && column.maxY == 64));
+        assertEquals(16, volume.countNonAir());
+    }
+
+    /**
+     * WorldNoiseAccess owns concrete server dependencies and exposes no construction
+     * seam for a real ServerWorld, NoiseChunkGenerator, and NoiseConfig test fixture.
+     * Keep this narrow static guard until that real-world fixture exists.
+     */
+    @Test
     void pinnedProtoChunkPathKeepsExactSamplingIsolated() throws Exception {
-        assertEquals(ProtoChunk.class.getName(),
-                "net.minecraft.world.chunk.ProtoChunk");
 
         String source = Files.readString(findSource("WorldNoiseAccess.java"));
         int exactStart = source.indexOf("void sampleExactEndBaseTerrainChunk(");
@@ -55,14 +92,15 @@ class WorldNoiseAccessExactSamplingSourceGuardTest {
         assertTrue(source.contains("candidate.produceRegion(childLevel, childOrigin)"));
     }
 
-    @Test
-    void afkTourRunsAKnownMainIslandControlSample() throws Exception {
-        String source = Files.readString(findSource("GenerationSession.java"));
-
-        assertTrue(source.contains("Boolean.getBoolean(\"lodiffusion.flightTour.autoStart\")"));
-        assertTrue(source.contains("probeExactEndL1(new SectionPos(0, 4, 0))"));
-        assertTrue(source.contains("[LodGen][ExactL1Control]"));
+    private static Set<Integer> values(List<ChunkColumn> requested, boolean x) {
+        Set<Integer> values = new HashSet<>();
+        for (ChunkColumn column : requested) {
+            values.add(x ? column.chunkX : column.chunkZ);
+        }
+        return values;
     }
+
+    private record ChunkColumn(int chunkX, int chunkZ, int minY, int maxY) {}
 
     private static Path findSource(String fileName) {
         Path current = Path.of("").toAbsolutePath();
