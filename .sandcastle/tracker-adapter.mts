@@ -417,7 +417,7 @@ function verifyClosedCleanupInvariant(
   return null;
 }
 
-interface SagaStep {
+export interface SagaStep {
   name: string;
   /**
    * Validate the fresh before-state; return error code when invalid (no
@@ -491,8 +491,13 @@ async function fetchFresh(gh: GhTransport, issueNumber: number): Promise<IssueIn
  * fresh state reads at each boundary, exact claimant identity via transport,
  * unknown-versus-absent separation, compensation rules, postcondition proof,
  * primary/recovery error separation, and typed receipt persistence.
+ *
+ * Exported as a test seam so the compensation paths (COMPENSATION_FAILED,
+ * COMPENSATION_VERIFY_FAILED) can be exercised with actual saga-produced
+ * receipts even though no production transition currently defines a
+ * `compensate` step.
  */
-async function runSaga(
+export async function runSaga(
   gh: GhTransport,
   issueNumber: number,
   transition: string,
@@ -500,6 +505,10 @@ async function runSaga(
   sink: ReceiptSink,
 ): Promise<TrackerTransitionResult> {
   let beforeSnap: IssueSnapshot | null = null;
+  // Saga-wide lastObserved snapshot, updated after EVERY successful fresh
+  // read. Every indeterminate result after any prior or attempted mutation
+  // persists before + lastObserved so recovery can re-prove the real state.
+  let lastObserved: IssueSnapshot | null = null;
 
   for (const step of steps) {
     let fresh: IssueInput;
@@ -507,9 +516,10 @@ async function runSaga(
       fresh = await fetchFresh(gh, issueNumber);
     } catch (e) {
       const reason = `fresh read failed for #${issueNumber} (${step.name}): ${getMsg(e)}`;
-      const outcome = persistReceipt(sink, { transition, issueNumber, kind: "indeterminate", reason, code: "FETCH_FAILED" });
-      return { kind: "indeterminate", lastObserved: beforeSnap, receipt: outcome.receipt, factoryError: true };
+      const outcome = persistReceipt(sink, { transition, issueNumber, kind: "indeterminate", reason, code: "FETCH_FAILED", before: beforeSnap ?? undefined, lastObserved });
+      return { kind: "indeterminate", lastObserved, receipt: outcome.receipt, factoryError: true };
     }
+    lastObserved = snapshot(fresh);
     if (!beforeSnap) beforeSnap = snapshot(fresh);
 
     if (step.validateBefore) {
@@ -539,22 +549,23 @@ async function runSaga(
       // The mutation command threw and may have partially landed. Attempt a
       // bounded fresh read so the indeterminate receipt carries the real
       // post-mutation state as lastObserved, not the stale pre-mutation read.
-      let lastObserved = snapshot(fresh);
+      let observed = lastObserved;
       try {
-        lastObserved = snapshot(await fetchFresh(gh, issueNumber));
+        observed = snapshot(await fetchFresh(gh, issueNumber));
       } catch {
-        // Read failed — fall back to the pre-mutation snapshot; the receipt
+        // Read failed — fall back to the last successful read; the receipt
         // still records before + lastObserved so recovery can re-prove state.
       }
-      return finishFailure(gh, issueNumber, transition, step, beforeSnap, lastObserved, `mutation failed (${step.name}): ${getMsg(e)}`, sink);
+      return finishFailure(gh, issueNumber, transition, step, beforeSnap, observed, `mutation failed (${step.name}): ${getMsg(e)}`, sink);
     }
 
     let after: IssueInput;
     try {
       after = await fetchFresh(gh, issueNumber);
     } catch (e) {
-      return finishFailure(gh, issueNumber, transition, step, beforeSnap, snapshot(fresh), `post-mutation fresh read failed (${step.name}): ${getMsg(e)}`, sink);
+      return finishFailure(gh, issueNumber, transition, step, beforeSnap, lastObserved, `post-mutation fresh read failed (${step.name}): ${getMsg(e)}`, sink);
     }
+    lastObserved = snapshot(after);
     const violation = step.verifyAfter(after);
     if (violation) {
       return finishFailure(gh, issueNumber, transition, step, beforeSnap, snapshot(after), `postcondition failed (${step.name}): ${violation}`, sink);
@@ -569,6 +580,7 @@ async function runSaga(
   try {
     const final = await fetchFresh(gh, issueNumber);
     const finalSnap = snapshot(final);
+    lastObserved = finalSnap;
     if (lastStep.verifyAfter) {
       const terminalViolation = lastStep.verifyAfter(final);
       if (terminalViolation) {
@@ -589,8 +601,8 @@ async function runSaga(
     return { kind: "committed", before: beforeSnap!, after: finalSnap, receipt: outcome.receipt };
   } catch (e) {
     const reason = `final fresh read failed for #${issueNumber}: ${getMsg(e)}`;
-    const outcome = persistReceipt(sink, { transition, issueNumber, kind: "indeterminate", reason, code: "FETCH_FAILED" });
-    return { kind: "indeterminate", lastObserved: beforeSnap, receipt: outcome.receipt, factoryError: true };
+    const outcome = persistReceipt(sink, { transition, issueNumber, kind: "indeterminate", reason, code: "FETCH_FAILED", before: beforeSnap ?? undefined, lastObserved });
+    return { kind: "indeterminate", lastObserved, receipt: outcome.receipt, factoryError: true };
   }
 }
 
@@ -630,15 +642,18 @@ async function finishFailure(
   // Prove the compensation reached its intended safe state on a fresh read.
   try {
     const afterComp = await fetchFresh(gh, issueNumber);
+    const afterCompSnap = snapshot(afterComp);
     const compViolation = step.verifyCompensation
       ? step.verifyCompensation(afterComp)
       : null;
     if (compViolation) {
+      // Compensation verification mismatch — persist the ACTUAL post-compensation
+      // snapshot as lastObserved so recovery re-proves the real state, never the
+      // stale pre-compensation read.
       const r2 = `${reason}; compensation applied but safe state not proven: ${compViolation}`;
-      const outcome = persistReceipt(sink, { transition, issueNumber, kind: "indeterminate", reason: r2, code: "COMPENSATION_VERIFY_FAILED", before, lastObserved });
-      return { kind: "indeterminate", lastObserved, receipt: outcome.receipt, factoryError: true };
+      const outcome = persistReceipt(sink, { transition, issueNumber, kind: "indeterminate", reason: r2, code: "COMPENSATION_VERIFY_FAILED", before, lastObserved: afterCompSnap });
+      return { kind: "indeterminate", lastObserved: afterCompSnap, receipt: outcome.receipt, factoryError: true };
     }
-    const afterCompSnap = snapshot(afterComp);
     const outcome = persistReceipt(sink, {
       transition, issueNumber, kind: "compensated", reason, code: "COMPENSATED",
       before, after: afterCompSnap,
@@ -1528,12 +1543,14 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
       return runSaga(gh, issueNumber, "finalizeIntegrated", [
         {
           name: "strip-transient",
-          // The claimant is the SINGLE concurrency owner. If the issue was
-          // transferred to another actor (sole assignee is no longer the
-          // claimant, or an intruder was added), the merged PR must NOT be
-          // closed/label-mutated by us — zero mutation.
+          // The claimant is the SINGLE concurrency owner. An OPEN issue must
+          // be owned by the sole authenticated claimant before the merged PR
+          // may be label-mutated/closed by us — zero assignees is NOT general
+          // ownership permission. An already-closed-and-clean issue is an
+          // explicit idempotent no-op (the close step re-proves the
+          // closed-and-clean invariant).
           validateBefore: (fresh) => {
-            if (fresh.assignees.length === 0) return null; // already unassigned — nothing to strip
+            if (fresh.state === "closed") return null; // idempotent no-op
             return soleClaimantViolation(fresh, issueNumber, claimantLogin);
           },
           mutate: async () => {

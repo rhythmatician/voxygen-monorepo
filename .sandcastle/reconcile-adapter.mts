@@ -166,7 +166,12 @@ export function createProductionReconcileOps(deps: ReconcileAdapterDeps): Reconc
       // structured 404. Auth/network/timeout/403/429/5xx => unknown.
       if (!ownerRepo) return { state:"UNKNOWN", mergedAt:null, found:false, unknown:true };
       try {
-        const prJson=await runGh(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/pulls/${prNumber}`, "--jq", "{state,merged_at,number}"]);
+        // Emit `has_merged_at: has("merged_at")` so a MISSING merged_at field
+        // survives the jq projection as `has_merged_at:false` instead of being
+        // coerced to null. The API contract always returns merged_at (null when
+        // never merged), so a missing field is evidence of a malformed response
+        // and must be UNKNOWN — never a valid never-merged PR.
+        const prJson=await runGh(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/pulls/${prNumber}`, "--jq", "{state,merged_at,number,has_merged_at:has(\"merged_at\")}"]);
         let pr: unknown;
         try {
           pr = JSON.parse(prJson);
@@ -178,7 +183,7 @@ export function createProductionReconcileOps(deps: ReconcileAdapterDeps): Reconc
         // match the requested number, and the state must be a known PR state.
         // A malformed or mismatched successful response is UNKNOWN, never
         // found.
-        const obj = pr as { number?: unknown; state?: unknown; merged_at?: unknown };
+        const obj = pr as { number?: unknown; state?: unknown; merged_at?: unknown; has_merged_at?: unknown };
         if (Number(obj.number) !== Number(prNumber)) {
           return { state:"UNKNOWN", mergedAt:null, found:false, unknown:true };
         }
@@ -197,7 +202,7 @@ export function createProductionReconcileOps(deps: ReconcileAdapterDeps): Reconc
         // carrying a merged_at is INCONSISTENT => UNKNOWN and zero tracker
         // mutation.
         const rawMergedAt = obj.merged_at;
-        if (rawMergedAt === undefined) {
+        if (obj.has_merged_at !== true || rawMergedAt === undefined) {
           // The merged_at property is MISSING — malformed. The API contract
           // always returns it (null when never merged), so absence is evidence
           // of a malformed response, never a valid never-merged PR.

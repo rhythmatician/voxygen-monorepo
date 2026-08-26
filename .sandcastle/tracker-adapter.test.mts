@@ -1034,6 +1034,42 @@ describe("tracker-adapter — exact ownership for stale reconciliation (round 4)
     // transition is committed.
     expect(result.kind).toBe("committed");
   });
+
+  it("REGRESSION: open issue with zero assignees => finalize rejected before mutation, zero edit/close commands, issue remains open", async () => {
+    // An OPEN issue with ZERO assignees is NOT owned by the claimant. Zero
+    // assignees must NOT be treated as general ownership permission — the
+    // merged PR must not be label-mutated or closed by us. The strip-transient
+    // precondition requires the sole authenticated claimant whenever the issue
+    // is open.
+    const issue: FakeIssue = {
+      number: 817,
+      title: "t",
+      body: TRACER_BODY,
+      state: "open",
+      labels: new Set(["ready-for-agent", "agent:in-progress"]),
+      assignees: new Set(), // unassigned open issue
+    };
+    const gh = makeFakeGh({ issues: new Map([[817, issue]]) });
+    const origRun = gh.run.bind(gh);
+    let closeCalls = 0;
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "issue" && args[1] === "close") closeCalls++;
+      return origRun(args);
+    };
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.finalizeIntegrated(817, "sandcastle/issue-817");
+
+    // Rejected BEFORE any mutation: zero issue-edit and zero issue-close
+    // commands; the issue remains open and unassigned.
+    expect(result.kind).toBe("rejected");
+    expect(gh.editCalls.length).toBe(0);
+    expect(closeCalls).toBe(0);
+    expect(issue.state).toBe("open");
+    expect(issue.labels.has("agent:in-progress")).toBe(true);
+    expect(issue.assignees.size).toBe(0);
+  });
 });
 
 describe("tracker-adapter — one verified closed-state cleanup (round 4)", () => {
@@ -3132,6 +3168,156 @@ describe("tracker-adapter — claimant-only residue recovery (round 8)", () => {
     expect(recovery.skipped).toBe(1);
     expect(recovery.errors).toEqual([]);
     expect(issue.assignees.has("test-bot")).toBe(true);
+  });
+
+  it("SEAM 2: next-step fresh-read failure after an earlier step committed => receipt persists before + lastObserved", async () => {
+    // finalizeIntegrated is a two-step saga. The strip-transient step commits
+    // (label removed, claimant unassigned), then the close step's fresh read
+    // FAILS. The indeterminate receipt must persist BOTH before (the initial
+    // open+claimant state) AND lastObserved (the stripped intermediate state
+    // observed after the first step committed) — never a bare FETCH_FAILED
+    // receipt with no recovery evidence.
+    const gen = "2026-08-25T10:00:00Z";
+    const issue: FakeIssue = { number: 1812, title: "t", body: "body", state: "open", labels: new Set(["ready-for-agent", "agent:in-progress"]), assignees: new Set(["test-bot"]), updatedAt: gen };
+    const gh = makeFakeGh({ issues: new Map([[1812, issue]]) });
+    const origRun = gh.run.bind(gh);
+    let viewCalls = 0;
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "issue" && args[1] === "view") {
+        viewCalls++;
+        // View 3 is the close step's validateBefore fresh read. Make it fail
+        // AFTER the strip-transient step already committed.
+        if (viewCalls === 3) throw new Error("simulated close-step fresh-read failure");
+      }
+      return origRun(args);
+    };
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.finalizeIntegrated(1812, "feature-branch");
+
+    expect(result.kind).toBe("indeterminate");
+    if (result.kind !== "indeterminate") return;
+    expect(result.factoryError).toBe(true);
+    expect(result.receipt.code).toBe("FETCH_FAILED");
+    // The receipt persists before (initial open+claimant) and lastObserved
+    // (the stripped intermediate state after the first step committed).
+    expect(result.receipt.before).toEqual({ number: 1812, state: "open", labels: ["ready-for-agent", "agent:in-progress"], assignees: ["test-bot"], updatedAt: gen });
+    expect(result.receipt.lastObserved).toEqual({ number: 1812, state: "open", labels: ["ready-for-agent"], assignees: [], updatedAt: gen });
+    // The strip-transient step DID commit (label removed, claimant unassigned).
+    expect(issue.labels.has("agent:in-progress")).toBe(false);
+    expect(issue.assignees.size).toBe(0);
+  });
+
+  it("SEAM 2: terminal fresh-read failure => receipt persists before + lastObserved", async () => {
+    // All saga steps commit, but the FINAL terminal fresh read fails. The
+    // indeterminate receipt must persist BOTH before AND lastObserved (the
+    // last successful read) — never a bare FETCH_FAILED receipt.
+    const gen = "2026-08-25T10:00:00Z";
+    const issue: FakeIssue = { number: 1813, title: "t", body: "body", state: "open", labels: new Set(["ready-for-agent", "agent:in-progress"]), assignees: new Set(["test-bot"]), updatedAt: gen };
+    const gh = makeFakeGh({ issues: new Map([[1813, issue]]) });
+    const origRun = gh.run.bind(gh);
+    let viewCalls = 0;
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "issue" && args[1] === "view") {
+        viewCalls++;
+        // finalizeIntegrated views: 1=strip validate, 2=strip verify,
+        // 3=close validate, 4=close verify, 5=terminal. Make the terminal
+        // read fail after all steps committed.
+        if (viewCalls === 5) throw new Error("simulated terminal fresh-read failure");
+      }
+      return origRun(args);
+    };
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.finalizeIntegrated(1813, "feature-branch");
+
+    expect(result.kind).toBe("indeterminate");
+    if (result.kind !== "indeterminate") return;
+    expect(result.factoryError).toBe(true);
+    expect(result.receipt.code).toBe("FETCH_FAILED");
+    // before = initial open+claimant; lastObserved = the closed+clean state
+    // observed after the close step committed.
+    expect(result.receipt.before).toEqual({ number: 1813, state: "open", labels: ["ready-for-agent", "agent:in-progress"], assignees: ["test-bot"], updatedAt: gen });
+    expect(result.receipt.lastObserved).toEqual({ number: 1813, state: "closed", labels: ["ready-for-agent"], assignees: [], updatedAt: gen });
+    // The issue was actually closed by the saga.
+    expect(issue.state).toBe("closed");
+  });
+
+  it("SEAM 2: compensation returns false after a possible partial effect => receipt persists before + lastObserved", async () => {
+    // A saga step with a `compensate` that returns false (compensation failed
+    // after a possible partial effect). The indeterminate receipt must persist
+    // BOTH before AND lastObserved — the real post-mutation state.
+    const { runSaga } = await import("./tracker-adapter.mts");
+    const gen = "2026-08-25T10:00:00Z";
+    const issue: FakeIssue = { number: 1814, title: "t", body: "body", state: "open", labels: new Set(["ready-for-agent", "agent:in-progress"]), assignees: new Set(["test-bot"]), updatedAt: gen };
+    const gh = makeFakeGh({ issues: new Map([[1814, issue]]) });
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await runSaga(gh, 1814, "seam2-compensation-failed", [
+      {
+        name: "mutate-then-fail",
+        mutate: async () => {
+          // Partial effect: remove the in-progress label, then throw.
+          await gh.run(["issue", "edit", "1814", "--remove-label", "agent:in-progress"]);
+          throw new Error("simulated mutation failure after partial effect");
+        },
+        verifyAfter: () => null,
+        compensate: async () => false, // compensation fails
+      },
+    ], sink);
+
+    expect(result.kind).toBe("indeterminate");
+    if (result.kind !== "indeterminate") return;
+    expect(result.factoryError).toBe(true);
+    expect(result.receipt.code).toBe("COMPENSATION_FAILED");
+    // before = initial open+claimant; lastObserved = the real post-mutation
+    // state (in-progress removed, claimant still assigned).
+    expect(result.receipt.before).toEqual({ number: 1814, state: "open", labels: ["ready-for-agent", "agent:in-progress"], assignees: ["test-bot"], updatedAt: gen });
+    expect(result.receipt.lastObserved).toEqual({ number: 1814, state: "open", labels: ["ready-for-agent"], assignees: ["test-bot"], updatedAt: gen });
+  });
+
+  it("SEAM 2: compensation verification mismatch => receipt persists before + actual afterComp snapshot", async () => {
+    // A saga step with a `compensate` that succeeds but whose verifyCompensation
+    // fails. The indeterminate receipt must persist BOTH before AND the ACTUAL
+    // post-compensation snapshot as lastObserved — never the stale
+    // pre-compensation read.
+    const { runSaga } = await import("./tracker-adapter.mts");
+    const gen = "2026-08-25T10:00:00Z";
+    const issue: FakeIssue = { number: 1815, title: "t", body: "body", state: "open", labels: new Set(["ready-for-agent", "agent:in-progress"]), assignees: new Set(["test-bot"]), updatedAt: gen };
+    const gh = makeFakeGh({ issues: new Map([[1815, issue]]) });
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await runSaga(gh, 1815, "seam2-compensation-verify-mismatch", [
+      {
+        name: "mutate-then-fail",
+        mutate: async () => {
+          // Partial effect: remove the in-progress label, then throw.
+          await gh.run(["issue", "edit", "1815", "--remove-label", "agent:in-progress"]);
+          throw new Error("simulated mutation failure after partial effect");
+        },
+        verifyAfter: () => null,
+        compensate: async () => {
+          // Compensation succeeds: remove the claimant assignee.
+          await gh.run(["issue", "edit", "1815", "--remove-assignee", "test-bot"]);
+          return true;
+        },
+        verifyCompensation: () => "safe state not proven", // mismatch
+      },
+    ], sink);
+
+    expect(result.kind).toBe("indeterminate");
+    if (result.kind !== "indeterminate") return;
+    expect(result.factoryError).toBe(true);
+    expect(result.receipt.code).toBe("COMPENSATION_VERIFY_FAILED");
+    // before = initial open+claimant; lastObserved = the ACTUAL post-compensation
+    // snapshot (in-progress removed AND claimant unassigned), not the stale
+    // pre-compensation read.
+    expect(result.receipt.before).toEqual({ number: 1815, state: "open", labels: ["ready-for-agent", "agent:in-progress"], assignees: ["test-bot"], updatedAt: gen });
+    expect(result.receipt.lastObserved).toEqual({ number: 1815, state: "open", labels: ["ready-for-agent"], assignees: [], updatedAt: gen });
   });
 });
 

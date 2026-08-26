@@ -2447,7 +2447,7 @@ describe("tracker-operations — round 9 unknown-versus-absent parsing", () => {
     const { createProductionReconcileOps } = await import("./reconcile-adapter.mts");
     const mockGh = async (args: string[]) => {
       if (args[0] === "api" && args[1].includes("/pulls/")) {
-        return JSON.stringify({ state: "open", merged_at: null, number: 999 });
+        return JSON.stringify({ state: "open", merged_at: null, number: 999, has_merged_at: true });
       }
       return "";
     };
@@ -2462,7 +2462,7 @@ describe("tracker-operations — round 9 unknown-versus-absent parsing", () => {
       if (args[0] === "api" && args[1].includes("/pulls/")) {
         // The response is for a DIFFERENT PR number — malformed/mismatched
         // success is UNKNOWN, never found.
-        return JSON.stringify({ state: "open", merged_at: null, number: 1000 });
+        return JSON.stringify({ state: "open", merged_at: null, number: 1000, has_merged_at: true });
       }
       return "";
     };
@@ -2476,7 +2476,7 @@ describe("tracker-operations — round 9 unknown-versus-absent parsing", () => {
     const mockGh = async (args: string[]) => {
       if (args[0] === "api" && args[1].includes("/pulls/")) {
         // An unknown state value is malformed — UNKNOWN, never found.
-        return JSON.stringify({ state: "weird", merged_at: null, number: 999 });
+        return JSON.stringify({ state: "weird", merged_at: null, number: 999, has_merged_at: true });
       }
       return "";
     };
@@ -2503,7 +2503,7 @@ describe("tracker-operations — round 9 unknown-versus-absent parsing", () => {
     const { createProductionReconcileOps } = await import("./reconcile-adapter.mts");
     const mockGh = async (args: string[]) => {
       if (args[0] === "api" && args[1].includes("/pulls/")) {
-        return JSON.stringify({ state: "closed", merged_at: "2024-01-15T10:30:00Z", number: 999 });
+        return JSON.stringify({ state: "closed", merged_at: "2024-01-15T10:30:00Z", number: 999, has_merged_at: true });
       }
       return "";
     };
@@ -2517,7 +2517,7 @@ describe("tracker-operations — round 9 unknown-versus-absent parsing", () => {
     const mockGh = async (args: string[]) => {
       if (args[0] === "api" && args[1].includes("/pulls/")) {
         // A non-RFC3339 string (e.g. "2024-01-01") is malformed — UNKNOWN.
-        return JSON.stringify({ state: "closed", merged_at: "2024-01-01", number: 999 });
+        return JSON.stringify({ state: "closed", merged_at: "2024-01-01", number: 999, has_merged_at: true });
       }
       return "";
     };
@@ -2531,7 +2531,7 @@ describe("tracker-operations — round 9 unknown-versus-absent parsing", () => {
     const mockGh = async (args: string[]) => {
       if (args[0] === "api" && args[1].includes("/pulls/")) {
         // A non-string, non-null merged_at (e.g. a number) is malformed.
-        return JSON.stringify({ state: "closed", merged_at: 12345, number: 999 });
+        return JSON.stringify({ state: "closed", merged_at: 12345, number: 999, has_merged_at: true });
       }
       return "";
     };
@@ -2545,7 +2545,7 @@ describe("tracker-operations — round 9 unknown-versus-absent parsing", () => {
     const mockGh = async (args: string[]) => {
       if (args[0] === "api" && args[1].includes("/pulls/")) {
         // An OPEN PR carrying a merged_at is inconsistent — UNKNOWN.
-        return JSON.stringify({ state: "open", merged_at: "2024-01-15T10:30:00Z", number: 999 });
+        return JSON.stringify({ state: "open", merged_at: "2024-01-15T10:30:00Z", number: 999, has_merged_at: true });
       }
       return "";
     };
@@ -2558,7 +2558,7 @@ describe("tracker-operations — round 9 unknown-versus-absent parsing", () => {
     const { createProductionReconcileOps } = await import("./reconcile-adapter.mts");
     const mockGh = async (args: string[]) => {
       if (args[0] === "api" && args[1].includes("/pulls/")) {
-        return JSON.stringify({ state: "closed", merged_at: null, number: 999 });
+        return JSON.stringify({ state: "closed", merged_at: null, number: 999, has_merged_at: true });
       }
       return "";
     };
@@ -2568,13 +2568,17 @@ describe("tracker-operations — round 9 unknown-versus-absent parsing", () => {
   });
 
   it("getPrState MISSING merged_at property => unknown (never found)", async () => {
-    // The merged_at property is ABSENT (undefined) — the API contract always
-    // returns it (null when never merged), so absence is a malformed response.
-    // It must be UNKNOWN, never treated as a valid never-merged PR.
+    // The merged_at property is ABSENT — the API contract always returns it
+    // (null when never merged), so absence is a malformed response. Through the
+    // executable gh/jq seam, the `--jq "{state,merged_at,number,has_merged_at:has(\"merged_at\")}"`
+    // projection emits has_merged_at:false for a missing field (never coerced
+    // to null). It must be UNKNOWN, never treated as a valid never-merged PR.
     const { createProductionReconcileOps } = await import("./reconcile-adapter.mts");
     const mockGh = async (args: string[]) => {
       if (args[0] === "api" && args[1].includes("/pulls/")) {
-        return JSON.stringify({ state: "closed", number: 999 });
+        // Production-shaped output: the jq projection emits has_merged_at:false
+        // when the raw PR JSON omits merged_at.
+        return JSON.stringify({ state: "closed", number: 999, has_merged_at: false });
       }
       return "";
     };
@@ -2589,7 +2593,7 @@ describe("tracker-operations — round 9 unknown-versus-absent parsing", () => {
     const { createProductionReconcileOps } = await import("./reconcile-adapter.mts");
     const mockGh = async (args: string[]) => {
       if (args[0] === "api" && args[1].includes("/pulls/")) {
-        return JSON.stringify({ state: "closed", merged_at: "2024-02-30T10:30:00Z", number: 999 });
+        return JSON.stringify({ state: "closed", merged_at: "2024-02-30T10:30:00Z", number: 999, has_merged_at: true });
       }
       return "";
     };
@@ -2604,7 +2608,7 @@ describe("tracker-operations — round 9 unknown-versus-absent parsing", () => {
     const { createProductionReconcileOps } = await import("./reconcile-adapter.mts");
     const mockGh = async (args: string[]) => {
       if (args[0] === "api" && args[1].includes("/pulls/")) {
-        return JSON.stringify({ state: "closed", merged_at: "2024-01-15T10:30:00+99:00", number: 999 });
+        return JSON.stringify({ state: "closed", merged_at: "2024-01-15T10:30:00+99:00", number: 999, has_merged_at: true });
       }
       return "";
     };
@@ -2618,7 +2622,7 @@ describe("tracker-operations — round 9 unknown-versus-absent parsing", () => {
     const { createProductionReconcileOps } = await import("./reconcile-adapter.mts");
     const mockGh = async (args: string[]) => {
       if (args[0] === "api" && args[1].includes("/pulls/")) {
-        return JSON.stringify({ state: "closed", merged_at: "2024-01-15T10:30:00+05:30", number: 999 });
+        return JSON.stringify({ state: "closed", merged_at: "2024-01-15T10:30:00+05:30", number: 999, has_merged_at: true });
       }
       return "";
     };
