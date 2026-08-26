@@ -966,38 +966,73 @@ describe("tracker-adapter — exact ownership for stale reconciliation (round 4)
     expect(issue.assignees.has("human-reviewer")).toBe(true);
   });
 
-  it("REGRESSION: unrelated assignee appears during finalizeIntegrated close => indeterminate, not closed", async () => {
+  it("REGRESSION: unrelated assignee appears between strip and close => zero close commands, issue remains open", async () => {
     const issue: FakeIssue = ownedIssue(815);
     const gh = makeFakeGh({ issues: new Map([[815, issue]]) });
-    // Sabotage: after the strip-transient step, an unrelated assignee appears
-    // before the close step. The close step's verifyAfter must reject (zero
-    // assignees in the closed integrated state) — indeterminate, not closed.
+    // Sabotage: after the strip-transient step's post-mutation read, an
+    // unrelated assignee appears BEFORE the close step's validateBefore read.
+    // The close step must freshly prove zero assignees and execute ZERO close
+    // commands — the issue must remain open.
     const origRun = gh.run.bind(gh);
-    let stripped = false;
+    let viewCalls = 0;
+    let closeCalls = 0;
     (gh as any).run = async (args: string[]) => {
-      const r = await origRun(args);
-      if (args[0] === "issue" && args[1] === "edit" && args.includes("--remove-label") && args.includes("agent:in-progress")) {
-        stripped = true;
+      if (args[0] === "issue" && args[1] === "view") {
+        viewCalls++;
+        // Read #3 is the close step's validateBefore fresh read. Add the
+        // unrelated assignee so that read sees it and rejects the close.
+        if (viewCalls === 3) {
+          issue.assignees.add("human-reviewer");
+        }
       }
-      if (stripped && args[0] === "issue" && args[1] === "close") {
-        // Concurrent unrelated assignee appears before close.
-        issue.assignees.add("human-reviewer");
+      if (args[0] === "issue" && args[1] === "close") {
+        closeCalls++;
       }
-      return r;
+      return origRun(args);
     };
     const sink = makeMemoryReceiptSink();
     const tracker = createTrackerAdapter({ gh, receiptSink: sink });
 
     const result = await tracker.finalizeIntegrated(815, "sandcastle/issue-815");
 
-    // The close step's verifyAfter rejects (unrelated assignee present) —
-    // indeterminate, NOT committed. The close mutation may have landed (state
-    // closed) but the transition is not committed because the final state has
-    // an unrelated assignee.
+    // The close step's validateBefore rejects (unrelated assignee present) —
+    // ZERO close commands executed, the issue remains OPEN.
     expect(result.kind).toBe("indeterminate");
     if (result.kind !== "indeterminate") return;
     expect(result.factoryError).toBe(true);
+    expect(closeCalls).toBe(0);
+    expect(issue.state).toBe("open");
     expect(issue.assignees.has("human-reviewer")).toBe(true);
+  });
+
+  it("finalizeIntegrated already-closed-and-clean issue => idempotent no-op, zero close commands", async () => {
+    const issue: FakeIssue = {
+      number: 816,
+      title: "t",
+      body: TRACER_BODY,
+      state: "closed", // already closed and clean
+      labels: new Set(["ready-for-agent"]),
+      assignees: new Set(),
+    };
+    const gh = makeFakeGh({ issues: new Map([[816, issue]]) });
+    const origRun = gh.run.bind(gh);
+    let closeCalls = 0;
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "issue" && args[1] === "close") closeCalls++;
+      return origRun(args);
+    };
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.finalizeIntegrated(816, "sandcastle/issue-816");
+
+    // The already-closed-and-clean issue is an explicit idempotent no-op: the
+    // normal owned close mutation must NOT run.
+    expect(closeCalls).toBe(0);
+    expect(issue.state).toBe("closed");
+    // The terminal verifier proves the closed-and-clean invariant, so the
+    // transition is committed.
+    expect(result.kind).toBe("committed");
   });
 });
 
@@ -2992,6 +3027,111 @@ describe("tracker-adapter — claimant-only residue recovery (round 8)", () => {
     expect(result.skipped).toBe(0);
     expect(result.errors).toEqual([]);
     expect(issue.assignees.has("test-bot")).toBe(false);
+  });
+
+  it("PRODUCTION PATH: real integration saga creates claimant-only residue + indeterminate receipt; restarted adapter recovers at exact generation", async () => {
+    // No manually seeded evidence. A REAL finalizeIntegrated saga on an
+    // already-closed issue removes the machine label but its assignee-removal
+    // command throws (may have partially landed). The saga emits a real
+    // indeterminate receipt whose lastObserved matches the resulting
+    // claimant-only residue. A RESTARTED adapter (fresh instance, same sink)
+    // reads that receipt and recovers ONLY because the generation matches.
+    const gen = "2026-08-25T10:00:00Z";
+    const issue: FakeIssue = { number: 1810, title: "t", body: "body", state: "closed", labels: new Set(["agent:in-progress"]), assignees: new Set(["test-bot"]), updatedAt: gen };
+    const gh = makeFakeGh({ issues: new Map([[1810, issue]]) });
+    const origRun = gh.run.bind(gh);
+    // The assignee-removal command throws AFTER the label removal landed —
+    // the mutation may have partially landed, leaving claimant-only residue.
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "issue" && args[1] === "edit" && args.includes("--remove-assignee")) {
+        throw new Error("simulated assignee-removal failure");
+      }
+      return origRun(args);
+    };
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink, readReceipts: () => sink.receipts });
+
+    // Real saga: strip-transient removes agent:in-progress, then the assignee
+    // removal throws. The issue is left closed + no labels + claimant assigned
+    // (claimant-only residue) and the saga emits an indeterminate receipt.
+    const result = await tracker.finalizeIntegrated(1810, "feature-branch");
+
+    expect(result.kind).toBe("indeterminate");
+    // The residue is claimant-only: closed, no machine labels, claimant assigned.
+    expect(issue.state).toBe("closed");
+    expect(issue.labels.has("agent:in-progress")).toBe(false);
+    expect(issue.assignees.has("test-bot")).toBe(true);
+    // The real saga persisted a real indeterminate receipt with lastObserved.
+    const receipt = sink.receipts.find((r) => r.transition === "finalizeIntegrated" && r.kind === "indeterminate");
+    expect(receipt).toBeDefined();
+    expect(receipt!.lastObserved).toEqual({ number: 1810, state: "closed", labels: [], assignees: ["test-bot"], updatedAt: gen });
+
+    // RESTARTED adapter — a fresh instance reading the same sink.
+    const restarted = createTrackerAdapter({ gh, receiptSink: sink, readReceipts: () => sink.receipts });
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "issue" && args[1] === "list" && args.includes("--assignee")) {
+        return JSON.stringify([{ number: 1810 }]);
+      }
+      return origRun(args);
+    };
+
+    const recovery = await restarted.recoverClaimantOnlyClosedResidue(100);
+
+    // Generation matches exactly => recovered.
+    expect(recovery.recovered).toBe(1);
+    expect(recovery.skipped).toBe(0);
+    expect(recovery.errors).toEqual([]);
+    expect(issue.assignees.has("test-bot")).toBe(false);
+  });
+
+  it("PRODUCTION PATH: real integration residue + later manual assignment => generation drift, NOT recovered", async () => {
+    // Same production path as above, but a later manual assignment bumps
+    // updatedAt to a NEW generation after the saga left the residue. The
+    // restarted adapter reads the receipt (observed at the OLD generation) and
+    // must NOT recover — the residue may no longer be Sandcastle-owned.
+    const oldGen = "2026-08-25T10:00:00Z";
+    const newGen = "2026-08-25T11:00:00Z";
+    const issue: FakeIssue = { number: 1811, title: "t", body: "body", state: "closed", labels: new Set(["agent:in-progress"]), assignees: new Set(["test-bot"]), updatedAt: oldGen };
+    const gh = makeFakeGh({ issues: new Map([[1811, issue]]) });
+    const origRun = gh.run.bind(gh);
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "issue" && args[1] === "edit" && args.includes("--remove-assignee")) {
+        throw new Error("simulated assignee-removal failure");
+      }
+      return origRun(args);
+    };
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink, readReceipts: () => sink.receipts });
+
+    const result = await tracker.finalizeIntegrated(1811, "feature-branch");
+
+    expect(result.kind).toBe("indeterminate");
+    expect(issue.state).toBe("closed");
+    expect(issue.labels.has("agent:in-progress")).toBe(false);
+    expect(issue.assignees.has("test-bot")).toBe(true);
+    const receipt = sink.receipts.find((r) => r.transition === "finalizeIntegrated" && r.kind === "indeterminate");
+    expect(receipt).toBeDefined();
+    expect(receipt!.lastObserved).toEqual({ number: 1811, state: "closed", labels: [], assignees: ["test-bot"], updatedAt: oldGen });
+
+    // A later manual assignment bumps the generation.
+    issue.updatedAt = newGen;
+
+    // RESTARTED adapter reads the receipt (observed at the OLD generation).
+    const restarted = createTrackerAdapter({ gh, receiptSink: sink, readReceipts: () => sink.receipts });
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "issue" && args[1] === "list" && args.includes("--assignee")) {
+        return JSON.stringify([{ number: 1811 }]);
+      }
+      return origRun(args);
+    };
+
+    const recovery = await restarted.recoverClaimantOnlyClosedResidue(100);
+
+    // Generation mismatch => NOT recovered; the residue is left untouched.
+    expect(recovery.recovered).toBe(0);
+    expect(recovery.skipped).toBe(1);
+    expect(recovery.errors).toEqual([]);
+    expect(issue.assignees.has("test-bot")).toBe(true);
   });
 });
 

@@ -811,12 +811,14 @@ describe("tracker-canary — live path behavioral (item 5)", () => {
         throw new Error("gh api POST failed: connection reset");
       }
       // Exact-title lookup. The FIRST call (during recovery) is unavailable;
-      // subsequent calls (finalizer retry) resolve the fixture.
+      // subsequent calls (finalizer retry) resolve the fixture. This runner
+      // FAITHFULLY honors `--state open`: only open issues are returned, so a
+      // search after the fixture is closed returns nothing.
       if (args[0]==="issue" && args[1]==="list" && args.includes("--search")) {
         titleLookupCalls++;
         const title = args[args.indexOf("--search")+1].replace('"','').replace('"','').replace(" in:title","");
         if (titleLookupCalls === 1) return "[]"; // first lookup unavailable
-        const matches = [...store.values()].filter((i:any)=>i.title===title);
+        const matches = [...store.values()].filter((i:any)=>i.title===title && i.state==="open");
         return JSON.stringify(matches.map((i:any)=>({ number:i.number, title:i.title })));
       }
       if (args[0]==="issue" && args[1]==="view") {
@@ -870,7 +872,7 @@ describe("tracker-canary — live path behavioral (item 5)", () => {
       mkdirSync: ((p:string, o?:any) => { fsTest.mkdirSync(p, o); }) as any,
     });
     // The canary fails closed: the first fixture's POST was uncertain and the
-    // first recovery lookup was unavailable, so no id was recovered.
+    // first recovery lookup was unavailable, so no id was recovered at POST.
     expect(result.exitCode).toBe(1);
     expect(result.result).toBeDefined();
     expect(result.result!.primaryError).toBeDefined();
@@ -882,8 +884,11 @@ describe("tracker-canary — live path behavioral (item 5)", () => {
     // The first title lookup was unavailable; the finalizer retried and
     // resolved by title.
     expect(titleLookupCalls).toBeGreaterThan(1);
+    // The id learned during final cleanup (title-resolved) appears in the
+    // canary receipt's fixtureIds.
+    expect(result.result!.fixtureIds.length).toBeGreaterThan(0);
     // Every fixture in the store was cleaned (closed, unassigned, no transient
-    // labels) — including the one whose id was never recovered.
+    // labels) — including the one whose id was never recovered at POST.
     for (const issue of store.values()) {
       expect(issue.state).toBe("closed");
       expect(issue.assignees.length).toBe(0);

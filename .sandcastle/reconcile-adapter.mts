@@ -10,10 +10,52 @@ import { isHttp404 } from "./gh-errors.mts";
  * `2024-01-15T10:30:00+00:00`). Used to validate a PR's `merged_at` before it
  * is trusted for a merged-PR decision. A malformed timestamp is UNKNOWN, never
  * treated as a merge.
+ *
+ * Validation is SEMANTIC, not just syntactic: the calendar date must be real
+ * (rejecting impossible dates such as Feb 30 that `Date.parse` would silently
+ * normalize), the time components must be in range (hour 00-23, minute 00-59,
+ * second 00-60 for a leap second), and the offset must be a valid RFC3339
+ * numeric offset (hour 00-23, minute 00-59). `Date.parse` is used only as a
+ * final sanity check, never as the sole authority.
  */
 function isValidRfc3339(s: string): boolean {
-  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/.test(s)) return false;
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.\d+)?(Z|([+-])(\d{2}):(\d{2}))$/.exec(s);
+  if (!m) return false;
+  const year = Number(m[1]);
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  const hour = Number(m[4]);
+  const minute = Number(m[5]);
+  const second = Number(m[6]);
+  // Calendar date must be real — reject impossible dates (e.g. Feb 30) that
+  // Date.parse would silently normalize into a later day.
+  if (month < 1 || month > 12) return false;
+  if (day < 1 || day > daysInMonth(year, month)) return false;
+  // Time components: hour 00-23, minute 00-59, second 00-60 (leap second).
+  if (hour > 23) return false;
+  if (minute > 59) return false;
+  if (second > 60) return false;
+  // Offset: a numeric offset must have hour 00-23 and minute 00-59. `Z` is
+  // always valid.
+  if (m[8] !== "Z") {
+    const offHour = Number(m[10]);
+    const offMinute = Number(m[11]);
+    if (offHour > 23) return false;
+    if (offMinute > 59) return false;
+  }
   return !isNaN(Date.parse(s));
+}
+
+function isLeapYear(y: number): boolean {
+  return (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
+}
+
+function daysInMonth(y: number, m: number): number {
+  switch (m) {
+    case 2: return isLeapYear(y) ? 29 : 28;
+    case 4: case 6: case 9: case 11: return 30;
+    default: return 31;
+  }
 }
 
 /**
@@ -148,13 +190,21 @@ export function createProductionReconcileOps(deps: ReconcileAdapterDeps): Reconc
         // ("OPEN"/"CLOSED"), matching the prior `gh pr view` output.
         const state = rawState.toUpperCase();
         // Validate merged_at SEMANTICALLY before trusting it for a merged-PR
-        // decision. OPEN + merged_at null is valid; CLOSED + merged_at null is
-        // valid; CLOSED + a valid RFC3339 timestamp is valid. A non-string,
-        // non-null merged_at, a malformed timestamp, or an OPEN PR carrying a
-        // merged_at is INCONSISTENT => UNKNOWN and zero tracker mutation.
+        // decision. The merged_at property MUST EXIST: OPEN + merged_at null is
+        // valid; CLOSED + merged_at null is valid; CLOSED + a strictly valid
+        // RFC3339 timestamp is valid. A MISSING (undefined) merged_at, a
+        // non-string non-null merged_at, a malformed timestamp, or an OPEN PR
+        // carrying a merged_at is INCONSISTENT => UNKNOWN and zero tracker
+        // mutation.
         const rawMergedAt = obj.merged_at;
-        if (rawMergedAt === null || rawMergedAt === undefined) {
-          // merged_at null/absent — valid for both OPEN and CLOSED.
+        if (rawMergedAt === undefined) {
+          // The merged_at property is MISSING — malformed. The API contract
+          // always returns it (null when never merged), so absence is evidence
+          // of a malformed response, never a valid never-merged PR.
+          return { state: "UNKNOWN", mergedAt: null, found: false, unknown: true };
+        }
+        if (rawMergedAt === null) {
+          // merged_at null — valid for both OPEN and CLOSED (never merged).
           return { state, mergedAt: null, found: true };
         }
         if (typeof rawMergedAt !== "string") {
@@ -162,7 +212,7 @@ export function createProductionReconcileOps(deps: ReconcileAdapterDeps): Reconc
           return { state: "UNKNOWN", mergedAt: null, found: false, unknown: true };
         }
         if (!isValidRfc3339(rawMergedAt)) {
-          // String but not a valid RFC3339 timestamp — malformed.
+          // String but not a strictly valid RFC3339 timestamp — malformed.
           return { state: "UNKNOWN", mergedAt: null, found: false, unknown: true };
         }
         if (state === "OPEN") {

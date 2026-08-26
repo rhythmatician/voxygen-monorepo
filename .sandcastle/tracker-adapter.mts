@@ -369,6 +369,34 @@ function noAssigneesViolation(
 }
 
 /**
+ * Close-step precondition for finalizeIntegrated. The close mutation must
+ * freshly prove the stripped intermediate state BEFORE it may close: state
+ * open, zero assignees, and agent:in-progress / agent:implement /
+ * agent:blocked all absent. An unrelated assignee appearing between strip and
+ * close is concurrent drift — the close must NOT run (zero close commands).
+ * An already-closed-and-clean issue is an explicit idempotent no-op (returns
+ * null so the saga may proceed without the normal owned close mutation).
+ */
+function validateClosePrecondition(
+  fresh: IssueInput,
+  issueNumber: number,
+): string | null {
+  if (fresh.state !== "open") {
+    // Already closed — an explicit idempotent no-op. The caller must not run
+    // the normal owned close mutation; the terminal verifier re-proves the
+    // closed-and-clean invariant.
+    return null;
+  }
+  if (fresh.assignees.length > 0) {
+    return `issue #${issueNumber} has ${fresh.assignees.length} assignee(s) before close: ${fresh.assignees.join(", ")} — concurrent drift, zero close commands`;
+  }
+  if (fresh.labels.includes(AGENT_IN_PROGRESS)) return `${AGENT_IN_PROGRESS} present before close — concurrent drift, zero close commands`;
+  if (fresh.labels.includes(AGENT_IMPLEMENT)) return `${AGENT_IMPLEMENT} present before close — concurrent drift, zero close commands`;
+  if (fresh.labels.includes(AGENT_BLOCKED)) return `${AGENT_BLOCKED} present before close — concurrent drift, zero close commands`;
+  return null;
+}
+
+/**
  * UNCONDITIONAL closed-cleanup terminal invariant. Regardless of the initial
  * hasClaimant value or which mutation steps were selected, the final and
  * terminal verifier must prove ALL of: state closed; authenticated claimant
@@ -508,7 +536,17 @@ async function runSaga(
     try {
       await step.mutate();
     } catch (e) {
-      return finishFailure(gh, issueNumber, transition, step, beforeSnap, snapshot(fresh), `mutation failed (${step.name}): ${getMsg(e)}`, sink);
+      // The mutation command threw and may have partially landed. Attempt a
+      // bounded fresh read so the indeterminate receipt carries the real
+      // post-mutation state as lastObserved, not the stale pre-mutation read.
+      let lastObserved = snapshot(fresh);
+      try {
+        lastObserved = snapshot(await fetchFresh(gh, issueNumber));
+      } catch {
+        // Read failed — fall back to the pre-mutation snapshot; the receipt
+        // still records before + lastObserved so recovery can re-prove state.
+      }
+      return finishFailure(gh, issueNumber, transition, step, beforeSnap, lastObserved, `mutation failed (${step.name}): ${getMsg(e)}`, sink);
     }
 
     let after: IssueInput;
@@ -576,7 +614,7 @@ async function finishFailure(
   sink: ReceiptSink,
 ): Promise<TrackerTransitionResult> {
   if (!step.compensate) {
-    const outcome = persistReceipt(sink, { transition, issueNumber, kind: "indeterminate", reason, code: "UNSAFE_TO_RESTORE" });
+    const outcome = persistReceipt(sink, { transition, issueNumber, kind: "indeterminate", reason, code: "UNSAFE_TO_RESTORE", before, lastObserved });
     return { kind: "indeterminate", lastObserved, receipt: outcome.receipt, factoryError: true };
   }
   let compensated: boolean;
@@ -586,7 +624,7 @@ async function finishFailure(
     compensated = false;
   }
   if (!compensated) {
-    const outcome = persistReceipt(sink, { transition, issueNumber, kind: "indeterminate", reason: `${reason}; compensation failed`, code: "COMPENSATION_FAILED" });
+    const outcome = persistReceipt(sink, { transition, issueNumber, kind: "indeterminate", reason: `${reason}; compensation failed`, code: "COMPENSATION_FAILED", before, lastObserved });
     return { kind: "indeterminate", lastObserved, receipt: outcome.receipt, factoryError: true };
   }
   // Prove the compensation reached its intended safe state on a fresh read.
@@ -597,7 +635,7 @@ async function finishFailure(
       : null;
     if (compViolation) {
       const r2 = `${reason}; compensation applied but safe state not proven: ${compViolation}`;
-      const outcome = persistReceipt(sink, { transition, issueNumber, kind: "indeterminate", reason: r2, code: "COMPENSATION_VERIFY_FAILED" });
+      const outcome = persistReceipt(sink, { transition, issueNumber, kind: "indeterminate", reason: r2, code: "COMPENSATION_VERIFY_FAILED", before, lastObserved });
       return { kind: "indeterminate", lastObserved, receipt: outcome.receipt, factoryError: true };
     }
     const afterCompSnap = snapshot(afterComp);
@@ -611,7 +649,7 @@ async function finishFailure(
     return { kind: "compensated", before, after: afterCompSnap, receipt: outcome.receipt };
   } catch (e) {
     const r2 = `${reason}; compensation applied but verification read failed: ${getMsg(e)}`;
-    const outcome = persistReceipt(sink, { transition, issueNumber, kind: "indeterminate", reason: r2, code: "COMPENSATION_VERIFY_FAILED" });
+    const outcome = persistReceipt(sink, { transition, issueNumber, kind: "indeterminate", reason: r2, code: "COMPENSATION_VERIFY_FAILED", before, lastObserved });
     return { kind: "indeterminate", lastObserved, receipt: outcome.receipt, factoryError: true };
   }
 }
@@ -1483,6 +1521,10 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
      */
     async finalizeIntegrated(issueNumber, branch) {
       const claimantLogin = await gh.resolveClaimantLogin();
+      // Captured by the close step's validateBefore so its mutate can skip the
+      // normal owned close mutation for an already-closed-and-clean issue
+      // (explicit idempotent no-op).
+      let closeFresh: IssueInput | null = null;
       return runSaga(gh, issueNumber, "finalizeIntegrated", [
         {
           name: "strip-transient",
@@ -1514,7 +1556,21 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
         },
         {
           name: "close",
+          // Freshly prove the stripped intermediate state BEFORE closing. An
+          // unrelated assignee (or a reintroduced machine label) appearing
+          // between strip and close is concurrent drift — execute ZERO close
+          // commands. An already-closed-and-clean issue is an explicit
+          // idempotent no-op: validateClosePrecondition returns null for a
+          // closed state, and the mutate skips the normal owned close mutation
+          // (the terminal verifier re-proves the closed-and-clean invariant).
+          validateBefore: (fresh) => {
+            closeFresh = fresh;
+            return validateClosePrecondition(fresh, issueNumber);
+          },
           mutate: async () => {
+            // Idempotent no-op: an already-closed issue must NOT pass through
+            // the normal owned close mutation.
+            if (closeFresh && closeFresh.state === "closed") return;
             try {
               await gh.run(["issue", "close", String(issueNumber), "--comment",
                 `Completed by Sandcastle -- branch \`${branch}\` merged and integrated. Auto-merged to main after verification.`]);
@@ -1671,6 +1727,13 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
           name: "remove-non-last-markers",
           validateBefore: (fresh2) => {
             if (fresh2.state !== "closed") return `issue #${issueNumber} is ${fresh2.state}, not closed — refusing cleanup mutation`;
+            // Re-prove claimant absence before removing non-last markers. If a
+            // claimant appeared after the initial read, removing the machine
+            // markers would strand the claim as undiscoverable residue — the
+            // cleanup must NOT proceed. The claimant is removed by the earlier
+            // step (or was absent at the initial read); if it is present now,
+            // the ordering is broken and the cleanup refuses.
+            if (fresh2.assignees.includes(claimantLogin)) return `claimant ${claimantLogin} appeared before removing non-last markers on #${issueNumber} — refusing cleanup mutation`;
             return null;
           },
           mutate: () => editIssue(issueNumber, nonLastMarkers.flatMap((l) => ["--remove-label", l])),

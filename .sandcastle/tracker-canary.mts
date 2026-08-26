@@ -77,15 +77,23 @@ function uniqueTitle(prefix: string): string {
 /**
  * Resolve a fixture handle to its numeric id for cleanup/verification. Uses
  * handle.id when present; otherwise RETRIES exact-title resolution via
- * ops.findIssueByTitle. Returns null when the id is unknown (zero or multiple
- * title matches) — explicit cleanup uncertainty. Throws when the title lookup
- * itself is unreadable (also explicit cleanup uncertainty).
+ * ops.findIssueByTitle. When exactly one match is found, the id is ASSIGNED
+ * back to handle.id so a later verification step can use it directly instead
+ * of repeating an open-only title search (which would miss a just-closed
+ * fixture). Returns null when the id is unknown (zero or multiple title
+ * matches) — explicit cleanup uncertainty. Throws when the title lookup itself
+ * is unreadable (also explicit cleanup uncertainty).
  */
 async function resolveFixtureId(handle: { title: string; id?: number }, ops: CanaryOps): Promise<number | null> {
   if (handle.id !== undefined) return handle.id;
   if (!ops.findIssueByTitle) throw new Error(`cannot resolve fixture "${handle.title}" to an id: no findIssueByTitle op`);
   const matches = await ops.findIssueByTitle(handle.title);
-  if (matches.length === 1) return matches[0];
+  if (matches.length === 1) {
+    // Preserve the title-resolved id on the handle so verification reads by
+    // ID (not by an open-only title search after the fixture is closed).
+    handle.id = matches[0];
+    return matches[0];
+  }
   return null;
 }
 
@@ -356,6 +364,11 @@ export async function runCanary(ops: CanaryOps, opts: { live: boolean }): Promis
   // failures separately via result.primaryError.
   result.cleanupFailures.push(...fixturesResult.cleanupFailures);
   result.fixturesCleaned = fixturesResult.cleanupFailures.length === 0 && fixturesResult.fixtures.length > 0;
+  // Rebuild fixtureIds from the FINAL handles so an id learned during final
+  // cleanup (title-resolved in resolveFixtureId) appears in the canary receipt.
+  result.fixtureIds = fixturesResult.fixtures
+    .map((h) => h.id)
+    .filter((id): id is number => id !== undefined);
   if (fixturesResult.primaryError) {
     result.primaryError = fixturesResult.primaryError;
   }

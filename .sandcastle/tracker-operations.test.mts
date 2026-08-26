@@ -2566,4 +2566,64 @@ describe("tracker-operations — round 9 unknown-versus-absent parsing", () => {
     const r = await ops.getPrState("999");
     expect(r).toEqual({ state: "CLOSED", mergedAt: null, found: true });
   });
+
+  it("getPrState MISSING merged_at property => unknown (never found)", async () => {
+    // The merged_at property is ABSENT (undefined) — the API contract always
+    // returns it (null when never merged), so absence is a malformed response.
+    // It must be UNKNOWN, never treated as a valid never-merged PR.
+    const { createProductionReconcileOps } = await import("./reconcile-adapter.mts");
+    const mockGh = async (args: string[]) => {
+      if (args[0] === "api" && args[1].includes("/pulls/")) {
+        return JSON.stringify({ state: "closed", number: 999 });
+      }
+      return "";
+    };
+    const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockGh, runGit: fakeGit, repoRoot: process.cwd(), claimantLogin: "bot" });
+    const r = await ops.getPrState("999");
+    expect(r).toEqual({ state: "UNKNOWN", mergedAt: null, found: false, unknown: true });
+  });
+
+  it("getPrState CLOSED + impossible calendar date merged_at => unknown (never merged)", async () => {
+    // "2024-02-30" is an impossible date that Date.parse would silently
+    // normalize to March 1. Semantic validation must reject it — UNKNOWN.
+    const { createProductionReconcileOps } = await import("./reconcile-adapter.mts");
+    const mockGh = async (args: string[]) => {
+      if (args[0] === "api" && args[1].includes("/pulls/")) {
+        return JSON.stringify({ state: "closed", merged_at: "2024-02-30T10:30:00Z", number: 999 });
+      }
+      return "";
+    };
+    const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockGh, runGit: fakeGit, repoRoot: process.cwd(), claimantLogin: "bot" });
+    const r = await ops.getPrState("999");
+    expect(r).toEqual({ state: "UNKNOWN", mergedAt: null, found: false, unknown: true });
+  });
+
+  it("getPrState CLOSED + invalid offset merged_at => unknown (never merged)", async () => {
+    // "+99:00" is an invalid RFC3339 offset (hour must be 00-23). Semantic
+    // validation must reject it — UNKNOWN.
+    const { createProductionReconcileOps } = await import("./reconcile-adapter.mts");
+    const mockGh = async (args: string[]) => {
+      if (args[0] === "api" && args[1].includes("/pulls/")) {
+        return JSON.stringify({ state: "closed", merged_at: "2024-01-15T10:30:00+99:00", number: 999 });
+      }
+      return "";
+    };
+    const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockGh, runGit: fakeGit, repoRoot: process.cwd(), claimantLogin: "bot" });
+    const r = await ops.getPrState("999");
+    expect(r).toEqual({ state: "UNKNOWN", mergedAt: null, found: false, unknown: true });
+  });
+
+  it("getPrState CLOSED + valid offset merged_at => found with mergedAt", async () => {
+    // A strictly valid RFC3339 timestamp with a numeric offset is accepted.
+    const { createProductionReconcileOps } = await import("./reconcile-adapter.mts");
+    const mockGh = async (args: string[]) => {
+      if (args[0] === "api" && args[1].includes("/pulls/")) {
+        return JSON.stringify({ state: "closed", merged_at: "2024-01-15T10:30:00+05:30", number: 999 });
+      }
+      return "";
+    };
+    const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockGh, runGit: fakeGit, repoRoot: process.cwd(), claimantLogin: "bot" });
+    const r = await ops.getPrState("999");
+    expect(r).toEqual({ state: "CLOSED", mergedAt: "2024-01-15T10:30:00+05:30", found: true });
+  });
 });
