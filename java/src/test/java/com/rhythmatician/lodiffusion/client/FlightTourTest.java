@@ -18,10 +18,10 @@ class FlightTourTest {
 
     @Test
     void tourKeepsTheConfiguredCorridorAndThreeSecondObservationDwell() {
-        assertEquals(6, FlightTour.waypointCountForTest());
+        assertEquals(5, FlightTour.waypointCountForTest());
         assertEquals(60, FlightTour.dwellTicksForTest());
-        assertArrayEquals(new int[] {0, 96, 512}, FlightTour.waypointForTest(0));
-        assertArrayEquals(new int[] {0, 96, 1008}, FlightTour.waypointForTest(5));
+        assertArrayEquals(new int[] {0, 100, 100}, FlightTour.waypointForTest(0));
+        assertArrayEquals(new int[] {0, 100, 950}, FlightTour.waypointForTest(4));
     }
 
     @Test
@@ -33,7 +33,7 @@ class FlightTourTest {
         assertFalse(FlightTour.isAutoStartEnabled());
 
         List<String> events = FlightTour.testEventsForTest();
-        assertEquals(30, events.size());
+        assertEquals(25, events.size());
 
         for (int i = 0; i < FlightTour.waypointCountForTest(); i++) {
             int waypointIndex = i + 1;
@@ -53,7 +53,7 @@ class FlightTourTest {
         }
 
         String finalStatus = events.get(events.size() - 1);
-        assertTrue(finalStatus.startsWith("screenshot:tour-waypoint-06-after.png"));
+        assertTrue(finalStatus.startsWith("screenshot:tour-waypoint-05-after.png"));
     }
 
     @Test

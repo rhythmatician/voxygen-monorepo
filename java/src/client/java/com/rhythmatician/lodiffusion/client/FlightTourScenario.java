@@ -37,12 +37,11 @@ record FlightTourScenario(
                 60,
                 "tour-waypoint",
                 List.of(
-                        new Waypoint(0, 96, 512, 0.0F, 0.0F),
-                        new Waypoint(0, 96, 768, 0.0F, 0.0F),
-                        new Waypoint(0, 96, 896, 0.0F, 0.0F),
-                        new Waypoint(0, 96, 960, 0.0F, 0.0F),
-                        new Waypoint(0, 96, 992, 0.0F, 0.0F),
-                        new Waypoint(0, 96, 1008, 0.0F, 0.0F)));
+                        new Waypoint(0, 100, 100, 0.0F, 0.0F),
+                        new Waypoint(0, 100, 600, 0.0F, 0.0F),
+                        new Waypoint(0, 100, 800, 0.0F, 0.0F),
+                        new Waypoint(0, 100, 900, 0.0F, 0.0F),
+                        new Waypoint(0, 100, 950, 0.0F, 0.0F)));
     }
 
     record Waypoint(int x, int y, int z, float yaw, float pitch) {
