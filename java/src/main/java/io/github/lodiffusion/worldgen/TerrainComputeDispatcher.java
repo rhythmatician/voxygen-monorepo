@@ -224,7 +224,7 @@ public class TerrainComputeDispatcher {
      * Pull next job from ShadowRouterJobQueue and dispatch if available.
      * 
      * This implements the demand-driven pull model: Voxy's missing terrain requests
-     * are queued by VoxyShadowBridgeMixin, and this method consumes them for GPU generation.
+     * are queued by the active demand planner, and this method consumes them for GPU generation.
      * 
      * @return true if a request was processed, false if queue is empty
      */

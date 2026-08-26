@@ -54,7 +54,7 @@ public final class ShaderSectionWriter {
     private static final int MAT_DIRT  = 4;
     private static final int MAT_COUNT = 5;
 
-    /** Default light: full sky light, no block light → 0x0F (matches VoxySectionWriter). */
+    /** Default light: full sky light, no block light → 0x0F. */
     private static final int DEFAULT_LIGHT = 0x0F;
 
     // ---- Runtime state ----
