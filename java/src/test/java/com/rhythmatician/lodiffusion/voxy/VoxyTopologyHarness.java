@@ -19,15 +19,31 @@ final class VoxyTopologyHarness {
     private final WorldSection coarse;
     private final WorldSection[] children = new WorldSection[8];
     private final long nativeBytesAtStart = HeadlessNodeManagerProbe.allocatedNativeBytes();
+    private int coarseDirtyFlags = -1;
     private HeadlessNodeManagerProbe nodeManager;
 
     VoxyTopologyHarness(int level, int x, int y, int z) {
         coarse = WorldSection._createRawUntrackedUnsafeSection(level, x, y, z);
     }
 
-    void writeSolidCoarseGeometry(long voxel) {
-        Arrays.fill(coarse._unsafeGetRawDataArray(), voxel);
-        VoxyWorldBinding.claimGeneratedFallbackForTest(coarse, coarse.lvl);
+    void writeSolidCoarseGeometryThroughBinding(long voxel) {
+        long[] voxels = new long[32 * 32 * 32];
+        Arrays.fill(voxels, voxel);
+        VoxyWorldBinding.writeAcquiredWorldSection(
+                coarse,
+                coarse.lvl,
+                voxels,
+                (byte) 0,
+                (section, flags) -> {
+                    ((WorldSection) section).markDirty();
+                    coarseDirtyFlags = flags;
+                });
+    }
+
+    void assertCoarseWritePublishedBlockDirtyNotification() {
+        assertEquals(VoxyWorldBinding.BLOCK_UPDATE_FLAG, coarseDirtyFlags);
+        org.junit.jupiter.api.Assertions.assertTrue(coarse.setNotDirty(),
+                "real WorldSection dirty state must be set by the write notification");
     }
 
     void storeSolidChild(int octant, long voxel) {
@@ -61,8 +77,11 @@ final class VoxyTopologyHarness {
         nodeManager.publishChildExistence(coarse.getNonEmptyChildren());
     }
 
-    void assertCoarseCoverageRetained() {
-        org.junit.jupiter.api.Assertions.assertTrue(nodeManager.coarseGeometryRetained());
+    void assertCoarseMeshAllocatedAndReferenced() {
+        org.junit.jupiter.api.Assertions.assertTrue(nodeManager.coarseMeshAllocated(),
+                "coarse mesh must remain allocated");
+        org.junit.jupiter.api.Assertions.assertTrue(nodeManager.coarseMeshReferencedByActiveGraph(),
+                "active Voxy node graph must still reference coarse geometry");
     }
 
     void assertNoChildDescent() {
@@ -71,6 +90,8 @@ final class VoxyTopologyHarness {
 
     void assertOnlyChildRequested(int octant) {
         assertEquals(java.util.Set.of(nodeManager.childPosition(octant)), nodeManager.watchedChildren());
+        org.junit.jupiter.api.Assertions.assertTrue(nodeManager.parentRequestInFlight());
+        org.junit.jupiter.api.Assertions.assertTrue(nodeManager.parentHasNoChildReferences());
     }
 
     void assertNoNativeBufferLeak() {
@@ -82,11 +103,41 @@ final class VoxyTopologyHarness {
         assertEquals(0, Byte.toUnsignedInt(coarse.getNonEmptyChildren()));
     }
 
-    void assertSelectedLevel(int octant, int expectedLevel) {
-        int selectedLevel = (coarse.getNonEmptyChildren() & (1 << octant)) == 0
-                ? coarse.lvl
-                : children[octant].lvl;
-        assertEquals(expectedLevel, selectedLevel, "selected level for octant " + octant);
+    void completeStoredChild(int octant) {
+        WorldSection child = children[octant];
+        if (child == null) {
+            throw new IllegalStateException("No stored child in octant " + octant);
+        }
+        nodeManager.completeChild(octant, child.getNonEmptyChildren());
+    }
+
+    void assertChildGeometryInstalledAndReferenced(int octant) {
+        org.junit.jupiter.api.Assertions.assertTrue(nodeManager.parentReferencesInstalledChildren(),
+                "parent GPU record must reference completed child nodes");
+        org.junit.jupiter.api.Assertions.assertTrue(nodeManager.childGeometryInstalledAndReferenced(octant));
+        assertEquals(java.util.Set.of(nodeManager.childPosition(octant)),
+                nodeManager.referencedChildPositions());
+    }
+
+    void assertNoInstalledChildGeometryReferences() {
+        assertEquals(java.util.Set.of(), nodeManager.referencedChildPositions());
+    }
+
+    void assertAllOctantsEffectivelyRenderAtLevel(int expectedLevel) {
+        for (int octant = 0; octant < 8; octant++) {
+            assertEquals(expectedLevel, nodeManager.effectiveRenderableLevel(octant),
+                    "effective rendered level for octant " + octant);
+        }
+    }
+
+    void assertOnlyOctantEffectivelyRendersAtLevel(int childOctant,
+                                                    int childLevel,
+                                                    int fallbackLevel) {
+        for (int octant = 0; octant < 8; octant++) {
+            int expected = octant == childOctant ? childLevel : fallbackLevel;
+            assertEquals(expected, nodeManager.effectiveRenderableLevel(octant),
+                    "effective rendered level for octant " + octant);
+        }
     }
 
     byte childExistenceMask() {

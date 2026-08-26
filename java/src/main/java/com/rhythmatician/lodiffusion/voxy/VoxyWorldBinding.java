@@ -479,60 +479,19 @@ final class VoxyWorldBinding {
             // any generated nonterminal fallback can be dirtied for rendering.
             Object worldSection = VoxyEngine.acquireMethod.invoke(
                     worldEngine, lvl, wsX, wsY, wsZ);
-            boolean topologyChanged = lvl > Level.L0.value()
-                    && claimGeneratedFallback(worldSection, lvl);
-            long[] data = (long[]) worldSectionDataField.get(worldSection);
-
             byte preserveMask = preserveOctantsMask;
             if (lvl > 0) {
                 // Preserve physical child data, not the parent's advertised topology.
                 // Stored finer sections and this section's coarse voxel octants are
                 // separate representations even when they cover the same space.
                 preserveMask |= computeStoredChildDataMask(worldEngine, lvl, wsX, wsY, wsZ);
-            } else {
-                // At L0, preserve octants that already contain vanilla voxel data.
-                preserveMask |= computeOccupiedOctantMask(data);
             }
-
-            if (preserveMask == 0) {
-                System.arraycopy(voxels, 0, data, 0, voxels.length);
-            } else {
-                for (int octant = 0; octant < 8; octant++) {
-                    if ((preserveMask & (byte) (1 << octant)) != 0) {
-                        continue;
-                    }
-                    int ox = (octant & 1) * 16;
-                    int oz = ((octant >> 1) & 1) * 16;
-                    int oy = ((octant >> 2) & 1) * 16;
-                    for (int iy = oy; iy < oy + 16; iy++) {
-                        for (int iz = oz; iz < oz + 16; iz++) {
-                            int base = (iy << 10) | (iz << 5) | ox;
-                            System.arraycopy(voxels, base, data, base, 16);
-                        }
-                    }
-                }
-            }
-
-            // nonEmptyChildren is renderer topology, not occupancy inside this
-            // 32^3 array. L1-L4 generated fallback remains a leaf with NEC=0
-            // until publishCompleteChildMask atomically advertises finer sections.
-            if (lvl == 0) {
-                boolean anyNonAir = false;
-                for (long v : data) {
-                    if (!isAir(v)) {
-                        anyNonAir = true;
-                        break;
-                    }
-                }
-                if (anyNonAir) {
-                    // Never replace NEC with a stale read. Native ingestion may
-                    // update it concurrently; this monotonic CAS only adds L0's
-                    // terminal nonempty state.
-                    topologyChanged |= mergeNonEmptyChildren(worldSection, (byte) 0xFF);
-                }
-            }
-
-            markDirty(worldEngine, worldSection, generatedFallbackUpdateFlags(topologyChanged));
+            writeAcquiredWorldSection(
+                    worldSection,
+                    lvl,
+                    voxels,
+                    preserveMask,
+                    (section, flags) -> markDirty(worldEngine, section, flags));
             VoxyEngine.worldSectionReleaseMethod.invoke(worldSection);
 
         } catch (Exception e) {
@@ -542,6 +501,75 @@ final class VoxyWorldBinding {
         }
 
         return nonAir;
+    }
+
+    @FunctionalInterface
+    interface SectionDirtyNotifier {
+        void mark(Object worldSection, int updateFlags) throws Exception;
+    }
+
+    static void writeAcquiredWorldSection(Object worldSection,
+                                          int lvl,
+                                          long[] voxels,
+                                          byte preserveOctantsMask,
+                                          SectionDirtyNotifier dirtyNotifier) {
+        ensureWorldSectionBindings();
+        try {
+            writeAcquiredWorldSectionInternal(
+                    worldSection, lvl, voxels, preserveOctantsMask, dirtyNotifier);
+        } catch (Exception e) {
+            throw new IllegalStateException("Could not write acquired Voxy section", e);
+        }
+    }
+
+    private static void writeAcquiredWorldSectionInternal(Object worldSection,
+                                                           int lvl,
+                                                           long[] voxels,
+                                                           byte preserveOctantsMask,
+                                                           SectionDirtyNotifier dirtyNotifier)
+            throws Exception {
+        boolean topologyChanged = lvl > Level.L0.value()
+                && claimGeneratedFallback(worldSection, lvl);
+        long[] data = (long[]) worldSectionDataField.get(worldSection);
+        byte preserveMask = preserveOctantsMask;
+        if (lvl == 0) {
+            // At L0, preserve octants that already contain vanilla voxel data.
+            preserveMask |= computeOccupiedOctantMask(data);
+        }
+
+        if (preserveMask == 0) {
+            System.arraycopy(voxels, 0, data, 0, voxels.length);
+        } else {
+            copyUnpreservedOctants(voxels, data, preserveMask);
+        }
+
+        // nonEmptyChildren is renderer topology, not occupancy inside this
+        // 32^3 array. L1-L4 generated fallback remains a leaf with NEC=0
+        // until publishCompleteChildMask atomically advertises finer sections.
+        if (lvl == 0 && containsNonAir(data)) {
+            // Never replace NEC with a stale read. Native ingestion may update
+            // it concurrently; this monotonic CAS only adds L0's terminal state.
+            topologyChanged |= mergeNonEmptyChildren(worldSection, (byte) 0xFF);
+        }
+
+        dirtyNotifier.mark(worldSection, generatedFallbackUpdateFlags(topologyChanged));
+    }
+
+    private static void copyUnpreservedOctants(long[] source, long[] destination, byte preserveMask) {
+        for (int octant = 0; octant < 8; octant++) {
+            if ((preserveMask & (byte) (1 << octant)) != 0) {
+                continue;
+            }
+            int ox = (octant & 1) * 16;
+            int oz = ((octant >> 1) & 1) * 16;
+            int oy = ((octant >> 2) & 1) * 16;
+            for (int iy = oy; iy < oy + 16; iy++) {
+                for (int iz = oz; iz < oz + 16; iz++) {
+                    int base = (iy << 10) | (iz << 5) | ox;
+                    System.arraycopy(source, base, destination, base, 16);
+                }
+            }
+        }
     }
 
     /** Claim a fallback and report whether stale/native child topology was cleared. */

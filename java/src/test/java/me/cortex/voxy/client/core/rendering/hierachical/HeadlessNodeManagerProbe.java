@@ -5,6 +5,7 @@ import me.cortex.voxy.client.core.rendering.building.BuiltSection;
 import me.cortex.voxy.client.core.rendering.section.geometry.IGeometryManager;
 import me.cortex.voxy.common.util.MemoryBuffer;
 import me.cortex.voxy.common.world.WorldEngine;
+import org.lwjgl.system.MemoryUtil;
 
 import java.util.HashMap;
 import java.util.HashSet;
@@ -18,27 +19,99 @@ public final class HeadlessNodeManagerProbe {
     private final Geometry geometry = new Geometry();
     private final Watcher watcher = new Watcher();
     private final NodeManager manager = new NodeManager(1 << 10, geometry, watcher);
+    private final Map<Integer, GpuNode> gpuNodes = new HashMap<>();
+    private int parentNodeId = -1;
 
     public HeadlessNodeManagerProbe(long parentPosition) {
         this.parentPosition = parentPosition;
+        manager.setTLNCallbacks(id -> parentNodeId = id, ignored -> { });
         manager.insertTopLevelNode(parentPosition);
     }
 
     public void completeCoarseLeaf(byte childExistence) {
         manager.processChildChange(parentPosition, childExistence);
         manager.processGeometryResult(nonEmptySection(parentPosition, childExistence));
+        captureNodeChanges();
     }
 
     public void requestRefinement() {
         manager.processRequest(parentPosition);
+        captureNodeChanges();
     }
 
     public void publishChildExistence(byte childExistence) {
         manager.processChildChange(parentPosition, childExistence);
+        captureNodeChanges();
     }
 
-    public boolean coarseGeometryRetained() {
-        return geometry.activeMeshCount() == 1;
+    public void completeChild(int octant, byte childExistence) {
+        long position = childPosition(octant);
+        manager.processChildChange(position, childExistence);
+        manager.processGeometryResult(nonEmptySection(position, childExistence));
+        captureNodeChanges();
+    }
+
+    public boolean coarseMeshAllocated() {
+        return parentNode().geometryId() > 0 && geometry.contains(parentNode().geometryId());
+    }
+
+    public boolean coarseMeshReferencedByActiveGraph() {
+        return parentNode().position() == parentPosition && parentNode().geometryId() > 0;
+    }
+
+    public boolean parentRequestInFlight() {
+        return parentNode().requestInFlight();
+    }
+
+    public boolean parentHasNoChildReferences() {
+        return parentNode().childPointer() == -1;
+    }
+
+    public boolean parentReferencesInstalledChildren() {
+        return parentNode().childPointer() >= 0 && !parentNode().requestInFlight();
+    }
+
+    public boolean childGeometryInstalledAndReferenced(int octant) {
+        long position = childPosition(octant);
+        return gpuNodes.values().stream()
+                .anyMatch(node -> node.position() == position
+                        && node.geometryId() > 0
+                        && geometry.contains(node.geometryId()));
+    }
+
+    public Set<Long> referencedChildPositions() {
+        return gpuNodes.values().stream()
+                .filter(node -> node.position() != parentPosition)
+                .filter(node -> node.geometryId() > 0)
+                .filter(node -> geometry.contains(node.geometryId()))
+                .map(GpuNode::position)
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+    }
+
+    public long effectiveRenderablePosition(int octant) {
+        GpuNode parent = parentNode();
+        if (parent.geometryId() <= 0 || !geometry.contains(parent.geometryId())) {
+            throw new IllegalStateException("Parent has no active renderable geometry");
+        }
+        if (parent.childPointer() < 0) {
+            return parent.position();
+        }
+
+        long expectedChildPosition = childPosition(octant);
+        for (int offset = 0; offset < parent.childCount(); offset++) {
+            GpuNode child = gpuNodes.get(parent.childPointer() + offset);
+            if (child != null
+                    && child.position() == expectedChildPosition
+                    && child.geometryId() > 0
+                    && geometry.contains(child.geometryId())) {
+                return child.position();
+            }
+        }
+        return parent.position();
+    }
+
+    public int effectiveRenderableLevel(int octant) {
+        return WorldEngine.getLevel(effectiveRenderablePosition(octant));
     }
 
     public static long allocatedNativeBytes() {
@@ -63,6 +136,51 @@ public final class HeadlessNodeManagerProbe {
         MemoryBuffer geometry = new MemoryBuffer(8).zero();
         return new BuiltSection(position, childExistence, 0, geometry, null, null);
     }
+
+    private GpuNode parentNode() {
+        GpuNode node = gpuNodes.get(parentNodeId);
+        if (node == null) {
+            throw new IllegalStateException("Parent node has no generated GPU record");
+        }
+        return node;
+    }
+
+    private void captureNodeChanges() {
+        MemoryBuffer changes = manager._generateChangeList();
+        if (changes == null) {
+            return;
+        }
+        try {
+            int count = Math.toIntExact(changes.size / 20L);
+            for (int index = 0; index < count; index++) {
+                long address = changes.address + index * 20L;
+                int nodeId = MemoryUtil.memGetInt(address);
+                int high = MemoryUtil.memGetInt(address + 4);
+                int low = MemoryUtil.memGetInt(address + 8);
+                long position = ((long) high << 32) | Integer.toUnsignedLong(low);
+                int geometryAndFlags = MemoryUtil.memGetInt(address + 12);
+                int childPointerWord = MemoryUtil.memGetInt(address + 16);
+                int encodedGeometry = geometryAndFlags & 0xFFFFFF;
+                int geometryId = encodedGeometry == 0xFFFFFF ? -1
+                        : encodedGeometry == 0xFFFFFE ? -2 : encodedGeometry;
+                int encodedChildPointer = childPointerWord & 0xFFFFFF;
+                int childPointer = encodedChildPointer == 0xFFFFFF ? -1 : encodedChildPointer;
+                int flags = geometryAndFlags >>> 24;
+                boolean requestInFlight = (flags & 1) != 0;
+                int childCount = ((flags >>> 2) & 0x7) + 1;
+                gpuNodes.put(nodeId,
+                        new GpuNode(position, geometryId, childPointer, childCount, requestInFlight));
+            }
+        } finally {
+            changes.free();
+        }
+    }
+
+    private record GpuNode(long position,
+                           int geometryId,
+                           int childPointer,
+                           int childCount,
+                           boolean requestInFlight) { }
 
     private static final class Geometry implements IGeometryManager {
         private final Set<Integer> activeMeshes = new HashSet<>();
@@ -93,8 +211,8 @@ public final class HeadlessNodeManagerProbe {
             activeMeshes.remove(id);
         }
 
-        int activeMeshCount() {
-            return activeMeshes.size();
+        boolean contains(int meshId) {
+            return activeMeshes.contains(meshId);
         }
     }
 
