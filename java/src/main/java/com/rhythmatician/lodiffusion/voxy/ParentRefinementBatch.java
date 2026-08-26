@@ -7,8 +7,10 @@ import java.util.Objects;
  * Complete handoff of one parent section to its eight finer children.
  *
  * <p>A child outcome is terminal only after its geometry has been written or
- * proved empty. The parent mask is therefore not a promise: it is the exact
- * set of children that now have renderable geometry.
+ * proved empty. Pinned Voxy renders only installed children once a parent has
+ * any child-existence bit, so a handoff is publishable only when every octant
+ * has a resolved outcome: the batch always materializes all eight siblings,
+ * regardless of which subset the scheduler demanded.
  */
 final class ParentRefinementBatch {
     public record Child(int octant, SectionPos origin, VoxelVolume volume) {
@@ -24,6 +26,8 @@ final class ParentRefinementBatch {
         }
     }
 
+    private static final int ALL_OCTANTS = 0xFF;
+
     private final SectionPos parentOrigin;
     private final Level parentLevel;
     private final List<Child> children;
@@ -33,7 +37,7 @@ final class ParentRefinementBatch {
     private int nonEmptyMask;
 
     private ParentRefinementBatch(
-            SectionPos parentOrigin, Level parentLevel, int requiredMask, List<Child> children) {
+            SectionPos parentOrigin, Level parentLevel, List<Child> children) {
         this.parentOrigin = Objects.requireNonNull(parentOrigin, "parentOrigin");
         this.parentLevel = Objects.requireNonNull(parentLevel, "parentLevel");
         if (parentLevel.value() < Level.L1.value() || parentLevel.value() > Level.L4.value()) {
@@ -43,9 +47,6 @@ final class ParentRefinementBatch {
             throw new IllegalArgumentException("parent origin is not aligned to " + parentLevel);
         }
         Objects.requireNonNull(children, "children");
-        if (requiredMask <= 0 || (requiredMask & ~0xFF) != 0) {
-            throw new IllegalArgumentException("requiredMask must contain child bits");
-        }
         int mask = 0;
         for (Child child : children) {
             if (child.volume().extent() != 32) {
@@ -63,10 +64,12 @@ final class ParentRefinementBatch {
             mask |= bit;
         }
         this.children = List.copyOf(children);
-        if (mask != requiredMask) {
-            throw new IllegalArgumentException("child octants must exactly match requiredMask");
+        // Partial handoffs are unrepresentable: every sibling must be present.
+        if (mask != ALL_OCTANTS) {
+            throw new IllegalArgumentException(
+                    "handoff requires all eight child outcomes, got mask " + mask);
         }
-        this.requiredMask = requiredMask;
+        this.requiredMask = ALL_OCTANTS;
     }
 
     static ParentRefinementBatch materialize(ParentRefinementIntent intent) {
@@ -75,17 +78,13 @@ final class ParentRefinementBatch {
         List<SectionPos> origins = childOrigins(intent.parentOrigin(), intent.parentLevel());
         java.util.ArrayList<Child> children = new java.util.ArrayList<>(8);
         for (int octant = 0; octant < 8; octant++) {
-            if ((intent.demandedChildMask() & (1 << octant)) == 0) {
-                continue;
-            }
             SectionPos origin = origins.get(octant);
             VoxelVolume volume = Objects.requireNonNull(
                     intent.childVolumes().produce(childLevel, origin),
                     "child volume for octant " + octant);
             children.add(new Child(octant, origin, volume));
         }
-        return new ParentRefinementBatch(
-                intent.parentOrigin(), intent.parentLevel(), intent.demandedChildMask(), children);
+        return new ParentRefinementBatch(intent.parentOrigin(), intent.parentLevel(), children);
     }
 
     static List<SectionPos> childOrigins(SectionPos parentOrigin, Level parentLevel) {

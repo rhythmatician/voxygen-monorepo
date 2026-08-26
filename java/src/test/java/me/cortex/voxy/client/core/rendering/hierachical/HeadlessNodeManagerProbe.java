@@ -88,13 +88,21 @@ public final class HeadlessNodeManagerProbe {
                 .collect(java.util.stream.Collectors.toUnmodifiableSet());
     }
 
-    public long effectiveRenderablePosition(int octant) {
+    /**
+     * Mirrors pinned Voxy traversal semantics: a leaf renders itself; once the
+     * parent has installed children, ONLY those children render — there is no
+     * parent fallback for octants without an installed child.
+     *
+     * @return the position of the node that would be rendered for this octant,
+     *         or empty when the octant has no render representation (a void).
+     */
+    public java.util.OptionalLong effectiveRenderablePosition(int octant) {
         GpuNode parent = parentNode();
         if (parent.geometryId() <= 0 || !geometry.contains(parent.geometryId())) {
             throw new IllegalStateException("Parent has no active renderable geometry");
         }
         if (parent.childPointer() < 0) {
-            return parent.position();
+            return java.util.OptionalLong.of(parent.position());
         }
 
         long expectedChildPosition = childPosition(octant);
@@ -104,14 +112,19 @@ public final class HeadlessNodeManagerProbe {
                     && child.position() == expectedChildPosition
                     && child.geometryId() > 0
                     && geometry.contains(child.geometryId())) {
-                return child.position();
+                return java.util.OptionalLong.of(child.position());
             }
         }
-        return parent.position();
+        // Pinned traversal: hasChildren(node) branch never enqueues the parent,
+        // so an octant without an installed child renders nothing.
+        return java.util.OptionalLong.empty();
     }
 
     public int effectiveRenderableLevel(int octant) {
-        return WorldEngine.getLevel(effectiveRenderablePosition(octant));
+        return WorldEngine.getLevel(
+                effectiveRenderablePosition(octant).orElseThrow(
+                        () -> new IllegalStateException(
+                                "octant " + octant + " has no render representation")));
     }
 
     public static long allocatedNativeBytes() {

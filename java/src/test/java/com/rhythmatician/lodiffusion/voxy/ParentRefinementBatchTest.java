@@ -11,8 +11,14 @@ import org.junit.jupiter.api.Test;
 class ParentRefinementBatchTest {
     private static final SectionPos PARENT = new SectionPos(0, 0, 0);
 
+    /**
+     * Pinned Voxy renders only installed children once a parent has any
+     * child-existence bit, so a partial handoff leaves undemanded octants
+     * with no render representation. The publication seam must therefore
+     * resolve all eight sibling outcomes regardless of scheduling demand.
+     */
     @Test
-    void intentMaterializesOnlyDemandedChildrenInOctantOrder() {
+    void partialDemandStillResolvesAllEightOctantsBeforePublication() {
         InMemoryVolumeWriter writer = writerWithParent();
         List<SectionPos> observed = new ArrayList<>();
 
@@ -23,26 +29,23 @@ class ParentRefinementBatchTest {
                 }));
 
         assertEquals(ParentRefinementResult.Status.PUBLISHED, result.status());
-        assertEquals(List.of(
-                new SectionPos(0, 0, 0),
-                new SectionPos(0, 0, 16),
-                new SectionPos(16, 16, 0)), observed);
-        assertEquals(0b0010_0101, writer.committedChildMask(PARENT, Level.L4));
+        assertEquals(ParentRefinementBatch.childOrigins(PARENT, Level.L4), observed);
+        assertEquals(0xFF, writer.committedChildMask(PARENT, Level.L4));
     }
 
     @Test
-    void oneBitDemandInvokesTheProducerOnce() {
+    void oneBitDemandInvokesTheProducerForEverySibling() {
         InMemoryVolumeWriter writer = writerWithParent();
         int[] calls = {0};
 
         writer.refineParent(new ParentRefinementIntent(
                 PARENT, Level.L4, 1 << 5, (level, origin) -> {
-                    calls[0]++;
-                    return solid();
-                }));
+            calls[0]++;
+            return solid();
+        }));
 
-        assertEquals(1, calls[0]);
-        assertEquals(1 << 5, writer.committedChildMask(PARENT, Level.L4));
+        assertEquals(8, calls[0]);
+        assertEquals(0xFF, writer.committedChildMask(PARENT, Level.L4));
     }
 
     @Test

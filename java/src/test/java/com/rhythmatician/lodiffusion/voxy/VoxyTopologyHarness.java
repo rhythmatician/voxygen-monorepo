@@ -140,10 +140,24 @@ final class VoxyTopologyHarness {
                 nodeManager.referencedChildPositions());
     }
 
+    /**
+     * Asserts the parent has flipped from leaf to inner with a partial child
+     * list — the pinned-Voxy state in which uncovered octants become voids.
+     */
+    void assertParentBecameInnerWithPartialChildren() {
+        org.junit.jupiter.api.Assertions.assertTrue(
+                nodeManager.parentReferencesInstalledChildren(),
+                "request finished: parent must reference its installed children");
+    }
+
     void assertNoInstalledChildGeometryReferences() {
         assertEquals(java.util.Set.of(), nodeManager.referencedChildPositions());
     }
 
+    /**
+     * Pinned traversal: every octant must have a render representation at the
+     * expected level. Fails on any octant rendered by fallback OR left void.
+     */
     void assertAllOctantsEffectivelyRenderAtLevel(int expectedLevel) {
         for (int octant = 0; octant < 8; octant++) {
             assertEquals(expectedLevel, nodeManager.effectiveRenderableLevel(octant),
@@ -151,17 +165,41 @@ final class VoxyTopologyHarness {
         }
     }
 
-    void assertOnlyOctantEffectivelyRendersAtLevel(int childOctant,
-                                                    int childLevel,
-                                                    int fallbackLevel) {
+    /** Asserts which octants currently have NO render representation (voids). */
+    void assertVoidOctants(int... expectedVoidOctants) {
+        var expected = java.util.Arrays.stream(expectedVoidOctants)
+                .boxed().collect(java.util.stream.Collectors.toSet());
         for (int octant = 0; octant < 8; octant++) {
-            int expected = octant == childOctant ? childLevel : fallbackLevel;
-            assertEquals(expected, nodeManager.effectiveRenderableLevel(octant),
-                    "effective rendered level for octant " + octant);
+            boolean isVoid = nodeManager.effectiveRenderablePosition(octant).isEmpty();
+            assertEquals(expected.contains(octant), isVoid,
+                    "void state for octant " + octant);
+        }
+    }
+
+    /**
+     * Asserts octant {@code childOctant} renders at {@code childLevel} while
+     * every other octant is a void (no render representation) — the pinned
+     * traversal consequence of a partial child handoff.
+     */
+    void assertOnlyOctantRendersAndRestAreVoid(int childOctant, int childLevel) {
+        for (int octant = 0; octant < 8; octant++) {
+            if (octant == childOctant) {
+                assertEquals(childLevel, nodeManager.effectiveRenderableLevel(octant),
+                        "effective rendered level for octant " + octant);
+            } else {
+                org.junit.jupiter.api.Assertions.assertTrue(
+                        nodeManager.effectiveRenderablePosition(octant).isEmpty(),
+                        "octant " + octant + " must have no render representation");
+            }
         }
     }
 
     byte childExistenceMask() {
         return coarse.getNonEmptyChildren();
+    }
+
+    /** Exposes the coarse section for ownership assertions. */
+    WorldSection coarseSectionForTest() {
+        return coarse;
     }
 }
