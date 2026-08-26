@@ -16,7 +16,11 @@ import java.util.Map;
  *
  * <p>Geometry mirrors Voxy's {@code screenspace.glsl}:
  * <ul>
- *   <li>Node at Level L spans {@code 32 << L} blocks per axis; region index r
+ *   <li>Covered L4 regions arrive as canonical {@link SectionPos} origins on the
+ *       16-block section lattice; they are converted to Voxy WorldSection indices
+ *       (one WorldSection spans {@code 32 << L} blocks at Level L) exactly once,
+ *       on entry to {@link #select}.</li>
+ *   <li>Node at Level L spans {@code 32 << L} blocks per axis; WorldSection index r
  *       covers blocks {@code [r * (32<<L), (r+1) * (32<<L))}.</li>
  *   <li>Projected area ≈ {@code size² · focal² / dist²} using closest-point
  *       distance in 3D; descend iff area &gt; {@code subDivisionPx²}.</li>
@@ -46,7 +50,7 @@ final class RefinementDemandSelector {
         }
     }
 
-    /** Selection inputs. Covered L4 regions are region-index SectionPos values. */
+    /** Selection inputs. Covered L4 regions are canonical SectionPos origins. */
     public record Params(
             double camX, double camY, double camZ,
             double focalPx, double subDivisionPx,
@@ -69,17 +73,23 @@ final class RefinementDemandSelector {
         double refDistPerSize = p.focalPx() / p.subDivisionPx();
 
         for (SectionPos l4 : p.coveredL4Regions()) {
-            long xzDistSq = xzDistanceSquaredToRegionCentre(p, l4.x(), l4.z(), 4);
+            // Canonical section lattice (16-block units) -> Voxy WorldSection
+            // index at L4 (512-block cells). Convert exactly once here; the
+            // rest of the selector operates purely in WorldSection indices.
+            long wsX = WorldSectionCoord.sectionToWorldSection(l4.x(), Level.L4.value());
+            long wsZ = WorldSectionCoord.sectionToWorldSection(l4.z(), Level.L4.value());
+            long xzDistSq = xzDistanceSquaredToRegionCentre(p, wsX, wsZ, 4);
             double rd = p.renderDistanceBlocks();
             if (xzDistSq > rd * rd) {
                 continue;
             }
             // All 8 L3 children of this L4 region.
+            int wsY = WorldSectionCoord.sectionToWorldSection(l4.y(), Level.L4.value());
             for (int cy = 0; cy < 2; cy++) {
                 for (int cz = 0; cz < 2; cz++) {
                     for (int cx = 0; cx < 2; cx++) {
-                        descend(p, 3, l4.x() * 2 + cx, l4.y() * 2 + cy,
-                                l4.z() * 2 + cz, refDistPerSize, selected);
+                        descend(p, 3, (int) (wsX * 2 + cx), wsY * 2 + cy,
+                                (int) (wsZ * 2 + cz), refDistPerSize, selected);
                     }
                 }
             }
@@ -143,7 +153,7 @@ final class RefinementDemandSelector {
     }
 
     private static long xzDistanceSquaredToRegionCentre(
-            Params p, int regionX, int regionZ, int level) {
+            Params p, long regionX, long regionZ, int level) {
         int size = 32 << level;
         double cx = (regionX + 0.5) * size;
         double cz = (regionZ + 0.5) * size;

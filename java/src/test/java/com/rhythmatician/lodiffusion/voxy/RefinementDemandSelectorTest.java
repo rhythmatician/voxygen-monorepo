@@ -88,4 +88,49 @@ class RefinementDemandSelectorTest {
             assertTrue(previous <= current);
         }
     }
+
+    // ── Canonical SectionPos → WorldSection lattice conversion ────────────
+
+    /**
+     * Production render distance (8192 blocks). A covered L4 origin of
+     * canonical SectionPos x=32 (block origin 512, Voxy WorldSection wsX=1)
+     * must be treated as the adjacent 512-block region — not as wsX=32,
+     * which would place its centre at block 16640 and cull it.
+     */
+    @Test
+    void positiveCanonicalOriginMapsToWorldSectionOne() {
+        // SectionPos x=32 is canonical section 32 (block origin 512) = wsX 1.
+        var out = RefinementDemandSelector.select(new RefinementDemandSelector.Params(
+                768, 96, 256, 1000, 64, Level.L1.value(), 8192, Integer.MAX_VALUE,
+                List.of(new SectionPos(32, 0, 0))));
+        assertFalse(out.isEmpty(),
+                "adjacent L4 region at wsX=1 must not be culled by render distance");
+        assertTrue(out.stream().anyMatch(e -> e.request().level() == 4
+                        && e.request().wsX() == 1 && e.request().wsY() == 0
+                        && e.request().wsZ() == 0),
+                "L4 parent transaction must be emitted at WorldSection (1,0,0)");
+    }
+
+    /** Negative canonical origins convert to negative WorldSection indices. */
+    @Test
+    void negativeCanonicalOriginMapsToNegativeWorldSection() {
+        // SectionPos x=-32 (block origin -512) = wsX -1; z=-16 (block -256) = wsZ -1.
+        var out = RefinementDemandSelector.select(new RefinementDemandSelector.Params(
+                -768, 96, -256, 1000, 64, Level.L1.value(), 8192, Integer.MAX_VALUE,
+                List.of(new SectionPos(-32, 0, -16))));
+        assertFalse(out.isEmpty());
+        assertTrue(out.stream().anyMatch(e -> e.request().level() == 4
+                        && e.request().wsX() == -1 && e.request().wsZ() == -1),
+                "L4 parent transaction must be emitted at WorldSection (-1,0,-1)");
+    }
+
+    /** A region beyond the production render distance stays culled. */
+    @Test
+    void distantCanonicalOriginRemainsCulledAtProductionScale() {
+        // wsX = 20 => centre at block ~10368 > 8192 from a camera near origin.
+        var out = RefinementDemandSelector.select(new RefinementDemandSelector.Params(
+                256, 96, 256, 1000, 64, Level.L1.value(), 8192, Integer.MAX_VALUE,
+                List.of(new SectionPos(20 << 5, 0, 0))));
+        assertTrue(out.isEmpty(), "region beyond render distance must be culled");
+    }
 }
