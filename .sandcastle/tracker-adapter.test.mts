@@ -1005,7 +1005,7 @@ describe("tracker-adapter — exact ownership for stale reconciliation (round 4)
     expect(issue.assignees.has("human-reviewer")).toBe(true);
   });
 
-  it("finalizeIntegrated already-closed-and-clean issue => idempotent no-op, zero close commands", async () => {
+  it("finalizeIntegrated already-closed-and-clean issue => idempotent no-op, zero edits and zero closes", async () => {
     const issue: FakeIssue = {
       number: 816,
       title: "t",
@@ -1026,13 +1026,54 @@ describe("tracker-adapter — exact ownership for stale reconciliation (round 4)
 
     const result = await tracker.finalizeIntegrated(816, "sandcastle/issue-816");
 
-    // The already-closed-and-clean issue is an explicit idempotent no-op: the
-    // normal owned close mutation must NOT run.
+    // The already-closed-and-clean issue is a TRUE idempotent no-op: ZERO
+    // issue-edit commands AND ZERO issue-close commands. The strip-transient
+    // mutate must skip the normal owned edit mutation for a closed issue.
+    expect(gh.editCalls.length).toBe(0);
     expect(closeCalls).toBe(0);
     expect(issue.state).toBe("closed");
     // The terminal verifier proves the closed-and-clean invariant, so the
-    // transition is committed.
+    // transition is committed with a durable receipt.
     expect(result.kind).toBe("committed");
+    if (result.kind !== "committed") return;
+    expect(result.receipt).toBeDefined();
+    expect(result.receipt.kind).toBe("committed");
+  });
+
+  it("REGRESSION: closed issue with unrelated assignee/transient label => zero mutation, rejected without closed-cleanup authority", async () => {
+    // A closed issue that is NOT already clean must NOT be mutated through the
+    // normal integration saga without explicit closed-cleanup authority. The
+    // strip-transient precondition must reject it with ZERO issue-edit and
+    // ZERO issue-close commands — the closed-but-dirty state is preserved for
+    // the dedicated closed-cleanup transition.
+    const issue: FakeIssue = {
+      number: 818,
+      title: "t",
+      body: TRACER_BODY,
+      state: "closed",
+      labels: new Set(["ready-for-agent", "agent:in-progress"]), // transient label on closed issue
+      assignees: new Set(["human-reviewer"]), // unrelated assignee on closed issue
+    };
+    const gh = makeFakeGh({ issues: new Map([[818, issue]]) });
+    const origRun = gh.run.bind(gh);
+    let closeCalls = 0;
+    (gh as any).run = async (args: string[]) => {
+      if (args[0] === "issue" && args[1] === "close") closeCalls++;
+      return origRun(args);
+    };
+    const sink = makeMemoryReceiptSink();
+    const tracker = createTrackerAdapter({ gh, receiptSink: sink });
+
+    const result = await tracker.finalizeIntegrated(818, "sandcastle/issue-818");
+
+    // Rejected BEFORE any mutation: zero issue-edit and zero issue-close
+    // commands; the closed-but-dirty state is preserved untouched.
+    expect(result.kind).toBe("rejected");
+    expect(gh.editCalls.length).toBe(0);
+    expect(closeCalls).toBe(0);
+    expect(issue.state).toBe("closed");
+    expect(issue.labels.has("agent:in-progress")).toBe(true);
+    expect(issue.assignees.has("human-reviewer")).toBe(true);
   });
 
   it("REGRESSION: open issue with zero assignees => finalize rejected before mutation, zero edit/close commands, issue remains open", async () => {
@@ -3065,51 +3106,36 @@ describe("tracker-adapter — claimant-only residue recovery (round 8)", () => {
     expect(issue.assignees.has("test-bot")).toBe(false);
   });
 
-  it("PRODUCTION PATH: real integration saga creates claimant-only residue + indeterminate receipt; restarted adapter recovers at exact generation", async () => {
-    // No manually seeded evidence. A REAL finalizeIntegrated saga on an
-    // already-closed issue removes the machine label but its assignee-removal
-    // command throws (may have partially landed). The saga emits a real
-    // indeterminate receipt whose lastObserved matches the resulting
-    // claimant-only residue. A RESTARTED adapter (fresh instance, same sink)
-    // reads that receipt and recovers ONLY because the generation matches.
+  it("PRODUCTION PATH: claimant-only residue + indeterminate receipt => restarted adapter recovers at exact generation", async () => {
+    // A claimant-only closed residue (closed, no machine labels, claimant
+    // assigned) is NOT producible by the normal finalizeIntegrated saga — a
+    // closed-but-dirty issue is rejected with zero mutation (closed-cleanup
+    // requires explicit authority). The residue is instead evidenced by a
+    // production-shaped indeterminate receipt whose lastObserved matches the
+    // live residue at the exact generation. A RESTARTED adapter (fresh
+    // instance, same sink) reads that receipt and recovers ONLY because the
+    // generation matches.
     const gen = "2026-08-25T10:00:00Z";
-    const issue: FakeIssue = { number: 1810, title: "t", body: "body", state: "closed", labels: new Set(["agent:in-progress"]), assignees: new Set(["test-bot"]), updatedAt: gen };
+    const issue: FakeIssue = { number: 1810, title: "t", body: "body", state: "closed", labels: new Set(), assignees: new Set(["test-bot"]), updatedAt: gen };
     const gh = makeFakeGh({ issues: new Map([[1810, issue]]) });
     const origRun = gh.run.bind(gh);
-    // The assignee-removal command throws AFTER the label removal landed —
-    // the mutation may have partially landed, leaving claimant-only residue.
-    (gh as any).run = async (args: string[]) => {
-      if (args[0] === "issue" && args[1] === "edit" && args.includes("--remove-assignee")) {
-        throw new Error("simulated assignee-removal failure");
-      }
-      return origRun(args);
-    };
-    const sink = makeMemoryReceiptSink();
-    const tracker = createTrackerAdapter({ gh, receiptSink: sink, readReceipts: () => sink.receipts });
-
-    // Real saga: strip-transient removes agent:in-progress, then the assignee
-    // removal throws. The issue is left closed + no labels + claimant assigned
-    // (claimant-only residue) and the saga emits an indeterminate receipt.
-    const result = await tracker.finalizeIntegrated(1810, "feature-branch");
-
-    expect(result.kind).toBe("indeterminate");
-    // The residue is claimant-only: closed, no machine labels, claimant assigned.
-    expect(issue.state).toBe("closed");
-    expect(issue.labels.has("agent:in-progress")).toBe(false);
-    expect(issue.assignees.has("test-bot")).toBe(true);
-    // The real saga persisted a real indeterminate receipt with lastObserved.
-    const receipt = sink.receipts.find((r) => r.transition === "finalizeIntegrated" && r.kind === "indeterminate");
-    expect(receipt).toBeDefined();
-    expect(receipt!.lastObserved).toEqual({ number: 1810, state: "closed", labels: [], assignees: ["test-bot"], updatedAt: gen });
-
-    // RESTARTED adapter — a fresh instance reading the same sink.
-    const restarted = createTrackerAdapter({ gh, receiptSink: sink, readReceipts: () => sink.receipts });
     (gh as any).run = async (args: string[]) => {
       if (args[0] === "issue" && args[1] === "list" && args.includes("--assignee")) {
         return JSON.stringify([{ number: 1810 }]);
       }
       return origRun(args);
     };
+    const sink = makeMemoryReceiptSink();
+    // Production-shaped indeterminate receipt: the observed state matches the
+    // live claimant-only residue at the exact generation.
+    sink.receipts.push({
+      transition: "cleanupClosedStaleLabels", issueNumber: 1810, at: new Date().toISOString(),
+      kind: "indeterminate", code: "UNSAFE_TO_RESTORE",
+      lastObserved: { number: 1810, state: "closed", labels: [], assignees: ["test-bot"], updatedAt: gen },
+    });
+
+    // RESTARTED adapter — a fresh instance reading the same sink.
+    const restarted = createTrackerAdapter({ gh, receiptSink: sink, readReceipts: () => sink.receipts });
 
     const recovery = await restarted.recoverClaimantOnlyClosedResidue(100);
 
@@ -3120,46 +3146,35 @@ describe("tracker-adapter — claimant-only residue recovery (round 8)", () => {
     expect(issue.assignees.has("test-bot")).toBe(false);
   });
 
-  it("PRODUCTION PATH: real integration residue + later manual assignment => generation drift, NOT recovered", async () => {
-    // Same production path as above, but a later manual assignment bumps
-    // updatedAt to a NEW generation after the saga left the residue. The
+  it("PRODUCTION PATH: claimant-only residue + later manual assignment => generation drift, NOT recovered", async () => {
+    // Same production-shaped residue as above, but a later manual assignment
+    // bumps updatedAt to a NEW generation after the residue was observed. The
     // restarted adapter reads the receipt (observed at the OLD generation) and
     // must NOT recover — the residue may no longer be Sandcastle-owned.
     const oldGen = "2026-08-25T10:00:00Z";
     const newGen = "2026-08-25T11:00:00Z";
-    const issue: FakeIssue = { number: 1811, title: "t", body: "body", state: "closed", labels: new Set(["agent:in-progress"]), assignees: new Set(["test-bot"]), updatedAt: oldGen };
+    const issue: FakeIssue = { number: 1811, title: "t", body: "body", state: "closed", labels: new Set(), assignees: new Set(["test-bot"]), updatedAt: oldGen };
     const gh = makeFakeGh({ issues: new Map([[1811, issue]]) });
     const origRun = gh.run.bind(gh);
-    (gh as any).run = async (args: string[]) => {
-      if (args[0] === "issue" && args[1] === "edit" && args.includes("--remove-assignee")) {
-        throw new Error("simulated assignee-removal failure");
-      }
-      return origRun(args);
-    };
-    const sink = makeMemoryReceiptSink();
-    const tracker = createTrackerAdapter({ gh, receiptSink: sink, readReceipts: () => sink.receipts });
-
-    const result = await tracker.finalizeIntegrated(1811, "feature-branch");
-
-    expect(result.kind).toBe("indeterminate");
-    expect(issue.state).toBe("closed");
-    expect(issue.labels.has("agent:in-progress")).toBe(false);
-    expect(issue.assignees.has("test-bot")).toBe(true);
-    const receipt = sink.receipts.find((r) => r.transition === "finalizeIntegrated" && r.kind === "indeterminate");
-    expect(receipt).toBeDefined();
-    expect(receipt!.lastObserved).toEqual({ number: 1811, state: "closed", labels: [], assignees: ["test-bot"], updatedAt: oldGen });
-
-    // A later manual assignment bumps the generation.
-    issue.updatedAt = newGen;
-
-    // RESTARTED adapter reads the receipt (observed at the OLD generation).
-    const restarted = createTrackerAdapter({ gh, receiptSink: sink, readReceipts: () => sink.receipts });
     (gh as any).run = async (args: string[]) => {
       if (args[0] === "issue" && args[1] === "list" && args.includes("--assignee")) {
         return JSON.stringify([{ number: 1811 }]);
       }
       return origRun(args);
     };
+    const sink = makeMemoryReceiptSink();
+    // Production-shaped indeterminate receipt observed at the OLD generation.
+    sink.receipts.push({
+      transition: "cleanupClosedStaleLabels", issueNumber: 1811, at: new Date().toISOString(),
+      kind: "indeterminate", code: "UNSAFE_TO_RESTORE",
+      lastObserved: { number: 1811, state: "closed", labels: [], assignees: ["test-bot"], updatedAt: oldGen },
+    });
+
+    // A later manual assignment bumps the generation.
+    issue.updatedAt = newGen;
+
+    // RESTARTED adapter reads the receipt (observed at the OLD generation).
+    const restarted = createTrackerAdapter({ gh, receiptSink: sink, readReceipts: () => sink.receipts });
 
     const recovery = await restarted.recoverClaimantOnlyClosedResidue(100);
 

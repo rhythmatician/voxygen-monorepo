@@ -1536,9 +1536,13 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
      */
     async finalizeIntegrated(issueNumber, branch) {
       const claimantLogin = await gh.resolveClaimantLogin();
+      // Captured by the strip-transient step's validateBefore so its mutate can
+      // skip the normal owned edit mutation for an already-closed-and-clean
+      // issue (explicit idempotent no-op: ZERO issue-edit commands).
+      let stripFresh: IssueInput | null = null;
       // Captured by the close step's validateBefore so its mutate can skip the
       // normal owned close mutation for an already-closed-and-clean issue
-      // (explicit idempotent no-op).
+      // (explicit idempotent no-op: ZERO issue-close commands).
       let closeFresh: IssueInput | null = null;
       return runSaga(gh, issueNumber, "finalizeIntegrated", [
         {
@@ -1547,13 +1551,27 @@ export function createTrackerAdapter(deps: TrackerAdapterDeps): TrackerAdapter {
           // be owned by the sole authenticated claimant before the merged PR
           // may be label-mutated/closed by us — zero assignees is NOT general
           // ownership permission. An already-closed-and-clean issue is an
-          // explicit idempotent no-op (the close step re-proves the
-          // closed-and-clean invariant).
+          // explicit idempotent no-op (ZERO issue-edit commands; the close
+          // step re-proves the closed-and-clean invariant). A closed issue
+          // that is NOT already clean must NOT be mutated through the normal
+          // integration saga without explicit closed-cleanup authority — it is
+          // rejected with zero mutation.
           validateBefore: (fresh) => {
-            if (fresh.state === "closed") return null; // idempotent no-op
+            stripFresh = fresh;
+            if (fresh.state === "closed") {
+              const clean = fresh.assignees.length === 0
+                && !fresh.labels.includes(AGENT_IN_PROGRESS)
+                && !fresh.labels.includes(AGENT_IMPLEMENT)
+                && !fresh.labels.includes(AGENT_BLOCKED);
+              if (clean) return null; // idempotent no-op
+              return `issue #${issueNumber} is closed but not clean (assignees: ${fresh.assignees.join(", ") || "none"}, transient labels present) — closed-cleanup requires explicit authority, zero mutation`;
+            }
             return soleClaimantViolation(fresh, issueNumber, claimantLogin);
           },
           mutate: async () => {
+            // Idempotent no-op: an already-closed-and-clean issue must NOT pass
+            // through the normal owned edit mutation (ZERO issue-edit commands).
+            if (stripFresh && stripFresh.state === "closed") return;
             for (const label of [AGENT_IN_PROGRESS, AGENT_IMPLEMENT, AGENT_BLOCKED]) {
               try { await editIssue(issueNumber, ["--remove-label", label]); } catch {}
             }

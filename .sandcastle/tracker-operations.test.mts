@@ -2574,8 +2574,15 @@ describe("tracker-operations — round 9 unknown-versus-absent parsing", () => {
     // projection emits has_merged_at:false for a missing field (never coerced
     // to null). It must be UNKNOWN, never treated as a valid never-merged PR.
     const { createProductionReconcileOps } = await import("./reconcile-adapter.mts");
+    let jqArg: string | undefined;
     const mockGh = async (args: string[]) => {
       if (args[0] === "api" && args[1].includes("/pulls/")) {
+        // Capture the exact --jq projection so we can assert the executable
+        // seam emits has_merged_at:has("merged_at") — the mechanism that makes
+        // a MISSING merged_at field survive as has_merged_at:false instead of
+        // being coerced to null.
+        const jqIdx = args.indexOf("--jq");
+        if (jqIdx >= 0) jqArg = args[jqIdx + 1];
         // Production-shaped output: the jq projection emits has_merged_at:false
         // when the raw PR JSON omits merged_at.
         return JSON.stringify({ state: "closed", number: 999, has_merged_at: false });
@@ -2584,6 +2591,9 @@ describe("tracker-operations — round 9 unknown-versus-absent parsing", () => {
     };
     const ops = createProductionReconcileOps({ ownerRepo: { owner: "rhythmatician", repo: "voxygen-monorepo" }, runGh: mockGh, runGit: fakeGit, repoRoot: process.cwd(), claimantLogin: "bot" });
     const r = await ops.getPrState("999");
+    // The executable gh/jq seam MUST emit has_merged_at:has("merged_at") so a
+    // missing field is distinguishable from a null field.
+    expect(jqArg).toContain('has_merged_at:has("merged_at")');
     expect(r).toEqual({ state: "UNKNOWN", mergedAt: null, found: false, unknown: true });
   });
 
