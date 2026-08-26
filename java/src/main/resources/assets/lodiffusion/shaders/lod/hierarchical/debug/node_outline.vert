@@ -24,11 +24,11 @@ layout(binding = 2, std430) restrict buffer NodeList {
 layout(location = 1) out flat vec4 colour;
 
 const vec4 LOD_COLOURS[5] = vec4[5](
-    vec4(255.0,  48.0,  48.0,  70.0) / 255.0, // L0 #FF3030 red, translucent
-    vec4(255.0, 157.0,  46.0,  70.0) / 255.0, // L1 #FF9D2E orange, translucent
-    vec4(242.0, 232.0,  75.0,  70.0) / 255.0, // L2 #F2E84B yellow, translucent
-    vec4( 53.0, 214.0, 232.0,  70.0) / 255.0, // L3 #35D6E8 cyan, translucent
-    vec4(181.0, 107.0, 255.0,  70.0) / 255.0  // L4 #B56BFF violet, translucent
+    vec4(255.0,  48.0,  48.0,  24.0) / 255.0, // L0 #FF3030 red, highly transparent
+    vec4(255.0, 157.0,  46.0,  24.0) / 255.0, // L1 #FF9D2E orange, highly transparent
+    vec4(242.0, 232.0,  75.0,  24.0) / 255.0, // L2 #F2E84B yellow, highly transparent
+    vec4( 53.0, 214.0, 232.0,  24.0) / 255.0, // L3 #35D6E8 cyan, highly transparent
+    vec4(181.0, 107.0, 255.0,  24.0) / 255.0  // L4 #B56BFF violet, highly transparent
 );
 
 void main() {

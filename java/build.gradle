@@ -178,6 +178,7 @@ tasks.register('voxyTopologyTest', Test) {
 	useJUnitPlatform()
 	filter {
 		includeTestsMatching 'com.rhythmatician.lodiffusion.voxy.VoxyCoarseToFineCoverageRegressionTest'
+		includeTestsMatching 'com.rhythmatician.lodiffusion.voxy.VoxyOverlayLevelPackingTest'
 	}
 	def rawVoxy = fileTree(dir: 'mods', include: 'voxy-*.jar').files
 	def remappedVoxy = sourceSets.test.compileClasspath.files.findAll {

@@ -1,6 +1,7 @@
 package com.rhythmatician.lodiffusion.mixin;
 
 import com.rhythmatician.lodiffusion.voxy.LodOverlayState;
+import com.rhythmatician.lodiffusion.voxy.LodOverlayNodeIdQueueProvider;
 import me.cortex.voxy.client.core.AbstractRenderPipeline;
 import me.cortex.voxy.client.core.rendering.Viewport;
 import me.cortex.voxy.client.core.rendering.hierachical.DebugRenderer;
@@ -72,7 +73,9 @@ public abstract class AbstractRenderPipelineLodOverlayMixin {
                 GL45C.glDepthMask(false);
                 GL45C.glColorMask(true, true, true, true);
                 lodiffusion$lodDebugRenderer.render(
-                        viewport, traversal.getNodeBuffer(), viewport.getRenderList());
+                        viewport,
+                        traversal.getNodeBuffer(),
+                        ((LodOverlayNodeIdQueueProvider) traversal).selectedNodeIds());
             } finally {
                 GL45C.glUseProgram(program);
                 GL45C.glBindVertexArray(vertexArray);
