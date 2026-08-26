@@ -1,6 +1,5 @@
 package com.rhythmatician.lodiffusion.voxy;
 
-import com.rhythmatician.lodiffusion.Config;
 import com.rhythmatician.lodiffusion.HelloTerrainMod;
 import net.lodiffusion.shadow.ShadowRouterJobQueue;
 
@@ -184,8 +183,8 @@ public final class LodGenerationService {
      * <p>Detects {@code client.world.getRegistryKey()} != last bound dimension and rebinds
      * a fresh {@link GenerationSession} via {@code stop() + ShadowRouterJobQueue.clear() + start()}
      * on the render thread. Re-executes the early gate
-     * {@code endL4TracerMode = decideEndL4TracerMode(world)} before
-     * {@code preloadModel()}/{@code resolveVoxyModel()}/worker entry.
+     * {@link TerrainPublicationRoute#forWorld(World)} before
+     * model resolution or worker entry.
      * Debounced: ignore repeated ticks while stopping (synchronized on lock).
      *
      * @return true if a rebind was performed
@@ -223,10 +222,7 @@ public final class LodGenerationService {
             GenerationSession next = new GenerationSession();
             session = next;
             // worldForStart may be null in test when using RegistryKey overload; pass null or fake world
-            // GenerationSession.start handles null world as non-tracer safely (decide returns false)
-            // but we still set boundDimension to newKey afterwards so tracer flag is correct via next.start's decide.
-            // If worldForStart == null we manually set tracer mode via reflection is not needed because
-            // decideEndL4TracerMode(null) is false; so for test we set boundDimension directly after start.
+            // GenerationSession.start treats a null test world as compatibility mode.
             if (worldForStart != null) {
                 next.start(worldForStart, server);
                 try {

@@ -6,10 +6,12 @@ import java.nio.IntBuffer;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
+import com.rhythmatician.lodiffusion.voxy.TerrainPublicationRoute;
 import com.rhythmatician.lodiffusion.voxy.VoxyCompat;
 
 import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
+import net.minecraft.world.World;
 
 /**
  * Converts the shader's block-material output (binding 11) into Voxy sections
@@ -71,7 +73,7 @@ public final class ShaderSectionWriter {
      * @param defaultBiomeVoxyId Voxy biome ID used for every voxel (MVP: single biome)
      * @throws IllegalStateException if Voxy is not available
      */
-    public ShaderSectionWriter(Object worldEngine, int defaultBiomeVoxyId) {
+    private ShaderSectionWriter(Object worldEngine, int defaultBiomeVoxyId) {
         if (!VoxyCompat.isAvailable()) {
             throw new IllegalStateException("Voxy is not available; cannot create ShaderSectionWriter");
         }
@@ -89,6 +91,22 @@ public final class ShaderSectionWriter {
         LOGGER.info("[ShaderSectionWriter] Voxy block IDs — air={} stone={} water={} grass={} dirt={}",
                 matToVoxyId[MAT_AIR], matToVoxyId[MAT_STONE], matToVoxyId[MAT_WATER],
                 matToVoxyId[MAT_GRASS], matToVoxyId[MAT_DIRT]);
+    }
+
+    /**
+     * Creates a compatibility terrain publisher for the supplied world.
+     *
+     * @throws IllegalArgumentException when the world has no dimension identity or
+     *                                  belongs to the End top-down route
+     */
+    public static ShaderSectionWriter create(
+            World world, Object worldEngine, int defaultBiomeVoxyId) {
+        TerrainPublicationRoute route = TerrainPublicationRoute.forWorld(world);
+        if (!route.allowsCompatibilityTerrainPublication()) {
+            throw new IllegalArgumentException(
+                    "Compatibility terrain publication is not allowed for route " + route);
+        }
+        return new ShaderSectionWriter(worldEngine, defaultBiomeVoxyId);
     }
 
     /**

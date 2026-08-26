@@ -246,7 +246,7 @@ class EndL4RuntimeTracerTest {
         assertTrue(idxGate < idxPreload, "Gate must precede preloadModel()");
         assertTrue(idxGate < idxResolve, "Gate must precede resolveVoxyModel()");
         // Also check gate inside preloadModel
-        int idxPreloadGate = src.indexOf("End L4 tracer mode — skipping preloadModel");
+        int idxPreloadGate = src.indexOf("End top-down route — skipping preloadModel");
         assertTrue(idxPreloadGate > idxPreload && idxPreloadGate < idxResolve);
     }
 

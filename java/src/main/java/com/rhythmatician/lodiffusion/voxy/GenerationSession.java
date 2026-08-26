@@ -139,14 +139,9 @@ public final class GenerationSession {
                 RouterField.RIDGES.ordinal(),
             };
 
-    // --- End L4 deterministic tracer (model-free, The End, L4-only) ---
-    // Tracer mode is an explicit early session-mode decision before BOTH
-    // preloadModel() and resolveVoxyModel()/worker entry. Single decision,
-    // no scattered if(isEnd). Proven by no preloadFuture / no VoxyModelRunner
-    // / no ONNX file in tracer mode. L4 only; disables L3/L2/L1/L0 seeding
-    // and partial-fill descent. Demand is 121 L4 requests (X/Z -5..5, Y=0)
-    // around player at (0,96,0) in The End — horizon 2048+512 = 2560 blocks.
-    private volatile boolean endL4TracerMode = false;
+    // End uses only the top-down tracer/exact route. Compatibility publishers
+    // (heightmap and ONNX) remain available only in other dimensions.
+    private volatile TerrainPublicationRoute terrainRoute = TerrainPublicationRoute.UNIDENTIFIED;
     static final int END_L4_TRACER_RADIUS = 5;
     static final int END_L4_TRACER_WS_Y = 0;
     static final int END_L4_TRACER_TOTAL = 121; // 11*11
@@ -179,11 +174,13 @@ public final class GenerationSession {
     private int lastSelectionPlayerSectionZ = Integer.MIN_VALUE;
 
     boolean isEndL4TracerMode() {
-        return endL4TracerMode;
+        return terrainRoute.usesTopDownEndRoute();
     }
 
     void setEndL4TracerModeForTest(boolean enabled) {
-        this.endL4TracerMode = enabled;
+        this.terrainRoute = enabled
+                ? TerrainPublicationRoute.END_TOP_DOWN
+                : TerrainPublicationRoute.COMPATIBILITY;
     }
 
     void setRunningForTest(boolean value) {
@@ -210,20 +207,6 @@ public final class GenerationSession {
         tracerFailed.set(0);
         tracerTerminalEmitted.set(false);
         tracerCompletion = null;
-    }
-
-    private boolean decideEndL4TracerMode(World world) {
-        if (world == null) {
-            return false;
-        }
-        try {
-            net.minecraft.registry.RegistryKey<World> key = world.getRegistryKey();
-            if (key == null || key.getValue() == null) return false;
-            // Avoid direct World.END reference to keep test bootstrap-free; compare identifier
-            return key.getValue().equals(net.minecraft.util.Identifier.of("minecraft", "the_end"));
-        } catch (Exception e) {
-            return false;
-        }
     }
 
     static int endL4TracerTotalRequests() {
@@ -856,9 +839,14 @@ public final class GenerationSession {
      */
     // Early session-mode decision before BOTH preloadModel() and resolveVoxyModel()/worker entry
     public void preloadModel() {
-        // Early tracer-mode gate: must precede VoxyModelRunner creation
-        if (endL4TracerMode) {
-            HelloTerrainMod.LOGGER.info("[LodGen] End L4 tracer mode — skipping preloadModel (no ONNX)");
+        // A model is a compatibility-route dependency. Until a world identifies that
+        // route, fail closed instead of speculatively loading an End-inapplicable model.
+        if (terrainRoute.usesTopDownEndRoute()) {
+            HelloTerrainMod.LOGGER.info("[LodGen] End top-down route — skipping preloadModel (no ONNX)");
+            return;
+        }
+        if (!terrainRoute.allowsCompatibilityTerrainPublication()) {
+            HelloTerrainMod.LOGGER.info("[LodGen] World route unidentified — skipping preloadModel");
             return;
         }
         if (preloadFuture != null && !preloadFuture.isDone()) {
@@ -922,9 +910,9 @@ public final class GenerationSession {
         noiseAccess = null;
         this.server = server;
         // Early session-mode decision before BOTH preloadModel() and resolveVoxyModel()/worker entry
-        this.endL4TracerMode = decideEndL4TracerMode(world);
-        if (endL4TracerMode) {
-            HelloTerrainMod.LOGGER.info("[LodGen] End L4 tracer mode enabled — The End, model-free, L4-only");
+        this.terrainRoute = TerrainPublicationRoute.forWorld(world);
+        if (terrainRoute.usesTopDownEndRoute()) {
+            HelloTerrainMod.LOGGER.info("[LodGen] End top-down route enabled — tracer/exact, model-free");
         }
 
         workerThread = new Thread(() -> runWorker(world), "LODiffusion-Gen");
@@ -994,7 +982,7 @@ public final class GenerationSession {
                                      double horizontalVelocityZ, int clientViewDistanceChunks,
                                      int simulationDistanceChunks) {
         updatePlayerPosition(pos);
-        if (running.get() && endL4TracerMode) {
+        if (running.get() && terrainRoute.usesTopDownEndRoute()) {
             enqueueVanillaFrontierGuardForTest(
                     new VanillaFrontierGuardPlanner.FrontierSnapshot(pos.getX(), pos.getZ(),
                             horizontalVelocityX, horizontalVelocityZ,
@@ -1154,8 +1142,8 @@ public final class GenerationSession {
         if (!running.get()) {
             return;
         }
-        // End L4 tracer: 121 L4-only (X/Z -5..5, Y=0), disable L3/L2/L1/L0 seeding
-        if (endL4TracerMode) {
+        // End starts with the L4 horizon; child refinement enters through the typed queue.
+        if (terrainRoute.usesTopDownEndRoute()) {
             return;
         }
 
@@ -1262,7 +1250,8 @@ public final class GenerationSession {
         } else {
             HelloTerrainMod.LOGGER.info("[LodGen] Using REAL noise access — "
                     + "no synthetic fallback needed");
-            if (Boolean.getBoolean("lodiffusion.flightTour.autoStart")) {
+            if (terrainRoute.usesTopDownEndRoute()
+                    && Boolean.getBoolean("lodiffusion.flightTour.autoStart")) {
                 WorldNoiseAccess.ExactEndL1Probe probe =
                         noiseAccess.probeExactEndL1(new SectionPos(0, 4, 0));
                 HelloTerrainMod.LOGGER.info(
@@ -1275,7 +1264,7 @@ public final class GenerationSession {
         }
 
             // Early tracer-mode gate: must precede resolveVoxyModel()
-            if (endL4TracerMode) {
+            if (terrainRoute.usesTopDownEndRoute()) {
                 if (noiseAccess == null) {
                     HelloTerrainMod.LOGGER.error(
                             "[LodGen] End L4 tracer mode — noiseAccess unavailable, aborting");
@@ -1296,12 +1285,6 @@ public final class GenerationSession {
                 boolean tracerProduced = runEndL4TracerPipeline(world, tracerWriter);
                 HelloTerrainMod.LOGGER.info(
                         "[LodGen] End L4 tracer pipeline stopped: produced={}", tracerProduced);
-                return;
-            }
-
-            if (decideEndL4TracerMode(world)) {
-                HelloTerrainMod.LOGGER.error(
-                        "[LodGen] End session escaped the typed tracer gate; refusing alternate generation");
                 return;
             }
 
@@ -1685,7 +1668,7 @@ public final class GenerationSession {
      * caching, surface Y-range filtering, and deduplication.
      */
     private void runFallbackPipeline(World world, VoxelVolumeWriter writer) {
-        if (decideEndL4TracerMode(world)) {
+        if (terrainRoute.usesTopDownEndRoute()) {
             HelloTerrainMod.LOGGER.error(
                     "[LodGen] Refusing heightmap fallback writes in The End");
             return;
@@ -1999,7 +1982,7 @@ public final class GenerationSession {
         if (req == null) {
             return DemandProcessResult.FAILED;
         }
-        if (decideEndL4TracerMode(world)) {
+        if (terrainRoute.usesTopDownEndRoute()) {
             return processEndPhysicalWork(
                     req, writer, () -> processDemandLeaf(world, writer, req));
         }
@@ -2406,12 +2389,12 @@ public final class GenerationSession {
         return mask;
     }
 
-    // --- End L4 tracer pipeline (L4-only, model-free) ---
+    // --- End top-down pipeline (initial L4 horizon, model-free) ---
 
     /**
      * Tracer-mode demand pipeline: services 121 L4 requests via
      * {@link EndL4DeterministicCandidate} and {@link VoxelVolumeWriter#writeRegion}.
-     * L4 only — disables L3/L2/L1/L0 seeding and partial-fill descent.
+     * The initial horizon is L4; typed parent transactions provide refinement.
      * Reuses dedup/backpressure via {@link ShadowRouterJobQueue}.
      * Direct full-WorldSection path via {@link VoxyWorldBinding#writeFullWorldSection}
      * owns completed geometry publication; future refinement comes from the
