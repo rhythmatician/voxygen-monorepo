@@ -20,7 +20,8 @@
       "com.rhythmatician.lodiffusion.HelloTerrainMod"
     ],
     "client": [
-      "com.rhythmatician.lodiffusion.LodiffusionClient"
+      "com.rhythmatician.lodiffusion.LodiffusionClient",
+      "com.rhythmatician.lodiffusion.voxy.LodOverlayClient"
     ]
   },
   "mixins": [

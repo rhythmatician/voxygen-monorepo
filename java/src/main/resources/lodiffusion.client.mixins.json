@@ -1,0 +1,13 @@
+{
+  "required": false,
+  "package": "com.rhythmatician.lodiffusion.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "client": [
+    "VoxyClientMixin",
+    "AbstractRenderPipelineLodOverlayMixin",
+    "VoxyDebugRendererShaderMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 0
+  }
+}
