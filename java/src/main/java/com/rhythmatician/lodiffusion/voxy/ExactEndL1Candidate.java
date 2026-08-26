@@ -19,13 +19,28 @@ final class ExactEndL1Candidate {
     }
 
     private final ChunkColumnSampler sampler;
+    private final ExactL1SamplingTelemetry telemetry;
 
     ExactEndL1Candidate(WorldNoiseAccess noiseAccess) {
-        this(Objects.requireNonNull(noiseAccess, "noiseAccess")::sampleExactEndBaseTerrainChunk);
+        this(noiseAccess, new ExactL1SamplingTelemetry());
+    }
+
+    ExactEndL1Candidate(WorldNoiseAccess noiseAccess, ExactL1SamplingTelemetry telemetry) {
+        Objects.requireNonNull(noiseAccess, "noiseAccess");
+        this.telemetry = Objects.requireNonNull(telemetry, "telemetry");
+        this.sampler = (chunkX, chunkZ, minY, maxY, consumer) ->
+                noiseAccess.sampleExactEndBaseTerrainChunk(
+                        chunkX, chunkZ, minY, maxY, consumer, telemetry);
     }
 
     ExactEndL1Candidate(ChunkColumnSampler sampler) {
+        this(sampler, new ExactL1SamplingTelemetry());
+    }
+
+    ExactEndL1Candidate(
+            ChunkColumnSampler sampler, ExactL1SamplingTelemetry telemetry) {
         this.sampler = Objects.requireNonNull(sampler, "sampler");
+        this.telemetry = Objects.requireNonNull(telemetry, "telemetry");
     }
 
     VoxelVolume produceExactL1(SectionPos origin) {
@@ -33,6 +48,7 @@ final class ExactEndL1Candidate {
         if (!Level.L1.isAligned(origin)) {
             throw new IllegalArgumentException("origin " + origin + " is not aligned to L1");
         }
+        telemetry.recordChildCall();
 
         int baseX = origin.x() << 4;
         int baseY = origin.y() << 4;
@@ -49,12 +65,13 @@ final class ExactEndL1Candidate {
         boolean[] solid = new boolean[EndL4DeterministicCandidate.EXTENT
                 * EndL4DeterministicCandidate.EXTENT * EndL4DeterministicCandidate.EXTENT];
         SolidBlockConsumer consumer = (blockX, blockY, blockZ, occupied) -> {
-            if (!occupied
-                    || blockX < baseX || blockX >= baseX + BLOCK_SPAN
+            if (blockX < baseX || blockX >= baseX + BLOCK_SPAN
                     || blockY < minY || blockY >= maxY
                     || blockZ < baseZ || blockZ >= baseZ + BLOCK_SPAN) {
                 return;
             }
+            telemetry.recordAcceptedCallback();
+            if (!occupied) return;
             int x = (blockX - baseX) >> 1;
             int y = (blockY - baseY) >> 1;
             int z = (blockZ - baseZ) >> 1;
@@ -69,6 +86,7 @@ final class ExactEndL1Candidate {
         }
 
         VoxelVolume.Builder result = VoxelVolume.builder(EndL4DeterministicCandidate.EXTENT);
+        int solidVoxelCount = 0;
         for (int y = 0; y < EndL4DeterministicCandidate.EXTENT; y++) {
             for (int z = 0; z < EndL4DeterministicCandidate.EXTENT; z++) {
                 for (int x = 0; x < EndL4DeterministicCandidate.EXTENT; x++) {
@@ -76,10 +94,12 @@ final class ExactEndL1Candidate {
                             * EndL4DeterministicCandidate.EXTENT + x;
                     if (solid[index]) {
                         result.setBlock(x, y, z, EndL4DeterministicCandidate.BLOCK_END_STONE);
+                        solidVoxelCount++;
                     }
                 }
             }
         }
+        telemetry.recordReducedSolidVoxels(solidVoxelCount);
         return result.build();
     }
 }

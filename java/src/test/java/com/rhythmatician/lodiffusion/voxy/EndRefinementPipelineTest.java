@@ -186,7 +186,7 @@ class EndRefinementPipelineTest {
             return null;
         }).when(noise).sampleExactEndBaseTerrainChunk(
                 Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt(),
-                Mockito.any());
+                Mockito.any(), Mockito.any());
         GenerationSession session = new GenerationSession();
         session.setNoiseAccessForTest(noise);
         BatchOnlyWriter writer = new BatchOnlyWriter();
@@ -198,7 +198,7 @@ class EndRefinementPipelineTest {
         assertEquals(16, writer.sampledChild.countNonAir());
         Mockito.verify(noise, Mockito.times(16)).sampleExactEndBaseTerrainChunk(
                 Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt(),
-                Mockito.any());
+                Mockito.any(), Mockito.any());
         Mockito.verify(noise, Mockito.never()).sampleFinalDensity(
                 Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt());
 
@@ -221,7 +221,7 @@ class EndRefinementPipelineTest {
             return null;
         }).when(noise).sampleExactEndBaseTerrainChunk(
                 Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt(),
-                Mockito.any());
+                Mockito.any(), Mockito.any());
         GenerationSession session = new GenerationSession();
         session.setNoiseAccessForTest(noise);
         BatchOnlyWriter writer = new BatchOnlyWriter();

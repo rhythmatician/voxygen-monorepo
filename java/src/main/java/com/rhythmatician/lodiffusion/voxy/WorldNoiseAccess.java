@@ -308,11 +308,13 @@ public final class WorldNoiseAccess {
             int chunkZ,
             int retainMinY,
             int retainMaxY,
-            ExactEndL1Candidate.SolidBlockConsumer consumer) {
+            ExactEndL1Candidate.SolidBlockConsumer consumer,
+            ExactL1SamplingTelemetry telemetry) {
         if (retainMinY > retainMaxY) {
             throw new IllegalArgumentException("retainMinY must not exceed retainMaxY");
         }
         NoiseSamplerSetup setup = createNoiseSampler(chunkX, chunkZ);
+        telemetry.recordChunkSampler();
         ChunkGeneratorSettings settings = setup.settings();
         GenerationShapeConfig shape = setup.shape();
         int horizontalBlocks = shape.horizontalCellBlockCount();
@@ -344,6 +346,14 @@ public final class WorldNoiseAccess {
                                         BlockState sampled = sampler.sampleBlockState();
                                         BlockState actual = sampled == null
                                                 ? settings.defaultBlock() : sampled;
+                                        telemetry.recordRetainedCallback();
+                                        if (sampled == null) {
+                                            telemetry.recordRawDefault();
+                                        } else if (actual.isAir()) {
+                                            telemetry.recordRawAir();
+                                        } else {
+                                            telemetry.recordRawExplicitNonAir();
+                                        }
                                         consumer.accept(
                                                 blockX, blockY, blockZ, !actual.isAir());
                                     }

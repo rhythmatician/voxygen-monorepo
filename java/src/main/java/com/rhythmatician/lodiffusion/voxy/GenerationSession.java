@@ -169,6 +169,8 @@ public final class GenerationSession {
     private final AtomicInteger refinementFailed = new AtomicInteger(0);
     private final RefinementLifecycleTelemetry refinementLifecycle =
             new RefinementLifecycleTelemetry();
+    private final ExactL1SamplingTelemetry exactL1Sampling =
+            new ExactL1SamplingTelemetry();
     private final AtomicBoolean tracerTerminalEmitted = new AtomicBoolean(false);
     private volatile TracerCompletion tracerCompletion = null;
     /** Stage 2: last selection-pass time, throttles refinement demand passes. */
@@ -477,7 +479,7 @@ public final class GenerationSession {
                 WorldSectionCoord.worldSectionToBlockMin(req.worldZ, parentLevelValue) >> 4);
         int childLevelValue = parentLevelValue - 1;
         EndL4DeterministicCandidate candidate = new EndL4DeterministicCandidate(noiseAccess);
-        ExactEndL1Candidate exactL1 = new ExactEndL1Candidate(noiseAccess);
+        ExactEndL1Candidate exactL1 = new ExactEndL1Candidate(noiseAccess, exactL1Sampling);
         try {
             ParentRefinementResult result = writer.refineParent(new ParentRefinementIntent(
                     parentOrigin, parentLevel, (childLevel, childOrigin) -> {
@@ -848,6 +850,7 @@ public final class GenerationSession {
         skippedAirSections.set(0);
         diagnosticCount.set(0);
         refinementLifecycle.reset();
+        exactL1Sampling.reset();
         if (samplerFactory != null) {
             try { samplerFactory.close(); } catch (Exception ignored) {}
             samplerFactory = null;
@@ -1879,8 +1882,9 @@ public final class GenerationSession {
 
         logDemandProgress(startMs, dequeued, written, skipped, deferred, failed);
         HelloTerrainMod.LOGGER.info(
-                "[LodGen] Demand pipeline stopped: dequeued={} written={} skipped={} deferred={} failed={} refine={}",
-                dequeued, written, skipped, deferred, failed, refinementLifecycle.compact());
+                "[LodGen] Demand pipeline stopped: dequeued={} written={} skipped={} deferred={} failed={} refine={} exactL1={}",
+                dequeued, written, skipped, deferred, failed, refinementLifecycle.compact(),
+                exactL1Sampling.compact());
         return written > 0;
     }
 
@@ -1889,10 +1893,11 @@ public final class GenerationSession {
                                    int deferred, int failed) {
         long elapsedMs = Math.max(1L, System.currentTimeMillis() - startMs);
         HelloTerrainMod.LOGGER.info(
-                "[LodGen][Demand] dequeued={} written={} skipped={} deferred={} failed={} inFlight={} demand={} refine={} elapsed={}s",
+                "[LodGen][Demand] dequeued={} written={} skipped={} deferred={} failed={} inFlight={} demand={} refine={} exactL1={} elapsed={}s",
                 dequeued, written, skipped, deferred, failed,
                 ShadowRouterJobQueue.inFlightSize(), ShadowRouterJobQueue.demandMetrics().compact(),
                 refinementLifecycle.compact(),
+                exactL1Sampling.compact(),
                 elapsedMs / 1000);
     }
 
@@ -2468,18 +2473,19 @@ public final class GenerationSession {
             int f = tracerFailed.get();
             if (w == 1 || now - lastProgressLogMs >= DEMAND_PROGRESS_LOG_MS) {
                 HelloTerrainMod.LOGGER.info(
-                        "[LodGen][Tracer] dequeued written={} skipped={} failed={} inFlight={} demand={} refine={}",
+                        "[LodGen][Tracer] dequeued written={} skipped={} failed={} inFlight={} demand={} refine={} exactL1={}",
                         w, s, f, ShadowRouterJobQueue.inFlightSize(),
                         ShadowRouterJobQueue.demandMetrics().compact(),
-                        refinementLifecycle.compact());
+                        refinementLifecycle.compact(), exactL1Sampling.compact());
                 lastProgressLogMs = now;
             }
         }
 
         HelloTerrainMod.LOGGER.info(
-                "[LodGen][Tracer] stopped: written={} skipped={} failed={} demand={} refine={}",
+                "[LodGen][Tracer] stopped: written={} skipped={} failed={} demand={} refine={} exactL1={}",
                 tracerWritten.get(), tracerSkipped.get(), tracerFailed.get(),
-                ShadowRouterJobQueue.demandMetrics().compact(), refinementLifecycle.compact());
+                ShadowRouterJobQueue.demandMetrics().compact(), refinementLifecycle.compact(),
+                exactL1Sampling.compact());
         return tracerWritten.get() > 0;
     }
 
