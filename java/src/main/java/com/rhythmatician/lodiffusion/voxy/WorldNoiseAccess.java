@@ -210,15 +210,16 @@ public final class WorldNoiseAccess {
      *         consistent with {@link ChunkGenerator#getHeight}.
      */
     public float[][][] sampleBothHeightmaps(int sectionX, int sectionZ) {
-        if (!(generator instanceof NoiseChunkGenerator ncg)) {
+        if (!(generator instanceof NoiseChunkGenerator)) {
             // Non-noise generator (e.g. flat world) — fall back to per-column sampling
             float[][] surface = sampleHeightmap(sectionX, sectionZ, Heightmap.Type.WORLD_SURFACE_WG);
             float[][] ocean   = sampleHeightmap(sectionX, sectionZ, Heightmap.Type.OCEAN_FLOOR_WG);
             return new float[][][] { surface, ocean };
         }
 
-        ChunkGeneratorSettings settings = ncg.getSettings().value();
-        GenerationShapeConfig shape = settings.generationShapeConfig().trimHeight(serverWorld);
+        NoiseSamplerSetup setup = createNoiseSampler(sectionX, sectionZ);
+        ChunkGeneratorSettings settings = setup.settings();
+        GenerationShapeConfig shape = setup.shape();
 
         // Standard overworld values: hCells=4, hCellB=4, vCellB=8, minCellY=-8, cellHeight=48
         int hCells     = 16 / shape.horizontalCellBlockCount();
@@ -228,22 +229,7 @@ public final class WorldNoiseAccess {
         int cellHeight = MathHelper.floorDiv(shape.height(),   vCellB);
         int startX     = sectionX * 16;
         int startZ     = sectionZ * 16;
-
-        // Replicate NoiseChunkGenerator.createFluidLevelSampler().
-        // The private Supplier<FluidLevelSampler> on NoiseChunkGenerator is
-        // inaccessible, so we reconstruct it from the public settings.
-        int seaLevel = settings.seaLevel();
-        AquiferSampler.FluidLevel lavaLevel = new AquiferSampler.FluidLevel(-54, Blocks.LAVA.getDefaultState());
-        AquiferSampler.FluidLevel seaFluid  = new AquiferSampler.FluidLevel(seaLevel, settings.defaultFluid());
-        AquiferSampler.FluidLevelSampler fluidSampler =
-                (x, y, z) -> y < Math.min(-54, seaLevel) ? lavaLevel : seaFluid;
-
-        // One sampler for the entire 16×16 chunk — 4 horizontal cells × 4.
-        // Beardifier.INSTANCE is a no-op since we have no structure bounding boxes.
-        ChunkNoiseSampler sampler = new ChunkNoiseSampler(
-                hCells, noiseConfig, startX, startZ, shape,
-                DensityFunctionTypes.Beardifier.INSTANCE,
-                settings, fluidSampler, Blender.getNoBlending());
+        ChunkNoiseSampler sampler = setup.sampler();
 
         Predicate<BlockState> surfacePred = Heightmap.Type.WORLD_SURFACE_WG.getBlockPredicate();
         Predicate<BlockState> oceanPred   = Heightmap.Type.OCEAN_FLOOR_WG.getBlockPredicate();
@@ -312,6 +298,98 @@ public final class WorldNoiseAccess {
         sampler.stopInterpolation();
         return new float[][][] { surface, oceanFloor };
     }
+
+    /**
+     * Samples one virgin noise-stage chunk column with a fresh interpolation state.
+     * No chunk is requested, created, loaded, or cached.
+     */
+    void sampleExactEndBaseTerrainChunk(
+            int chunkX,
+            int chunkZ,
+            int retainMinY,
+            int retainMaxY,
+            ExactEndL1Candidate.SolidBlockConsumer consumer) {
+        if (retainMinY > retainMaxY) {
+            throw new IllegalArgumentException("retainMinY must not exceed retainMaxY");
+        }
+        NoiseSamplerSetup setup = createNoiseSampler(chunkX, chunkZ);
+        ChunkGeneratorSettings settings = setup.settings();
+        GenerationShapeConfig shape = setup.shape();
+        int horizontalBlocks = shape.horizontalCellBlockCount();
+        int verticalBlocks = shape.verticalCellBlockCount();
+        int horizontalCells = 16 / horizontalBlocks;
+        int minimumCellY = MathHelper.floorDiv(shape.minimumY(), verticalBlocks);
+        int verticalCells = MathHelper.floorDiv(shape.height(), verticalBlocks);
+        int startX = chunkX << 4;
+        int startZ = chunkZ << 4;
+        ChunkNoiseSampler sampler = setup.sampler();
+
+        sampler.sampleStartDensity();
+        try {
+            for (int cellX = 0; cellX < horizontalCells; cellX++) {
+                sampler.sampleEndDensity(cellX);
+                for (int cellZ = 0; cellZ < horizontalCells; cellZ++) {
+                    for (int cellY = verticalCells - 1; cellY >= 0; cellY--) {
+                        sampler.onSampledCellCorners(cellY, cellZ);
+                        for (int localY = verticalBlocks - 1; localY >= 0; localY--) {
+                            int blockY = (minimumCellY + cellY) * verticalBlocks + localY;
+                            sampler.interpolateY(blockY, (double) localY / verticalBlocks);
+                            for (int localX = 0; localX < horizontalBlocks; localX++) {
+                                int blockX = startX + cellX * horizontalBlocks + localX;
+                                sampler.interpolateX(blockX, (double) localX / horizontalBlocks);
+                                for (int localZ = 0; localZ < horizontalBlocks; localZ++) {
+                                    int blockZ = startZ + cellZ * horizontalBlocks + localZ;
+                                    sampler.interpolateZ(blockZ, (double) localZ / horizontalBlocks);
+                                    if (blockY >= retainMinY && blockY < retainMaxY) {
+                                        BlockState sampled = sampler.sampleBlockState();
+                                        BlockState actual = sampled == null
+                                                ? settings.defaultBlock() : sampled;
+                                        consumer.accept(
+                                                blockX, blockY, blockZ, !actual.isAir());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                sampler.swapBuffers();
+            }
+        } finally {
+            sampler.stopInterpolation();
+        }
+    }
+
+    private NoiseSamplerSetup createNoiseSampler(int chunkX, int chunkZ) {
+        if (!(generator instanceof NoiseChunkGenerator noiseGenerator)) {
+            throw new IllegalStateException("exact noise sampling requires NoiseChunkGenerator");
+        }
+        ChunkGeneratorSettings settings = noiseGenerator.getSettings().value();
+        GenerationShapeConfig shape = settings.generationShapeConfig().trimHeight(serverWorld);
+        int horizontalCells = 16 / shape.horizontalCellBlockCount();
+        int seaLevel = settings.seaLevel();
+        AquiferSampler.FluidLevel lava =
+                new AquiferSampler.FluidLevel(-54, Blocks.LAVA.getDefaultState());
+        AquiferSampler.FluidLevel sea =
+                new AquiferSampler.FluidLevel(seaLevel, settings.defaultFluid());
+        AquiferSampler.FluidLevelSampler fluids =
+                (x, y, z) -> y < Math.min(-54, seaLevel) ? lava : sea;
+        ChunkNoiseSampler sampler = new ChunkNoiseSampler(
+                horizontalCells,
+                noiseConfig,
+                chunkX << 4,
+                chunkZ << 4,
+                shape,
+                DensityFunctionTypes.Beardifier.INSTANCE,
+                settings,
+                fluids,
+                Blender.getNoBlending());
+        return new NoiseSamplerSetup(sampler, settings, shape);
+    }
+
+    private record NoiseSamplerSetup(
+            ChunkNoiseSampler sampler,
+            ChunkGeneratorSettings settings,
+            GenerationShapeConfig shape) {}
 
     /**
      * Sample a heightmap of the given type for a 16×16 section column.

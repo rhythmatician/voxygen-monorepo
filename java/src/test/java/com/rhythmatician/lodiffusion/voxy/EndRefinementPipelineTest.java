@@ -172,11 +172,81 @@ class EndRefinementPipelineTest {
                 .contains("L2[d1,b0,a0,e1,n0,f0]"));
     }
 
+    @Test
+    void l2ParentUsesExactInterpolatedL1WhileCoarserChildrenKeepPointSampling() {
+        WorldNoiseAccess noise = Mockito.mock(WorldNoiseAccess.class);
+        Mockito.when(noise.sampleFinalDensity(Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt()))
+                .thenReturn(1.0);
+        Mockito.doAnswer(invocation -> {
+            int chunkX = invocation.getArgument(0);
+            int chunkZ = invocation.getArgument(1);
+            int minY = invocation.getArgument(2);
+            ExactEndL1Candidate.SolidBlockConsumer consumer = invocation.getArgument(4);
+            consumer.accept(chunkX << 4, minY, chunkZ << 4, true);
+            return null;
+        }).when(noise).sampleExactEndBaseTerrainChunk(
+                Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt(),
+                Mockito.any());
+        GenerationSession session = new GenerationSession();
+        session.setNoiseAccessForTest(noise);
+        BatchOnlyWriter writer = new BatchOnlyWriter();
+        writer.sampleChild = true;
+
+        assertEquals(RefinementOutcome.Status.PUBLISHED,
+                session.processEndRefinementRequest(request(2, true), writer).status());
+        assertEquals(Level.L1, writer.sampledChildLevel);
+        assertEquals(16, writer.sampledChild.countNonAir());
+        Mockito.verify(noise, Mockito.times(16)).sampleExactEndBaseTerrainChunk(
+                Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt(),
+                Mockito.any());
+        Mockito.verify(noise, Mockito.never()).sampleFinalDensity(
+                Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt());
+
+        writer.sampledChild = null;
+        assertEquals(RefinementOutcome.Status.PUBLISHED,
+                session.processEndRefinementRequest(request(3, true), writer).status());
+        assertEquals(Level.L2, writer.sampledChildLevel);
+        assertTrue(writer.sampledChild.countNonAir() > 0);
+        Mockito.verify(noise, Mockito.atLeastOnce()).sampleFinalDensity(
+                Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt());
+    }
+
+    @Test
+    void l2TransactionMaterializesAllEightExactChildrenBeforeOneBatchHandoff() {
+        WorldNoiseAccess noise = Mockito.mock(WorldNoiseAccess.class);
+        java.util.concurrent.atomic.AtomicInteger chunkColumns =
+                new java.util.concurrent.atomic.AtomicInteger();
+        Mockito.doAnswer(invocation -> {
+            chunkColumns.incrementAndGet();
+            return null;
+        }).when(noise).sampleExactEndBaseTerrainChunk(
+                Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt(),
+                Mockito.any());
+        GenerationSession session = new GenerationSession();
+        session.setNoiseAccessForTest(noise);
+        BatchOnlyWriter writer = new BatchOnlyWriter();
+        writer.materializeAllChildren = true;
+
+        assertEquals(RefinementOutcome.Status.PUBLISHED,
+                session.processEndRefinementRequest(request(2, true), writer).status());
+
+        assertEquals(1, writer.batchCommits);
+        assertEquals(0, writer.directRegionWrites);
+        assertEquals(8, writer.materializedChildLevels.size());
+        assertTrue(writer.materializedChildLevels.stream().allMatch(level -> level == Level.L1));
+        assertEquals(128, chunkColumns.get());
+    }
+
     private static final class BatchOnlyWriter implements VoxelVolumeWriter {
         int batchCommits;
         int directRegionWrites;
         ParentRefinementIntent intent;
         WriteOutcome outcome = WriteOutcome.written(1);
+        boolean sampleChild;
+        boolean materializeAllChildren;
+        Level sampledChildLevel;
+        VoxelVolume sampledChild;
+        final java.util.List<Level> materializedChildLevels = new java.util.ArrayList<>();
 
         @Override
         public WriteOutcome writeSection(SectionPos pos, VoxelVolume volume) {
@@ -198,6 +268,21 @@ class EndRefinementPipelineTest {
         public ParentRefinementResult refineParent(ParentRefinementIntent intent) {
             batchCommits++;
             this.intent = intent;
+            if (sampleChild) {
+                sampledChildLevel = Level.values()[intent.parentLevel().value() - 1];
+                sampledChild = intent.childVolumes().produce(
+                        sampledChildLevel,
+                        ParentRefinementBatch.childOrigins(
+                                intent.parentOrigin(), intent.parentLevel()).getFirst());
+            }
+            if (materializeAllChildren) {
+                Level childLevel = Level.values()[intent.parentLevel().value() - 1];
+                for (SectionPos childOrigin : ParentRefinementBatch.childOrigins(
+                        intent.parentOrigin(), intent.parentLevel())) {
+                    intent.childVolumes().produce(childLevel, childOrigin);
+                    materializedChildLevels.add(childLevel);
+                }
+            }
             return ParentRefinementResult.published(outcome);
         }
     }

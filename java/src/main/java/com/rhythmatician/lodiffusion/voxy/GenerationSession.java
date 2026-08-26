@@ -477,6 +477,7 @@ public final class GenerationSession {
                 WorldSectionCoord.worldSectionToBlockMin(req.worldZ, parentLevelValue) >> 4);
         int childLevelValue = parentLevelValue - 1;
         EndL4DeterministicCandidate candidate = new EndL4DeterministicCandidate(noiseAccess);
+        ExactEndL1Candidate exactL1 = new ExactEndL1Candidate(noiseAccess);
         try {
             ParentRefinementResult result = writer.refineParent(new ParentRefinementIntent(
                     parentOrigin, parentLevel, (childLevel, childOrigin) -> {
@@ -485,7 +486,9 @@ public final class GenerationSession {
                         return isOutOfWorldY(childLevelValue, childWsY)
                                 ? VoxelVolume.uniform(
                                         32, EndL4DeterministicCandidate.BLOCK_AIR, 0)
-                                : candidate.produceRegion(childLevel, childOrigin);
+                                : childLevel == Level.L1
+                                        ? exactL1.produceExactL1(childOrigin)
+                                        : candidate.produceRegion(childLevel, childOrigin);
                     }));
             if (result.status() == ParentRefinementResult.Status.PARENT_MISSING) {
                 enqueueParentPrerequisite(req);
