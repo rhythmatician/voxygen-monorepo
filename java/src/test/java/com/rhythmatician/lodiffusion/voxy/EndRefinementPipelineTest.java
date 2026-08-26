@@ -156,10 +156,27 @@ class EndRefinementPipelineTest {
         assertEquals(new SectionPos(0, 0, 0), writer.intent.parentOrigin());
     }
 
+    @Test
+    void l2ParentEmptyPublicationIsAttributedWithoutChangingItsOutcome() {
+        GenerationSession session = new GenerationSession();
+        session.setNoiseAccessForTest(solidNoise());
+        BatchOnlyWriter writer = new BatchOnlyWriter();
+        writer.outcome = WriteOutcome.skippedAir();
+
+        GenerationSession.DemandProcessResult result = session.processEndPhysicalWork(
+                request(2, true), writer, () -> GenerationSession.DemandProcessResult.FAILED);
+
+        assertEquals(Level.L2, writer.intent.parentLevel());
+        assertEquals(GenerationSession.DemandProcessResult.WRITTEN, result);
+        assertTrue(session.refinementLifecycleSummaryForTest()
+                .contains("L2[d1,b0,e1,n0,f0]"));
+    }
+
     private static final class BatchOnlyWriter implements VoxelVolumeWriter {
         int batchCommits;
         int directRegionWrites;
         ParentRefinementIntent intent;
+        WriteOutcome outcome = WriteOutcome.written(1);
 
         @Override
         public WriteOutcome writeSection(SectionPos pos, VoxelVolume volume) {
@@ -181,7 +198,7 @@ class EndRefinementPipelineTest {
         public ParentRefinementResult refineParent(ParentRefinementIntent intent) {
             batchCommits++;
             this.intent = intent;
-            return ParentRefinementResult.published(WriteOutcome.written(1));
+            return ParentRefinementResult.published(outcome);
         }
     }
 

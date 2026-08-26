@@ -167,6 +167,8 @@ public final class GenerationSession {
     /** Stage 2: L3..L0 refinement regions written this session. */
     private final AtomicInteger refinementWritten = new AtomicInteger(0);
     private final AtomicInteger refinementFailed = new AtomicInteger(0);
+    private final RefinementLifecycleTelemetry refinementLifecycle =
+            new RefinementLifecycleTelemetry();
     private final AtomicBoolean tracerTerminalEmitted = new AtomicBoolean(false);
     private volatile TracerCompletion tracerCompletion = null;
     /** Stage 2: last selection-pass time, throttles refinement demand passes. */
@@ -447,6 +449,18 @@ public final class GenerationSession {
         return processParentRefinement(parent, writer);
     }
 
+    private void recordRefinementAttempt(
+            VoxyRequestDecoder.VoxyNodeRequest request, RefinementOutcome outcome) {
+        if (request != null
+                && request.workKind == net.lodiffusion.shadow.VoxyWorkKind.PARENT_REFINEMENT) {
+            refinementLifecycle.recordAttempt(request.lodLevel, outcome);
+        }
+    }
+
+    String refinementLifecycleSummaryForTest() {
+        return refinementLifecycle.compact();
+    }
+
     private RefinementOutcome processParentRefinement(
             VoxyRequestDecoder.VoxyNodeRequest req, VoxelVolumeWriter writer) {
         int parentLevelValue = req.lodLevel;
@@ -477,7 +491,7 @@ public final class GenerationSession {
                 enqueueParentPrerequisite(req);
                 return RefinementOutcome.blockedParent(parentOrigin);
             }
-            return RefinementOutcome.published();
+            return RefinementOutcome.published(result.writeOutcome());
         } catch (Exception e) {
             HelloTerrainMod.LOGGER.warn(
                     "[LodGen][Refine] parent transaction failed lvl={} ws=({},{},{}): {}",
@@ -830,6 +844,7 @@ public final class GenerationSession {
         noiseAccessSections.set(0);
         skippedAirSections.set(0);
         diagnosticCount.set(0);
+        refinementLifecycle.reset();
         if (samplerFactory != null) {
             try { samplerFactory.close(); } catch (Exception ignored) {}
             samplerFactory = null;
@@ -1764,22 +1779,26 @@ public final class GenerationSession {
             VoxyRequestDecoder.VoxyNodeRequest req,
             VoxelVolumeWriter writer,
             HorizonLeafProcessor l4HorizonLeaf) {
-        if (req == null || writer == null || l4HorizonLeaf == null || req.workKind == null) {
+        if (req == null || req.workKind == null) {
             return DemandProcessResult.FAILED;
         }
-        if (!RefinementAdmissionGate.allows(req.workKind)) {
-            return DemandProcessResult.SKIPPED;
-        }
-        return switch (req.workKind) {
-            case HORIZON_LEAF -> req.lodLevel == Level.L4.value()
-                    ? l4HorizonLeaf.process()
-                    : DemandProcessResult.SKIPPED;
-            case PARENT_REFINEMENT -> switch (processEndRefinementRequest(req, writer).status()) {
+        if (req.workKind == net.lodiffusion.shadow.VoxyWorkKind.PARENT_REFINEMENT) {
+            RefinementOutcome outcome = processEndRefinementRequest(req, writer);
+            recordRefinementAttempt(req, outcome);
+            return switch (outcome.status()) {
                 case PUBLISHED -> DemandProcessResult.WRITTEN;
                 case ALREADY_COVERED -> DemandProcessResult.SKIPPED;
                 case BLOCKED_PARENT -> DemandProcessResult.DEFERRED;
                 case FAILED -> DemandProcessResult.FAILED;
             };
+        }
+        if (writer == null || l4HorizonLeaf == null) return DemandProcessResult.FAILED;
+        return switch (req.workKind) {
+            case HORIZON_LEAF -> RefinementAdmissionGate.allows(req.workKind)
+                    && req.lodLevel == Level.L4.value()
+                    ? l4HorizonLeaf.process()
+                    : DemandProcessResult.SKIPPED;
+            case PARENT_REFINEMENT -> throw new IllegalStateException("handled above");
         };
     }
 
@@ -1813,9 +1832,9 @@ public final class GenerationSession {
             }
 
             dequeued++;
-
             if (isFullyVanillaOccupancyRequest(req)) {
                 ShadowRouterJobQueue.markSkippedFull(req);
+                recordRefinementAttempt(req, RefinementOutcome.alreadyCovered());
                 skipped++;
                 continue;
             }
@@ -1857,8 +1876,8 @@ public final class GenerationSession {
 
         logDemandProgress(startMs, dequeued, written, skipped, deferred, failed);
         HelloTerrainMod.LOGGER.info(
-                "[LodGen] Demand pipeline stopped: dequeued={} written={} skipped={} deferred={} failed={}",
-                dequeued, written, skipped, deferred, failed);
+                "[LodGen] Demand pipeline stopped: dequeued={} written={} skipped={} deferred={} failed={} refine={}",
+                dequeued, written, skipped, deferred, failed, refinementLifecycle.compact());
         return written > 0;
     }
 
@@ -1867,9 +1886,10 @@ public final class GenerationSession {
                                    int deferred, int failed) {
         long elapsedMs = Math.max(1L, System.currentTimeMillis() - startMs);
         HelloTerrainMod.LOGGER.info(
-                "[LodGen][Demand] dequeued={} written={} skipped={} deferred={} failed={} inFlight={} demand={} elapsed={}s",
+                "[LodGen][Demand] dequeued={} written={} skipped={} deferred={} failed={} inFlight={} demand={} refine={} elapsed={}s",
                 dequeued, written, skipped, deferred, failed,
                 ShadowRouterJobQueue.inFlightSize(), ShadowRouterJobQueue.demandMetrics().compact(),
+                refinementLifecycle.compact(),
                 elapsedMs / 1000);
     }
 
@@ -1886,13 +1906,14 @@ public final class GenerationSession {
     private DemandProcessResult processDemandRequest(World world,
                                                      VoxelVolumeWriter writer,
                                                      VoxyRequestDecoder.VoxyNodeRequest req) {
-        if (req == null || writer == null) {
+        if (req == null) {
             return DemandProcessResult.FAILED;
         }
         if (decideEndL4TracerMode(world)) {
             return processEndPhysicalWork(
                     req, writer, () -> processDemandLeaf(world, writer, req));
         }
+        if (writer == null) return DemandProcessResult.FAILED;
         return processDemandLeaf(world, writer, req);
     }
 
@@ -2343,6 +2364,7 @@ public final class GenerationSession {
 
             if (isFullyVanillaOccupancyRequest(req)) {
                 ShadowRouterJobQueue.markSkippedFull(req);
+                recordRefinementAttempt(req, RefinementOutcome.alreadyCovered());
                 // Boundary work is outside the fixed initial L4 tracer batch.
                 // It must not advance that batch's terminal accounting.
                 if (req.demandSource != VoxyDemandSource.VANILLA_OCCUPANCY_BOUNDARY) {
@@ -2355,6 +2377,7 @@ public final class GenerationSession {
             // Route complete parent transactions before native L4 horizon work.
             if (req.workKind == net.lodiffusion.shadow.VoxyWorkKind.PARENT_REFINEMENT) {
                 RefinementOutcome refOutcome = processEndRefinementRequest(req, writer);
+                recordRefinementAttempt(req, refOutcome);
                 recordFrontierGuardOutcomeForTest(req, refOutcome);
                 if (refOutcome.status() == RefinementOutcome.Status.BLOCKED_PARENT) {
                     ShadowRouterJobQueue.requeue(req);
@@ -2442,17 +2465,18 @@ public final class GenerationSession {
             int f = tracerFailed.get();
             if (w == 1 || now - lastProgressLogMs >= DEMAND_PROGRESS_LOG_MS) {
                 HelloTerrainMod.LOGGER.info(
-                        "[LodGen][Tracer] dequeued written={} skipped={} failed={} inFlight={} demand={}",
+                        "[LodGen][Tracer] dequeued written={} skipped={} failed={} inFlight={} demand={} refine={}",
                         w, s, f, ShadowRouterJobQueue.inFlightSize(),
-                        ShadowRouterJobQueue.demandMetrics().compact());
+                        ShadowRouterJobQueue.demandMetrics().compact(),
+                        refinementLifecycle.compact());
                 lastProgressLogMs = now;
             }
         }
 
         HelloTerrainMod.LOGGER.info(
-                "[LodGen][Tracer] stopped: written={} skipped={} failed={} demand={}",
+                "[LodGen][Tracer] stopped: written={} skipped={} failed={} demand={} refine={}",
                 tracerWritten.get(), tracerSkipped.get(), tracerFailed.get(),
-                ShadowRouterJobQueue.demandMetrics().compact());
+                ShadowRouterJobQueue.demandMetrics().compact(), refinementLifecycle.compact());
         return tracerWritten.get() > 0;
     }
 

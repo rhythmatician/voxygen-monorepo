@@ -34,6 +34,8 @@ class EndPhysicalWorkDispatcherTest {
 
             assertEquals(0, writer.refinementIntents);
             assertEquals(1, horizonCalls[0]);
+            assertEquals(summaryForLevel4(1, 0, 1, 0, 0),
+                    session.refinementLifecycleSummaryForTest());
         } finally {
             restoreProperty(property, previous);
         }
@@ -71,6 +73,34 @@ class EndPhysicalWorkDispatcherTest {
         assertEquals(GenerationSession.DemandProcessResult.WRITTEN, result);
         assertEquals(1, writer.refinementIntents);
         assertEquals(0, writer.regionWrites);
+        assertEquals(summaryForLevel4(1, 0, 0, 1, 0),
+                session.refinementLifecycleSummaryForTest());
+    }
+
+    @Test
+    void workerBoundaryAttributesBlockedAndPreconditionFailureExactlyOnce() {
+        GenerationSession blockedSession = session();
+        CountingWriter blockedWriter = new CountingWriter();
+        blockedWriter.result = ParentRefinementResult.parentMissing();
+
+        assertEquals(GenerationSession.DemandProcessResult.DEFERRED,
+                blockedSession.processEndPhysicalWork(
+                        request(Level.L3.value(), VoxyWorkKind.PARENT_REFINEMENT),
+                        blockedWriter,
+                        () -> GenerationSession.DemandProcessResult.FAILED));
+        assertEquals("L4[d0,b0,e0,n0,f0] L3[d1,b1,e0,n0,f0] "
+                        + "L2[d0,b0,e0,n0,f0] L1[d0,b0,e0,n0,f0]",
+                blockedSession.refinementLifecycleSummaryForTest());
+
+        GenerationSession failedSession = session();
+        assertEquals(GenerationSession.DemandProcessResult.FAILED,
+                failedSession.processEndPhysicalWork(
+                        request(Level.L2.value(), VoxyWorkKind.PARENT_REFINEMENT),
+                        null,
+                        () -> GenerationSession.DemandProcessResult.FAILED));
+        assertEquals("L4[d0,b0,e0,n0,f0] L3[d0,b0,e0,n0,f0] "
+                        + "L2[d1,b0,e0,n0,f1] L1[d0,b0,e0,n0,f0]",
+                failedSession.refinementLifecycleSummaryForTest());
     }
 
     @Test
@@ -110,6 +140,7 @@ class EndPhysicalWorkDispatcherTest {
     private static final class CountingWriter implements VoxelVolumeWriter {
         int regionWrites;
         int refinementIntents;
+        ParentRefinementResult result = ParentRefinementResult.published(WriteOutcome.written(1));
 
         @Override
         public WriteOutcome writeSection(SectionPos pos, VoxelVolume volume) {
@@ -125,8 +156,15 @@ class EndPhysicalWorkDispatcherTest {
         @Override
         public ParentRefinementResult refineParent(ParentRefinementIntent intent) {
             refinementIntents++;
-            return ParentRefinementResult.published(WriteOutcome.written(1));
+            return result;
         }
+    }
+
+    private static String summaryForLevel4(
+            int dequeued, int blocked, int empty, int nonempty, int failed) {
+        return "L4[d" + dequeued + ",b" + blocked + ",e" + empty + ",n" + nonempty
+                + ",f" + failed + "] L3[d0,b0,e0,n0,f0] "
+                + "L2[d0,b0,e0,n0,f0] L1[d0,b0,e0,n0,f0]";
     }
 
     private static void restoreProperty(String property, String previous) {
