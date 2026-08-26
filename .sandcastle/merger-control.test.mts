@@ -53,9 +53,11 @@ describe("merger control", () => {
     expect(canClaimNextOuterIteration(partition)).toBe(false);
 
     const productionSource = readFileSync(".sandcastle/main.mts", "utf8");
-    expect(productionSource).toContain(
-      '"--remove-label", "agent:in-progress", "--remove-assignee", "@me"',
-    );
+    // Factory-error release now routes through the tracker adapter's verified
+    // owned-release saga (releaseOwnedImplementationClaim) — main.mts no longer
+    // composes raw edits and no longer uses the generic unowned release.
+    expect(productionSource).toContain("releaseOwnedImplementationClaim");
+    expect(productionSource).not.toContain("releaseAfterFactoryError");
     // Inspect real submitImplementation adapter — executable code, not dummy comments
     const adapterStart = productionSource.indexOf("const submitImplementation = async");
     expect(adapterStart).toBeGreaterThan(-1);
@@ -97,5 +99,30 @@ describe("merger control", () => {
     expect(productionSource).toContain('result.next.reason === "submission-factory-error"');
     expect(productionSource).not.toContain("let finalNext = result.next");
     expect(productionSource).not.toContain("if (publicationFailed) break;");
+  });
+
+  it("closed-inventory cleanup covers all three machine labels, dedupes, and fails closed on listing failure", () => {
+    const productionSource = readFileSync(".sandcastle/main.mts", "utf8");
+    const reconcileStart = productionSource.indexOf("// 2. Closed issues with any stale transient/command labels");
+    expect(reconcileStart).toBeGreaterThan(-1);
+    const reconcileEnd = productionSource.indexOf("=== Reconciliation complete ===", reconcileStart);
+    expect(reconcileEnd).toBeGreaterThan(reconcileStart);
+    const section = productionSource.slice(reconcileStart, reconcileEnd);
+
+    // All THREE machine labels are queried for the closed inventory.
+    expect(section).toContain("AGENT_IN_PROGRESS");
+    expect(section).toContain("AGENT_IMPLEMENT");
+    expect(section).toContain("AGENT_BLOCKED");
+    // Issue numbers are DEDUPED so each closed issue is cleaned exactly once.
+    expect(section).toContain("new Set<number>()");
+    expect(section).toContain("closedIssueNumbers.add(r.number)");
+    // A listing failure is FACTORY_ERROR, never warn-and-continue.
+    expect(section).toContain("FACTORY_ERROR listing closed issues with stale machine labels");
+    expect(section).toContain("throw new Error(msg)");
+    // Cleanup routes through the fresh-state-owned adapter port by issue number.
+    expect(section).toContain("tracker.cleanupClosedIssueStaleLabels(number)");
+    // Unproved closed cleanup STOPS the factory.
+    expect(section).toContain("FACTORY_ERROR cleaning closed issue");
+    expect(section).toContain("throw new Error(msg)");
   });
 });

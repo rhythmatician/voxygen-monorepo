@@ -5,8 +5,7 @@
 import * as sandcastle from "@ai-hero/sandcastle";
 import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
 import { z } from "zod";
-import { execFile, execSync, execFileSync } from "node:child_process";
-import { promisify } from "node:util";
+import { execSync, execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { runStructuredOnce, runUnstructuredOnce, runUntilCompletion } from "./agent-run-contracts.mts";
@@ -42,22 +41,14 @@ import {
   READY_FOR_AGENT,
   AGENT_IMPLEMENT,
   AGENT_IN_PROGRESS,
+  AGENT_BLOCKED,
   WAYFINDER_RESEARCH as TRACKER_WAYFINDER_RESEARCH,
 } from "./tracker-policy.mts";
-import {
-  claimImplementation as trackerClaimImplementation,
-  claimResearch as trackerClaimResearch,
-  reconcileStaleImplementation,
-  reconcileStaleResearch,
-  type ClaimOps,
-  type ResearchClaimOps,
-} from "./tracker-operations.mts";
 import {
   partitionMergerInfrastructureFailure,
 } from "./factory-verdict-gate.mts";
 import * as branchHelpers from "./branch-helpers.mts";
 import type { GitRunner, GitResult } from "./branch-helpers.mts";
-import { createProductionReconcileOps } from "./reconcile-adapter.mts";
 import { publishBatchBranch } from "./batch-publication.mts";
 import { mayAutonomouslyMerge } from "./ci-policy.mts";
 import { runReviewerPass } from "./review-pass.mts";
@@ -67,6 +58,9 @@ import {
   type ReviewVerdict,
 } from "./review-verdict.mts";
 import { formatGhFailure, getErrorMessage, getGhErrorDetails } from "./gh-errors.mts";
+import { createGhTransport, resolveGhToken, GhCapabilityError, type GhTransport } from "./gh-transport.mts";
+import { createTrackerAdapter, type TrackerAdapter, type TrackerTransitionResult, type TransitionReceipt } from "./tracker-adapter.mts";
+import { withAtomicJsonReceipt } from "./resource-scopes.mts";
 import { parsePlannerOutput, fallbackToSingle } from "./planner-helpers.mts";
 import {
   makeIterationControl,
@@ -83,7 +77,6 @@ import {
   verifySandcastleRuntimeExports,
 } from "./sandcastle-runtime-provenance.mts";
 import {
-  makeGitHubCapability,
   GitHubWriteForbiddenError,
 } from "./github-capability.mts";
 import {
@@ -106,32 +99,14 @@ import {
 import { mergerDockerOptions } from "./merger-control.mts";
 import { runFactoryIteration, type PreparedImplIssue, type PreparedResearchIssue, type FactoryIterationDependencies } from "./factory-iteration.mts";
 
-const execFileAsync = promisify(execFile);
-
 // ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
 const MAX_ITERATIONS = 10;
 // Resolve current GitHub login once for claim ownership verification (fail-closed if unavailable)
-let cachedClaimantLogin: string | null = null;
+// Delegates to the single transport — no local candidate composition.
 async function resolveClaimantLogin(): Promise<string> {
-  if (cachedClaimantLogin) return cachedClaimantLogin;
-  // Try gh api user
-  const candidates = [
-    ["api", "user", "--jq", ".login"],
-    ["api", "/user", "--jq", ".login"],
-  ];
-  for (const args of candidates) {
-    try {
-      const out = await runGh(args);
-      const login = out.trim();
-      if (login && login !== "null" && !login.includes(" ")) {
-        cachedClaimantLogin = login;
-        return login;
-      }
-    } catch {}
-  }
-  throw new Error("failed to resolve claimant login via gh api user");
+  return ghTransport.resolveClaimantLogin();
 }
 
 const REASON_TRUNCATE = 800;
@@ -161,26 +136,81 @@ if (ITERATION_CONTROL.qualification.kind === "invalid") {
 const GH_CAPABILITY_MODE: "read-only" | "read-write" = QUALIFICATION_LIFECYCLE.claimExternalState || QUALIFICATION_LIFECYCLE.mutateOutcomeState || QUALIFICATION_LIFECYCLE.integrate
   ? "read-write"
   : "read-only";
+
+// Single GitHub transport — sole owner of binary resolution, token, CWD,
+// spawn, structured errors, capability enforcement, claimant identity, and
+// owner/repo resolution. No local ghBinary/ghToken/parseOwnerRepo duplicates.
+const ghTransport: GhTransport = createGhTransport({
+  repoRoot: REPO_ROOT,
+  capabilityMode: GH_CAPABILITY_MODE,
+});
+
 const WORKER_SANDBOX_ENV = resolveWorkerSandboxEnv(
   GH_CAPABILITY_MODE,
-  ghToken(),
+  resolveGhToken(REPO_ROOT),
   resolveFactoryMetaApiKey(REPO_ROOT),
 );
 
-const gitHubCapability = makeGitHubCapability({
-  mode: GH_CAPABILITY_MODE,
-  exec: async (args: string[]) => {
-    const token = ghToken();
-    const env = { ...process.env, GH_TOKEN: token };
-    const bin = ghBinary();
-    const { stdout } = await execFileAsync(bin, args, {
-      env,
-      cwd: REPO_ROOT,
-      maxBuffer: 10 * 1024 * 1024,
-    });
-    return stdout.trim();
-  },
+async function runGh(args: string[]): Promise<string> {
+  try {
+    return await ghTransport.run(args);
+  } catch (error: unknown) {
+    if (error instanceof GitHubWriteForbiddenError) {
+      throw error;
+    }
+    if (error instanceof GhCapabilityError) {
+      throw error;
+    }
+    const details = getGhErrorDetails(error);
+    console.error(`[runGh] args=${args.join(" ")} details=${details.slice(0,500)}`);
+    throw new Error(`gh ${args.join(" ")} failed: ${details}`);
+  }
+}
+
+// Single tracker adapter — all production tracker mutations flow through its
+// verified-saga transitions with typed receipts. main.mts no longer composes
+// `gh issue edit` calls or knows machine-state label strings inline.
+const fileReceiptSink = makeFileReceiptSink(REPO_ROOT);
+const tracker: TrackerAdapter = createTrackerAdapter({
+  gh: ghTransport,
+  receiptSink: fileReceiptSink,
+  readReceipts: () => fileReceiptSink.readAll(),
+  runGit: createGitRunner(),
+  repoRoot: REPO_ROOT,
 });
+
+/**
+ * Production receipt sink — atomic writes via withAtomicJsonReceipt, and
+ * persistence failures THROW so the saga converts an unpersistable required
+ * receipt into indeterminate FACTORY_ERROR (a committed result can never lack
+ * durable evidence). Also exposes readAll() so claimant-only residue recovery
+ * can inspect CURRENT, RELEVANT indeterminate cleanup/integration receipts.
+ */
+function makeFileReceiptSink(repoRoot: string) {
+  const receiptsDir = path.join(repoRoot, ".sandcastle", "logs", "tracker-transitions");
+  // Per-run sequence — collision-resistant receipt filenames (two receipts for
+  // the same transition+issue within the same millisecond must not collide).
+  let seq = 0;
+  return {
+    persist(receipt: unknown): void {
+      const name = `${Date.now()}-${String(seq++).padStart(4, "0")}-${(receipt as { transition?: string }).transition ?? "transition"}-${(receipt as { issueNumber?: number }).issueNumber ?? "x"}.json`;
+      withAtomicJsonReceipt(path.join(receiptsDir, name), () => receipt);
+      // Verify the persisted receipt reads back and parses — evidence must be durable.
+      const written = path.join(receiptsDir, name);
+      JSON.parse(fs.readFileSync(written, "utf8"));
+    },
+    readAll(): TransitionReceipt[] {
+      if (!fs.existsSync(receiptsDir)) return [];
+      return fs.readdirSync(receiptsDir)
+        .filter((f) => f.endsWith(".json"))
+        .map((f) => {
+          try { return JSON.parse(fs.readFileSync(path.join(receiptsDir, f), "utf8")); }
+          catch { return null; }
+        })
+        .filter((r): r is TransitionReceipt => r !== null);
+    },
+  };
+}
 
 // Worker result after implement + review -- commits plus machine-readable verdict.
 type WorkerResult = { commits: string[]; verdict: ReviewVerdict | null; reviewText?: string };
@@ -225,23 +255,9 @@ type PlannedIssue = z.infer<typeof planSchema>["issues"][number];
 // ---------------------------------------------------------------------------
 // GH helpers -- host-side only
 // ---------------------------------------------------------------------------
-// runGh() executes on the host, so ghBinary() resolves the host `gh`.
-// Inside the Docker sandbox (node:22-bookworm via .sandcastle/Dockerfile),
-// `gh` is at /usr/bin/gh on PATH. Prompts and docker() commands must use
-// bare `gh` and never call ghBinary() -- otherwise a host Windows path
-// (C:\Program Files\...) would leak into the container where only
-// /usr/bin/gh exists.
-
-function ghBinary(): string {
-  // Probe Linux gh first (host WSL: ~/.local/bin/gh, container: /usr/bin/gh)
-  // so a Windows path never leaks into Linux/WSL where auth differs.
-  const home = process.env.HOME || "";
-  const linuxPaths = ["/usr/bin/gh", home ? `${home}/.local/bin/gh` : "", "/home/jeff/.local/bin/gh"];
-  for(const p of linuxPaths){ if(p && fs.existsSync(p)) return p; }
-  // Fallback to gh on PATH (resolves to Linux gh in WSL with correct auth)
-  // Avoid Windows gh.exe which has different keyring/config in WSL.
-  return "gh";
-}
+// runGh() executes on the host via ghTransport (created above with stable
+// REPO_ROOT). Inside the Docker sandbox, prompts and docker() commands must
+// use bare `gh` — never a host-resolved binary path.
 
 // muse binary: intentionally not hardcoded -- host and sandbox both expose
 // `muse` on PATH (host via ~/.local/bin, sandbox via Dockerfile
@@ -253,7 +269,7 @@ async function safeRunGh(args: string[], failureContext?: string): Promise<boole
     await runGh(args);
     return true;
   } catch (error: unknown) {
-    if (error instanceof GitHubWriteForbiddenError) {
+    if (error instanceof GitHubWriteForbiddenError || error instanceof GhCapabilityError) {
       if (failureContext) {
         console.warn(formatGhFailure(failureContext, error));
       }
@@ -261,38 +277,6 @@ async function safeRunGh(args: string[], failureContext?: string): Promise<boole
     }
     if (failureContext) console.warn(formatGhFailure(failureContext, error));
     return false;
-  }
-}
-
-function ghToken(): string {
-  if (process.env.GH_TOKEN) return process.env.GH_TOKEN;
-  // fallback: read .sandcastle/.env from stable REPO_ROOT, never ambient cwd
-  try {
-    const envPath = path.join(REPO_ROOT, ".sandcastle", ".env");
-    const content = fs.readFileSync(envPath, "utf8");
-    const m = content.match(/^GH_TOKEN=(.*)$/m);
-    if (m) return m[1].trim();
-  } catch {}
-  return "";
-}
-
-async function runGh(args: string[]): Promise<string> {
-  try {
-    return await gitHubCapability.run(args);
-  } catch (error: unknown) {
-    if (error instanceof GitHubWriteForbiddenError) {
-      throw error;
-    }
-    const details = getGhErrorDetails(error);
-    const msg = error instanceof Error ? error.message : String(error);
-    const code = (error as unknown as { code?: unknown })?.code;
-    const signal = (error as unknown as { signal?: unknown })?.signal;
-    const stderr = (error as unknown as { stderr?: unknown })?.stderr;
-    const stdout = (error as unknown as { stdout?: unknown })?.stdout;
-    const stderrStr = stderr ? String(stderr).slice(0,1000) : "<no stderr>";
-    const stdoutStr = stdout ? String(stdout).slice(0,500) : "<no stdout>";
-    console.error(`[runGh] args=${args.join(" ")} code=${String(code)} signal=${String(signal)} msg=${msg} details=${details.slice(0,500)} stderr=${stderrStr} stdout=${stdoutStr}`);
-    throw new Error(`gh ${args.join(" ")} failed: ${details}`);
   }
 }
 
@@ -313,13 +297,7 @@ function createGitRunner(): GitRunner {
 }
 
 function parseOwnerRepo(): { owner: string; repo: string } | null {
-  try {
-    const out = execSync("git remote get-url origin", { encoding: "utf8", cwd: REPO_ROOT }).trim();
-    // https://github.com/rhythmatician/voxygen-monorepo.git
-    const m = out.match(/github\.com[:/]([^/]+)\/([^/.]+)/);
-    if (m) return { owner: m[1], repo: m[2] };
-  } catch {}
-  return null;
+  return ghTransport.resolveOwnerRepo();
 }
 
 interface RawIssue {
@@ -394,251 +372,126 @@ async function fetchOpenResearchIssues(): Promise<IssueInput[]> {
 
 // Phase 0.5 claim — transactional one-shot command consumption per ADR 0010.
 // Logical transaction: ready-for-agent + agent:implement → ready-for-agent + agent:in-progress + assignee, no implement
-// Do not assume gh edit is atomic; verify postcondition and compensate fail-closed.
+// Runs through the tracker-adapter verified saga: fresh read, validate
+// before-state, mutate, fresh read, verify postcondition, compensate when
+// defined, persist typed receipt. No inline label composition here.
 async function claimIssue(issue: IssueInput): Promise<boolean> {
   const id = String(issue.number);
   const branch = branchForIssue(issue.number);
-  // Resolve claimant once per claim attempt
-  let claimantLogin: string;
+  let result: TrackerTransitionResult;
   try {
-    claimantLogin = await resolveClaimantLogin();
+    result = await tracker.claimImplementation(issue);
   } catch (e) {
+    // Claimant resolution failure inside the adapter — fail closed.
     const reason = e instanceof Error ? e.message : String(e);
     console.error(`  FACTORY_ERROR resolving claimant for #${id}: ${reason} — fail closed`);
-    throw new Error(`FACTORY_ERROR resolving claimant for #${id}: ${reason}`);
+    throw new Error(`FACTORY_ERROR claiming #${id}: ${reason}`);
   }
-  const ops: ClaimOps & { claimantLogin: string } = {
-    claimantLogin,
-    fetchIssue: async (fetchId: string) => {
-      const rawJson = await runGh(["issue", "view", fetchId, "--json", "number,title,body,labels,assignees,state"]);
-      let raw: any;
-      try { raw = JSON.parse(rawJson); } catch { throw new Error(`failed to parse issue view for #${fetchId}`); }
-      const ownerRepo = parseOwnerRepo();
-      let blockedByCount: number | undefined = undefined;
-      if (ownerRepo) {
-        try {
-          const summary = await runGh(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/issues/${fetchId}`, "--jq", ".issue_dependencies_summary.blocked_by"]);
-          const n = parseInt(summary.trim(), 10);
-          if (!isNaN(n)) blockedByCount = n;
-        } catch {}
-      }
-      return {
-        number: raw.number,
-        title: raw.title,
-        state: (raw.state?.toLowerCase() ?? "open") as "open" | "closed",
-        labels: (raw.labels ?? []).map((l: any) => l.name),
-        assignees: (raw.assignees ?? []).map((a: any) => a.login),
-        blockedByCount,
-        body: raw.body,
-      };
-    },
-    applyClaim: async (applyId: string) => {
-      await runGh(["issue", "edit", applyId, "--add-assignee", "@me", "--add-label", "agent:in-progress", "--remove-label", "agent:implement"]);
-    },
-    verifyClaim: async (verifyId: string) => {
-      const rawJson = await runGh(["issue", "view", verifyId, "--json", "number,title,body,labels,assignees,state"]);
-      let raw: any;
-      try { raw = JSON.parse(rawJson); } catch { throw new Error(`failed to parse verify for #${verifyId}`); }
-      const ownerRepo = parseOwnerRepo();
-      let blockedByCount: number | undefined = undefined;
-      if (ownerRepo) {
-        try {
-          const summary = await runGh(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/issues/${verifyId}`, "--jq", ".issue_dependencies_summary.blocked_by"]);
-          const n = parseInt(summary.trim(), 10);
-          if (!isNaN(n)) blockedByCount = n;
-        } catch {}
-      }
-      return {
-        number: raw.number,
-        title: raw.title,
-        state: (raw.state?.toLowerCase() ?? "open") as "open" | "closed",
-        labels: (raw.labels ?? []).map((l: any) => l.name),
-        assignees: (raw.assignees ?? []).map((a: any) => a.login),
-        blockedByCount,
-        body: raw.body,
-      };
-    },
-    compensateClaim: async (compId: string) => {
-      try {
-        await runGh(["issue", "edit", compId, "--remove-label", "agent:in-progress", "--remove-assignee", "@me"]);
-        return true;
-      } catch {
-        return false;
-      }
-    },
-  };
-  try {
-    const result = await trackerClaimImplementation(id, issue, ops);
-    if (result.success) {
-      try {
-        await runGh(["issue", "comment", id, "--body", `Sandcastle claiming #${id} for AFK implementation on \`${branch}\` — \`${issue.title}\` (consumed ${AGENT_IMPLEMENT})`]);
-      } catch {}
-      console.log(`  Claimed #${id} → ${branch} (consumed ${AGENT_IMPLEMENT})`);
-      return true;
-    } else {
-      console.warn(`  Claim failed for #${id}: ${result.reason} (code=${result.code} compensated=${result.compensated})`);
-      if ((result as any).factoryError) {
-        console.error(`  FACTORY_ERROR for #${id}: compensation failed — preserved branch/provenance, stopping before worker launch. Reason: ${result.reason}`);
-        try {
-          await runGh(["issue", "comment", id, "--body", `Sandcastle FACTORY_ERROR claiming #${id} on \`${branch}\`: ${result.reason.slice(0,800)}\n\nBranch: \`${branch}\` preserved. Compensation failed — requires manual cleanup.`]);
-        } catch {}
-        throw new Error(`FACTORY_ERROR claiming #${id}: ${result.reason}`);
-      }
-      return false;
-    }
-  } catch (error: unknown) {
-    const msg = error instanceof Error ? error.message : String(error);
-    if (msg.includes("FACTORY_ERROR")) throw error;
-    console.warn(`  Claim failed for #${id}: ${msg}`);
-    return false;
+  if (result.kind === "committed") {
+    try {
+      await runGh(["issue", "comment", id, "--body", `Sandcastle claiming #${id} for AFK implementation on \`${branch}\` — \`${issue.title}\` (consumed ${AGENT_IMPLEMENT})`]);
+    } catch {}
+    console.log(`  Claimed #${id} → ${branch} (consumed ${AGENT_IMPLEMENT})`);
+    return true;
   }
+  if (result.kind === "indeterminate") {
+    const reason = result.receipt.reason ?? result.receipt.code ?? "unknown failure";
+    console.error(`  FACTORY_ERROR for #${id}: compensation failed — preserved branch/provenance, stopping before worker launch. Reason: ${reason}`);
+    try {
+      await runGh(["issue", "comment", id, "--body", `Sandcastle FACTORY_ERROR claiming #${id} on \`${branch}\`: ${reason.slice(0,800)}\n\nBranch: \`${branch}\` preserved. Compensation failed — requires manual cleanup.`]);
+    } catch {}
+    throw new Error(`FACTORY_ERROR claiming #${id}: ${reason}`);
+  }
+  console.warn(`  Claim failed for #${id}: ${result.receipt.reason ?? result.receipt.code} (code=${result.receipt.code})`);
+  return false;
 }
 
 async function claimResearchIssue(issue: IssueInput): Promise<boolean> {
   const id = String(issue.number);
   const branch = branchForIssue(issue.number);
-  let claimantLogin: string;
+  let result: TrackerTransitionResult;
   try {
-    claimantLogin = await resolveClaimantLogin();
+    result = await tracker.claimResearch(issue);
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);
     console.error(`  FACTORY_ERROR resolving claimant for research #${id}: ${reason} — fail closed`);
-    throw new Error(`FACTORY_ERROR resolving claimant for research #${id}: ${reason}`);
+    throw new Error(`FACTORY_ERROR research #${id}: ${reason}`);
   }
-  const ops: ResearchClaimOps & { claimantLogin: string } = {
-    claimantLogin,
-
-    fetchIssue: async (fetchId: string) => {
-      const rawJson = await runGh(["issue", "view", fetchId, "--json", "number,title,body,labels,assignees,state"]);
-      let raw: any;
-      try { raw = JSON.parse(rawJson); } catch { throw new Error(`failed to parse issue view for #${fetchId}`); }
-      const ownerRepo = parseOwnerRepo();
-      let blockedByCount: number | undefined = undefined;
-      if (ownerRepo) {
-        try {
-          const summary = await runGh(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/issues/${fetchId}`, "--jq", ".issue_dependencies_summary.blocked_by"]);
-          const n = parseInt(summary.trim(), 10);
-          if (!isNaN(n)) blockedByCount = n;
-        } catch {}
-      }
-      return {
-        number: raw.number,
-        title: raw.title,
-        state: (raw.state?.toLowerCase() ?? "open") as "open" | "closed",
-        labels: (raw.labels ?? []).map((l: any) => l.name),
-        assignees: (raw.assignees ?? []).map((a: any) => a.login),
-        blockedByCount,
-        body: raw.body,
-      };
-    },
-    applyClaim: async (applyId: string) => {
-      await runGh(["issue", "edit", applyId, "--add-assignee", "@me", "--add-label", "agent:in-progress"]);
-    },
-    verifyClaim: async (verifyId: string) => {
-      const rawJson = await runGh(["issue", "view", verifyId, "--json", "number,title,body,labels,assignees,state"]);
-      let raw: any;
-      try { raw = JSON.parse(rawJson); } catch { throw new Error(`failed to parse verify for #${verifyId}`); }
-      const ownerRepo = parseOwnerRepo();
-      let blockedByCount: number | undefined = undefined;
-      if (ownerRepo) {
-        try {
-          const summary = await runGh(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/issues/${verifyId}`, "--jq", ".issue_dependencies_summary.blocked_by"]);
-          const n = parseInt(summary.trim(), 10);
-          if (!isNaN(n)) blockedByCount = n;
-        } catch {}
-      }
-      return {
-        number: raw.number,
-        title: raw.title,
-        state: (raw.state?.toLowerCase() ?? "open") as "open" | "closed",
-        labels: (raw.labels ?? []).map((l: any) => l.name),
-        assignees: (raw.assignees ?? []).map((a: any) => a.login),
-        blockedByCount,
-        body: raw.body,
-      };
-    },
-    compensateClaim: async (compId: string) => {
-      try {
-        await runGh(["issue", "edit", compId, "--remove-label", "agent:in-progress", "--remove-assignee", "@me"]);
-        return true;
-      } catch { return false; }
-    },
-  };
-  try {
-    const result = await trackerClaimResearch(id, ops);
-    if (result.success) {
-      try {
-        await runGh(["issue", "comment", id, "--body", `Sandcastle claiming #${id} for AFK research on \`${branch}\` -- \`${issue.title}\``]);
-      } catch {}
-      console.log(`  Claimed research #${id} → ${branch}`);
-      return true;
-    } else {
-      console.warn(`  Research claim failed for #${id}: ${result.reason} (code=${result.code})`);
-      if ((result as any).factoryError) {
-        console.error(`  FACTORY_ERROR research #${id}: compensation failed — ${result.reason}`);
-        throw new Error(`FACTORY_ERROR research #${id}: ${result.reason}`);
-      }
-      return false;
-    }
-  } catch (error: unknown) {
-    const msg = error instanceof Error ? error.message : String(error);
-    if (msg.includes("FACTORY_ERROR")) throw error;
-    console.warn(`  Research claim failed for #${id}: ${msg}`);
-    return false;
+  if (result.kind === "committed") {
+    try {
+      await runGh(["issue", "comment", id, "--body", `Sandcastle claiming #${id} for AFK research on \`${branch}\` -- \`${issue.title}\``]);
+    } catch {}
+    console.log(`  Claimed research #${id} → ${branch}`);
+    return true;
   }
-}
-
-async function transitionToBlocked(issueId: string): Promise<boolean> {
-  // Per ADR 0010: remove agent:in-progress, remove claimant assignee, retain ready-for-agent, add agent:blocked, do not restore implement, preserve branch/provenance
-  const removedProgress = await safeRunGh(
-    ["issue", "edit", issueId, "--remove-label", "agent:in-progress"],
-    `Failed to remove agent:in-progress from #${issueId}`,
-  );
-  const removedAssignee = await safeRunGh(
-    ["issue", "edit", issueId, "--remove-assignee", "@me"],
-    `Failed to remove claimant assignee from #${issueId}`,
-  );
-  const addedBlocked = await safeRunGh(
-    ["issue", "edit", issueId, "--add-label", "agent:blocked"],
-    `Failed to add agent:blocked to #${issueId}`,
-  );
-  // Also ensure implement not restored — verify not present (do not add)
-  return removedProgress && removedAssignee && addedBlocked;
+  if (result.kind === "indeterminate") {
+    console.error(`  FACTORY_ERROR research #${id}: compensation failed — ${result.receipt.reason}`);
+    throw new Error(`FACTORY_ERROR research #${id}: ${result.receipt.reason}`);
+  }
+  console.warn(`  Research claim failed for #${id}: ${result.receipt.reason ?? result.receipt.code} (code=${result.receipt.code})`);
+  return false;
 }
 
 async function markBlocked(issueId: string, branch: string, reason: string): Promise<boolean> {
   const shortReason = reason.slice(0, REASON_TRUNCATE);
-  const transitionOk = await transitionToBlocked(issueId);
-  const commentOk = await safeRunGh([
-    "issue",
-    "comment",
-    issueId,
-    "--body",
-    `Sandcastle failed on \`${branch}\` -- not merged. Preserved branch for inspection.\n\n**Reason:** ${shortReason}\n\nBranch: \`${branch}\`\n\nTo retry: remove \`agent:blocked\` and explicitly re-add \`agent:implement\`, then re-run factory. Branch \`${branch}\` preserved, ready-for-agent retained, agent:in-progress and claimant assignee removed, agent:implement not restored.`,
-  ]);
-  const ok = transitionOk && commentOk;
-  if (!ok) {
-    // GitHub unavailable during failure cleanup — do not falsely report that the branch was marked.
-    // Preserve recoverable local state so next reconciliation can truthfully report status after connectivity returns.
-    try {
-      const recoveryDir = path.join(REPO_ROOT, ".sandcastle", "recovery");
-      fs.mkdirSync(recoveryDir, { recursive: true });
-      const recoveryPath = path.join(recoveryDir, `${issueId}-${branch.replace(/[^a-zA-Z0-9-]/g, "-")}.json`);
-      fs.writeFileSync(recoveryPath, JSON.stringify({ issueId, branch, reason: shortReason, at: new Date().toISOString(), transitionOk, commentOk, githubAvailable: false }, null, 2));
-      console.warn(`  [recovery] Preserved local state at ${recoveryPath} — GitHub mutations failed (transitionOk=${transitionOk} commentOk=${commentOk}), will reconcile truthfully after connectivity returns. Did NOT report as "marked agent:blocked".`);
-    } catch (e) {
-      console.warn(`  [recovery] Failed to preserve local state for #${issueId}: ${getErrorMessage(e)}`);
+  // Verified saga transition. Only committed may publish a success-oriented
+  // comment; rejected/compensated/indeterminate are handled explicitly.
+  const result = await tracker.transitionToBlocked(Number(issueId));
+  if (result.kind === "committed") {
+    const commentOk = await safeRunGh([
+      "issue",
+      "comment",
+      issueId,
+      "--body",
+      `Sandcastle failed on \`${branch}\` -- not merged. Preserved branch for inspection.\n\n**Reason:** ${shortReason}\n\nBranch: \`${branch}\`\n\nTo retry: remove \`agent:blocked\` and explicitly re-add \`agent:implement\`, then re-run factory. Branch \`${branch}\` preserved, ready-for-agent retained, agent:in-progress and claimant assignee removed, agent:implement not restored.`,
+    ]);
+    if (!commentOk) {
+      try {
+        const recoveryDir = path.join(REPO_ROOT, ".sandcastle", "recovery");
+        const recoveryPath = path.join(recoveryDir, `${issueId}-${branch.replace(/[^a-zA-Z0-9-]/g, "-")}.json`);
+        // Atomic write — recovery evidence must never be a torn file.
+        withAtomicJsonReceipt(recoveryPath, () => ({ issueId, branch, reason: shortReason, at: new Date().toISOString(), transitionOk: true, commentOk: false, githubAvailable: false }));
+        console.warn(`  [recovery] Preserved local state at ${recoveryPath} — blocked transition committed but comment failed.`);
+      } catch (e) {
+        console.warn(`  [recovery] Failed to preserve local state for #${issueId}: ${getErrorMessage(e)}`);
+      }
     }
+    return true;
   }
-  return ok;
+  if (result.kind === "rejected") {
+    console.error(`  BLOCKED transition rejected for #${issueId}: ${result.receipt.reason ?? result.receipt.code} — state was not a valid claimed state; no mutation applied.`);
+    return false;
+  }
+  if (result.kind === "compensated") {
+    console.error(`  BLOCKED transition compensated for #${issueId}: ${result.receipt.reason ?? result.receipt.code} — original claimed state restored; not marked blocked.`);
+    return false;
+  }
+  // indeterminate — FACTORY_ERROR, stop progression.
+  console.error(`  FACTORY_ERROR blocking #${issueId}: ${result.receipt.reason ?? result.receipt.code} — recovery evidence in receipt; stopping before any success reporting.`);
+  throw new Error(`FACTORY_ERROR blocking #${issueId}: ${result.receipt.reason ?? result.receipt.code}`);
 }
 
 async function markFactoryError(issueId: string, branch: string, reason: string): Promise<boolean> {
   const shortReason = reason.slice(0, REASON_TRUNCATE);
-  const removed = await safeRunGh(
-    ["issue", "edit", issueId, "--remove-label", "agent:in-progress", "--remove-assignee", "@me"],
-    `Failed to release factory claim from #${issueId}`,
-  );
+  // Verified saga release — proves EXACT ownership (claimant, ready-for-agent,
+  // in-progress, implement absent) on its own fresh pre-mutation read before
+  // removing in-progress + claimant. Unknown or unrelated ownership means ZERO
+  // mutation and FACTORY_ERROR — never release another actor's claim. Never
+  // restores agent:implement; indeterminate on unsafe-to-restore failure with
+  // recovery evidence in the typed receipt.
+  const released = await tracker.releaseOwnedImplementationClaim(Number(issueId));
+  if (released.kind === "indeterminate") {
+    console.error(`  FACTORY_ERROR releasing claim for #${issueId}: ${released.receipt.reason}`);
+    throw new Error(`FACTORY_ERROR releasing claim for #${issueId}: ${released.receipt.reason ?? released.receipt.code}`);
+  }
+  if (released.kind === "rejected") {
+    console.error(`  FACTORY_ERROR release rejected for #${issueId}: ${released.receipt.reason ?? released.receipt.code} — no valid owned claim to release.`);
+    throw new Error(`FACTORY_ERROR release rejected for #${issueId}: ${released.receipt.reason ?? released.receipt.code}`);
+  }
+  if (released.kind === "compensated") {
+    console.error(`  FACTORY_ERROR release compensated for #${issueId}: ${released.receipt.reason ?? released.receipt.code} — claim restored; not reporting release.`);
+    throw new Error(`FACTORY_ERROR release compensated for #${issueId}: ${released.receipt.reason ?? released.receipt.code}`);
+  }
   const commentOk = await safeRunGh([
     "issue",
     "comment",
@@ -646,34 +499,7 @@ async function markFactoryError(issueId: string, branch: string, reason: string)
     "--body",
     `Sandcastle factory infrastructure failed on \`${branch}\` — preserved branch for inspection.\n\n**Reason:** ${shortReason}\n\nBranch: \`${branch}\`\n\nThe issue was released — remove \`agent:blocked\` if present and explicitly re-add \`agent:implement\` to retry. Branch preserved, ready-for-agent retained, agent:in-progress and claimant assignee removed, agent:implement not restored.`,
   ]);
-  return removed && commentOk;
-}
-
-async function markIntegrated(issueId: string, branch: string): Promise<void> {
-  // TODO(factory-v1): Wayfinder close ownership -- host closes ordinary impl
-  // only; Wayfinder skill will own Wayfinder ticket close. See plan-prompt.
-  for (const label of ["agent:in-progress", "agent:implement", "agent:blocked"]) {
-    await safeRunGh(
-      ["issue", "edit", issueId, "--remove-label", label],
-      `Failed to remove ${label} from integrated issue #${issueId}`,
-    );
-  }
-  // Close with audit comment
-  try {
-    await runGh([
-      "issue",
-      "close",
-      issueId,
-      "--comment",
-      `Completed by Sandcastle -- branch \`${branch}\` merged and integrated. Auto-merged to main after verification.`,
-    ]);
-  } catch {
-    // fallback: comment then close
-    try {
-      await runGh(["issue", "comment", issueId, "--body", `Completed by Sandcastle -- branch \`${branch}\` integrated.`]);
-      await runGh(["issue", "close", issueId]);
-    } catch {}
-  }
+  return commentOk;
 }
 
 function formatVerdictForRetry(verdict: ReviewVerdict | null, fallback: string): string {
@@ -729,8 +555,25 @@ ${JSON.stringify(verdict ?? { approved: false, reason: fallbackReason }, null, 2
 Branch: \`${branch}\`
 
 To retry: fix implementation to address findings, remove \`agent:blocked\` and explicitly re-add \`agent:implement\`, then re-run factory. Branch preserved, ready-for-agent retained, agent:in-progress and claimant assignee removed, agent:implement not restored.`;
-  await transitionToBlocked(issueId);
-  await safeRunGh(["issue", "comment", issueId, "--body", body]);
+  // Only a committed blocked transition may publish the rejection comment.
+  // EVERY noncommitted outcome is a required-outcome failure: rejected means
+  // the state was not a valid claim, compensated means the mutation did not
+  // stand, indeterminate means evidence is missing — none may pass silently.
+  const result = await tracker.transitionToBlocked(Number(issueId));
+  if (result.kind !== "committed") {
+    const detail = result.receipt.reason ?? result.receipt.code ?? "unknown";
+    if (result.kind === "indeterminate") {
+      throw new Error(`FACTORY_ERROR review-rejecting #${issueId}: ${detail}`);
+    }
+    throw new Error(`FACTORY_ERROR review-rejecting #${issueId}: blocked transition ${result.kind} — ${detail}`);
+  }
+  // The rejection comment is REQUIRED evidence of the review outcome. A
+  // comment failure after a committed blocked transition is a FACTORY_ERROR —
+  // the issue is blocked but the human reviewer has no record of why.
+  const commentOk = await safeRunGh(["issue", "comment", issueId, "--body", body]);
+  if (!commentOk) {
+    throw new Error(`FACTORY_ERROR review-rejecting #${issueId}: blocked transition committed but rejection comment failed to publish`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -761,8 +604,11 @@ async function reconcileInProgressIssues(): Promise<void> {
       body: r.body,
     }));
   } catch (e) {
-    console.warn(`  Reconciliation: failed to list agent:in-progress issues: ${getErrorMessage(e)} — fail-closed, will retry next startup`);
-    return;
+    // Fail closed: an unreadable reconciliation inventory must STOP the
+    // factory — never continue to discovery/claim with unknown claim state.
+    const msg = `FACTORY_ERROR listing open agent:in-progress issues for reconciliation: ${getErrorMessage(e)} — stopping before discovery/claim`;
+    console.error(`  ${msg}`);
+    throw new Error(msg);
   }
   if (inProgress.length === 0) {
     console.log("  No Sandcastle-owned open in-progress issues to reconcile.");
@@ -773,24 +619,36 @@ async function reconcileInProgressIssues(): Promise<void> {
     const classification = classifyTicket(issue);
     if (classification.profile === "research") {
       console.log(`  #${id} (${branch}) → research in-progress stale on restart — preserving branch, releasing transient claim`);
-      const ops = {
-        releaseClaim: async (rid: string) => {
-          return await safeRunGh(
-            ["issue", "edit", rid, "--remove-label", "agent:in-progress", "--remove-assignee", "@me"],
-            `Failed to release research claim for #${rid} on reconciliation`,
-          );
-        },
-        comment: async (cid: string, body: string) => {
-          return await safeRunGh(["issue", "comment", cid, "--body", body]);
-        },
-        fetchIssue: async (fid: string) => issue,
-      };
-      const result = await reconcileStaleResearch(issue, branch, ops);
-      if (!result.reconciled) {
-        console.warn(`  #${id} → ${result.reason} — leaving in-progress for next reconciliation`);
-        continue;
+      // Release through the tracker adapter's owned-research release saga
+      // (proves exact ownership: claimant, in-progress, wayfinder:research).
+      // A failed stale-Research release STOPS the factory before discovery/claim.
+      const released = await tracker.releaseOwnedResearchClaim(issue.number);
+      if (released.kind !== "committed") {
+        const reason = released.receipt.reason ?? released.receipt.code ?? `unexpected result kind ${released.kind}`;
+        console.error(`  FACTORY_ERROR releasing stale research claim for #${id}: ${reason} — stopping before discovery/claim`);
+        throw new Error(`FACTORY_ERROR releasing stale research claim for #${id}: ${reason}`);
       }
-      console.log(`  #${id} (${branch}) → ${result.reason}`);
+      await safeRunGh(["issue", "comment", id, "--body", `Sandcastle reconciliation: released stale research claim for \`${branch}\` — branch preserved.`]);
+      console.log(`  #${id} (${branch}) → released stale research claim`);
+      continue;
+    }
+    if (issue.labels.includes(AGENT_IMPLEMENT) && issue.labels.includes(AGENT_IN_PROGRESS)) {
+      // Contradictory both present — should never be created intentionally; compensate by releasing in-progress.
+      // Handled BEFORE the generic conflicting-profile continue so this exact
+      // contradiction always reaches its recovery path.
+      console.warn(`  #${id} (${branch}) → contradictory both ${AGENT_IMPLEMENT} and ${AGENT_IN_PROGRESS} present — compensating`);
+      // Compensate through the tracker adapter's both-present compensation saga
+      // (proves exact ownership: claimant, in-progress, implement present; then
+      // removes in-progress + claimant while RETAINING agent:implement).
+      // A contradictory-state compensation failure STOPS the factory.
+      const released = await tracker.compensateBothPresentClaim(issue.number);
+      if (released.kind !== "committed") {
+        const reason = released.receipt.reason ?? released.receipt.code ?? `unexpected result kind ${released.kind}`;
+        console.error(`  FACTORY_ERROR compensating contradictory state for #${id}: ${reason} — stopping before discovery/claim`);
+        throw new Error(`FACTORY_ERROR compensating contradictory state for #${id}: ${reason}`);
+      }
+      await safeRunGh(["issue", "comment", id, "--body", `Sandcastle reconciliation: compensated contradictory state for \`${branch}\` — removed assignee and \`${AGENT_IN_PROGRESS}\` but retained \`${AGENT_IMPLEMENT}\` (command not consumed). Requires revalidation before retry.`]);
+      console.log(`  #${id} → compensated contradictory both-present`);
       continue;
     }
     if (classification.profile === "conflicting") {
@@ -804,79 +662,85 @@ async function reconcileInProgressIssues(): Promise<void> {
     const hasAssignee = issue.assignees.length > 0;
     if (hasReady && hasInProgress && hasAssignee && !hasImplement) {
       console.log(`  #${id} (${branch}) → stale implementation claim (consumed ${AGENT_IMPLEMENT}) — full seam`);
-      const claimantLogin = await resolveClaimantLogin();
-    const fullOps = createProductionReconcileOps({ runGh, runGit: createGitRunner(), repoRoot: REPO_ROOT, claimantLogin });
-      const result = await reconcileStaleImplementation(issue, branch, fullOps);
+      // Single consumer-facing reconciliation port on the tracker adapter.
+      // A reconciliation FACTORY_ERROR STOPS the factory before discovery/claim.
+      const result = await tracker.reconcileStaleImplementation(issue, branch);
       if (!result.reconciled) {
         console.warn(`  #${id} → ${result.reason} — decision=${result.decision?.type} factoryError=${result.factoryError}`);
         if (result.factoryError) {
-          console.error(`  FACTORY_ERROR reconciling #${id}: ${result.reason}`);
+          console.error(`  FACTORY_ERROR reconciling #${id}: ${result.reason} — stopping before discovery/claim`);
+          throw new Error(`FACTORY_ERROR reconciling #${id}: ${result.reason}`);
         }
         continue;
       }
       console.log(`  #${id} (${branch}) → ${result.reason}`);
       continue;
     }
-    if (hasImplement && hasInProgress) {
-      // Contradictory both present — should never be created intentionally; compensate by releasing in-progress
-      console.warn(`  #${id} (${branch}) → contradictory both ${AGENT_IMPLEMENT} and ${AGENT_IN_PROGRESS} present — compensating`);
-      const released = await safeRunGh(
-        ["issue", "edit", id, "--remove-label", "agent:in-progress", "--remove-assignee", "@me"],
-        `Failed to compensate contradictory claim for #${id}`,
-      );
-      if (!released) {
-        console.warn(`  #${id} → failed to compensate contradictory state — leaving for next reconciliation`);
-        continue;
-      }
-      await safeRunGh(["issue", "comment", id, "--body", `Sandcastle reconciliation: compensated contradictory state for \`${branch}\` — removed assignee and \`${AGENT_IN_PROGRESS}\` but retained \`${AGENT_IMPLEMENT}\` (command not consumed). Requires revalidation before retry.`]);
-      console.log(`  #${id} → compensated contradictory both-present`);
-      continue;
-    }
     console.log(`  #${id} (${branch}) → not a stale claimed implementation (ready=${hasReady} implement=${hasImplement} inProgress=${hasInProgress} assignee=${hasAssignee}) — leaving in-progress for inspection`);
     continue;
   }
   }
-  // 2. Closed in-progress issues — cleanup after GitHub Closes #N auto-close
+  // 2. Closed issues with any stale transient/command labels — general cleanup.
+  //    Covers ALL THREE machine labels (agent:in-progress, agent:implement,
+  //    agent:blocked). Issue numbers are fetched across all three label
+  //    queries and DEDUPED so each closed issue is cleaned exactly once.
+  //    A listing failure is FACTORY_ERROR, never warn-and-continue.
+  const closedLabelQueries = [AGENT_IN_PROGRESS, AGENT_IMPLEMENT, AGENT_BLOCKED];
+  const closedIssueNumbers = new Set<number>();
   try {
-    const closedJson = await runGh([
-      "issue", "list",
-      "--state", "closed",
-      "--label", "agent:in-progress",
-      "--limit", "100",
-      "--json", "number,title",
-    ]);
-    const closed: any[] = JSON.parse(closedJson);
-    for(const r of closed){
-      const id = String(r.number);
-      console.log(`  closed #${id} still has agent:in-progress — cleaning up stale claim label`);
-      await safeRunGh(["issue", "edit", id, "--remove-label", "agent:in-progress"], `Failed to cleanup closed #${id}`);
-      for(const label of ["agent:implement","agent:blocked"]){
-        try{ await runGh(["issue", "edit", id, "--remove-label", label]); }catch{}
-      }
+    for (const label of closedLabelQueries) {
+      const closedJson = await runGh([
+        "issue", "list",
+        "--state", "closed",
+        "--label", label,
+        "--limit", "100",
+        "--json", "number",
+      ]);
+      const closed: any[] = JSON.parse(closedJson);
+      for (const r of closed) closedIssueNumbers.add(r.number);
     }
-    if(closed.length===0) console.log("  No closed in-progress issues to clean.");
-  } catch (e){
-    console.warn(`  Reconciliation: failed to list closed in-progress issues: ${getErrorMessage(e)}`);
+  } catch (e) {
+    // A closed-inventory listing failure is FACTORY_ERROR — never continue on
+    // unknown closed-claim residue.
+    const msg = `FACTORY_ERROR listing closed issues with stale machine labels: ${getErrorMessage(e)} — stopping before discovery/claim`;
+    console.error(`  ${msg}`);
+    throw new Error(msg);
   }
-  // 3. Closed issues with any stale transient/command labels — general cleanup
-  try {
-    const closedImplementJson = await runGh([
-      "issue", "list",
-      "--state", "closed",
-      "--label", "agent:implement",
-      "--limit", "100",
-      "--json", "number,title,labels",
-    ]);
-    const closedImplement: any[] = JSON.parse(closedImplementJson);
-    for(const r of closedImplement){
-      const id = String(r.number);
-      const labels = (r.labels ?? []).map((l: any) => l.name);
-      if (labels.includes("agent:implement")) {
-        console.log(`  closed #${id} still has agent:implement — cleaning`);
-        try{ await runGh(["issue", "edit", id, "--remove-label", "agent:implement"]); }catch{}
-      }
+  // Bounded startup recovery for CLAIMANT-ONLY closed residue: closed issues
+  // assigned to the authenticated claimant with NO machine labels. Only
+  // unassigned when a CURRENT, RELEVANT indeterminate cleanup/integration
+  // receipt whose observed state matches the live claimant-only residue
+  // proves Sandcastle owned it. Ordinary closed issues assigned to the
+  // maintainer are never touched. A listing/read failure is FACTORY_ERROR —
+  // never continue on unknown residue.
+  console.log("  Recovering claimant-only closed residue (state-specific receipt evidence)...");
+  const residueRecovery = await tracker.recoverClaimantOnlyClosedResidue(100);
+  if (residueRecovery.errors.length > 0) {
+    const msg = `FACTORY_ERROR recovering claimant-only closed residue: ${residueRecovery.errors.join("; ")}`;
+    console.error(`  ${msg} — stopping before discovery/claim`);
+    throw new Error(msg);
+  }
+  if (residueRecovery.recovered > 0) console.log(`  Recovered ${residueRecovery.recovered} claimant-only closed issue(s).`);
+  if (residueRecovery.skipped > 0) console.log(`  Skipped ${residueRecovery.skipped} closed issue(s) without state-specific evidence (left assigned).`);
+  if (residueRecovery.recovered === 0 && residueRecovery.skipped === 0) console.log("  No claimant-only closed residue to recover.");
+  for (const number of closedIssueNumbers) {
+    const id = String(number);
+    console.log(`  closed #${id} still has a stale machine label — cleaning`);
+    // Fresh-state-owned cleanup: the adapter reads the issue fresh by number,
+    // requires it remains closed, removes all three machine labels + only the
+    // authenticated claimant (preserving unrelated assignees), and terminally
+    // proves closed + claimant absent + all three labels absent.
+    const cleanup = await tracker.cleanupClosedIssueStaleLabels(number);
+    // Unproved closed cleanup STOPS the factory — never continue on
+    // uncertainty. `committed` (cleaned) and `unchanged` (already clean) are
+    // both success; `rejected`/`indeterminate` are failures.
+    if (cleanup.status !== "committed" && cleanup.status !== "unchanged") {
+      const msg = `FACTORY_ERROR cleaning closed issue #${id}: ${cleanup.reason ?? cleanup.status}`;
+      console.error(`  ${msg} — stopping before discovery/claim`);
+      throw new Error(msg);
     }
-  } catch {}
+  }
+  if (closedIssueNumbers.size === 0) console.log("  No closed issues with stale machine labels to clean.");
   console.log("=== Reconciliation complete ===\n");
 }
 import { doctorWorktreePath, cleanupDoctorBranchAndWorktree, reconcileStaleDoctorResources } from "./doctor-helpers.mts";
@@ -1908,11 +1772,17 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
       mutations: {
         apply: async (action) => {
           if (action.kind === "failed") {
-            await markBlocked(action.issue.id, action.issue.branch, action.reason);
+            const ok = await markBlocked(action.issue.id, action.issue.branch, action.reason);
+            if (!ok) {
+              throw new Error(`FACTORY_ERROR marking #${action.issue.id} blocked failed — stopping progression`);
+            }
           } else if (action.kind === "reviewRejected") {
             await markReviewRejected(action.issue.id, action.issue.branch, action.verdict!, action.reason);
           } else {
-            await markFactoryError(action.issue.id, action.issue.branch, action.reason);
+            const ok = await markFactoryError(action.issue.id, action.issue.branch, action.reason);
+            if (!ok) {
+              throw new Error(`FACTORY_ERROR factory-error release for #${action.issue.id} did not complete — stopping progression`);
+            }
           }
         },
       },

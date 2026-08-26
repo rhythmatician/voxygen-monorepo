@@ -26,10 +26,25 @@ describe("production-consumer guardrails", () => {
   it("main reconciliation calls full reconciliation adapter with required ops", () => {
     const main = readFile(".sandcastle/main.mts");
     const adapter = readFile(".sandcastle/reconcile-adapter.mts");
+    const trackerAdapter = readFile(".sandcastle/tracker-adapter.mts");
+    // One-authority rule: main consumes the tracker adapter's reconcile port,
+    // never createProductionReconcileOps directly.
     expect(main).toContain("reconcileStaleImplementation");
-    // Production path must use the single extracted adapter
-    expect(main).toContain("createProductionReconcileOps");
-    expect(main).toContain("reconcile-adapter");
+    expect(main).toContain("tracker.reconcileStaleImplementation");
+    expect(main).not.toContain("createProductionReconcileOps");
+    // The tracker adapter is the consumer-facing authority; reconcile-adapter
+    // is its internal Git/worktree INSPECTION implementation — it must not
+    // remain a second raw GitHub state-transition authority.
+    expect(trackerAdapter).toContain("createProductionReconcileOps");
+    expect(trackerAdapter).toContain("reconcileStaleImplementation");
+    // One-authority rule: no issue/label mutation ops inside reconcile-adapter.
+    expect(adapter).not.toContain("addBlocked");
+    expect(adapter).not.toContain("markIntegrated");
+    expect(adapter).not.toContain("releaseClaim:");
+    expect(adapter).not.toMatch(/issue",\s*"edit/);
+    expect(adapter).not.toMatch(/issue",\s*"close/);
+    // The adapter wires its own saga transitions as reconciliation's GitHub port.
+    expect(trackerAdapter).toContain("ReconcileGitHubTransitions");
     // Adapter must provide all required ops (authoritative safety)
     expect(adapter).toContain("getBatchPrNumber");
     expect(adapter).toContain("getPrState");
@@ -37,29 +52,41 @@ describe("production-consumer guardrails", () => {
     expect(adapter).toContain("checkProvenanceValid");
     expect(adapter).toContain("hasCommitsAhead");
     expect(adapter).toContain("deleteBranch");
-    expect(adapter).toContain("addBlocked");
-    expect(adapter).toContain("markIntegrated");
     expect(adapter).toContain("fetchIssue");
     // No fallback comment about release anyway
     expect(main).not.toContain("No branch check provided");
-    // Should use fullOps not minimal ops
-    expect(main).toContain("fullOps");
   });
 
   it("canary CLI calls tested live adapter with injected runner", () => {
     const canary = readFile(".sandcastle/tracker-canary.mts");
+    const trackerAdapter = readFile(".sandcastle/tracker-adapter.mts");
     expect(canary).toContain("export function createLiveCanaryOps");
     expect(canary).toContain("export async function runCanaryCli");
     expect(canary).toContain("export async function resolveClaimantLogin");
     // Must use claimantLogin
     expect(canary).toContain("claimantLogin");
-    // Must use gh api POST for creation
-    expect(canary).toContain('api", "--method", "POST"');
-    // Cleanup must remove assignee and transient labels
-    expect(canary).toContain("cleanupIssue");
-    expect(canary).toContain("AGENT_IN_PROGRESS");
+    // Fixture creation and cleanup route through the tracker adapter's owned
+    // ports — never raw gh commands in the canary.
+    expect(canary).toContain("createCanaryFixture");
+    expect(canary).toContain("cleanupCanaryFixture");
+    expect(trackerAdapter).toContain('api", "--method", "POST"');
+    expect(trackerAdapter).toContain("cleanupCanaryFixture");
+    expect(trackerAdapter).toContain("AGENT_IN_PROGRESS");
     // Check that main canary uses createLiveCanaryOps
     expect(canary).toMatch(/createLiveCanaryOps[\s\S]*runCanary/);
+    // Reconciliation must be executable: real or injected GitRunner, never an
+    // always-failing stub.
+    expect(canary).not.toContain("canary has no local git");
+    expect(canary).toMatch(/runGit \?\?|runGit:/);
+  });
+
+  it("migration composes no direct issue mutations outside the tracker adapter", () => {
+    const migration = readFile(".sandcastle/tracker-migration.mts");
+    // Issue label mutations route through the adapter's verified saga port.
+    expect(migration).toContain("makeIssueLabelMutationPort");
+    // No raw `gh issue edit` composition for issue state in the CLI adapter.
+    const cliSection = migration.slice(migration.indexOf("export async function runTrackerMigrationCli"));
+    expect(cliSection).not.toMatch(/issue",\s*"edit/);
   });
 
   it("no optional production fallback for required safety operations", () => {
@@ -71,5 +98,33 @@ describe("production-consumer guardrails", () => {
     expect(ops).toContain("fail closed");
     // Should not contain legacy fallback phrase
     expect(ops).not.toContain("fallback to old simple behavior");
+  });
+
+  it("round 4: reconcile-adapter owns no remote parsing — ownerRepo comes from GhTransport", () => {
+    const adapter = readFile(".sandcastle/reconcile-adapter.mts");
+    const transport = readFile(".sandcastle/gh-transport.mts");
+    // Single transport authority: only gh-transport resolves owner/repo from git remotes.
+    expect(transport).toContain("resolveOwnerRepo");
+    expect(adapter).not.toContain("parseOwnerRepo");
+    expect(adapter).not.toMatch(/remote",\s*"get-url/);
+    // The adapter requires ownerRepo as an injected dependency.
+    expect(adapter).toContain("ownerRepo:");
+  });
+
+  it("round 4: production canary persists receipts durably, never in memory", () => {
+    const canary = readFile(".sandcastle/tracker-canary.mts");
+    // Production default sink is the atomic file sink; memory sink is test-only.
+    expect(canary).toContain("makeFileReceiptSink");
+    expect(canary).not.toMatch(/makeMemoryReceiptSink/);
+    expect(canary).toMatch(/receiptSink \?\? makeFileReceiptSink/);
+  });
+
+  it("round 4: migration records durable transition receipts directory in persisted receipt", () => {
+    const migration = readFile(".sandcastle/tracker-migration.mts");
+    // Durable atomic receipt sink (no memory sink in production paths).
+    expect(migration).not.toMatch(/makeMemoryReceiptSink/);
+    // Persisted receipt records where transition receipts live.
+    expect(migration).toContain("transitionReceiptsDir");
+    expect(migration).toContain("migration-transitions");
   });
 });

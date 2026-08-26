@@ -1,7 +1,11 @@
 import * as fsSync from "node:fs";
 import * as path from "node:path";
-import { pathToFileURL } from "node:url";
+import { pathToFileURL, fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
+import { createGhTransport, type GhTransport } from "./gh-transport.mts";
+import { isHttp404 } from "./gh-errors.mts";
+import { withAtomicJsonReceipt } from "./resource-scopes.mts";
+import { createTrackerAdapter, makeIssueLabelMutationPort, type ReceiptSink, type TrackerAdapter, type ReviewedIssueSnapshot } from "./tracker-adapter.mts";
 import {
   detectContradictions,
   getRemovableResidueLabels,
@@ -291,9 +295,9 @@ export interface InventoryOps2 {
   getHeadSha?: () => Promise<string>;
 }
 export interface MutationOps2 {
-  updateIssueLabels: (issueNumber: number, add: string[], remove: string[]) => Promise<void>;
-  updateLabelDescription: (name: string, description: string) => Promise<void>;
-  deleteLabel: (name: string) => Promise<void>;
+  updateIssueLabels: (issueNumber: number, add: string[], remove: string[], expected?: ReviewedIssueSnapshot) => Promise<void>;
+  updateLabelDescription: (name: string, description: string, expectedOldDescription?: string) => Promise<void>;
+  deleteLabel: (name: string, expectedExists?: boolean) => Promise<void>;
 }
 
 export interface ReviewedReceipt {
@@ -467,10 +471,13 @@ export async function runTrackerMigration(opts: {
     return { plan, receipt: before, before, after, afterPlan, applied: false, blockingProblems, migrationRequired: migrationNeeded, checkPassed };
   }
   if (!opts.mutationOps) throw new Error("mutationOps required for apply");
-  // Phase 1: normalize issue labels
+  // Phase 1: normalize issue labels — each mutation is bound to the REVIEWED
+  // snapshot so the port's own fresh pre-mutation read must match the reviewed
+  // state/labels/assignees/blocked_by/body hash before any write.
+  const reviewedByNumber = new Map<number, ReviewedIssueSnapshot>((receipt.issues ?? []).map((i) => [i.number, i]));
   for (const m of plan.plannedMutations) {
     try {
-      await opts.mutationOps.updateIssueLabels(m.issue, m.addLabels, m.removeLabels);
+      await opts.mutationOps.updateIssueLabels(m.issue, m.addLabels, m.removeLabels, reviewedByNumber.get(m.issue));
     } catch (e) {
       throw new Error(`mutation failed for #${m.issue}: ${e}`);
     }
@@ -488,14 +495,20 @@ export async function runTrackerMigration(opts: {
   for (const upd of plan.labelDescriptionUpdates) {
     const liveDesc = (await opts.inventoryOps.getLabelDescriptions())[upd.name];
     if (liveDesc !== upd.newDesc) {
-      try { await opts.mutationOps.updateLabelDescription(upd.name, upd.newDesc); } catch (e) { throw new Error(`label description update failed for ${upd.name}: ${e}`); }
+      // Bind to the REVIEWED old description — the port's own fresh pre-mutation
+      // read must match before any write.
+      const reviewedOld = receipt.labelDescriptions[upd.name];
+      try { await opts.mutationOps.updateLabelDescription(upd.name, upd.newDesc, reviewedOld); } catch (e) { throw new Error(`label description update failed for ${upd.name}: ${e}`); }
     }
   }
   // Delete retired labels independently (per-label)
   for (const del of plan.retiredLabelsToDelete) {
     const liveState = normalizeRetiredState(await opts.inventoryOps.getRetiredLabelsExist() as any);
     if (liveState[del]) {
-      try { await opts.mutationOps.deleteLabel(del); } catch (e) { throw new Error(`retired label delete failed for ${del}: ${e}`); }
+      // Bind to the REVIEWED existence — the port's own fresh pre-mutation read
+      // must confirm the label exists before any write.
+      const reviewedExists = (receipt.retiredLabelsExist as any)[del] ?? false;
+      try { await opts.mutationOps.deleteLabel(del, reviewedExists); } catch (e) { throw new Error(`retired label delete failed for ${del}: ${e}`); }
     }
   }
   // Also attempt to delete any remaining retired labels that exist but were not in plan (independent)
@@ -503,7 +516,9 @@ export async function runTrackerMigration(opts: {
     const liveState = normalizeRetiredState(await opts.inventoryOps.getRetiredLabelsExist() as any);
     for (const label of [AGENT_RESEARCH_RETIRED, WAYFINDER_PRESERVE_FUTURES_RETIRED] as const) {
       if (liveState[label] && !plan.retiredLabelsToDelete.includes(label)) {
-        try { await opts.mutationOps.deleteLabel(label); } catch (e) { throw new Error(`retired label delete failed for ${label}: ${e}`); }
+        // These labels exist live (not in the reviewed plan) — bind to the
+        // observed existence.
+        try { await opts.mutationOps.deleteLabel(label, true); } catch (e) { throw new Error(`retired label delete failed for ${label}: ${e}`); }
       }
     }
   }
@@ -612,36 +627,66 @@ export async function runTrackerMigrationCli(args: string[], deps: CliDeps = {})
 
   // Resolve helpers with defaults
   const execSyncFn = deps.execSync ?? ((await import("node:child_process")).execSync as any);
-  const runGhFn = deps.runGh ?? (async (ghArgs: string[]) => {
-    const { promisify } = await import("node:util");
-    const { execFile } = await import("node:child_process");
-    const execFileAsync = promisify(execFile);
-    const home = process.env.HOME || "";
-    const candidates = ["/usr/bin/gh", home ? `${home}/.local/bin/gh` : "", "/home/jeff/.local/bin/gh"];
-    let bin = "gh";
-    for (const p of candidates) if (p && fsSync.existsSync(p)) { bin = p; break; }
-    const token = process.env.GH_TOKEN || "";
-    const env = { ...process.env, GH_TOKEN: token };
-    const { stdout } = await execFileAsync(bin, ghArgs, { env, cwd: process.cwd(), maxBuffer: 10*1024*1024 }) as any;
-    return (stdout as string).trim();
+  // Single transport — capability mode follows the operation: check/dry-run are
+  // read-only; apply is read-write. No local binary/token/CWD duplicates.
+  const MIGRATION_REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  const migrationTransport: GhTransport = createGhTransport({
+    repoRoot: MIGRATION_REPO_ROOT,
+    capabilityMode: mode === "apply" ? "read-write" : "read-only",
   });
+  const runGhFn = deps.runGh ?? ((ghArgs: string[]) => migrationTransport.run(ghArgs));
+
+  // ONE tracker adapter — every ISSUE mutation flows through its verified saga
+  // with typed receipts. Repository-level label metadata operations
+  // (description updates, retired-label deletion) route through the adapter's
+  // owned repository ports with fresh read-back and receipts.
+  const adapterTransport: GhTransport = {
+    capabilityMode: migrationTransport.capabilityMode,
+    isWriteForbidden: (args) => migrationTransport.isWriteForbidden(args),
+    run: runGhFn,
+    tryRun: async (args) => { try { await runGhFn(args); return true; } catch { return false; } },
+    resolveClaimantLogin: () => migrationTransport.resolveClaimantLogin(),
+    resolveOwnerRepo: () => migrationTransport.resolveOwnerRepo(),
+  };
+  // Durable typed-transition-receipt sink — atomic writes under
+  // .sandcastle/logs/migration-transitions/ (sidecar receipts alongside the
+  // canonical migration receipt; the canonical schema is unchanged).
+  const MIGRATION_TRANSITIONS_DIR = path.join(MIGRATION_REPO_ROOT, ".sandcastle", "logs", "migration-transitions");
+  // Per-run sequence — collision-resistant receipt filenames.
+  let migrationSeq = 0;
+  const adapterReceiptSink: ReceiptSink = {
+    persist(receipt: unknown): void {
+      const name = `${Date.now()}-${String(migrationSeq++).padStart(4, "0")}-${(receipt as { transition?: string }).transition ?? "transition"}-${(receipt as { issueNumber?: number }).issueNumber ?? "x"}.json`;
+      withAtomicJsonReceipt(path.join(MIGRATION_TRANSITIONS_DIR, name), () => receipt);
+    },
+  };
+  const adapter: TrackerAdapter = createTrackerAdapter({
+    gh: adapterTransport,
+    receiptSink: adapterReceiptSink,
+  });
+  const applyLabelMutation = makeIssueLabelMutationPort(
+    adapterTransport,
+    adapterReceiptSink,
+  );
 
   const readFile = deps.readFileSync ?? fsSync.readFileSync;
   const writeFile = deps.writeFileSync ?? fsSync.writeFileSync;
   const mkdir = deps.mkdirSync ?? fsSync.mkdirSync;
+  // Atomic receipt writer — evidence is written temp-file + rename; injected
+  // writeFileSync (tests) still flows through the same atomic path.
+  const writeReceiptAtomic = (targetPath: string, data: unknown): void => {
+    withAtomicJsonReceipt(targetPath, () => data, {
+      writeFileSync: ((p: any, d: any) => writeFile(p, typeof d === "string" ? d : JSON.stringify(d, null, 2))) as any,
+      mkdirSync: mkdir as any,
+    });
+  };
 
   const getHeadSha = deps.getHeadSha ?? (() => {
     try { return execSyncFn("git rev-parse HEAD", { encoding: "utf8" }).trim(); } catch { return "unknown"; }
   });
 
-  const parseOwnerRepo = () => {
-    try {
-      const out = execSyncFn("git remote get-url origin", { encoding: "utf8" }).trim();
-      const m = out.match(/github\.com[:\/]([^\/]+)\/([^\/\.]+)/);
-      if (m) return { owner: m[1], repo: m[2] };
-    } catch {}
-    return null;
-  };
+  // Transport-owned repository identity — no local git-remote parsing.
+  const parseOwnerRepo = () => migrationTransport.resolveOwnerRepo();
 
   const inventoryOps: InventoryOps2 = {
     listOpenIssues: async () => {
@@ -683,8 +728,10 @@ export async function runTrackerMigrationCli(args: string[], deps: CliDeps = {})
         }
         return map;
       } catch (e) {
-        const msg = String(e).toLowerCase();
-        if (msg.includes("404") || msg.includes("not found")) {
+        // ONLY an authoritative HTTP 404 proves the label set is absent.
+        // Auth/network/timeout/403/429/5xx => unknown — never inferred from a
+        // message substring like "not found".
+        if (isHttp404(e)) {
           throw new Error(`failed to fetch repository labels (bulk): ${e}`);
         }
         // For bulk failure, try per-label with 404 vs unknown
@@ -694,8 +741,8 @@ export async function runTrackerMigrationCli(args: string[], deps: CliDeps = {})
             const desc = await runGhFn(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/labels/${encodeURIComponent(name)}`, "--jq", ".description"]);
             map[name] = desc ?? "";
           } catch (err) {
-            const m2 = String(err).toLowerCase();
-            if (m2.includes("404") || m2.includes("not found")) {
+            // ONLY an authoritative HTTP 404 proves the label is absent.
+            if (isHttp404(err)) {
               map[name] = "";
             } else {
               throw new Error(`failed to fetch label description for ${name}: ${err}`);
@@ -717,20 +764,12 @@ export async function runTrackerMigrationCli(args: string[], deps: CliDeps = {})
           await runGhFn(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/labels/${encodeURIComponent(label)}`]);
           result[label] = true;
         } catch (e) {
-          const msg = String(e).toLowerCase();
-          if (msg.includes("404") || msg.includes("not found")) {
+          // ONLY an authoritative HTTP 404 proves the label is absent.
+          if (isHttp404(e)) {
             result[label] = false;
           } else {
-            // Try to distinguish via second call message
-            try {
-              const msg2 = await runGhFn(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/labels/${encodeURIComponent(label)}`, "--jq", ".message"]);
-              if (msg2.toLowerCase().includes("not found")) result[label] = false;
-              else throw e;
-            } catch (e2) {
-              const m2 = String(e2).toLowerCase();
-              if (m2.includes("404") || m2.includes("not found")) result[label] = false;
-              else throw new Error(`failed to check retired label ${label}: ${e}`);
-            }
+            // Unknown existence — fail closed (do not assume absent).
+            throw new Error(`failed to check retired label ${label}: ${e}`);
           }
         }
       }
@@ -740,17 +779,34 @@ export async function runTrackerMigrationCli(args: string[], deps: CliDeps = {})
   };
 
   const mutationOps: MutationOps2 = {
-    updateIssueLabels: async (issueNumber, add, remove) => {
-      const ghArgs: string[] = ["issue", "edit", String(issueNumber)];
-      for (const a of add) ghArgs.push("--add-label", a);
-      for (const r of remove) ghArgs.push("--remove-label", r);
-      await runGhFn(ghArgs);
+    updateIssueLabels: async (issueNumber, add, remove, expected) => {
+      // Route through the tracker adapter's verified saga — the single GitHub
+      // state-transition authority. The combined add/remove edit is applied,
+      // proved on a fresh read, and receipted. The reviewed snapshot binds the
+      // mutation to the reviewed state (state/labels/assignees/blocked_by/body
+      // hash) on the port's own fresh pre-mutation read.
+      const result = await applyLabelMutation(issueNumber, add, remove, expected);
+      if (!result.committed) {
+        throw new Error(`mutation failed for #${issueNumber}: ${result.reason}`);
+      }
     },
-    updateLabelDescription: async (name, description) => {
-      await runGhFn(["api", "--method", "PATCH", `repos/${parseOwnerRepo()?.owner}/${parseOwnerRepo()?.repo}/labels/${encodeURIComponent(name)}`, "-f", `description=${description}`]);
+    updateLabelDescription: async (name, description, expectedOldDescription) => {
+      // Route through the tracker adapter's owned repository port — binds to
+      // the reviewed old description, fresh read-back proves the description
+      // landed, typed receipt persisted.
+      const result = await adapter.updateCanonicalLabelDescription(name, description, expectedOldDescription);
+      if (result.status !== "committed" && result.status !== "unchanged") {
+        throw new Error(`label description update failed for ${name}: ${result.reason}`);
+      }
     },
-    deleteLabel: async (name) => {
-      await runGhFn(["api", "--method", "DELETE", `repos/${parseOwnerRepo()?.owner}/${parseOwnerRepo()?.repo}/labels/${encodeURIComponent(name)}`]);
+    deleteLabel: async (name, expectedExists) => {
+      // Route through the tracker adapter's owned repository port — binds to
+      // the reviewed existence, proves zero open users before deletion, fresh
+      // read-back proves the label is gone, typed receipt persisted.
+      const result = await adapter.deleteRetiredLabel(name, expectedExists);
+      if (result.status !== "committed" && result.status !== "unchanged") {
+        throw new Error(`retired label delete failed for ${name}: ${result.reason}`);
+      }
     },
   };
 
@@ -778,7 +834,7 @@ export async function runTrackerMigrationCli(args: string[], deps: CliDeps = {})
     console.log(formatReceipt(result.plan, mode, { checkPassed: result.checkPassed, blockingProblems: result.blockingProblems, migrationRequired: result.migrationRequired }));
     const receiptPath = ".sandcastle/logs/migration-dry-run-receipt.json";
     try { mkdir(".sandcastle/logs", { recursive: true }); } catch (e) { console.error(`Failed to create logs dir: ${e}`); return { exitCode: 1 }; }
-    try { writeFile(receiptPath, JSON.stringify(result.receipt, null, 2)); console.log(`Dry-run receipt written to ${receiptPath}`); } catch (e) { console.error(`Failed to write dry-run receipt: ${e}`); return { exitCode: 1 }; }
+    try { writeReceiptAtomic(receiptPath, result.receipt); console.log(`Dry-run receipt written to ${receiptPath}`); } catch (e) { console.error(`Failed to write dry-run receipt: ${e}`); return { exitCode: 1 }; }
     console.log("DRY-RUN complete — no writes performed");
     if (hasBlockingMigrationProblems(result.plan)) {
       console.log("NOTE: dry-run shows blocking contradictions/ambiguities that would block apply");
@@ -816,9 +872,12 @@ export async function runTrackerMigrationCli(args: string[], deps: CliDeps = {})
         receipt: result.receipt,
         beforeReceipt: result.before,
         afterReceipt: result.after,
+        // Rollout evidence: sidecar typed transition receipts (one per saga
+        // mutation) are persisted atomically under this directory.
+        transitionReceiptsDir: path.relative(MIGRATION_REPO_ROOT, MIGRATION_TRANSITIONS_DIR),
       };
       try { mkdir(".sandcastle/logs", { recursive: true }); } catch (e) { console.error(`Failed to create logs dir: ${e}`); return { exitCode: 1 }; }
-      try { writeFile(receiptPath, JSON.stringify(persisted, null, 2)); } catch (e) { console.error(`Failed to write apply receipt: ${e}`); return { exitCode: 1 }; }
+      try { writeReceiptAtomic(receiptPath, persisted); } catch (e) { console.error(`Failed to write apply receipt: ${e}`); return { exitCode: 1 }; }
       return { exitCode: 0, receiptPath, plan: result.plan };
     } catch (e) {
       console.error(`APPLY FAILED: ${e}`);

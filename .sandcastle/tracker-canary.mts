@@ -9,12 +9,16 @@ import {
   AGENT_BLOCKED,
   type IssueInput,
 } from "./tracker-policy.mts";
-import { claimImplementation, reconcileStaleImplementation, type ClaimOps } from "./tracker-operations.mts";
+import { createTrackerAdapter, type ReceiptSink } from "./tracker-adapter.mts";
+import { withTemporaryIssueFixtures, withAtomicJsonReceipt, type FixtureHandle } from "./resource-scopes.mts";
+import { createGhTransport, type GhTransport } from "./gh-transport.mts";
 import * as fs2 from "node:fs";
 import * as path2 from "node:path";
-import { pathToFileURL } from "node:url";
-import { execSync, execFile } from "node:child_process";
-import { promisify } from "node:util";
+import * as childProcess from "node:child_process";
+import { pathToFileURL, fileURLToPath } from "node:url";
+
+// REPO_ROOT for canary: stable repo root two levels above this module's directory.
+const CANARY_REPO_ROOT = path2.resolve(path2.dirname(fileURLToPath(import.meta.url)), "..");
 
 export interface CanaryResult {
   implementationDiscoverableOnlyWithReadyAndImplement: boolean;
@@ -30,7 +34,7 @@ export interface CanaryResult {
 }
 
 export interface CanaryOps {
-  createIssue: (title: string, body: string, labels: string[]) => Promise<number>;
+  createIssue: (title: string, body: string, labels: string[]) => Promise<{ id: number; committed: boolean; reason?: string }>;
   fetchIssue: (id: number) => Promise<IssueInput>;
   closeIssue: (id: number) => Promise<void>;
   claimImplementation: (issue: IssueInput) => Promise<{ success: boolean; reason?: string }>;
@@ -38,56 +42,93 @@ export interface CanaryOps {
   cleanupIssue?: (id: number) => Promise<void>;
   removeAssignee?: (id: number) => Promise<void>;
   removeLabel?: (id: number, label: string) => Promise<void>;
+  /**
+   * Resolve a fixture by EXACT title to its numeric id(s). Used by finally
+   * cleanup when a handle has no id (POST uncertain + recovery failed). Return
+   * the matching ids; throw on unreadable lookup (explicit cleanup
+   * uncertainty). Zero or multiple matches are cleanup uncertainty.
+   */
+  findIssueByTitle?: (title: string) => Promise<number[]>;
+}
+
+/**
+ * Durable typed-transition-receipt sink for live canary runs — atomic writes
+ * via withAtomicJsonReceipt under .sandcastle/logs/canary-transitions/.
+ * Persistence failures THROW so the saga converts an unpersistable required
+ * receipt into indeterminate FACTORY_ERROR.
+ */
+function makeFileReceiptSink(repoRoot: string): ReceiptSink {
+  const dir = path2.join(repoRoot, ".sandcastle", "logs", "canary-transitions");
+  // Per-run sequence — collision-resistant receipt filenames.
+  let seq = 0;
+  return {
+    persist(receipt: unknown): void {
+      const name = `${Date.now()}-${String(seq++).padStart(4, "0")}-${(receipt as { transition?: string }).transition ?? "transition"}-${(receipt as { issueNumber?: number }).issueNumber ?? "x"}.json`;
+      withAtomicJsonReceipt(path2.join(dir, name), () => receipt);
+      JSON.parse(fs2.readFileSync(path2.join(dir, name), "utf8"));
+    },
+  };
 }
 
 function uniqueTitle(prefix: string): string {
   return `${prefix} — canary ${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function ghBinary(): string {
-  const home = process.env.HOME || "";
-  const candidates = ["/usr/bin/gh", home ? `${home}/.local/bin/gh` : "", "/home/jeff/.local/bin/gh"];
-  for (const p of candidates) if (p && fs2.existsSync(p)) return p;
-  return "gh";
-}
-function ghToken(): string {
-  if (process.env.GH_TOKEN) return process.env.GH_TOKEN;
-  try { const c=fs2.readFileSync(".sandcastle/.env","utf8"); const m=c.match(/^GH_TOKEN=(.*)$/m); if(m) return m[1].trim(); } catch {}
-  return "";
-}
-async function runGh(args: string[]): Promise<string> {
-  const execFileAsync = promisify(execFile);
-  const bin = ghBinary();
-  const token = ghToken();
-  const env = { ...process.env, GH_TOKEN: token };
-  const { stdout } = await execFileAsync(bin, args, { env, cwd: process.cwd(), maxBuffer: 10*1024*1024 }) as any;
-  return (stdout as string).trim();
-}
-function parseOwnerRepo(): { owner: string; repo: string } | null {
-  try { const out = execSync("git remote get-url origin", { encoding: "utf8" }).trim(); const m = out.match(/github\.com[:\/]([^\/]+)\/([^\/\.]+)/); if (m) return { owner: m[1], repo: m[2] }; } catch {}
+/**
+ * Resolve a fixture handle to its numeric id for cleanup/verification. Uses
+ * handle.id when present; otherwise RETRIES exact-title resolution via
+ * ops.findIssueByTitle. When exactly one match is found, the id is ASSIGNED
+ * back to handle.id so a later verification step can use it directly instead
+ * of repeating an open-only title search (which would miss a just-closed
+ * fixture). Returns null when the id is unknown (zero or multiple title
+ * matches) — explicit cleanup uncertainty. Throws when the title lookup itself
+ * is unreadable (also explicit cleanup uncertainty).
+ */
+async function resolveFixtureId(handle: { title: string; id?: number }, ops: CanaryOps): Promise<number | null> {
+  if (handle.id !== undefined) return handle.id;
+  if (!ops.findIssueByTitle) throw new Error(`cannot resolve fixture "${handle.title}" to an id: no findIssueByTitle op`);
+  const matches = await ops.findIssueByTitle(handle.title);
+  if (matches.length === 1) {
+    // Preserve the title-resolved id on the handle so verification reads by
+    // ID (not by an open-only title search after the fixture is closed).
+    handle.id = matches[0];
+    return matches[0];
+  }
   return null;
 }
-export async function resolveClaimantLogin(runGhFn: (args: string[]) => Promise<string> = runGh): Promise<string> {
-  const candidates = [
-    ["api", "user", "--jq", ".login"],
-    ["api", "/user", "--jq", ".login"],
-  ];
-  for (const args of candidates) {
-    try {
-      const out = await runGhFn(args);
-      const login = out.trim().replace(/"/g, "");
-      if (login && login !== "null" && !login.includes(" ")) return login;
-    } catch {}
-  }
-  throw new Error("failed to resolve claimant login via gh api user");
+
+// Single transport — no local ghBinary/ghToken/runGh/parseOwnerRepo duplicates.
+const canaryTransport: GhTransport = createGhTransport({
+  repoRoot: CANARY_REPO_ROOT,
+  capabilityMode: "read-write", // canary --live is the only mode that reaches here
+});
+
+/**
+ * Wrap an injected gh runner as a transport so adapter construction works for
+ * both live runs (real transport) and tests (mock runner) through one path.
+ */
+function transportFromRunner(runGhFn: (args: string[]) => Promise<string>, claimantLogin: string): GhTransport {
+  return {
+    capabilityMode: "read-write",
+    isWriteForbidden: () => false,
+    run: runGhFn,
+    tryRun: async (args) => { try { await runGhFn(args); return true; } catch { return false; } },
+    resolveClaimantLogin: async () => claimantLogin,
+    resolveOwnerRepo: () => canaryTransport.resolveOwnerRepo(),
+  };
 }
-async function fetchIssueReal(id: number, runGhFn: (args:string[])=>Promise<string> = runGh): Promise<IssueInput> {
+
+export async function resolveClaimantLogin(runGhFn: (args: string[]) => Promise<string> = (args) => canaryTransport.run(args)): Promise<string> {
+  // Transport-owned claimant resolution — no local candidate loop.
+  return canaryTransport.resolveClaimantLogin();
+}
+async function fetchIssueReal(id: number, runGhFn: (args:string[])=>Promise<string> = (args)=>canaryTransport.run(args)): Promise<IssueInput> {
   const rawJson = await runGhFn(["issue", "view", String(id), "--json", "number,title,body,labels,assignees,state"]);
   const raw = JSON.parse(rawJson);
-  const ownerRepo = parseOwnerRepo();
+  const ownerRepo = canaryTransport.resolveOwnerRepo();
   let blockedByCount: number | undefined = undefined;
   if (ownerRepo) {
-    try { const summary = await runGhFn(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/issues/${id}`, "--jq", ".issue_dependencies_summary.blocked_by"]); const n=parseInt(summary.trim(),10); if(!isNaN(n)) blockedByCount=n; } catch {}
+    try { const summary = await runGhFn(["api", `repos/${ownerRepo.owner}/${ownerRepo.repo}/issues/${id}`, "--jq", ".issue_dependencies_summary.blocked_by"]); const n=parseInt(summary.trim(),10); blockedByCount = isNaN(n) ? undefined : n; } catch { blockedByCount = undefined; }
   }
   return {
     number: raw.number,
@@ -106,59 +147,89 @@ export function createLiveCanaryOps(opts: {
   runGh: (args: string[]) => Promise<string>;
   claimantLogin: string;
   fetchIssueRealFn?: (id:number)=>Promise<IssueInput>;
+  /**
+   * Real or injected local Git runner — reconciliation's branch/worktree
+   * inspections must be executable, never an always-failing stub.
+   */
+  runGit?: (args: string[]) => { exitCode: number; stdout: string; stderr: string };
+  /** Stable repository root for the local git runner. Defaults to CANARY_REPO_ROOT. */
+  repoRoot?: string;
+  /** Receipt sink override for tests. Production defaults to a durable atomic file sink. */
+  receiptSink?: ReceiptSink;
 }): CanaryOps {
-  const { owner, repo, runGh: runGhFn, claimantLogin } = opts;
+  const { runGh: runGhFn, claimantLogin } = opts;
   const fetchReal = opts.fetchIssueRealFn ?? ((id:number)=>fetchIssueReal(id, runGhFn));
+  const canaryRepoRoot = opts.repoRoot ?? CANARY_REPO_ROOT;
+  // Real git runner by default — the fresh fixture's local branch absence is
+  // PROVED by inspection, not represented by a failing stub.
+  const runGit = opts.runGit ?? ((args: string[]) => {
+    try {
+      const out = childProcess.execFileSync("git", args, { encoding: "utf8", cwd: canaryRepoRoot } as any);
+      const stdout = typeof out === "string" ? out : Buffer.from(out).toString();
+      return { exitCode: 0, stdout, stderr: "" };
+    } catch (e: any) {
+      return { exitCode: typeof e?.status === "number" ? e.status : 1, stdout: e?.stdout?.toString() ?? "", stderr: e?.stderr?.toString() ?? String(e?.message ?? e) };
+    }
+  });
+  // ONE adapter per ops instance — every tracker mutation (claims,
+  // reconciliation transitions, fixture cleanup) flows through it with typed
+  // receipts persisted to the shared sink. PRODUCTION uses a durable atomic
+  // file sink (typed transition receipts survive the process); tests may
+  // inject an in-memory sink.
+  const receiptSink: ReceiptSink = opts.receiptSink ?? makeFileReceiptSink(canaryRepoRoot);
+  const canaryTransport = transportFromRunner(runGhFn, claimantLogin);
+  const adapter = createTrackerAdapter({
+    gh: canaryTransport,
+    receiptSink,
+    runGit,
+    repoRoot: canaryRepoRoot,
+  });
   return {
     createIssue: async (title, body, labels) => {
-      const args: string[] = ["api", "--method", "POST", `repos/${owner}/${repo}/issues`, "-f", `title=${title}`, "-f", `body=${body}`];
-      for (const l of labels) args.push("-f", `labels[]=${l}`);
-      args.push("--jq", ".number");
-      const out = await runGhFn(args);
-      const n = parseInt(out.trim(), 10);
-      if (isNaN(n)) throw new Error("failed to create issue via gh api POST: "+out+" args="+args.join(" "));
-      return n;
+      // Adapter-owned canary fixture creation — never a raw gh POST. The
+      // adapter freshly proves the created state and returns a handle (title
+      // always present, id enriched when known) even when creation is
+      // indeterminate (receipt persistence failure), so the fixture is still
+      // registered for cleanup. The typed outcome is mapped to the canary's
+      // committed/reason contract. When the adapter returns, the id is always
+      // known (POST uncertainty + failed recovery throws instead).
+      const { handle, outcome } = await adapter.createCanaryFixture(title, body, labels);
+      return { id: handle.id ?? 0, committed: outcome.status === "committed", reason: outcome.reason };
+    },
+    findIssueByTitle: async (title) => {
+      // Exact-title resolution for finally cleanup of a title-only handle.
+      // Unreadable lookup throws (explicit cleanup uncertainty); the caller
+      // treats zero/multiple matches as uncertainty too.
+      const ownerRepo = canaryTransport.resolveOwnerRepo();
+      if (!ownerRepo) return [];
+      const rawJson = await runGhFn(["issue", "list", "--state", "open", "--search", `"${title}" in:title`, "--limit", "10", "--json", "number,title"]);
+      const matches: any[] = JSON.parse(rawJson).filter((r: any) => r.title === title);
+      return matches.map((m: any) => Number(m.number));
     },
     fetchIssue: fetchReal,
-    closeIssue: async (id) => { await runGhFn(["issue", "close", String(id), "--comment", "Canary fixture — cleaning up"]); },
+    closeIssue: async (id) => {
+      // Adapter-owned canary fixture cleanup — saga-verified close with typed
+      // receipt. Never a raw gh close.
+      await adapter.cleanupCanaryFixture(id);
+    },
     cleanupIssue: async (id) => {
-      // Remove claimant assignee and transient labels
-      try { await runGhFn(["issue", "edit", String(id), "--remove-assignee", claimantLogin]); } catch {}
-      for (const label of [AGENT_IN_PROGRESS, AGENT_IMPLEMENT, AGENT_BLOCKED]) {
-        try { await runGhFn(["issue", "edit", String(id), "--remove-label", label]); } catch {}
-      }
+      // Adapter-owned canary fixture cleanup — saga-verified label removal,
+      // claimant assignee removal, and close. Never raw gh commands, never
+      // swallowed errors.
+      await adapter.cleanupCanaryFixture(id);
     },
     claimImplementation: async (issue) => {
-      const id = String(issue.number);
-      const claimOps: ClaimOps & { claimantLogin: string } = {
-        claimantLogin,
-        fetchIssue: async (fid) => fetchReal(parseInt(fid,10)),
-        applyClaim: async (fid) => { await runGhFn(["issue", "edit", fid, "--add-assignee", claimantLogin, "--add-label", AGENT_IN_PROGRESS, "--remove-label", AGENT_IMPLEMENT]); },
-        verifyClaim: async (fid) => fetchReal(parseInt(fid,10)),
-        compensateClaim: async (fid) => { try { await runGhFn(["issue", "edit", fid, "--remove-label", AGENT_IN_PROGRESS, "--remove-assignee", claimantLogin]); return true; } catch { return false; } },
-      };
-      const { claimImplementation: prodClaim } = await import("./tracker-operations.mts");
-      const res = await prodClaim(id, issue, claimOps);
-      return { success: res.success, reason: (res as any).reason };
+      // Route through the ONE production tracker adapter — the canary must
+      // exercise the exact production claim implementation, not a parallel one.
+      const result = await adapter.claimImplementation(issue);
+      return { success: result.kind === "committed", reason: result.receipt.reason ?? result.receipt.code };
     },
     reconcile: async (issue) => {
       const id = String(issue.number);
       const branch = "sandcastle/issue-"+id;
-      const { reconcileStaleImplementation } = await import("./tracker-operations.mts");
-      const ops2: any = {
-        releaseClaim: async (rid: string) => { try { await runGhFn(["issue", "edit", rid, "--remove-label", AGENT_IN_PROGRESS, "--remove-assignee", claimantLogin]); return true; } catch { return false; } },
-        comment: async (cid: string, body: string) => { try { await runGhFn(["issue", "comment", cid, "--body", body]); return true; } catch { return false; } },
-        fetchIssue: async (fid: string) => fetchReal(parseInt(fid,10)),
-        getBatchPrNumber: async () => ({ prNumber: null, state: "absent" as const }),
-        getPrState: async () => ({ state: "CLOSED", mergedAt: null, found: false }),
-        checkBranchExists: async () => "absent" as const,
-        checkProvenanceValid: async () => ({ valid: true }),
-        hasCommitsAhead: async () => "empty" as const,
-        deleteBranch: async () => true,
-        addBlocked: async (iid:string) => { try { await runGhFn(["issue", "edit", iid, "--add-label", AGENT_BLOCKED]); return true; } catch { return false; } },
-        markIntegrated: async () => true,
-      };
-      const res = await reconcileStaleImplementation(issue, branch, ops2);
+      // Same adapter authority used by main — no parallel reconciliation implementation.
+      // The adapter's internal git inspections use the REAL (or injected) runner.
+      const res = await adapter.reconcileStaleImplementation(issue, branch);
       // For canary, consider reconciled if postcondition holds regardless of blocked
       return res.reconciled || res.reason.includes("no branch");
     },
@@ -177,99 +248,129 @@ export async function runCanary(ops: CanaryOps, opts: { live: boolean }): Promis
     cleanupFailures: [],
     fixtureIds: [],
   };
-  const fixtures: number[] = [];
-  let primaryError: Error | null = null;
-  try {
-    const implTitle = uniqueTitle("Canary impl");
-    const implBody = "Scope bounded observable outcome\nno unresolved design decided\nacceptance criteria done when\nverification path verify\ndependencies blocked by none\nsmall enough for one session\nvertical tracer bullet slice";
-    const implOnlyReady = await ops.createIssue(implTitle + " ready-only", implBody, [READY_FOR_AGENT]);
-    fixtures.push(implOnlyReady); result.fixtureIds.push(implOnlyReady);
-    let issueReadyOnly = await ops.fetchIssue(implOnlyReady);
-    const eligibleReadyOnly = isImplementationEligible(issueReadyOnly);
-    if (eligibleReadyOnly.eligible) throw new Error("ready-only should not be implementation eligible");
-    const implReadyImplement = await ops.createIssue(implTitle + " ready+implement", implBody, [READY_FOR_AGENT, AGENT_IMPLEMENT]);
-    fixtures.push(implReadyImplement); result.fixtureIds.push(implReadyImplement);
-    let issueReadyImplement = await ops.fetchIssue(implReadyImplement);
-    const eligibleReadyImplement = isImplementationEligible(issueReadyImplement);
-    if (!eligibleReadyImplement.eligible) throw new Error("ready+implement should be eligible");
-    result.implementationDiscoverableOnlyWithReadyAndImplement = true;
-    const claimResult = await ops.claimImplementation(issueReadyImplement);
-    if (!claimResult.success) throw new Error("claim should succeed");
-    let afterClaim = await ops.fetchIssue(implReadyImplement);
-    const hasReady = afterClaim.labels.includes(READY_FOR_AGENT);
-    const hasImplement = afterClaim.labels.includes(AGENT_IMPLEMENT);
-    const hasInProgress = afterClaim.labels.includes(AGENT_IN_PROGRESS);
-    const hasAssignee = afterClaim.assignees.length > 0;
-    if (!hasReady || hasImplement || !hasInProgress || !hasAssignee) throw new Error("claim postcondition failed");
-    result.successfulClaimConsumesImplement = true;
-    const reconciled = await ops.reconcile(afterClaim);
-    if (!reconciled) throw new Error("reconciliation should succeed");
-    let afterReconcile = await ops.fetchIssue(implReadyImplement);
-    if (afterReconcile.labels.includes(AGENT_IN_PROGRESS) || afterReconcile.assignees.length > 0 || afterReconcile.labels.includes(AGENT_IMPLEMENT)) throw new Error("reconcile should release");
-    if (!afterReconcile.labels.includes(READY_FOR_AGENT)) throw new Error("ready-for-agent should remain after reconcile");
-    result.staleReconciliationReleasesWithoutRestoring = true;
-    const researchTitle = uniqueTitle("Canary research");
-    const researchBody = "## Question\n\nCanary research question with substantive details for validation, part of #190 with evidence needed and mechanism to be investigated.";
-    const researchId = await ops.createIssue(researchTitle, researchBody, [WAYFINDER_RESEARCH]);
-    fixtures.push(researchId); result.fixtureIds.push(researchId);
-    let researchIssue = await ops.fetchIssue(researchId);
-    const researchEligible = isResearchEligible(researchIssue);
-    if (!researchEligible.eligible) throw new Error("research should be eligible from wayfinder alone");
-    result.researchDiscoverableFromWayfinderAlone = true;
-    const contraTitle = uniqueTitle("Canary contra");
-    const contraId = await ops.createIssue(contraTitle, implBody, [WAYFINDER_RESEARCH, AGENT_IMPLEMENT, READY_FOR_AGENT]);
-    fixtures.push(contraId); result.fixtureIds.push(contraId);
-    let contraIssue = await ops.fetchIssue(contraId);
-    const contraValidation = detectContradictions(contraIssue);
-    if (contraValidation.contradictions.length === 0) throw new Error("contradictory should have contradictions");
-    const implEligibleContra = isImplementationEligible(contraIssue);
-    const researchEligibleContra = isResearchEligible(contraIssue);
-    if (implEligibleContra.eligible || researchEligibleContra.eligible) throw new Error("contradictory should not be eligible");
-    const contraClaim = await ops.claimImplementation(contraIssue);
-    if (contraClaim.success) throw new Error("contradictory claim should fail");
-    result.contradictionsFailBeforeWorker = true;
-  } catch (e) {
-    primaryError = e instanceof Error ? e : new Error(String(e));
-  } finally {
-    for (const id of fixtures) {
-      let perFixtureCleaned = true;
-      let perError: string | null = null;
-      try {
-        // Real cleanup operation: remove assignee and transient labels, then close
+
+  // Fixture lifecycle owned by the narrow resource scope: record-at-acquisition
+  // (partial acquisition cannot leak), finally-cleanup, required fresh-read
+  // verification, fail closed on uncertainty. Each handle is recorded BEFORE
+  // the POST (title is the recovery key), then enriched with the id when known.
+  const fixturesResult = await withTemporaryIssueFixtures(
+    async ({ record }) => {
+      const implTitle = uniqueTitle("Canary impl");
+      const implBody = "Scope bounded observable outcome\nno unresolved design decided\nacceptance criteria done when\nverification path verify\ndependencies blocked by none\nsmall enough for one session\nvertical tracer bullet slice";
+      // Record the handle BEFORE the POST so a lost/uncertain POST still
+      // leaves a structured title handle for finally cleanup.
+      const implOnlyReadyHandle: FixtureHandle = { title: implTitle + " ready-only" };
+      record(implOnlyReadyHandle);
+      const implOnlyReady = await ops.createIssue(implOnlyReadyHandle.title, implBody, [READY_FOR_AGENT]);
+      // Enrich the handle with the id when known, and record the id for the
+      // canary result. Then throw when committed is false — the canary must
+      // fail closed on an uncommitted fixture.
+      implOnlyReadyHandle.id = implOnlyReady.id; result.fixtureIds.push(implOnlyReady.id);
+      if (!implOnlyReady.committed) throw new Error(`canary fixture #${implOnlyReady.id} not committed: ${implOnlyReady.reason ?? "unknown"}`);
+      let issueReadyOnly = await ops.fetchIssue(implOnlyReady.id);
+      const eligibleReadyOnly = isImplementationEligible(issueReadyOnly);
+      if (eligibleReadyOnly.eligible) throw new Error("ready-only should not be implementation eligible");
+      const implReadyImplementHandle: FixtureHandle = { title: implTitle + " ready+implement" };
+      record(implReadyImplementHandle);
+      const implReadyImplement = await ops.createIssue(implReadyImplementHandle.title, implBody, [READY_FOR_AGENT, AGENT_IMPLEMENT]);
+      implReadyImplementHandle.id = implReadyImplement.id; result.fixtureIds.push(implReadyImplement.id);
+      if (!implReadyImplement.committed) throw new Error(`canary fixture #${implReadyImplement.id} not committed: ${implReadyImplement.reason ?? "unknown"}`);
+      let issueReadyImplement = await ops.fetchIssue(implReadyImplement.id);
+      const eligibleReadyImplement = isImplementationEligible(issueReadyImplement);
+      if (!eligibleReadyImplement.eligible) throw new Error("ready+implement should be eligible");
+      result.implementationDiscoverableOnlyWithReadyAndImplement = true;
+      const claimResult = await ops.claimImplementation(issueReadyImplement);
+      if (!claimResult.success) throw new Error(`claim should succeed: ${claimResult.reason ?? "unknown"}`);
+      let afterClaim = await ops.fetchIssue(implReadyImplement.id);
+      const hasReady = afterClaim.labels.includes(READY_FOR_AGENT);
+      const hasImplement = afterClaim.labels.includes(AGENT_IMPLEMENT);
+      const hasInProgress = afterClaim.labels.includes(AGENT_IN_PROGRESS);
+      const hasAssignee = afterClaim.assignees.length > 0;
+      if (!hasReady || hasImplement || !hasInProgress || !hasAssignee) throw new Error("claim postcondition failed");
+      result.successfulClaimConsumesImplement = true;
+      const reconciled = await ops.reconcile(afterClaim);
+      if (!reconciled) throw new Error("reconciliation should succeed");
+      let afterReconcile = await ops.fetchIssue(implReadyImplement.id);
+      if (afterReconcile.labels.includes(AGENT_IN_PROGRESS) || afterReconcile.assignees.length > 0 || afterReconcile.labels.includes(AGENT_IMPLEMENT)) throw new Error("reconcile should release");
+      if (!afterReconcile.labels.includes(READY_FOR_AGENT)) throw new Error("ready-for-agent should remain after reconcile");
+      result.staleReconciliationReleasesWithoutRestoring = true;
+      const researchTitle = uniqueTitle("Canary research");
+      const researchBody = "## Question\n\nCanary research question with substantive details for validation, part of #190 with evidence needed and mechanism to be investigated.";
+      const researchHandle: FixtureHandle = { title: researchTitle };
+      record(researchHandle);
+      const researchId = await ops.createIssue(researchHandle.title, researchBody, [WAYFINDER_RESEARCH]);
+      researchHandle.id = researchId.id; result.fixtureIds.push(researchId.id);
+      if (!researchId.committed) throw new Error(`canary fixture #${researchId.id} not committed: ${researchId.reason ?? "unknown"}`);
+      let researchIssue = await ops.fetchIssue(researchId.id);
+      const researchEligible = isResearchEligible(researchIssue);
+      if (!researchEligible.eligible) throw new Error("research should be eligible from wayfinder alone");
+      result.researchDiscoverableFromWayfinderAlone = true;
+      const contraTitle = uniqueTitle("Canary contra");
+      const contraHandle: FixtureHandle = { title: contraTitle };
+      record(contraHandle);
+      const contraId = await ops.createIssue(contraHandle.title, implBody, [WAYFINDER_RESEARCH, AGENT_IMPLEMENT, READY_FOR_AGENT]);
+      contraHandle.id = contraId.id; result.fixtureIds.push(contraId.id);
+      if (!contraId.committed) throw new Error(`canary fixture #${contraId.id} not committed: ${contraId.reason ?? "unknown"}`);
+      let contraIssue = await ops.fetchIssue(contraId.id);
+      const contraValidation = detectContradictions(contraIssue);
+      if (contraValidation.contradictions.length === 0) throw new Error("contradictory should have contradictions");
+      const implEligibleContra = isImplementationEligible(contraIssue);
+      const researchEligibleContra = isResearchEligible(contraIssue);
+      if (implEligibleContra.eligible || researchEligibleContra.eligible) throw new Error("contradictory should not be eligible");
+      const contraClaim = await ops.claimImplementation(contraIssue);
+      if (contraClaim.success) throw new Error("contradictory claim should fail");
+      result.contradictionsFailBeforeWorker = true;
+      return true;
+    },
+    {
+      cleanup: async (handle) => {
+        // Resolve the fixture id: by handle.id when present, else by exact
+        // title (retry resolution). Zero/multiple/unreadable title matches are
+        // explicit cleanup uncertainty — throw (fail closed).
+        const id = await resolveFixtureId(handle, ops);
+        if (id === null) throw new Error(`cannot resolve fixture "${handle.title}" to an id for cleanup`);
+        // ONE adapter-owned cleanup operation, invoked exactly once per
+        // fixture. The adapter's cleanupCanaryFixture removes stale machine
+        // labels, removes the authenticated claimant assignee, and closes the
+        // issue in a single verified saga with one final receipt. Never wire
+        // cleanupIssue AND closeIssue to the same full cleanup operation.
         if (ops.cleanupIssue) {
-          try { await ops.cleanupIssue(id); } catch (e) { perFixtureCleaned = false; perError = `cleanupIssue #${id} failed: ${String(e)}`; }
+          await ops.cleanupIssue(id);
         } else {
-          // Fallback: try to remove via individual ops if available
           if (ops.removeAssignee) { try { await ops.removeAssignee(id); } catch {} }
           if (ops.removeLabel) {
             for (const lbl of [AGENT_IN_PROGRESS, AGENT_IMPLEMENT, AGENT_BLOCKED]) { try { await ops.removeLabel(id, lbl); } catch {} }
           }
+          await ops.closeIssue(id);
         }
-        await ops.closeIssue(id);
-        try {
-          const after = await ops.fetchIssue(id);
-          const isClosed = after.state === "closed";
-          const isUnassigned = after.assignees.length === 0;
-          const hasTransient = after.labels.includes(AGENT_IN_PROGRESS) || after.labels.includes(AGENT_IMPLEMENT) || after.labels.includes(AGENT_BLOCKED);
-          if (!isClosed) { perFixtureCleaned = false; perError = `fixture #${id} not closed after cleanup: state=${after.state}`; }
-          else if (!isUnassigned) { perFixtureCleaned = false; perError = `fixture #${id} still assigned after cleanup: ${after.assignees.join(",")}`; }
-          else if (hasTransient) { perFixtureCleaned = false; perError = `fixture #${id} still has transient/command labels after cleanup: ${after.labels.join(",")}`; }
-        } catch (e) {
-          perFixtureCleaned = false;
-          perError = `fixture #${id} read-back after close failed: ${String(e)}`;
-        }
-      } catch (e) {
-        perFixtureCleaned = false;
-        perError = `close #${id} failed: ${String(e)}`;
-      }
-      if (!perFixtureCleaned) {
-        result.cleanupFailures.push(perError || `fixture #${id} cleanup incomplete`);
-      }
-    }
-    result.fixturesCleaned = result.cleanupFailures.length === 0 && fixtures.length > 0;
-  }
-  if (primaryError) {
-    result.primaryError = primaryError.message;
+      },
+      verify: async (handle) => {
+        const id = await resolveFixtureId(handle, ops);
+        if (id === null) return `fixture "${handle.title}" could not be resolved to an id for verification`;
+        const after = await ops.fetchIssue(id);
+        const isClosed = after.state === "closed";
+        const isUnassigned = after.assignees.length === 0;
+        const hasTransient = after.labels.includes(AGENT_IN_PROGRESS) || after.labels.includes(AGENT_IMPLEMENT) || after.labels.includes(AGENT_BLOCKED);
+        if (!isClosed) return `fixture #${id} not closed after cleanup: state=${after.state}`;
+        if (!isUnassigned) return `fixture #${id} still assigned after cleanup: ${after.assignees.join(",")}`;
+        if (hasTransient) return `fixture #${id} still has transient/command labels after cleanup: ${after.labels.join(",")}`;
+        return null;
+      },
+    },
+  );
+
+  // fixturesCleaned means CLEANUP PROVEN (per-fixture fresh-read verification),
+  // deliberately independent of primaryError — the canary reports primary
+  // failures separately via result.primaryError.
+  result.cleanupFailures.push(...fixturesResult.cleanupFailures);
+  result.fixturesCleaned = fixturesResult.cleanupFailures.length === 0 && fixturesResult.fixtures.length > 0;
+  // Rebuild fixtureIds from the FINAL handles so an id learned during final
+  // cleanup (title-resolved in resolveFixtureId) appears in the canary receipt.
+  result.fixtureIds = fixturesResult.fixtures
+    .map((h) => h.id)
+    .filter((id): id is number => id !== undefined);
+  if (fixturesResult.primaryError) {
+    result.primaryError = fixturesResult.primaryError;
   }
   return result;
 }
@@ -279,27 +380,41 @@ export interface CanaryCliDeps {
   resolveClaimantLoginFn?: () => Promise<string>;
   writeFileSync?: (path: string, data: string) => void;
   mkdirSync?: (path: string, opts?: any) => void;
+  /**
+   * Receipt sink override for the live canary ops. Production defaults to a
+   * durable atomic file sink; tests inject a controlled (e.g. throwing) sink
+   * to prove fixture-creation outcome handling on the production path.
+   */
+  receiptSink?: ReceiptSink;
 }
 
 export async function runCanaryCli(args: string[], deps: CanaryCliDeps = {}): Promise<{ exitCode: number; result?: CanaryResult }> {
   const live = args.includes("--live") || args.includes("--canary");
   if (!live) { console.error("Canary requires explicit --live flag"); return { exitCode: 1 }; }
   console.log("Live tracker canary — requires live GitHub access");
-  const ownerRepo = parseOwnerRepo();
+  const ownerRepo = canaryTransport.resolveOwnerRepo();
   if (!ownerRepo) throw new Error("cannot resolve owner/repo for canary");
-  const runGhFn = deps.runGh ?? runGh;
+  const runGhFn = deps.runGh ?? ((ghArgs: string[]) => canaryTransport.run(ghArgs));
   const claimantLogin = deps.resolveClaimantLoginFn ? await deps.resolveClaimantLoginFn() : await resolveClaimantLogin(runGhFn);
-  const ops = createLiveCanaryOps({ owner: ownerRepo.owner, repo: ownerRepo.repo, runGh: runGhFn, claimantLogin });
+  const ops = createLiveCanaryOps({ owner: ownerRepo.owner, repo: ownerRepo.repo, runGh: runGhFn, claimantLogin, receiptSink: deps.receiptSink });
   let result: CanaryResult | null = null;
   const receiptPath = ".sandcastle/logs/canary-receipt.json";
   try { fs2.mkdirSync(".sandcastle/logs", { recursive: true }); } catch {}
   // Use deps for file writes if provided (for testing)
   const writeFile = deps.writeFileSync ?? fs2.writeFileSync;
   const mkdir = deps.mkdirSync ?? fs2.mkdirSync;
+  // Atomic receipt writer — evidence is temp-file + rename; injected
+  // writeFileSync (tests) still flows through the same atomic path.
+  const writeReceiptAtomic = (targetPath: string, data: unknown): void => {
+    withAtomicJsonReceipt(targetPath, () => data, {
+      writeFileSync: ((p: any, d: any) => writeFile(p, typeof d === "string" ? d : JSON.stringify(d, null, 2))) as any,
+      mkdirSync: mkdir as any,
+    });
+  };
   try { mkdir(".sandcastle/logs", { recursive: true }); } catch {}
   try {
     result = await runCanary(ops, { live: true });
-    writeFile(receiptPath, JSON.stringify(result, null, 2) as any);
+    writeReceiptAtomic(receiptPath, result);
     console.log(JSON.stringify(result, null, 2));
     const allPassed = result.implementationDiscoverableOnlyWithReadyAndImplement && result.successfulClaimConsumesImplement && result.staleReconciliationReleasesWithoutRestoring && result.researchDiscoverableFromWayfinderAlone && result.contradictionsFailBeforeWorker && result.fixturesCleaned;
     if (!allPassed) { console.error("Canary FAILED"); return { exitCode: 1, result }; }
@@ -308,7 +423,7 @@ export async function runCanaryCli(args: string[], deps: CanaryCliDeps = {}): Pr
     return { exitCode: 0, result };
   } catch (e) {
     const receipt = result ?? { error: String(e), fixturesCleaned: false, fixtureIds: [], cleanupFailures: [] } as any;
-    try { writeFile(receiptPath, JSON.stringify(receipt, null, 2) as any); } catch {}
+    try { writeReceiptAtomic(receiptPath, receipt); } catch {}
     console.error("Canary error", e);
     return { exitCode: 1, result: receipt };
   }

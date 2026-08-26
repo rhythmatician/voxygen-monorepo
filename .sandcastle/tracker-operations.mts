@@ -39,9 +39,70 @@ export interface ReconcileOps {
   isBranchPreserved?: (branch: string) => Promise<boolean>;
 }
 
+/**
+ * Typed result of a branch cleanup operation, carrying effect evidence rather
+ * than a bare boolean. `cleaned` is true only when the branch is fully removed
+ * (worktree, local, remote, and provenance all absent). `untouched` is true
+ * when NO mutation occurred because the initial remote state was unknown (fail
+ * closed — zero worktree/local/provenance/tracker mutation). A partial or
+ * indeterminate cleanup is neither `cleaned` nor `untouched` — the caller must
+ * fail closed and preserve provenance and the claim.
+ */
+export interface BranchCleanupResult {
+  /** True when the branch is fully cleaned (worktree, local, remote, provenance all absent). */
+  cleaned: boolean;
+  /** True when NO mutation occurred (initial remote state unknown — fail closed). */
+  untouched: boolean;
+  /** Effect evidence: what was actually removed. */
+  effects: {
+    worktreeRemoved: boolean;
+    localBranchRemoved: boolean;
+    remoteBranchRemoved: boolean;
+    provenanceRemoved: boolean;
+  };
+  /** Reason for partial/indeterminate cleanup or the untouched fail-closed. */
+  reason?: string;
+}
+
+/**
+ * Inspection + cleanup operations for stale-implementation reconciliation.
+ * Contains NO GitHub state-transition authority — release/block/integrate
+ * flow through the TrackerAdapter's verified saga via ReconcileGitHubTransitions.
+ */
+export interface ReconcileInspectionOps {
+  claimantLogin: string;
+  fetchIssue: (id: string) => Promise<IssueInput>;
+  getBatchPrNumber: (issueNumber: string) => Promise<{ prNumber: string | null; state: "found" | "absent" | "unknown"; error?: string }>;
+  getPrState: (prNumber: string) => Promise<{ state: string; mergedAt: string | null; found: boolean; unknown?: boolean }>;
+  checkBranchExists: (branch: string) => Promise<"present" | "absent" | "unknown">;
+  checkProvenanceValid: (branch: string) => Promise<ProvenanceInspection>;
+  hasCommitsAhead: (branch: string) => Promise<"has-work" | "empty" | "unknown">;
+  /**
+   * Proven worktree/local/remote branch deletion incl. orphaned provenance
+   * cleanup. Authoritatively inspects REMOTE state BEFORE any destructive
+   * local cleanup; initial unknown remote state => zero mutation (untouched).
+   * Returns a typed result with effect evidence.
+   */
+  deleteBranch: (branch: string) => Promise<BranchCleanupResult>;
+}
+
 export type ClaimResult =
   | { success: true; issue: IssueInput }
-  | { success: false; reason: string; code: string; compensated: boolean; factoryError?: boolean; issue?: IssueInput };
+  | {
+      success: false;
+      reason: string;
+      code: string;
+      compensated: boolean;
+      factoryError?: boolean;
+      issue?: IssueInput;
+      /**
+       * Explicit phase marker set by the canonical operation itself — the
+       * adapter NEVER infers phase from string codes. Present exactly when
+       * the failure occurred before applyClaim was invoked (eligibility,
+       * contradiction, both-present-before-claim gates).
+       */
+      phase?: "rejected-before-mutation";
+    };
 
 export const CLAIM_CODES = {
   FETCH_FAILED: "FETCH_FAILED",
@@ -71,10 +132,10 @@ export async function claimImplementation(
   }
   const eligibility = isImplementationEligible(fresh);
   if (!eligibility.eligible) {
-    return { success: false, reason: (eligibility as { reason: string }).reason, code: (eligibility as { code?: string }).code ?? CLAIM_CODES.NOT_ELIGIBLE, compensated: true, issue: fresh };
+    return { success: false, reason: (eligibility as { reason: string }).reason, code: (eligibility as { code?: string }).code ?? CLAIM_CODES.NOT_ELIGIBLE, compensated: true, issue: fresh, phase: "rejected-before-mutation" };
   }
   if (fresh.labels.includes(AGENT_IMPLEMENT) && fresh.labels.includes(AGENT_IN_PROGRESS)) {
-    return { success: false, reason: `${AGENT_IMPLEMENT} with ${AGENT_IN_PROGRESS} present before claim — fail closed`, code: CLAIM_CODES.BOTH_PRESENT, compensated: true, issue: fresh };
+    return { success: false, reason: `${AGENT_IMPLEMENT} with ${AGENT_IN_PROGRESS} present before claim — fail closed`, code: CLAIM_CODES.BOTH_PRESENT, compensated: true, issue: fresh, phase: "rejected-before-mutation" };
   }
   try {
     await ops.applyClaim(issueId);
@@ -160,11 +221,11 @@ export async function claimResearch(
   }
   const eligibility = isResearchEligible(fresh);
   if (!eligibility.eligible) {
-    return { success: false, reason: eligibility.reason, code: eligibility.code ?? "ELIGIBILITY_FAILED", compensated: true };
+    return { success: false, reason: eligibility.reason, code: eligibility.code ?? "ELIGIBILITY_FAILED", compensated: true, phase: "rejected-before-mutation" };
   }
   const contradictions = detectContradictions(fresh);
   if (contradictions.contradictions.length > 0) {
-    return { success: false, reason: contradictions.contradictions[0].reason, code: contradictions.contradictions[0].code, compensated: true, issue: fresh };
+    return { success: false, reason: contradictions.contradictions[0].reason, code: contradictions.contradictions[0].code, compensated: true, issue: fresh, phase: "rejected-before-mutation" };
   }
   try {
     await ops.applyClaim(issueId);
@@ -214,6 +275,12 @@ export interface ReconcileResult {
   reason: string;
   factoryError?: boolean;
   decision?: ReconcileDecision;
+  /**
+   * Typed receipts produced by the TrackerAdapter for the GitHub transitions
+   * it executed to carry out this reconciliation (release/block/integrate).
+   * Empty or absent when no GitHub transition was required.
+   */
+  receipts?: unknown[];
 }
 
 export type ReconcileDecision =
@@ -228,16 +295,37 @@ export type ReconcileDecision =
   | { type: "pr_not_found"; prNumber: string; reason: string }
   | { type: "pr_closed_without_merge"; prNumber: string; state: string; reason: string };
 
-export interface FullReconcileOps extends ReconcileOps {
-  getBatchPrNumber: (issueNumber: string) => Promise<{ prNumber: string | null; state: "found" | "absent" | "unknown"; error?: string }>;
-  getPrState: (prNumber: string) => Promise<{ state: string; mergedAt: string | null; found: boolean; unknown?: boolean }>;
-  checkBranchExists: (branch: string) => Promise<"present" | "absent" | "unknown">;
-  checkProvenanceValid: (branch: string) => Promise<ProvenanceInspection>;
-  hasCommitsAhead: (branch: string) => Promise<"has-work" | "empty" | "unknown">;
-  deleteBranch: (branch: string) => Promise<boolean>;
-  addBlocked: (issueId: string) => Promise<boolean>;
-  markIntegrated: (issueId: string, branch: string) => Promise<boolean>;
-  claimantLogin: string;
+/**
+ * The GitHub state-transition port a reconciliation executor MUST use —
+ * implemented ONLY by the TrackerAdapter's verified saga, so every mutation
+ * is validated, proved on fresh reads, and receipted by the single authority.
+ */
+export interface ReconcileGitHubTransitions {
+  /**
+   * Release an owned implementation claim then add agent:blocked — ONE
+   * two-step saga. The release step proves exact ownership; the add-blocked
+   * step re-proves the released intermediate state on its own fresh read.
+   * A drift between the two steps is indeterminate, never a clean rejection.
+   */
+  releaseAndBlockOwnedImplementation(issueNumber: number): Promise<TransitionOutcome>;
+  /**
+   * Release an owned implementation claim WITHOUT adding agent:blocked — used
+   * by the empty-branch cleanup path where the branch was cleaned and the
+   * claim is simply released. Proves exact ownership on its own fresh read.
+   */
+  releaseOwnedImplementationClaim(issueNumber: number): Promise<TransitionOutcome>;
+  /** Strip transient labels, close, verify closed-and-clean. Returns committed result. */
+  integrateAndClose(issueNumber: number, branch: string): Promise<TransitionOutcome>;
+  comment(issueNumber: number, body: string): Promise<boolean>;
+}
+
+/** Minimal shape of a TrackerTransitionResult consumed here (avoids import cycle). */
+export interface TransitionOutcome {
+  kind: "committed" | "rejected" | "compensated" | "indeterminate";
+  factoryError?: true;
+  reason?: string;
+  code?: string;
+  receipt?: unknown;
 }
 
 export function decideReconciliation(
@@ -279,12 +367,113 @@ export function decideReconciliation(
   return { type: "absent_with_work", reason: `branch ${branch} has work but no PR — preserving and blocking` };
 }
 
+/**
+ * Full reconciliation operations: tri-state inspections/cleanup plus the
+ * GitHub state-transition port implemented by the TrackerAdapter saga.
+ */
+export interface FullReconcileOps extends ReconcileInspectionOps {
+  github: ReconcileGitHubTransitions;
+}
+
+/**
+ * Outcome of an adapter-saga transition used inside reconciliation. The
+ * transition succeeded only when the verified saga PROVED its postcondition
+ * and persisted its typed receipt; anything else stops the reconciliation.
+ */
+function collectTransitionReceipts(
+  outcome: TransitionOutcome,
+  receipts: unknown[],
+): void {
+  if (outcome.receipt) receipts.push(outcome.receipt);
+}
+
+function transitionFailureReason(outcome: TransitionOutcome, what: string, issueNumber: number | string): string {
+  const detail = outcome.reason ?? outcome.code ?? "unknown";
+  if (outcome.kind === "rejected") {
+    return `${what} rejected for #${issueNumber}: ${detail}`;
+  }
+  return `FACTORY_ERROR ${what} for #${issueNumber}: ${detail}`;
+}
+
+/**
+ * State-dependent recovery comments are published ONLY after the state
+ * transition has committed and its receipt persisted. A comment failure
+ * after a committed transition is separate recovery evidence — it never
+ * rolls back or hides the committed, receipted transition.
+ */
+async function recoveryComment(
+  gh: ReconcileGitHubTransitions,
+  issueNumber: number,
+  body: string,
+): Promise<string | null> {
+  try {
+    const ok = await gh.comment(issueNumber, body);
+    return ok ? null : "comment command reported failure";
+  } catch (e) {
+    return e instanceof Error ? e.message : String(e);
+  }
+}
+
 export async function executeReconciliation(
   decision: ReconcileDecision,
   issue: IssueInput,
   branch: string,
   ops: FullReconcileOps,
 ): Promise<ReconcileResult> {
+  const gh = ops.github;
+  const receipts: unknown[] = [];
+
+  /**
+   * Exact-ownership pre-release validation on a FRESH read: a stale
+   * Sandcastle claim must STILL belong to the authenticated claimant at
+   * release time — merely being assigned to someone is not ownership.
+   * Any drift (claimant removed, readiness gone, implement reintroduced)
+   * receives ZERO mutation and never blocks on another actor's claim.
+   */
+  async function validateStillOwned(what: string): Promise<ReconcileResult | null> {
+    let fresh: IssueInput;
+    try {
+      fresh = await ops.fetchIssue(String(issue.number));
+    } catch (e) {
+      return { reconciled: false, reason: `${what}: fresh ownership read failed for #${issue.number}: ${e}`, factoryError: true, decision, receipts };
+    }
+    const problems: string[] = [];
+    // The claimant is the SINGLE concurrency owner — any additional assignee
+    // is concurrent drift and the claim is not owned. This is the SAME
+    // sole-claimant rule the adapter's release/block/finalize sagas enforce.
+    if (fresh.assignees.length !== 1) problems.push(`expected exactly 1 assignee (sole claimant ${ops.claimantLogin}), found ${fresh.assignees.length}`);
+    else if (fresh.assignees[0] !== ops.claimantLogin) problems.push(`sole assignee is ${fresh.assignees[0]}, not claimant ${ops.claimantLogin}`);
+    if (!fresh.labels.includes(AGENT_IN_PROGRESS)) problems.push(`${AGENT_IN_PROGRESS} absent`);
+    if (!fresh.labels.includes(READY_FOR_AGENT)) problems.push(`${READY_FOR_AGENT} absent`);
+    if (fresh.labels.includes(AGENT_IMPLEMENT)) problems.push(`${AGENT_IMPLEMENT} present`);
+    if (problems.length > 0) {
+      return { reconciled: false, reason: `${what}: claim ownership drifted for #${issue.number} before release — zero mutation (${problems.join("; ")})`, decision, receipts };
+    }
+    return null;
+  }
+
+  /**
+   * Release (on proven ownership) then add agent:blocked — ONE two-step saga
+   * through the adapter's releaseAndBlockOwnedImplementation port. The port's
+   * own validateBefore freshly proves exact ownership before the release
+   * mutation; the add-blocked step re-proves the released intermediate state.
+   */
+  async function releaseThenBlock(what: string): Promise<ReconcileResult | null> {
+    const owned = await validateStillOwned(what);
+    if (owned) return owned;
+    let outcome: TransitionOutcome;
+    try {
+      outcome = await gh.releaseAndBlockOwnedImplementation(issue.number);
+    } catch (e) {
+      return { reconciled: false, reason: `${what}: failed to release+block claim for #${issue.number}: ${e}`, factoryError: true, decision, receipts };
+    }
+    collectTransitionReceipts(outcome, receipts);
+    if (outcome.kind !== "committed") {
+      return { reconciled: false, reason: transitionFailureReason(outcome, `${what} release+block`, issue.number), factoryError: true, decision, receipts };
+    }
+    return null;
+  }
+
   switch (decision.type) {
     case "not_stale":
       return { reconciled: false, reason: decision.reason, decision };
@@ -293,194 +482,137 @@ export async function executeReconciliation(
     case "unknown":
       return { reconciled: false, reason: decision.reason, decision };
     case "merged_pr": {
+      let outcome: TransitionOutcome;
       try {
-        const ok = await ops.markIntegrated(String(issue.number), branch);
-        if (!ok) return { reconciled: false, reason: `markIntegrated failed for #${issue.number}`, factoryError: true, decision };
-        // Verify final issue state after integration
-        if (ops.fetchIssue) {
-          try {
-            const after = await ops.fetchIssue(String(issue.number));
-            const hasInProgress = after.labels.includes(AGENT_IN_PROGRESS);
-            const hasBlocked = after.labels.includes(AGENT_BLOCKED);
-            const isClosed = after.state === "closed";
-            if (hasInProgress || hasBlocked) {
-              return { reconciled: false, reason: `failed to verify integrated state for #${issue.number} — still has transient labels`, factoryError: true, decision };
-            }
-            // Expect closed or at least not open with claim
-            if (after.labels.includes(AGENT_IMPLEMENT)) {
-              return { reconciled: false, reason: `failed to verify integrated state for #${issue.number} — still has implement`, factoryError: true, decision };
-            }
-          } catch (e) { return { reconciled: false, reason: `failed to fetch after markIntegrated for #${issue.number}: ${e}`, factoryError: true, decision }; }
-        }
-      } catch (e) { return { reconciled: false, reason: `merged_pr handling failed for #${issue.number}: ${e}`, factoryError: true, decision }; }
-      return { reconciled: true, reason: decision.reason, decision };
+        outcome = await gh.integrateAndClose(issue.number, branch);
+      } catch (e) { return { reconciled: false, reason: `merged_pr handling failed for #${issue.number}: ${e}`, factoryError: true, decision, receipts }; }
+      collectTransitionReceipts(outcome, receipts);
+      if (outcome.kind !== "committed") {
+        return { reconciled: false, reason: transitionFailureReason(outcome, "integrate-and-close", issue.number), factoryError: true, decision, receipts };
+      }
+      return { reconciled: true, reason: decision.reason, decision, receipts };
     }
     case "pr_not_found":
     case "pr_closed_without_merge": {
-      try {
-        const ok = await ops.comment(String(issue.number), `Sandcastle reconciliation: batch PR #${decision.prNumber} for \`${branch}\` ${decision.type === "pr_not_found" ? "not found" : `state ${(decision as any).state}`} — preserving. To retry, remove \`agent:blocked\` and re-add \`agent:implement\`.`);
-        if (!ok) return { reconciled: false, reason: `failed to comment for #${issue.number}`, factoryError: true, decision };
-      } catch (e) { return { reconciled: false, reason: `failed to comment for #${issue.number}: ${e}`, factoryError: true, decision }; }
-      let released = false;
-      try { released = await ops.releaseClaim(String(issue.number)); } catch (e) { return { reconciled: false, reason: `failed to release claim for #${issue.number}: ${e}`, factoryError: true, decision }; }
-      if (!released) return { reconciled: false, reason: `failed to release claim for #${issue.number}`, factoryError: true, decision };
-      // Verify claim release with fresh read — failure is FACTORY_ERROR
-      try {
-        const afterRelease = await ops.fetchIssue(String(issue.number));
-        if (afterRelease.labels.includes(AGENT_IN_PROGRESS) || afterRelease.assignees.includes(ops.claimantLogin)) {
-          return { reconciled: false, reason: `failed to verify claim release for #${issue.number} — still has in-progress or assignee`, factoryError: true, decision };
-        }
-      } catch (e) { return { reconciled: false, reason: `failed to verify claim release for #${issue.number}: ${e}`, factoryError: true, decision }; }
-      let blocked = false;
-      try { blocked = await ops.addBlocked(String(issue.number)); } catch (e) { return { reconciled: false, reason: `failed to add blocked for #${issue.number}: ${e}`, factoryError: true, decision }; }
-      if (!blocked) return { reconciled: false, reason: `failed to add blocked for #${issue.number}`, factoryError: true, decision };
-      // Verify blocked present with fresh read — failure is FACTORY_ERROR
-      try {
-        const afterBlocked = await ops.fetchIssue(String(issue.number));
-        if (!afterBlocked.labels.includes(AGENT_BLOCKED)) {
-          return { reconciled: false, reason: `failed to verify blocked label for #${issue.number}`, factoryError: true, decision };
-        }
-      } catch (e) { return { reconciled: false, reason: `failed to verify blocked label for #${issue.number}: ${e}`, factoryError: true, decision }; }
-      return { reconciled: false, reason: decision.reason, decision };
+      // State first: release the stale claim, then add agent:blocked on the
+      // proven released state. The recovery comment is published ONLY after
+      // both transitions have committed — never instructions to remove
+      // agent:blocked that does not yet exist.
+      const prFailed = await releaseThenBlock(decision.type);
+      if (prFailed) return prFailed;
+      const commentError = await recoveryComment(gh, issue.number, `Sandcastle reconciliation: batch PR #${decision.prNumber} for \`${branch}\` ${decision.type === "pr_not_found" ? "not found" : `state ${(decision as any).state}`} — preserving. To retry, remove \`agent:blocked\` and re-add \`agent:implement\`.`);
+      if (commentError) {
+        return { reconciled: false, reason: `state transition committed for #${issue.number}, but recovery comment failed (separate recovery evidence): ${commentError}`, factoryError: true, decision, receipts };
+      }
+      return { reconciled: false, reason: decision.reason, decision, receipts };
     }
     case "no_branch": {
-      // Recovery: authoritative absent-branch cleanup for orphaned provenance crash window
-      // Prove no worktree, local, remote before deleting orphaned provenance
+      // Prove exact ownership BEFORE any worktree/branch/provenance deletion —
+      // never clean up orphaned provenance for a claim that no longer belongs
+      // to us. The later release+block saga revalidates ownership too.
+      const ownedBeforeDelete = await validateStillOwned("no_branch");
+      if (ownedBeforeDelete) return ownedBeforeDelete;
+      // Recovery: authoritative absent-branch cleanup for orphaned provenance crash window.
+      // deleteBranch preflights remote state BEFORE any destructive local
+      // cleanup; initial unknown remote state => untouched (zero mutation).
       try {
-        const cleaned = await ops.deleteBranch(branch);
-        // deleteBranch proves worktree/local/remote absence before provenance deletion.
-        // If branch was truly absent and no orphan, cleaned should be true (provenance already absent or deleted).
-        // If cleaned false, check why: if branch still present or unknown, fail closed.
-        if (!cleaned) {
-          // If deleteBranch failed, verify if it's because branch still exists or worktree issue
-          if (ops.checkBranchExists) {
-            try {
-              const state = await ops.checkBranchExists(branch);
-              if (state === "present") return { reconciled: false, reason: `branch ${branch} still present after cleanup — fail closed`, factoryError: true, decision };
-              if (state === "unknown") return { reconciled: false, reason: `branch ${branch} state unknown after cleanup — fail closed`, factoryError: true, decision };
-              // absent but delete failed due to worktree or provenance -> still factory error, but check provenance
-            } catch {}
+        const cleanup = await ops.deleteBranch(branch);
+        if (!cleanup.cleaned) {
+          // Untouched: initial remote state unknown — zero worktree/local/
+          // provenance/tracker mutation. Preserve provenance and the claim.
+          if (cleanup.untouched) {
+            return { reconciled: false, reason: `branch ${branch} remote state unknown — zero mutation (${cleanup.reason ?? "untouched"})`, factoryError: true, decision, receipts };
           }
-          // For orphaned provenance case where branch absent but provenance existed, deleteBranch should have succeeded.
-          // If it returned false, treat as factory error unless we can prove provenance absent.
-          // We will still attempt to proceed only if we can prove worktree/local/remote absent and provenance absent.
-          // For now, if deleteBranch false and branch is absent, we need to verify provenance deletion separately.
-          // Try to check if provenance still exists via checkProvenanceValid: if it returns valid/invalid, it still exists; unknown may mean file missing or error.
-          // If provenance still present, we cannot leave orphan.
+          // Partial/indeterminate cleanup — fail closed and preserve provenance
+          // and the claim.
+          try {
+            const state = await ops.checkBranchExists(branch);
+            if (state === "present") return { reconciled: false, reason: `branch ${branch} still present after cleanup — fail closed`, factoryError: true, decision, receipts };
+            if (state === "unknown") return { reconciled: false, reason: `branch ${branch} state unknown after cleanup — fail closed`, factoryError: true, decision, receipts };
+          } catch {}
           try {
             const prov = await ops.checkProvenanceValid(branch);
-            // If provenance still reports valid/invalid (file exists), then cleanup failed
             if (prov.state === "valid" || prov.state === "invalid") {
-              return { reconciled: false, reason: `failed to clean up orphaned provenance for ${branch}: ${prov.reason} — fail closed`, factoryError: true, decision };
+              return { reconciled: false, reason: `failed to clean up orphaned provenance for ${branch}: ${prov.reason} — fail closed`, factoryError: true, decision, receipts };
             }
-            // unknown could be malformed or missing; if missing, it would be valid with reason clean if branch empty -> but for orphan case branch absent and empty, valid means provenance already absent, so we can proceed
-            // If unknown due to read failure, fail closed
             if (prov.state === "unknown" && prov.reason.includes("failed")) {
-              return { reconciled: false, reason: `provenance cleanup verification failed for ${branch}: ${prov.reason}`, factoryError: true, decision };
+              return { reconciled: false, reason: `provenance cleanup verification failed for ${branch}: ${prov.reason}`, factoryError: true, decision, receipts };
             }
           } catch {}
-          // If we cannot prove provenance absent, fail closed
-          // But if branch is absent and provenance is valid with clean (empty branch no provenance), then cleaned should have been true; so false here is unexpected -> factory error
-          return { reconciled: false, reason: `failed to clean up orphaned provenance for ${branch} — fail closed`, factoryError: true, decision };
+          return { reconciled: false, reason: `failed to clean up orphaned provenance for ${branch} — fail closed (${cleanup.reason ?? "partial cleanup"})`, factoryError: true, decision, receipts };
         }
-      } catch (e) { return { reconciled: false, reason: `absent-branch cleanup failed for ${branch}: ${e}`, factoryError: true, decision }; }
-      let commented = false;
-      try { commented = await ops.comment(String(issue.number), `Sandcastle reconciliation: no branch \`${branch}\` or batch PR for #${issue.number} — stale claim after crash. To retry, remove \`agent:blocked\` and re-add \`agent:implement\`.`); } catch (e) { return { reconciled: false, reason: `failed to comment for #${issue.number}: ${e}`, factoryError: true, decision }; }
-      if (!commented) return { reconciled: false, reason: `failed to comment for #${issue.number}`, factoryError: true, decision };
-      let released = false;
-      try { released = await ops.releaseClaim(String(issue.number)); } catch (e) { return { reconciled: false, reason: `failed to release claim for #${issue.number}: ${e}`, factoryError: true, decision }; }
-      if (!released) return { reconciled: false, reason: `failed to release claim for #${issue.number}`, factoryError: true, decision };
-      try {
-        const afterRelease = await ops.fetchIssue(String(issue.number));
-        const hasInProgress = afterRelease.labels.includes(AGENT_IN_PROGRESS);
-        const claimant = ops.claimantLogin;
-        const stillAssigned = afterRelease.assignees.includes(claimant);
-        if (hasInProgress || stillAssigned) return { reconciled: false, reason: `failed to verify claim release for #${issue.number}`, factoryError: true, decision };
-      } catch (e) { return { reconciled: false, reason: `failed to verify claim release for #${issue.number}: ${e}`, factoryError: true, decision }; }
-      let blocked = false;
-      try { blocked = await ops.addBlocked(String(issue.number)); } catch (e) { return { reconciled: false, reason: `failed to add blocked for #${issue.number}: ${e}`, factoryError: true, decision }; }
-      if (!blocked) return { reconciled: false, reason: `failed to add blocked for #${issue.number}`, factoryError: true, decision };
-      try {
-        const afterBlocked = await ops.fetchIssue(String(issue.number));
-        if (!afterBlocked.labels.includes(AGENT_BLOCKED)) return { reconciled: false, reason: `failed to verify blocked label for #${issue.number}`, factoryError: true, decision };
-      } catch (e) { return { reconciled: false, reason: `failed to verify blocked label for #${issue.number}: ${e}`, factoryError: true, decision }; }
-      return { reconciled: false, reason: decision.reason, decision };
+      } catch (e) {
+        return { reconciled: false, reason: `absent-branch cleanup failed for ${branch}: ${e}`, factoryError: true, decision, receipts };
+      }
+      // Branch cleanup proved — now release the stale claim and block.
+      const noBranchFailed = await releaseThenBlock("no_branch");
+      if (noBranchFailed) return noBranchFailed;
+      const noBranchCommentError = await recoveryComment(gh, issue.number, `Sandcastle reconciliation: no branch \`${branch}\` or batch PR for #${issue.number} — stale claim after crash. To retry, remove \`agent:blocked\` and re-add \`agent:implement\`.`);
+      if (noBranchCommentError) {
+        return { reconciled: false, reason: `state transition committed for #${issue.number}, but recovery comment failed (separate recovery evidence): ${noBranchCommentError}`, factoryError: true, decision, receipts };
+      }
+      return { reconciled: false, reason: decision.reason, decision, receipts };
     }
     case "invalid_provenance": {
       const body = decision.contaminated
         ? `Sandcastle reconciliation: branch \`${branch}\` for #${issue.number} has contaminated/legacy provenance (${decision.reason}) — fail closed, preserving/blocking.`
         : `Sandcastle reconciliation: branch \`${branch}\` for #${issue.number} has invalid provenance (${decision.reason}) — blocking.`;
-      let commented = false;
-      try { commented = await ops.comment(String(issue.number), body); } catch (e) { return { reconciled: false, reason: `failed to comment for #${issue.number}: ${e}`, factoryError: true, decision }; }
-      if (!commented) return { reconciled: false, reason: `failed to comment for #${issue.number}`, factoryError: true, decision };
-      let released = false;
-      try { released = await ops.releaseClaim(String(issue.number)); } catch (e) { return { reconciled: false, reason: `failed to release claim for #${issue.number}: ${e}`, factoryError: true, decision }; }
-      if (!released) return { reconciled: false, reason: `failed to release claim for #${issue.number}`, factoryError: true, decision };
-      try {
-        const afterRelease = await ops.fetchIssue(String(issue.number));
-        if (afterRelease.labels.includes(AGENT_IN_PROGRESS) || afterRelease.assignees.includes(ops.claimantLogin)) return { reconciled: false, reason: `failed to verify claim release for #${issue.number}`, factoryError: true, decision };
-      } catch (e) { return { reconciled: false, reason: `failed to verify claim release for #${issue.number}: ${e}`, factoryError: true, decision }; }
-      let blocked = false;
-      try { blocked = await ops.addBlocked(String(issue.number)); } catch (e) { return { reconciled: false, reason: `failed to add blocked for #${issue.number}: ${e}`, factoryError: true, decision }; }
-      if (!blocked) return { reconciled: false, reason: `failed to add blocked for #${issue.number}`, factoryError: true, decision };
-      try {
-        const afterBlocked = await ops.fetchIssue(String(issue.number));
-        if (!afterBlocked.labels.includes(AGENT_BLOCKED)) return { reconciled: false, reason: `failed to verify blocked label for #${issue.number}`, factoryError: true, decision };
-      } catch (e) { return { reconciled: false, reason: `failed to verify blocked label for #${issue.number}: ${e}`, factoryError: true, decision }; }
-      return { reconciled: false, reason: decision.reason, decision };
+      const invalidFailed = await releaseThenBlock("invalid_provenance");
+      if (invalidFailed) return invalidFailed;
+      const invalidCommentError = await recoveryComment(gh, issue.number, body);
+      if (invalidCommentError) {
+        return { reconciled: false, reason: `state transition committed for #${issue.number}, but recovery comment failed (separate recovery evidence): ${invalidCommentError}`, factoryError: true, decision, receipts };
+      }
+      return { reconciled: false, reason: decision.reason, decision, receipts };
     }
     case "absent_empty_branch": {
-      let deleted = false;
-      try { deleted = await ops.deleteBranch(branch); } catch (e) { return { reconciled: false, reason: `failed to delete branch ${branch}: ${e}`, factoryError: true, decision }; }
-      if (!deleted) {
-        return { reconciled: false, reason: `failed to delete branch ${branch} — cleanup not proved`, factoryError: true, decision };
+      // Prove exact ownership BEFORE any worktree/branch/provenance deletion —
+      // never clean up a branch for a claim that no longer belongs to us.
+      const ownedBeforeDelete = await validateStillOwned("absent_empty_branch");
+      if (ownedBeforeDelete) return ownedBeforeDelete;
+      let cleanup: BranchCleanupResult;
+      try { cleanup = await ops.deleteBranch(branch); } catch (e) { return { reconciled: false, reason: `failed to delete branch ${branch}: ${e}`, factoryError: true, decision, receipts }; }
+      if (!cleanup.cleaned) {
+        // Untouched: initial remote state unknown — zero worktree/local/
+        // provenance/tracker mutation. Preserve provenance and the claim.
+        if (cleanup.untouched) {
+          return { reconciled: false, reason: `branch ${branch} remote state unknown — zero mutation (${cleanup.reason ?? "untouched"})`, factoryError: true, decision, receipts };
+        }
+        return { reconciled: false, reason: `failed to delete branch ${branch} — cleanup not proved (${cleanup.reason ?? "partial cleanup"})`, factoryError: true, decision, receipts };
       }
       // Verify branch truly absent after delete (both local and remote)
-      if (ops.checkBranchExists) {
-        try {
-          const afterState = await ops.checkBranchExists(branch);
-          if (afterState === "present") return { reconciled: false, reason: `failed to verify branch deletion for ${branch} — still present`, factoryError: true, decision };
-          if (afterState === "unknown") return { reconciled: false, reason: `branch ${branch} state unknown after delete — fail closed`, factoryError: true, decision };
-        } catch (e) { return { reconciled: false, reason: `failed to verify branch deletion for ${branch}: ${e}`, factoryError: true, decision }; }
-      }
-      // Release claim only after required cleanup succeeds, then verify via fresh read
-      let released = false;
-      try { released = await ops.releaseClaim(String(issue.number)); } catch (e) { return { reconciled: false, reason: `failed to release claim for #${issue.number}: ${e}`, factoryError: true, decision }; }
-      if (!released) return { reconciled: false, reason: `failed to release stale claim for #${issue.number}`, factoryError: true, decision };
-      // Fresh verification of claim release before publishing success comment
       try {
-        const afterRelease = await ops.fetchIssue(String(issue.number));
-        const hasInProgress = afterRelease.labels.includes(AGENT_IN_PROGRESS);
-        const claimant = ops.claimantLogin;
-        const stillAssigned = afterRelease.assignees.includes(claimant);
-        if (hasInProgress || stillAssigned) {
-          return { reconciled: false, reason: `failed to verify claim release for #${issue.number} — still has in-progress or claimant assigned`, factoryError: true, decision };
-        }
-      } catch (e) { return { reconciled: false, reason: `failed to verify claim release for #${issue.number}: ${e}`, factoryError: true, decision }; }
-      let commented = false;
-      try { commented = await ops.comment(String(issue.number), `Sandcastle reconciliation: stale implementation claim for \`${branch}\` was interrupted (empty branch). Released assignee and \`${AGENT_IN_PROGRESS}\` without restoring \`${AGENT_IMPLEMENT}\`. Branch \`${branch}\` cleaned. To retry, re-add \`${AGENT_IMPLEMENT}\` explicitly.`); } catch (e) { return { reconciled: false, reason: `failed to comment for #${issue.number}: ${e}`, factoryError: true, decision }; }
-      if (!commented) return { reconciled: false, reason: `failed to comment for #${issue.number}`, factoryError: true, decision };
-      return { reconciled: true, reason: decision.reason, decision };
+        const afterState = await ops.checkBranchExists(branch);
+        if (afterState === "present") return { reconciled: false, reason: `failed to verify branch deletion for ${branch} — still present`, factoryError: true, decision, receipts };
+        if (afterState === "unknown") return { reconciled: false, reason: `branch ${branch} state unknown after delete — fail closed`, factoryError: true, decision, receipts };
+      } catch (e) { return { reconciled: false, reason: `failed to verify branch deletion for ${branch}: ${e}`, factoryError: true, decision, receipts }; }
+      // Release claim only after required cleanup succeeds — through the
+      // adapter's owned-release saga (revalidates exact ownership on its own
+      // fresh read before the release mutation).
+      let releaseOutcome: TransitionOutcome;
+      try {
+        releaseOutcome = await gh.releaseOwnedImplementationClaim(issue.number);
+      } catch (e) { return { reconciled: false, reason: `failed to release claim for #${issue.number}: ${e}`, factoryError: true, decision, receipts }; }
+      collectTransitionReceipts(releaseOutcome, receipts);
+      if (releaseOutcome.kind !== "committed") {
+        return { reconciled: false, reason: transitionFailureReason(releaseOutcome, "release claim", issue.number), factoryError: true, decision, receipts };
+      }
+      // Comment AFTER the committed release — the message describes what was
+      // released, so it must not precede the receipted transition.
+      const emptyCommentError = await recoveryComment(gh, issue.number, `Sandcastle reconciliation: stale implementation claim for \`${branch}\` was interrupted (empty branch). Released assignee and \`${AGENT_IN_PROGRESS}\` without restoring \`${AGENT_IMPLEMENT}\`. Branch \`${branch}\` cleaned. To retry, re-add \`${AGENT_IMPLEMENT}\` explicitly.`);
+      if (emptyCommentError) {
+        return { reconciled: false, reason: `release committed for #${issue.number}, but recovery comment failed (separate recovery evidence): ${emptyCommentError}`, factoryError: true, decision, receipts };
+      }
+      return { reconciled: true, reason: decision.reason, decision, receipts };
     }
     case "absent_with_work": {
-      let commented = false;
-      try { commented = await ops.comment(String(issue.number), `Sandcastle reconciliation: branch \`${branch}\` for #${issue.number} exists with work but no batch PR — crash before PR creation. Preserving branch. To retry, remove \`agent:blocked\` and re-add \`agent:implement\`.`); } catch (e) { return { reconciled: false, reason: `failed to comment for #${issue.number}: ${e}`, factoryError: true, decision }; }
-      if (!commented) return { reconciled: false, reason: `failed to comment for #${issue.number}`, factoryError: true, decision };
-      let released = false;
-      try { released = await ops.releaseClaim(String(issue.number)); } catch (e) { return { reconciled: false, reason: `failed to release claim for #${issue.number}: ${e}`, factoryError: true, decision }; }
-      if (!released) return { reconciled: false, reason: `failed to release claim for #${issue.number}`, factoryError: true, decision };
-      try {
-        const afterRelease = await ops.fetchIssue(String(issue.number));
-        if (afterRelease.labels.includes(AGENT_IN_PROGRESS) || afterRelease.assignees.includes(ops.claimantLogin)) return { reconciled: false, reason: `failed to verify claim release for #${issue.number}`, factoryError: true, decision };
-      } catch (e) { return { reconciled: false, reason: `failed to verify claim release for #${issue.number}: ${e}`, factoryError: true, decision }; }
-      let blocked = false;
-      try { blocked = await ops.addBlocked(String(issue.number)); } catch (e) { return { reconciled: false, reason: `failed to add blocked for #${issue.number}: ${e}`, factoryError: true, decision }; }
-      if (!blocked) return { reconciled: false, reason: `failed to add blocked for #${issue.number}`, factoryError: true, decision };
-      try {
-        const afterBlocked = await ops.fetchIssue(String(issue.number));
-        if (!afterBlocked.labels.includes(AGENT_BLOCKED)) return { reconciled: false, reason: `failed to verify blocked label for #${issue.number}`, factoryError: true, decision };
-      } catch (e) { return { reconciled: false, reason: `failed to verify blocked label for #${issue.number}: ${e}`, factoryError: true, decision }; }
-      return { reconciled: false, reason: decision.reason, decision };
+      const workFailed = await releaseThenBlock("absent_with_work");
+      if (workFailed) return workFailed;
+      const workCommentError = await recoveryComment(gh, issue.number, `Sandcastle reconciliation: branch \`${branch}\` for #${issue.number} exists with work but no batch PR — crash before PR creation. Preserving branch. To retry, remove \`agent:blocked\` and re-add \`agent:implement\`.`);
+      if (workCommentError) {
+        return { reconciled: false, reason: `state transition committed for #${issue.number}, but recovery comment failed (separate recovery evidence): ${workCommentError}`, factoryError: true, decision, receipts };
+      }
+      return { reconciled: false, reason: decision.reason, decision, receipts };
     }
   }
 }
@@ -602,23 +734,4 @@ export async function reconcileStaleResearch(
     return { reconciled: false, reason: `failed to release stale research claim for #${issue.number}`, factoryError: true };
   }
   return { reconciled: true, reason: `released stale research claim for #${issue.number}, preserved ${branch}` };
-}
-
-/**
- * Closed-issue cleanup
- */
-export async function cleanupClosedIssue(
-  issue: IssueInput,
-  ops: { removeLabel: (id: string, label: string) => Promise<boolean> },
-): Promise<{ cleaned: boolean; removed: string[] }> {
-  if (issue.state !== "closed") return { cleaned: false, removed: [] };
-  const toRemove = [AGENT_IN_PROGRESS, AGENT_IMPLEMENT, AGENT_BLOCKED].filter((l) => issue.labels.includes(l));
-  const removed: string[] = [];
-  for (const label of toRemove) {
-    try {
-      const ok = await ops.removeLabel(String(issue.number), label);
-      if (ok) removed.push(label);
-    } catch {}
-  }
-  return { cleaned: removed.length > 0, removed };
 }
