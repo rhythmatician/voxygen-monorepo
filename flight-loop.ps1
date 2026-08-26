@@ -171,6 +171,7 @@ try {
     $arguments = @(
         "--no-daemon",
         "clean",
+        "deployToRunMods",
         "runClient",
         "--console=plain",
         "-PflightWorld=FlightTest",

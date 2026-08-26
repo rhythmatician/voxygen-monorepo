@@ -204,6 +204,10 @@ tasks.register('deployToRunMods', Copy) {
 	into(file('run/mods'))
 }
 
+tasks.named('runClient').configure {
+	dependsOn tasks.named('deployToRunMods')
+}
+
 // Wire deployToRunMods into the build lifecycle
 build.dependsOn deployToRunMods
 
