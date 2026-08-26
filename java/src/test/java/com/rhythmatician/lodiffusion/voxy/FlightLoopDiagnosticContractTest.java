@@ -19,4 +19,25 @@ class FlightLoopDiagnosticContractTest {
         assertTrue(script.contains("Remove-ValidatedTree $copiedVoxyStore $liveWorld"));
         assertTrue(script.contains("Remove-ValidatedTree $capturedVoxyStore $templateDir"));
     }
+
+    @Test
+    void launcherRemovesOnlyStaleTourWaypointImagesInsideItsScreenshotDirectory() throws Exception {
+        Path javaRoot = Path.of("").toAbsolutePath().normalize();
+        String script = Files.readString(javaRoot.getParent().resolve("flight-loop.ps1"));
+
+        assertTrue(script.contains("Resolve-ValidatedPath $screenshotsDir $validatedRunDir"));
+        assertTrue(script.contains("Get-ChildItem -LiteralPath $validatedScreenshotsDir -File -Filter \"tour-waypoint-*.png\""));
+        assertTrue(script.contains("Remove-Item -LiteralPath $_.FullName -Force"));
+    }
+
+    @Test
+    void launcherUsesAnOverridableWaypointCountInsteadOfAHiddenRouteLength() throws Exception {
+        Path javaRoot = Path.of("").toAbsolutePath().normalize();
+        String script = Files.readString(javaRoot.getParent().resolve("flight-loop.ps1"));
+
+        assertTrue(script.contains("[int]$WaypointCount = 5"));
+        assertTrue(script.contains("$WaypointCount -le 0"));
+        assertTrue(script.contains("$idx -le $WaypointCount"));
+        assertTrue(!script.contains("$idx -le 6"));
+    }
 }

@@ -1,6 +1,7 @@
 package com.rhythmatician.lodiffusion.client;
 
 import com.rhythmatician.lodiffusion.HelloTerrainMod;
+import com.rhythmatician.lodiffusion.voxy.VoxyNativeLodStats;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.util.ScreenshotRecorder;
 import net.minecraft.text.Text;
@@ -373,14 +374,14 @@ public final class FlightTour {
             return;
         }
 
-        String record = String.format(
-                "{\"event\":\"%s\",\"waypoint\":%d,\"phase\":\"%s\",\"detail\":\"%s\",\"ticks\":%d,\"runId\":\"%s\"}%n",
-                jsonEscape(event),
+        String record = FlightTourStatusRecord.encode(
+                event,
                 waypointIndex + 1,
                 phase.name().toLowerCase(),
-                jsonEscape(detail),
+                detail,
                 ticksTotal,
-                jsonEscape(runId));
+                runId,
+                VoxyNativeLodStats.snapshot().orElse(null));
         try {
             Files.createDirectories(statusFilePath.getParent());
             Files.writeString(statusFilePath, record, StandardCharsets.UTF_8,
@@ -388,10 +389,6 @@ public final class FlightTour {
         } catch (IOException ignored) {
             HelloTerrainMod.LOGGER.warn("Failed to write flight-tour status file: {}", statusFilePath);
         }
-    }
-
-    private static String jsonEscape(String raw) {
-        return raw.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
     private static void requestShutdown(MinecraftClient client) {

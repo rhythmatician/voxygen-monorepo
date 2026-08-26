@@ -6,11 +6,16 @@ param(
     [int]$TimeoutSeconds = 600,
     [int]$ReadinessTimeoutSeconds = 120,
     [int]$DwellTicks = 200,
+    [int]$WaypointCount = 5,
     [switch]$DisableRefinementAdmission,
     [switch]$LaunchProofOnly
 )
 
 $ErrorActionPreference = "Stop"
+
+if ($WaypointCount -le 0) {
+    throw "WaypointCount must be positive: $WaypointCount"
+}
 
 $runDir = Join-Path $WorktreeJava "run"
 $savesDir = Join-Path $runDir "saves"
@@ -126,8 +131,14 @@ Remove-ValidatedTree $voxyCache $runDir
 
 $flightStatus = Join-Path $runDir "flight-tour-status.jsonl"
 $screenshotsDir = Join-Path $runDir "screenshots"
+$validatedRunDir = Resolve-ValidatedPath $runDir $runDir
+$validatedScreenshotsDir = Resolve-ValidatedPath $screenshotsDir $validatedRunDir
+$expectedScreenshotsDir = [IO.Path]::GetFullPath((Join-Path $validatedRunDir "screenshots")).TrimEnd([IO.Path]::DirectorySeparatorChar)
+if (-not $validatedScreenshotsDir.Equals($expectedScreenshotsDir, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Refusing screenshot cleanup outside the run screenshot directory: $validatedScreenshotsDir"
+}
 $expectedScreenshotNames = @()
-for ($idx = 1; $idx -le 6; $idx++) {
+for ($idx = 1; $idx -le $WaypointCount; $idx++) {
     $expectedScreenshotNames += "tour-waypoint-$("{0:D2}" -f $idx)-before.png"
     $expectedScreenshotNames += "tour-waypoint-$("{0:D2}" -f $idx)-after.png"
 }
@@ -137,6 +148,10 @@ foreach ($name in $expectedScreenshotNames) {
     $expectedScreenshotPaths += Join-Path $runDir $name
 }
 if (Test-Path $flightStatus) { Remove-Item $flightStatus -Force }
+if (Test-Path -LiteralPath $validatedScreenshotsDir) {
+    Get-ChildItem -LiteralPath $validatedScreenshotsDir -File -Filter "tour-waypoint-*.png" |
+        ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force }
+}
 foreach ($path in $expectedScreenshotPaths) {
     if (Test-Path $path) { Remove-Item $path -Force }
 }

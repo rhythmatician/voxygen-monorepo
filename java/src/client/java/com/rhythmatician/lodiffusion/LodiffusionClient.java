@@ -5,6 +5,8 @@ import com.rhythmatician.lodiffusion.voxy.LodGenerationService;
 import com.rhythmatician.lodiffusion.voxy.VoxyCompat;
 import com.rhythmatician.lodiffusion.voxy.VoxyDatasetExportService;
 import com.rhythmatician.lodiffusion.voxy.VoxyDebugState;
+import com.rhythmatician.lodiffusion.voxy.LodOverlayState;
+import com.rhythmatician.lodiffusion.voxy.VoxyNativeLodStats;
 import com.rhythmatician.lodiffusion.world.noise.GpuNoiseDispatchQueue;
 
 
@@ -154,6 +156,10 @@ public class LodiffusionClient implements ClientModInitializer {
         FlightTourLaunchConfig config = parsed.config();
         FlightTour.configureAutoStart(
                 config.autoStart(), config.timeoutTicks(), config.dwellTicks(), config.runId());
+        // Voxy selects the HAS_STATISTICS shader variant when its traverser is constructed.
+        // Client entrypoints run before that renderer construction, so this is the last safe
+        // opt-in point for both overlay and AFK evidence diagnostics.
+        VoxyNativeLodStats.enableForDiagnostics(LodOverlayState.isEnabled(), config.autoStart());
         HelloTerrainMod.LOGGER.info(
                 "[LODiffusion][FlightTourLaunch] resolved runId={} autoStart={} timeout={} dwell={} ticks",
                 config.runId(), config.autoStart(), config.timeoutTicks(), config.dwellTicks());
