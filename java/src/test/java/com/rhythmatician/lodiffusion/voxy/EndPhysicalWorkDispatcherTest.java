@@ -1,177 +1,133 @@
 package com.rhythmatician.lodiffusion.voxy;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import net.lodiffusion.shadow.VoxyRequestDecoder;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 import net.lodiffusion.shadow.VoxyWorkKind;
 import org.junit.jupiter.api.Test;
-import org.mockito.Mockito;
 
 class EndPhysicalWorkDispatcherTest {
+    private static final DefaultEndRefinement.Config CONFIG =
+            new DefaultEndRefinement.Config(1000, 64, 16, 16, 8192, 0);
+    private static final EndRefinement.Frame FRAME =
+            new EndRefinement.Frame(1, new SectionPos(0, 4, 0), List.of(), false);
+
     @Test
     void diagnosticAdmissionGateBlocksRefinementButLeavesHorizonMutationEnabled() {
         String property = RefinementAdmissionGate.DISABLE_PROPERTY;
         String previous = System.getProperty(property);
         System.setProperty(property, "true");
         try {
-            GenerationSession session = session();
-            CountingWriter writer = new CountingWriter();
-            int[] horizonCalls = {0};
+            assertFalse(RefinementAdmissionGate.allows(VoxyWorkKind.PARENT_REFINEMENT));
+            assertTrue(RefinementAdmissionGate.allows(VoxyWorkKind.HORIZON_LEAF));
 
-            assertEquals(GenerationSession.DemandProcessResult.SKIPPED,
-                    session.processEndPhysicalWork(
-                            request(Level.L4.value(), VoxyWorkKind.PARENT_REFINEMENT),
-                            writer,
-                            () -> GenerationSession.DemandProcessResult.FAILED));
-            assertEquals(GenerationSession.DemandProcessResult.WRITTEN,
-                    session.processEndPhysicalWork(
-                            request(Level.L4.value(), VoxyWorkKind.HORIZON_LEAF),
-                            writer,
-                            () -> {
-                                horizonCalls[0]++;
-                                return GenerationSession.DemandProcessResult.WRITTEN;
-                            }));
-
-            assertEquals(0, writer.refinementIntents);
-            assertEquals(1, horizonCalls[0]);
-            assertEquals(summaryForLevel4(1, 0, 1, 0, 0, 0),
-                    session.refinementLifecycleSummaryForTest());
-        } finally {
-            restoreProperty(property, previous);
-        }
-    }
-
-    @Test
-    void finerHorizonLeafCannotReachDirectRegionWrite() {
-        GenerationSession session = session();
-        CountingWriter writer = new CountingWriter();
-        int[] leafCalls = {0};
-
-        for (int level = Level.L0.value(); level <= Level.L3.value(); level++) {
-            GenerationSession.DemandProcessResult result = session.processEndPhysicalWork(
-                    request(level, VoxyWorkKind.HORIZON_LEAF), writer, () -> {
-                        leafCalls[0]++;
-                        return GenerationSession.DemandProcessResult.WRITTEN;
+            AtomicInteger horizons = new AtomicInteger();
+            DefaultEndRefinement module = module(intent -> published(intent.demandedChildMask()),
+                    origin -> {
+                        horizons.incrementAndGet();
+                        return WriteOutcome.written(1);
                     });
-            assertEquals(GenerationSession.DemandProcessResult.SKIPPED, result);
+            assertEquals(EndRefinement.StepResult.Status.PROGRESSED,
+                    module.advance(frame(1, List.of(new SectionPos(0, 0, 0)))) .status());
+            assertEquals(1, horizons.get());
+            assertEquals(0, module.snapshot().refinement().completed());
+        } finally {
+            if (previous == null) System.clearProperty(property);
+            else System.setProperty(property, previous);
         }
-
-        assertEquals(0, leafCalls[0]);
-        assertEquals(0, writer.regionWrites);
     }
 
     @Test
-    void parentRefinementSubmitsExactlyOneIntent() {
-        GenerationSession session = session();
-        CountingWriter writer = new CountingWriter();
+    void parentRefinementSubmitsOneSparseTransactionAndAttributesItOnce() {
+        AtomicInteger terrainCalls = new AtomicInteger();
+        AtomicInteger transactions = new AtomicInteger();
+        DefaultEndRefinement module = new DefaultEndRefinement(CONFIG, intent -> {
+            transactions.incrementAndGet();
+            int required = intent.demandedChildMask();
+            int childLevel = intent.parentLevel().value() - 1;
+            for (int octant = 0; octant < 8; octant++) {
+                if ((required & (1 << octant)) != 0) {
+                    intent.childVolumes().produce(Level.values()[childLevel],
+                            ParentRefinementBatch.childOrigins(intent.parentOrigin(), intent.parentLevel())
+                                    .get(octant));
+                }
+            }
+            return published(required);
+        }, (level, origin) -> {
+            terrainCalls.incrementAndGet();
+            return solid();
+        }, origin -> WriteOutcome.written(1));
+        observeOneVanillaOctant(module);
 
-        GenerationSession.DemandProcessResult result = session.processEndPhysicalWork(
-                request(Level.L4.value(), VoxyWorkKind.PARENT_REFINEMENT),
-                writer,
-                () -> GenerationSession.DemandProcessResult.FAILED);
-
-        assertEquals(GenerationSession.DemandProcessResult.WRITTEN, result);
-        assertEquals(1, writer.refinementIntents);
-        assertEquals(0, writer.regionWrites);
-        assertEquals(summaryForLevel4(1, 0, 0, 0, 1, 0),
-                session.refinementLifecycleSummaryForTest());
+        assertEquals(EndRefinement.StepResult.Status.PROGRESSED, module.advance(FRAME).status());
+        assertEquals(1, transactions.get());
+        assertEquals(module.snapshot().representedChildren(), terrainCalls.get());
+        assertEquals(1, module.snapshot().refinement().completed());
+        assertTrue(module.snapshot().lifecycle().contains("d1"));
+        assertTrue(module.snapshot().lifecycle().contains("n1"));
     }
 
     @Test
-    void workerBoundaryAttributesBlockedAndPreconditionFailureExactlyOnce() {
-        GenerationSession blockedSession = session();
-        CountingWriter blockedWriter = new CountingWriter();
-        blockedWriter.result = ParentRefinementResult.parentMissing();
+    void blockedAndFailedTransactionsReceiveExactlyOneLifecycleAttribution() {
+        DefaultEndRefinement blocked = module(intent -> ParentRefinementResult.parentMissing(),
+                origin -> WriteOutcome.written(1));
+        observeOneVanillaOctant(blocked);
+        assertEquals(EndRefinement.StepResult.Status.DEFERRED, blocked.advance(FRAME).status());
+        assertEquals(1, occurrences(blocked.snapshot().lifecycle(), ",b1"));
+        assertEquals(1, occurrences(blocked.snapshot().lifecycle(), "d1"));
 
-        assertEquals(GenerationSession.DemandProcessResult.DEFERRED,
-                blockedSession.processEndPhysicalWork(
-                        request(Level.L3.value(), VoxyWorkKind.PARENT_REFINEMENT),
-                        blockedWriter,
-                        () -> GenerationSession.DemandProcessResult.FAILED));
-        assertEquals("L4[d0,b0,a0,e0,n0,f0] L3[d1,b1,a0,e0,n0,f0] "
-                        + "L2[d0,b0,a0,e0,n0,f0] L1[d0,b0,a0,e0,n0,f0]",
-                blockedSession.refinementLifecycleSummaryForTest());
-
-        GenerationSession failedSession = session();
-        assertEquals(GenerationSession.DemandProcessResult.FAILED,
-                failedSession.processEndPhysicalWork(
-                        request(Level.L2.value(), VoxyWorkKind.PARENT_REFINEMENT),
-                        null,
-                        () -> GenerationSession.DemandProcessResult.FAILED));
-        assertEquals("L4[d0,b0,a0,e0,n0,f0] L3[d0,b0,a0,e0,n0,f0] "
-                        + "L2[d1,b0,a0,e0,n0,f1] L1[d0,b0,a0,e0,n0,f0]",
-                failedSession.refinementLifecycleSummaryForTest());
+        DefaultEndRefinement failed = module(intent -> {
+            throw new IllegalStateException("writer failed");
+        }, origin -> WriteOutcome.written(1));
+        observeOneVanillaOctant(failed);
+        assertEquals(EndRefinement.StepResult.Status.FAILED, failed.advance(FRAME).status());
+        assertEquals(1, occurrences(failed.snapshot().lifecycle(), ",f1"));
+        assertEquals(1, occurrences(failed.snapshot().lifecycle(), "d1"));
     }
 
     @Test
     void l4HorizonLeafUsesTheDirectLeafRoute() {
-        GenerationSession session = session();
-        CountingWriter writer = new CountingWriter();
-        int[] leafCalls = {0};
-
-        GenerationSession.DemandProcessResult result = session.processEndPhysicalWork(
-                request(Level.L4.value(), VoxyWorkKind.HORIZON_LEAF), writer, () -> {
-                    leafCalls[0]++;
-                    return GenerationSession.DemandProcessResult.WRITTEN;
-                });
-
-        assertEquals(GenerationSession.DemandProcessResult.WRITTEN, result);
-        assertEquals(1, leafCalls[0]);
-        assertEquals(0, writer.refinementIntents);
-    }
-
-    private static GenerationSession session() {
-        GenerationSession session = new GenerationSession();
-        WorldNoiseAccess noise = Mockito.mock(WorldNoiseAccess.class);
-        Mockito.when(noise.sampleFinalDensity(Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt()))
-                .thenReturn(1.0);
-        session.setNoiseAccessForTest(noise);
-        return session;
-    }
-
-    private static VoxyRequestDecoder.VoxyNodeRequest request(int level, VoxyWorkKind kind) {
-        VoxyRequestDecoder.VoxyNodeRequest request = new VoxyRequestDecoder.VoxyNodeRequest();
-        request.lodLevel = level;
-        request.workKind = kind;
-        request.worldY = 0;
-        return request;
-    }
-
-    private static final class CountingWriter implements VoxelVolumeWriter {
-        int regionWrites;
-        int refinementIntents;
-        ParentRefinementResult result = ParentRefinementResult.published(WriteOutcome.written(1));
-
-        @Override
-        public WriteOutcome writeSection(SectionPos pos, VoxelVolume volume) {
-            throw new AssertionError("End physical work must not write sections");
-        }
-
-        @Override
-        public WriteOutcome writeRegion(SectionPos origin, Level level, VoxelVolume volume) {
-            regionWrites++;
+        AtomicInteger refinements = new AtomicInteger();
+        AtomicInteger horizons = new AtomicInteger();
+        DefaultEndRefinement module = module(intent -> {
+            refinements.incrementAndGet();
+            return published(intent.demandedChildMask());
+        }, origin -> {
+            horizons.incrementAndGet();
             return WriteOutcome.written(1);
-        }
+        });
 
-        @Override
-        public ParentRefinementResult refineParent(ParentRefinementIntent intent) {
-            refinementIntents++;
-            return result;
-        }
+        assertEquals(EndRefinement.StepResult.Status.PROGRESSED,
+                module.advance(frame(1, List.of(new SectionPos(0, 0, 0)))).status());
+        assertEquals(1, horizons.get());
+        assertEquals(0, refinements.get());
     }
 
-    private static String summaryForLevel4(
-            int dequeued, int blocked, int already, int empty, int nonempty, int failed) {
-        return "L4[d" + dequeued + ",b" + blocked + ",a" + already + ",e" + empty
-                + ",n" + nonempty + ",f" + failed + "] L3[d0,b0,a0,e0,n0,f0] "
-                + "L2[d0,b0,a0,e0,n0,f0] L1[d0,b0,a0,e0,n0,f0]";
+    private static DefaultEndRefinement module(
+            DefaultEndRefinement.ParentWriter writer, DefaultEndRefinement.HorizonCoverage horizon) {
+        return new DefaultEndRefinement(CONFIG, writer, (level, origin) -> solid(), horizon);
     }
 
-    private static void restoreProperty(String property, String previous) {
-        if (previous == null) {
-            System.clearProperty(property);
-        } else {
-            System.setProperty(property, previous);
-        }
+    private static EndRefinement.Frame frame(long time, List<SectionPos> horizon) {
+        return new EndRefinement.Frame(time, new SectionPos(0, 4, 0), horizon, false);
+    }
+
+    private static void observeOneVanillaOctant(EndRefinement module) {
+        module.observeVanilla(new EndRefinement.ObservedVanilla(new SectionPos(0, 0, 0), 1));
+    }
+
+    private static ParentRefinementResult published(int mask) {
+        return ParentRefinementResult.published(WriteOutcome.written(Integer.bitCount(mask)), mask, 0);
+    }
+
+    private static VoxelVolume solid() {
+        return VoxelVolume.uniform(32, EndL4DeterministicCandidate.BLOCK_END_STONE, 0);
+    }
+
+    private static int occurrences(String text, String value) {
+        return text.split(java.util.regex.Pattern.quote(value), -1).length - 1;
     }
 }

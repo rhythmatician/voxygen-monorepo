@@ -1,19 +1,17 @@
 package com.rhythmatician.lodiffusion.voxy;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import net.lodiffusion.shadow.ShadowRouterJobQueue;
-import net.lodiffusion.shadow.VoxyDemandKind;
-import net.lodiffusion.shadow.VoxyDemandSource;
-import net.lodiffusion.shadow.VoxyRequestDecoder;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
 class VanillaOccupancyIntegrationTest {
-    @BeforeEach void setUp() { ShadowRouterJobQueue.clear(); }
-    @AfterEach void tearDown() { ShadowRouterJobQueue.clear(); }
+    private static final DefaultEndRefinement.Config CONFIG =
+            new DefaultEndRefinement.Config(1000, 64, 16, 16, 8192, 0, 3, 10, 0);
 
     @Test
     void chunkColumnOwnsBothYOctantsInItsL0QuadrantAcrossEndHeight() {
@@ -24,74 +22,116 @@ class VanillaOccupancyIntegrationTest {
     }
 
     @Test
-    void occupancyDeltaQueuesSparseBoundaryWorkButNeverFullVanillaCells() {
-        GenerationSession session = new GenerationSession();
+    void observedVanillaCreatesSparseBoundaryWorkButNeverMaterializesOwnedBits() {
+        List<ParentRefinementIntent> intents = new ArrayList<>();
+        DefaultEndRefinement module = module(intent -> {
+            intents.add(intent);
+            return ParentRefinementResult.published(
+                    WriteOutcome.written(Integer.bitCount(intent.demandedChildMask())),
+                    intent.demandedChildMask(), 0);
+        });
 
-        session.observeVanillaChunkColumnForTest(0, 0);
-
-        assertTrue(ShadowRouterJobQueue.size() > 0);
-        var request = ShadowRouterJobQueue.dequeueAny();
-        assertEquals(VoxyDemandSource.VANILLA_OCCUPANCY_BOUNDARY, request.demandSource);
-        assertTrue(request.demandKind == VoxyDemandKind.VANILLA_FRONTIER_GUARD
-                || request.demandKind == VoxyDemandKind.HORIZON_COVERAGE);
-
-        session.observeVanillaChunkColumnForTest(1, 0);
-        session.observeVanillaChunkColumnForTest(0, 1);
-        session.observeVanillaChunkColumnForTest(1, 1);
-        assertTrue(session.isFullyVanillaForTest(0, 0, 0, 0));
-    }
-
-    @Test
-    void urgentBoundaryCellsAlwaysRequestTheirContainingParentTransaction() {
-        GenerationSession session = new GenerationSession();
-        for (int level = 0; level <= 3; level++) {
-            ShadowRouterJobQueue.clear();
-            VanillaOccupancyPyramid.Cell boundary = new VanillaOccupancyPyramid.Cell(level, -3, 1, 5);
-            session.enqueueOccupancyDeltaForTest(new VanillaOccupancyPyramid.Delta(
-                    java.util.Set.of(boundary), java.util.Set.of(), java.util.Set.of()));
-
-            VoxyRequestDecoder.VoxyNodeRequest request = ShadowRouterJobQueue.dequeueAny();
-            assertEquals(level + 1, request.lodLevel, "boundary L" + level + " parent level");
-            assertEquals(Math.floorDiv(-3, 2), request.worldX);
-            assertEquals(Math.floorDiv(1, 2), request.worldY);
-            assertEquals(Math.floorDiv(5, 2), request.worldZ);
-            assertEquals(VoxyDemandKind.VANILLA_FRONTIER_GUARD, request.demandKind);
-            assertEquals(net.lodiffusion.shadow.VoxyWorkKind.PARENT_REFINEMENT, request.workKind);
-            ShadowRouterJobQueue.markCompleted(request);
+        module.observeVanilla(new EndRefinement.ObservedVanilla(
+                new SectionPos(0, 0, 0), 0xFF));
+        for (int tick = 1; tick <= 64 && intents.isEmpty(); tick++) {
+            module.advance(frame(tick));
         }
+
+        assertFalse(intents.isEmpty());
+        assertTrue(intents.stream().allMatch(intent -> intent.demandedChildMask() != 0));
     }
 
     @Test
-    void l4OccupancyBoundaryIsGuardPriorityHorizonLeaf() {
-        GenerationSession session = new GenerationSession();
-        VanillaOccupancyPyramid.Cell boundary = new VanillaOccupancyPyramid.Cell(4, 3, 0, -2);
-        session.enqueueOccupancyDeltaForTest(new VanillaOccupancyPyramid.Delta(
-                java.util.Set.of(boundary), java.util.Set.of(), java.util.Set.of()));
+    void staleRequestThatBecomesFullVanillaDoesNotReachTerrainOrWriter() {
+        AtomicInteger terrain = new AtomicInteger();
+        List<String> writes = new ArrayList<>();
+        DefaultEndRefinement module = new DefaultEndRefinement(CONFIG, intent -> {
+            writes.add(intent.parentLevel() + ":" + intent.parentOrigin());
+            return ParentRefinementResult.published(
+                    WriteOutcome.written(Integer.bitCount(intent.demandedChildMask())),
+                    intent.demandedChildMask(), 0);
+        }, (level, origin) -> {
+            terrain.incrementAndGet();
+            return solid();
+        }, origin -> WriteOutcome.written(1), () -> true);
+        module.observeFrontier(List.of(
+                new VanillaFrontierGuardPlanner.ParentTransaction(new SectionPos(0, 0, 0))));
 
-        VoxyRequestDecoder.VoxyNodeRequest request = ShadowRouterJobQueue.dequeueAny();
-        assertEquals(4, request.lodLevel);
-        assertEquals(VoxyDemandKind.VANILLA_FRONTIER_GUARD, request.demandKind);
-        assertEquals(net.lodiffusion.shadow.VoxyWorkKind.HORIZON_LEAF, request.workKind);
-        assertEquals(VoxyDemandSource.VANILLA_OCCUPANCY_BOUNDARY, request.demandSource);
-        ShadowRouterJobQueue.markCompleted(request);
-        assertEquals(1, ShadowRouterJobQueue.demandMetrics().guard().queued());
-        assertEquals(1, ShadowRouterJobQueue.demandMetrics().guard().completed());
+        fillL1WithVanilla(module);
+        for (int tick = 1; tick <= 64; tick++) module.advance(frame(tick));
+
+        assertEquals(0, terrain.get());
+        assertFalse(writes.contains(Level.L1 + ":" + new SectionPos(0, 0, 0)));
+        assertTrue(module.snapshot().vanillaCoveredChildren() >= 8);
+        assertEquals(0, module.snapshot().pendingChildren());
     }
 
     @Test
-    void staleFullyVanillaParentTransactionIsRecognizedBeforeProduction() {
-        GenerationSession session = new GenerationSession();
-        for (int chunkX = 0; chunkX < 4; chunkX++) {
-            for (int chunkZ = 0; chunkZ < 4; chunkZ++) {
-                session.observeVanillaChunkColumnForTest(chunkX, chunkZ);
+    void partialVanillaParentTreatsOwnedOctantsAsCoveredAndWritesOnlyMissingOctants() {
+        List<ParentRefinementIntent> intents = new ArrayList<>();
+        DefaultEndRefinement module = module(intent -> {
+            intents.add(intent);
+            return ParentRefinementResult.published(
+                    WriteOutcome.written(Integer.bitCount(intent.demandedChildMask())),
+                    intent.demandedChildMask(), 0);
+        });
+        module.observeVanilla(new EndRefinement.ObservedVanilla(
+                new SectionPos(0, 0, 0), 0xFF));
+        module.observeFrontier(List.of(
+                new VanillaFrontierGuardPlanner.ParentTransaction(new SectionPos(0, 0, 0))));
+
+        for (int tick = 1; tick <= 128; tick++) module.advance(frame(tick));
+
+        ParentRefinementIntent target = intents.stream()
+                .filter(intent -> intent.parentLevel() == Level.L1
+                        && intent.parentOrigin().equals(new SectionPos(0, 0, 0)))
+                .findFirst().orElseThrow();
+        assertTrue(Integer.bitCount(target.demandedChildMask()) < 8);
+        assertTrue(module.snapshot().vanillaCoveredChildren() > 0);
+        assertEquals(0,
+                module.snapshot().pendingChildren() + module.snapshot().executingChildren());
+    }
+
+    @Test
+    void negativeChunkCoordinatesMapToTheSameSparseOccupancyRules() {
+        List<SectionPos> parents = new ArrayList<>();
+        DefaultEndRefinement module = module(intent -> {
+            parents.add(intent.parentOrigin());
+            return ParentRefinementResult.published(
+                    WriteOutcome.written(Integer.bitCount(intent.demandedChildMask())),
+                    intent.demandedChildMask(), 0);
+        });
+
+        module.observeVanilla(new EndRefinement.ObservedVanilla(
+                new SectionPos(-2, 0, -2), GenerationSession.chunkColumnOwnershipMask(-1, -1)));
+        module.advance(frame(1));
+
+        assertFalse(parents.isEmpty());
+        assertTrue(parents.stream().anyMatch(origin -> origin.x() <= 0 && origin.z() <= 0));
+    }
+
+    private static DefaultEndRefinement module(DefaultEndRefinement.ParentWriter writer) {
+        return new DefaultEndRefinement(CONFIG, writer, (level, origin) -> solid(),
+                origin -> WriteOutcome.written(1), () -> true);
+    }
+
+    private static EndRefinement.Frame frame(long time) {
+        return new EndRefinement.Frame(
+                time, new SectionPos(0, 4, 0), List.of(), false);
+    }
+
+    private static void fillL1WithVanilla(EndRefinement module) {
+        for (int y = 0; y < 2; y++) {
+            for (int z = 0; z < 2; z++) {
+                for (int x = 0; x < 2; x++) {
+                    module.observeVanilla(new EndRefinement.ObservedVanilla(
+                            new SectionPos(x * 2, y * 2, z * 2), 0xFF));
+                }
             }
         }
+    }
 
-        VoxyRequestDecoder.VoxyNodeRequest request = new VoxyRequestDecoder.VoxyNodeRequest();
-        request.lodLevel = 1;
-        request.workKind = net.lodiffusion.shadow.VoxyWorkKind.PARENT_REFINEMENT;
-        request.demandKind = VoxyDemandKind.VANILLA_FRONTIER_GUARD;
-        request.demandSource = VoxyDemandSource.VANILLA_OCCUPANCY_BOUNDARY;
-        assertTrue(session.isFullyVanillaOccupancyRequestForTest(request));
+    private static VoxelVolume solid() {
+        return VoxelVolume.uniform(32, EndL4DeterministicCandidate.BLOCK_END_STONE, 0);
     }
 }

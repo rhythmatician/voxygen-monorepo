@@ -1,260 +1,155 @@
 package com.rhythmatician.lodiffusion.voxy;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 
 import com.rhythmatician.lodiffusion.util.PerformanceMonitor;
-import net.lodiffusion.shadow.ShadowRouterJobQueue;
-import net.lodiffusion.shadow.VoxyRequestDecoder;
-import org.junit.jupiter.api.AfterEach;
+import java.lang.reflect.Field;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.mockito.Mockito;
 
-/**
- * Finite completion telemetry for End L4 tracer — 121/121 terminal outcomes.
- * Barrier-free observation via TracerCompletion record and PerformanceMonitor.
- */
+/** Fixed initial-horizon completion behavior driven through {@link EndRefinement}. */
 class EndL4TracerCompletionTest {
+    private static final DefaultEndRefinement.Config HORIZON_ONLY =
+            new DefaultEndRefinement.Config(1000, 64, 0, 1, 8192, 0, 1, 1, 121);
+    private static final SectionPos PLAYER = new SectionPos(0, 6, 0);
 
     @BeforeEach
-    void setUp() {
-        ShadowRouterJobQueue.clear();
+    void resetMonitor() {
         PerformanceMonitor.reset();
     }
 
-    @AfterEach
-    void tearDown() {
-        ShadowRouterJobQueue.clear();
+    @Test
+    void exactly121WrittenTargetsProduceOneTimestampedSuccess() throws Exception {
+        GenerationSession session = completionSession();
+        DefaultEndRefinement module = module(session, WriteOutcome.written(1));
+
+        drive(session, module, 121);
+
+        GenerationSession.TracerCompletion completion = session.tracerCompletion();
+        assertNotNull(completion);
+        assertEquals("SUCCESS", completion.status());
+        assertEquals(121, completion.written());
+        assertEquals(0, completion.skipped());
+        assertEquals(0, completion.failed());
+        assertEquals(121, completion.written() + completion.skipped() + completion.failed());
+        assertNotNull(java.time.Instant.parse(completion.atIsoInstant()));
+        assertEquals(121, PerformanceMonitor.getCounter(
+                PerformanceMonitor.TRACER_HORIZON_WRITTEN));
+        assertEquals(1, PerformanceMonitor.getCounter(
+                PerformanceMonitor.TRACER_HORIZON_STATUS_SUCCESS));
+
+        advance(session, module, 122, targets());
+        assertSame(completion, session.tracerCompletion(), "completion is emitted once");
     }
 
     @Test
-    void tracer_success_121_written() throws Exception {
-        GenerationSession session = new GenerationSession();
-        setSection(session, 0, 0);
-        ShadowRouterJobQueue.clear();
-        int enqueued = session.enqueueEndL4TracerRequests();
-        assertEquals(121, enqueued);
-        assertNull(session.tracerCompletion(), "no terminal before processing");
+    void exactly121SkippedTargetsStillProduceSuccess() throws Exception {
+        GenerationSession session = completionSession();
+        DefaultEndRefinement module = module(session, WriteOutcome.skippedAir());
 
-        // Drive via lightweight record helper to avoid 8192*121 mock invocations (heap)
-        for (int i = 0; i < 121; i++) {
-            VoxyRequestDecoder.VoxyNodeRequest req = ShadowRouterJobQueue.dequeueAny();
-            assertNotNull(req, "queue should have 121");
-            session.recordTracerWrittenForTest();
-            ShadowRouterJobQueue.markCompleted(req);
-            if (i < 120) {
-                assertNull(session.tracerCompletion(), "not terminal before 121 at i=" + i);
+        drive(session, module, 121);
+
+        GenerationSession.TracerCompletion completion = session.tracerCompletion();
+        assertNotNull(completion);
+        assertEquals("SUCCESS", completion.status());
+        assertEquals(0, completion.written());
+        assertEquals(121, completion.skipped());
+        assertEquals(0, completion.failed());
+        assertEquals(121, PerformanceMonitor.getCounter(
+                PerformanceMonitor.TRACER_HORIZON_SKIPPED));
+    }
+
+    @Test
+    void failuresAreDisjointAndMakeTheFixedBatchFail() throws Exception {
+        GenerationSession session = completionSession();
+        AtomicInteger calls = new AtomicInteger();
+        DefaultEndRefinement module = new DefaultEndRefinement(HORIZON_ONLY,
+                intent -> ParentRefinementResult.parentMissing(),
+                (level, origin) -> VoxelVolume.uniform(32, 0, 0), origin -> {
+                    if (calls.getAndIncrement() >= 118) {
+                        throw new IllegalStateException("expected failure");
+                    }
+                    return WriteOutcome.written(1);
+                });
+
+        drive(session, module, 121);
+
+        GenerationSession.TracerCompletion completion = session.tracerCompletion();
+        assertNotNull(completion);
+        assertEquals("FAILED", completion.status());
+        assertEquals(118, completion.written());
+        assertEquals(0, completion.skipped());
+        assertEquals(3, completion.failed());
+        assertEquals(121, completion.written() + completion.skipped() + completion.failed());
+        assertEquals(3, PerformanceMonitor.getCounter(
+                PerformanceMonitor.TRACER_HORIZON_FAILED));
+        assertEquals(0, PerformanceMonitor.getCounter(
+                PerformanceMonitor.TRACER_HORIZON_STATUS_SUCCESS));
+    }
+
+    @Test
+    void stoppingBefore121ProducesNoTerminalCompletion() throws Exception {
+        GenerationSession session = completionSession();
+        DefaultEndRefinement module = module(session, WriteOutcome.written(1));
+
+        drive(session, module, 10);
+        assertNull(session.tracerCompletion());
+        assertEquals(EndRefinement.StepResult.Status.STOPPED,
+                module.advance(new EndRefinement.Frame(11, PLAYER, List.of(), true)).status());
+        assertNull(session.tracerCompletion());
+    }
+
+    private static DefaultEndRefinement module(
+            GenerationSession session, WriteOutcome outcome) {
+        return new DefaultEndRefinement(HORIZON_ONLY,
+                intent -> ParentRefinementResult.parentMissing(),
+                (level, origin) -> VoxelVolume.uniform(32, 0, 0), origin -> {
+                    return outcome;
+                });
+    }
+
+    private static void drive(
+            GenerationSession session, DefaultEndRefinement module, int count) {
+        List<SectionPos> targets = targets();
+        for (int index = 0; index < count; index++) {
+            advance(session, module, index + 1, targets);
+        }
+    }
+
+    private static void advance(
+            GenerationSession session,
+            DefaultEndRefinement module,
+            long monotonicMillis,
+            List<SectionPos> targets) {
+        module.advance(new EndRefinement.Frame(monotonicMillis, PLAYER, targets, false));
+        session.observeEndRefinementSnapshotForTest(module.snapshot());
+    }
+
+    private static List<SectionPos> targets() {
+        List<SectionPos> targets = new ArrayList<>(121);
+        for (int z = -5; z <= 5; z++) {
+            for (int x = -5; x <= 5; x++) {
+                targets.add(new SectionPos(
+                        x * Level.L4.regionSections(), 0,
+                        z * Level.L4.regionSections()));
             }
         }
-        var c = session.tracerCompletion();
-        assertNotNull(c, "terminal after 121");
-        assertEquals("SUCCESS", c.status());
-        assertEquals(121, c.written());
-        assertEquals(0, c.skipped());
-        assertEquals(0, c.failed());
-        assertEquals(121, c.written() + c.skipped() + c.failed(), "processed ==121");
-        assertTrue(c.elapsedMs() >= 0);
-        assertNotNull(c.atIsoInstant());
-        java.time.Instant.parse(c.atIsoInstant());
-
-        assertEquals(121, PerformanceMonitor.getCounter(PerformanceMonitor.TRACER_HORIZON_WRITTEN));
-        assertEquals(0, PerformanceMonitor.getCounter(PerformanceMonitor.TRACER_HORIZON_FAILED));
-
-        for (int i = 0; i < 3; i++) {
-            VoxyRequestDecoder.VoxyNodeRequest idle = ShadowRouterJobQueue.dequeueAny();
-            assertNull(idle, "queue empty after 121");
-            assertSame(c, session.tracerCompletion(), "no duplicate terminal on idle tick " + i);
-        }
-
-        // Also prove single WRITTEN via real candidate path (one sample, not 121)
-        WorldNoiseAccess mockNa = Mockito.mock(WorldNoiseAccess.class);
-        Mockito.when(mockNa.sampleFinalDensity(Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt()))
-                .thenReturn(1.0);
-        GenerationSession single = new GenerationSession();
-        single.setNoiseAccessForTest(mockNa);
-        single.enqueueEndL4TracerRequests(); // reset
-        // drain queue but process one via heavy path
-        ShadowRouterJobQueue.clear();
-        single.enqueueEndL4TracerRequests();
-        var oneReq = ShadowRouterJobQueue.dequeueAny();
-        single.resetTracerCompletionForTest();
-        single.setNoiseAccessForTest(mockNa);
-        // need to re-set startMs via record helper? Instead directly test heavy path once
-        InMemoryVolumeWriter w = new InMemoryVolumeWriter();
-        WriteOutcome out = single.processTracerRequestForTest(oneReq, w, null);
-        assertEquals(WriteOutcome.Status.WRITTEN, out.status());
+        return targets;
     }
 
-    @Test
-    void tracer_success_withSkippedAir_countsTowardSuccess() throws Exception {
+    private static GenerationSession completionSession() throws Exception {
         GenerationSession session = new GenerationSession();
-        setSection(session, 0, 0);
-        ShadowRouterJobQueue.clear();
-        session.enqueueEndL4TracerRequests();
-        assertNull(session.tracerCompletion());
-        // 121 SKIPPED_AIR via lightweight helper counts toward success per #127
-        for (int i = 0; i < 121; i++) {
-            var req = ShadowRouterJobQueue.dequeueAny();
-            assertNotNull(req);
-            session.recordTracerSkippedForTest();
-            ShadowRouterJobQueue.markCompleted(req);
-        }
-        var c = session.tracerCompletion();
-        assertNotNull(c);
-        assertEquals("SUCCESS", c.status(), "all-air (SKIPPED_AIR) counts toward success");
-        assertEquals(0, c.written());
-        assertEquals(121, c.skipped());
-        assertEquals(0, c.failed());
-
-        // Also verify single SKIPPED_AIR via heavy path (one air region)
-        WorldNoiseAccess airMock = Mockito.mock(WorldNoiseAccess.class);
-        Mockito.when(airMock.sampleFinalDensity(Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt()))
-                .thenReturn(-1.0);
-        GenerationSession airSession = new GenerationSession();
-        airSession.setNoiseAccessForTest(airMock);
-        ShadowRouterJobQueue.clear();
-        airSession.enqueueEndL4TracerRequests();
-        airSession.resetTracerCompletionForTest();
-        airSession.setNoiseAccessForTest(airMock);
-        var one = ShadowRouterJobQueue.dequeueAny();
-        // re-enqueue single for heavy test
-        ShadowRouterJobQueue.clear();
-        airSession.enqueueEndL4TracerRequests();
-        one = ShadowRouterJobQueue.dequeueAny();
-        airSession.resetTracerCompletionForTest();
-        airSession.setNoiseAccessForTest(airMock);
-        InMemoryVolumeWriter airWriter = new InMemoryVolumeWriter();
-        WriteOutcome out = airSession.processTracerRequestForTest(one, airWriter, null);
-        assertEquals(WriteOutcome.Status.SKIPPED_AIR, out.status());
+        session.resetTracerCompletionForTest();
+        Field start = GenerationSession.class.getDeclaredField("tracerStartMs");
+        start.setAccessible(true);
+        start.setLong(session, System.currentTimeMillis());
+        return session;
     }
 
-    @Test
-    void tracer_failed_whenSomeWritesFail() throws Exception {
-        GenerationSession session = new GenerationSession();
-        setSection(session, 0, 0);
-        ShadowRouterJobQueue.clear();
-        session.enqueueEndL4TracerRequests();
-        // 118 WRITTEN + 3 FAILED -> FAILED status
-        for (int i = 0; i < 118; i++) {
-            var req = ShadowRouterJobQueue.dequeueAny();
-            assertNotNull(req);
-            session.recordTracerWrittenForTest();
-            ShadowRouterJobQueue.markCompleted(req);
-            assertNull(session.tracerCompletion());
-        }
-        for (int i = 0; i < 3; i++) {
-            var req = ShadowRouterJobQueue.dequeueAny();
-            assertNotNull(req);
-            session.recordTracerFailureForTest();
-            ShadowRouterJobQueue.markCompleted(req);
-        }
-        var c = session.tracerCompletion();
-        assertNotNull(c);
-        assertEquals("FAILED", c.status(), "failed>0 yields FAILED");
-        assertEquals(118, c.written());
-        assertEquals(0, c.skipped());
-        assertEquals(3, c.failed());
-        assertEquals(121, c.written() + c.skipped() + c.failed());
-        assertNotEquals("SUCCESS", c.status());
-        assertEquals(3, PerformanceMonitor.getCounter(PerformanceMonitor.TRACER_HORIZON_FAILED));
-
-        // Also verify single FAILED via heavy path throws
-        WorldNoiseAccess mockNa = Mockito.mock(WorldNoiseAccess.class);
-        Mockito.when(mockNa.sampleFinalDensity(Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt()))
-                .thenReturn(1.0);
-        GenerationSession single = new GenerationSession();
-        single.setNoiseAccessForTest(mockNa);
-        ShadowRouterJobQueue.clear();
-        single.enqueueEndL4TracerRequests();
-        single.resetTracerCompletionForTest();
-        single.setNoiseAccessForTest(mockNa);
-        var one = ShadowRouterJobQueue.dequeueAny();
-        VoxelVolumeWriter failingWriter = new VoxelVolumeWriter() {
-            @Override public int saveQueueDepth() { return 0; }
-            @Override public boolean isRegionFullyPopulated(SectionPos o, Level l) { return false; }
-            @Override public WriteOutcome writeSection(SectionPos p, VoxelVolume v) { throw new VolumeUnavailableException("fail"); }
-            @Override public WriteOutcome writeRegion(SectionPos o, Level l, VoxelVolume v) { throw new VolumeUnavailableException("fail"); }
-        };
-        WriteOutcome out = single.processTracerRequestForTest(one, failingWriter, null);
-        assertNull(out, "failed write returns null");
-    }
-
-    @Test
-    void tracer_failed_doesNotCountTowardWrittenSkipped() throws Exception {
-        WorldNoiseAccess mockNa = Mockito.mock(WorldNoiseAccess.class);
-        Mockito.when(mockNa.sampleFinalDensity(Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt()))
-                .thenReturn(1.0);
-        GenerationSession session = new GenerationSession();
-        session.setNoiseAccessForTest(mockNa);
-        setSection(session, 0, 0);
-        ShadowRouterJobQueue.clear();
-        session.enqueueEndL4TracerRequests();
-        // 121 failures via direct helper
-        for (int i = 0; i < 121; i++) {
-            var req = ShadowRouterJobQueue.dequeueAny();
-            assertNotNull(req);
-            // Use recordTracerFailureForTest to simulate exception path without writer
-            ShadowRouterJobQueue.markCompleted(req);
-            session.recordTracerFailureForTest();
-        }
-        var c = session.tracerCompletion();
-        assertNotNull(c);
-        assertEquals("FAILED", c.status());
-        assertEquals(0, c.written() + c.skipped(), "failed never counts toward written+skipped");
-        assertEquals(121, c.failed());
-    }
-
-    @Test
-    void tracer_stopBefore121_emitsNothing() throws Exception {
-        GenerationSession session = new GenerationSession();
-        setSection(session, 0, 0);
-        ShadowRouterJobQueue.clear();
-        session.enqueueEndL4TracerRequests();
-        for (int i = 0; i < 10; i++) {
-            var req = ShadowRouterJobQueue.dequeueAny();
-            assertNotNull(req);
-            session.recordTracerWrittenForTest();
-            ShadowRouterJobQueue.markCompleted(req);
-        }
-        assertNull(session.tracerCompletion(), "stop before 121 should not have terminal");
-        ShadowRouterJobQueue.clear();
-        assertNull(session.tracerCompletion());
-    }
-
-    @Test
-    void tracer_logContainsTerminalLine() throws Exception {
-        java.nio.file.Path p = findPath("java/src/main/java/com/rhythmatician/lodiffusion/voxy/GenerationSession.java");
-        String src = java.nio.file.Files.readString(p);
-        assertTrue(src.contains("[LodGen][Tracer] terminal 121/121 status="),
-                "Must contain single terminal log with status=");
-        assertTrue(src.contains("elapsedMs=") && src.contains("at="),
-                "Must contain elapsedMs and at");
-        // No blocking barrier
-        assertFalse(src.contains("CountDownLatch") || src.contains("countDownLatch"),
-                "Must not use CountDownLatch");
-        // Verify TracerCompletion record exists
-        assertTrue(src.contains("record TracerCompletion"), "Must expose TracerCompletion");
-    }
-
-    private void setSection(GenerationSession s, int x, int z) throws Exception {
-        var fX = GenerationSession.class.getDeclaredField("playerSectionX");
-        var fZ = GenerationSession.class.getDeclaredField("playerSectionZ");
-        fX.setAccessible(true);
-        fZ.setAccessible(true);
-        fX.set(s, x);
-        fZ.set(s, z);
-    }
-
-    private java.nio.file.Path findPath(String relative) {
-        java.nio.file.Path r = java.nio.file.Path.of(relative);
-        if (java.nio.file.Files.exists(r)) return r;
-        java.nio.file.Path alt = java.nio.file.Path.of("").toAbsolutePath();
-        for (int i = 0; i < 5; i++) {
-            java.nio.file.Path tryP = alt.resolve(relative);
-            if (java.nio.file.Files.exists(tryP)) return tryP;
-            alt = alt.getParent();
-            if (alt == null) break;
-        }
-        return r;
-    }
 }

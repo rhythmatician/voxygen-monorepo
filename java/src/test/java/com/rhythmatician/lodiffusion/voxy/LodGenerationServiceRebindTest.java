@@ -75,7 +75,7 @@ class LodGenerationServiceRebindTest {
             forceRunning(svc.getSessionForTest());
             assertEquals(END_KEY, svc.getBoundDimensionForTest());
             assertTrue(svc.getSessionForTest().isEndL4TracerMode(), "End dimension must be tracer");
-            assertEquals(121, svc.getSessionForTest().enqueueEndL4TracerRequests());
+            assertNotNull(svc.getSessionForTest().endRefinementSnapshotForTest());
             ShadowRouterJobQueue.clear();
 
             boolean second = svc.checkAndRebindIfNeeded(END_KEY, null, null);
@@ -125,7 +125,10 @@ class LodGenerationServiceRebindTest {
             svc.observeVanillaChunkColumnForTest(END_KEY, 1, 0);
             svc.observeVanillaChunkColumnForTest(END_KEY, 0, 1);
             svc.observeVanillaChunkColumnForTest(END_KEY, 1, 1);
-            assertTrue(svc.getSessionForTest().isFullyVanillaForTest(0, 0, 0, 0));
+            EndRefinement.Snapshot beforeRebind =
+                    svc.getSessionForTest().endRefinementSnapshotForTest();
+            assertNotNull(beforeRebind);
+            assertTrue(beforeRebind.refinement().admitted() > 0);
 
             assertTrue(svc.checkAndRebindIfNeeded(OVERWORLD_KEY, null, null));
             Thread.sleep(50);
@@ -134,8 +137,44 @@ class LodGenerationServiceRebindTest {
             Thread.sleep(50);
             forceRunning(svc.getSessionForTest());
 
-            assertTrue(svc.getSessionForTest().isFullyVanillaForTest(0, 0, 0, 0),
-                    "a new End session must replay observations loaded before the dimension round-trip");
+            EndRefinement.Snapshot replayed =
+                    svc.getSessionForTest().endRefinementSnapshotForTest();
+            assertNotNull(replayed);
+            assertTrue(replayed.refinement().admitted() > 0,
+                    "a fresh End module must replay durable vanilla observations after rebind");
+        } finally {
+            svc.stop();
+        }
+    }
+
+    @Test
+    void rebindEndRoundTripDoesNotCarryOldFrontierStateIntoFreshModule() throws Exception {
+        LodGenerationService svc = new LodGenerationService();
+        svc.startForTest(END_KEY, null);
+        Thread.sleep(50);
+        forceRunning(svc.getSessionForTest());
+        try {
+            GenerationSession original = svc.getSessionForTest();
+            int admitted = original.enqueueVanillaFrontierGuardForTest(
+                    new VanillaFrontierGuardPlanner.FrontierSnapshot(
+                            0, 0, 0, 0, 8, 8), 0);
+            assertTrue(admitted > 0);
+            assertTrue(original.endRefinementSnapshotForTest().refinement().admitted() > 0);
+
+            assertTrue(svc.checkAndRebindIfNeeded(OVERWORLD_KEY, null, null));
+            Thread.sleep(50);
+            forceRunning(svc.getSessionForTest());
+            assertTrue(svc.checkAndRebindIfNeeded(END_KEY, null, null));
+            Thread.sleep(50);
+            forceRunning(svc.getSessionForTest());
+
+            GenerationSession fresh = svc.getSessionForTest();
+            assertNotSame(original, fresh);
+            EndRefinement.Snapshot snapshot = fresh.endRefinementSnapshotForTest();
+            assertNotNull(snapshot);
+            assertEquals(0, snapshot.refinement().admitted());
+            assertEquals(0, snapshot.pendingChildren());
+            assertEquals(0, snapshot.retryableChildren());
         } finally {
             svc.stop();
         }

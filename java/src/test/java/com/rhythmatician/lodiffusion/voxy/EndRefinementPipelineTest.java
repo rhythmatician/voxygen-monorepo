@@ -1,180 +1,51 @@
 package com.rhythmatician.lodiffusion.voxy;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.util.HashSet;
-import java.util.Set;
-import net.lodiffusion.shadow.ShadowRouterJobQueue;
-import net.lodiffusion.shadow.VoxyDemandKind;
-import net.lodiffusion.shadow.VoxyDemandSource;
-import net.lodiffusion.shadow.VoxyRequestDecoder;
-import net.lodiffusion.shadow.VoxyWorkKind;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 
 class EndRefinementPipelineTest {
-    @BeforeEach void setUp() { ShadowRouterJobQueue.clear(); }
-    @AfterEach void tearDown() { ShadowRouterJobQueue.clear(); }
+    private static final DefaultEndRefinement.Config CONFIG =
+            new DefaultEndRefinement.Config(1000, 64, 16, 16, 8192, 0, 3, 10, 0);
 
     @Test
-    void parentTransactionPublishesOnlyRenderableDemandedChildren() {
-        GenerationSession session = new GenerationSession();
-        session.setNoiseAccessForTest(solidNoise());
-        InMemoryVolumeWriter writer = new InMemoryVolumeWriter();
-        writer.writeRegion(new SectionPos(0, 0, 0), Level.L4, solidVolume());
-        assertEquals(RefinementOutcome.Status.PUBLISHED,
-                session.processEndRefinementRequest(request(4, true), writer).status());
-        assertEquals(5, writer.regionRecords().size());
-        assertEquals(0x0F, writer.committedChildMask(new SectionPos(0, 0, 0), Level.L4));
-        assertTrue(writer.regionRecords().stream().skip(1).allMatch(r -> r.level() == Level.L3));
-        Set<SectionPos> childOrigins = new HashSet<>();
-        writer.regionRecords().stream().skip(1).forEach(r -> childOrigins.add(r.origin()));
-        assertEquals(Set.of(
-                new SectionPos(0, 0, 0), new SectionPos(16, 0, 0),
-                new SectionPos(0, 0, 16), new SectionPos(16, 0, 16)), childOrigins);
-    }
-
-    @Test
-    void finerTransactionIsBlockedUntilCoarserTransactionHasWrittenChildren() {
-        GenerationSession session = new GenerationSession();
-        session.setNoiseAccessForTest(solidNoise());
-        InMemoryVolumeWriter writer = new InMemoryVolumeWriter();
-        assertEquals(RefinementOutcome.Status.BLOCKED_PARENT,
-                session.processEndRefinementRequest(request(3, true), writer).status());
-        assertEquals(0, writer.regionRecords().size());
-        writer.writeRegion(new SectionPos(0, 0, 0), Level.L4, solidVolume());
-        assertEquals(RefinementOutcome.Status.PUBLISHED,
-                session.processEndRefinementRequest(request(4, true), writer).status());
-        assertEquals(RefinementOutcome.Status.PUBLISHED,
-                session.processEndRefinementRequest(request(3, true), writer).status());
-    }
-
-    @Test
-    void missingGuardParentQueuesGuardPrerequisiteAheadOfBlockedDescendant() {
-        GenerationSession session = new GenerationSession();
-        session.setNoiseAccessForTest(solidNoise());
-        InMemoryVolumeWriter writer = new InMemoryVolumeWriter();
-        VoxyRequestDecoder.VoxyNodeRequest guard = request(3, true);
-        guard.demandKind = VoxyDemandKind.VANILLA_FRONTIER_GUARD;
-        guard.demandSource = VoxyDemandSource.VANILLA_OCCUPANCY_BOUNDARY;
-
-        assertEquals(RefinementOutcome.Status.BLOCKED_PARENT,
-                session.processEndRefinementRequest(guard, writer).status());
-        ShadowRouterJobQueue.requeue(guard);
-
-        VoxyRequestDecoder.VoxyNodeRequest prerequisite = ShadowRouterJobQueue.dequeueAny();
-        assertNotNull(prerequisite);
-        assertEquals(Level.L4.value(), prerequisite.lodLevel);
-        assertEquals(VoxyDemandKind.VANILLA_FRONTIER_GUARD, prerequisite.demandKind);
-        assertEquals(VoxyWorkKind.PARENT_REFINEMENT, prerequisite.workKind);
-        assertEquals(VoxyDemandSource.PARENT_DEPENDENCY, prerequisite.demandSource);
-    }
-
-    @Test
-    void missingL4ForGuardQueuesGuardHorizonLeaf() {
-        GenerationSession session = new GenerationSession();
-        session.setNoiseAccessForTest(solidNoise());
-        InMemoryVolumeWriter writer = new InMemoryVolumeWriter();
-        VoxyRequestDecoder.VoxyNodeRequest guard = request(4, true);
-        guard.demandKind = VoxyDemandKind.VANILLA_FRONTIER_GUARD;
-
-        assertEquals(RefinementOutcome.Status.BLOCKED_PARENT,
-                session.processEndRefinementRequest(guard, writer).status());
-
-        VoxyRequestDecoder.VoxyNodeRequest prerequisite = ShadowRouterJobQueue.dequeueAny();
-        assertNotNull(prerequisite);
-        assertEquals(VoxyDemandKind.VANILLA_FRONTIER_GUARD, prerequisite.demandKind);
-        assertEquals(VoxyWorkKind.HORIZON_LEAF, prerequisite.workKind);
-    }
-
-    @Test
-    void missingVisualParentKeepsVisualPrerequisite() {
-        GenerationSession session = new GenerationSession();
-        session.setNoiseAccessForTest(solidNoise());
-        InMemoryVolumeWriter writer = new InMemoryVolumeWriter();
-
-        assertEquals(RefinementOutcome.Status.BLOCKED_PARENT,
-                session.processEndRefinementRequest(request(3, true), writer).status());
-
-        VoxyRequestDecoder.VoxyNodeRequest prerequisite = ShadowRouterJobQueue.dequeueAny();
-        assertNotNull(prerequisite);
-        assertEquals(VoxyDemandKind.VISUAL_REFINEMENT, prerequisite.demandKind);
-        assertEquals(VoxyWorkKind.PARENT_REFINEMENT, prerequisite.workKind);
-    }
-
-    @Test
-    void unflaggedLegacyChildDemandIsConvertedToParentTransaction() {
-        GenerationSession session = new GenerationSession();
-        session.setNoiseAccessForTest(solidNoise());
-        InMemoryVolumeWriter writer = new InMemoryVolumeWriter();
-        writer.writeRegion(new SectionPos(0, 0, 0), Level.L4, solidVolume());
-        assertEquals(RefinementOutcome.Status.PUBLISHED,
-                session.processEndRefinementRequest(request(3, false), writer).status());
-        assertEquals(2, writer.regionRecords().size());
-        assertEquals(0x01, writer.committedChildMask(new SectionPos(0, 0, 0), Level.L4));
-    }
-
-    @Test
-    void l1ParentTransactionPublishesItsL0Children() {
-        GenerationSession session = new GenerationSession();
-        session.setNoiseAccessForTest(solidNoise());
-        InMemoryVolumeWriter writer = new InMemoryVolumeWriter();
-        writer.writeRegion(new SectionPos(0, 0, 0), Level.L1, solidVolume());
-
-        assertEquals(RefinementOutcome.Status.PUBLISHED,
-                session.processEndRefinementRequest(request(1, true), writer).status());
-        assertEquals(9, writer.regionRecords().size());
-        assertEquals(0xFF, writer.committedChildMask(new SectionPos(0, 0, 0), Level.L1));
-        assertTrue(writer.regionRecords().stream().skip(1).allMatch(r -> r.level() == Level.L0));
-    }
-
-    @Test
-    void nativeL0DemandIsConvertedToAnL1ParentTransaction() {
-        GenerationSession session = new GenerationSession();
-        session.setNoiseAccessForTest(solidNoise());
-        InMemoryVolumeWriter writer = new InMemoryVolumeWriter();
-        writer.writeRegion(new SectionPos(0, 0, 0), Level.L1, solidVolume());
-
-        assertEquals(RefinementOutcome.Status.PUBLISHED,
-                session.processEndRefinementRequest(request(0, false), writer).status());
-        assertEquals(0x01, writer.committedChildMask(new SectionPos(0, 0, 0), Level.L1));
-    }
-
-    @Test
-    void sessionPublishesRefinementOnlyThroughOneCompleteBatch() {
-        GenerationSession session = new GenerationSession();
-        session.setNoiseAccessForTest(solidNoise());
+    void modulePublishesFrontierRefinementThroughOneCompleteBatch() {
         BatchOnlyWriter writer = new BatchOnlyWriter();
+        DefaultEndRefinement module = module(writer, (level, origin) -> solid());
 
-        assertEquals(RefinementOutcome.Status.PUBLISHED,
-                session.processEndRefinementRequest(request(4, true), writer).status());
+        module.observeFrontier(List.of(parent(new SectionPos(0, 0, 0))));
+        assertEquals(EndRefinement.StepResult.Status.PROGRESSED, module.advance(frame(1)).status());
+
         assertEquals(1, writer.batchCommits);
         assertEquals(0, writer.directRegionWrites);
         assertNotNull(writer.intent);
-        assertEquals(Level.L4, writer.intent.parentLevel());
+        assertEquals(Level.L1, writer.intent.parentLevel());
         assertEquals(new SectionPos(0, 0, 0), writer.intent.parentOrigin());
+        assertEquals(0xFF, writer.intent.demandedChildMask());
     }
 
     @Test
-    void l2ParentEmptyPublicationIsAttributedWithoutChangingItsOutcome() {
-        GenerationSession session = new GenerationSession();
-        session.setNoiseAccessForTest(solidNoise());
+    void l1FrontierTransactionMaterializesL0ChildrenAndPublishesExactMask() {
         BatchOnlyWriter writer = new BatchOnlyWriter();
-        writer.outcome = WriteOutcome.skippedAir();
+        writer.materializeChildren = true;
+        DefaultEndRefinement module = module(writer, (level, origin) -> solid());
 
-        GenerationSession.DemandProcessResult result = session.processEndPhysicalWork(
-                request(2, true), writer, () -> GenerationSession.DemandProcessResult.FAILED);
+        module.observeFrontier(List.of(parent(new SectionPos(0, 0, 0))));
+        module.advance(frame(1));
 
-        assertEquals(Level.L2, writer.intent.parentLevel());
-        assertEquals(GenerationSession.DemandProcessResult.WRITTEN, result);
-        assertTrue(session.refinementLifecycleSummaryForTest()
-                .contains("L2[d1,b0,a0,e1,n0,f0]"));
+        assertEquals(8, writer.childCalls.get());
+        assertEquals(Level.L0, writer.lastChildLevel);
+        assertEquals(0xFF, writer.intent.demandedChildMask());
+        assertEquals(8, module.snapshot().representedChildren());
     }
 
     @Test
-    void l2ParentUsesExactInterpolatedL1WhileCoarserChildrenKeepPointSampling() {
+    void productionChildDispatchUsesExactSamplerOnlyForL2ToL1() {
         WorldNoiseAccess noise = Mockito.mock(WorldNoiseAccess.class);
         Mockito.when(noise.sampleFinalDensity(Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt()))
                 .thenReturn(1.0);
@@ -190,35 +61,27 @@ class EndRefinementPipelineTest {
                 Mockito.any(), Mockito.any());
         GenerationSession session = new GenerationSession();
         session.setNoiseAccessForTest(noise);
-        BatchOnlyWriter writer = new BatchOnlyWriter();
-        writer.sampleChild = true;
 
-        assertEquals(RefinementOutcome.Status.PUBLISHED,
-                session.processEndRefinementRequest(request(2, true), writer).status());
-        assertEquals(Level.L1, writer.sampledChildLevel);
-        assertEquals(16, writer.sampledChild.countNonAir());
+        VoxelVolume l1 = session.produceEndRefinementChild(Level.L1, new SectionPos(0, 0, 0));
+        assertEquals(16, l1.countNonAir());
         Mockito.verify(noise, Mockito.times(16)).sampleExactEndBaseTerrainChunk(
                 Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt(),
                 Mockito.any(), Mockito.any());
         Mockito.verify(noise, Mockito.never()).sampleFinalDensity(
                 Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt());
 
-        writer.sampledChild = null;
-        assertEquals(RefinementOutcome.Status.PUBLISHED,
-                session.processEndRefinementRequest(request(3, true), writer).status());
-        assertEquals(Level.L2, writer.sampledChildLevel);
-        assertTrue(writer.sampledChild.countNonAir() > 0);
+        VoxelVolume l2 = session.produceEndRefinementChild(Level.L2, new SectionPos(0, 0, 0));
+        assertTrue(l2.countNonAir() > 0);
         Mockito.verify(noise, Mockito.atLeastOnce()).sampleFinalDensity(
                 Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt());
     }
 
     @Test
-    void oneBitL2TransactionMaterializesOneExactChildBeforeOneBatchHandoff() {
+    void exactL1ChildUsesSixteenChunkColumnsBeforeOneBatchHandoff() {
         WorldNoiseAccess noise = Mockito.mock(WorldNoiseAccess.class);
-        java.util.concurrent.atomic.AtomicInteger chunkColumns =
-                new java.util.concurrent.atomic.AtomicInteger();
+        AtomicInteger columns = new AtomicInteger();
         Mockito.doAnswer(invocation -> {
-            chunkColumns.incrementAndGet();
+            columns.incrementAndGet();
             return null;
         }).when(noise).sampleExactEndBaseTerrainChunk(
                 Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt(),
@@ -226,40 +89,68 @@ class EndRefinementPipelineTest {
         GenerationSession session = new GenerationSession();
         session.setNoiseAccessForTest(noise);
         BatchOnlyWriter writer = new BatchOnlyWriter();
-        writer.materializeAllChildren = true;
 
-        VoxyRequestDecoder.VoxyNodeRequest request = request(2, true);
-        request.demandedChildMask = 1 << 3;
-        assertEquals(RefinementOutcome.Status.PUBLISHED,
-                session.processEndRefinementRequest(request, writer).status());
+        ParentRefinementIntent intent = new ParentRefinementIntent(
+                new SectionPos(0, 0, 0), Level.L2, 1 << 3,
+                session::produceEndRefinementChild);
+        writer.materializeChildren = true;
+        writer.refineParent(intent);
 
         assertEquals(1, writer.batchCommits);
+        assertEquals(1, writer.childCalls.get());
+        assertEquals(Level.L1, writer.lastChildLevel);
+        assertEquals(16, columns.get());
         assertEquals(0, writer.directRegionWrites);
-        assertEquals(1, writer.materializedChildLevels.size());
-        assertTrue(writer.materializedChildLevels.stream().allMatch(level -> level == Level.L1));
-        assertEquals(16, chunkColumns.get());
+    }
+
+    @Test
+    void emptyPublicationRemainsTerminalAndIsNotAdvertised() {
+        BatchOnlyWriter writer = new BatchOnlyWriter();
+        writer.result = ParentRefinementResult.published(WriteOutcome.skippedAir(), 0, 0xFF);
+        DefaultEndRefinement module = module(writer, (level, origin) -> solid());
+
+        module.observeFrontier(List.of(parent(new SectionPos(0, 0, 0))));
+        module.advance(frame(1));
+        module.advance(frame(2));
+
+        assertEquals(0, module.snapshot().representedChildren());
+        assertEquals(8, module.snapshot().deterministicEmptyChildren());
+        assertEquals(1, writer.batchCommits);
+    }
+
+    private static DefaultEndRefinement module(
+            VoxelVolumeWriter writer, DefaultEndRefinement.ChildTerrain terrain) {
+        return new DefaultEndRefinement(CONFIG, writer::refineParent, terrain,
+                origin -> WriteOutcome.written(1), () -> true);
+    }
+
+    private static EndRefinement.Frame frame(long time) {
+        return new EndRefinement.Frame(
+                time, new SectionPos(0, 4, 0), List.of(), false);
+    }
+
+    private static VanillaFrontierGuardPlanner.ParentTransaction parent(SectionPos origin) {
+        return new VanillaFrontierGuardPlanner.ParentTransaction(origin);
     }
 
     private static final class BatchOnlyWriter implements VoxelVolumeWriter {
         int batchCommits;
         int directRegionWrites;
         ParentRefinementIntent intent;
-        WriteOutcome outcome = WriteOutcome.written(1);
-        boolean sampleChild;
-        boolean materializeAllChildren;
-        Level sampledChildLevel;
-        VoxelVolume sampledChild;
-        final java.util.List<Level> materializedChildLevels = new java.util.ArrayList<>();
+        ParentRefinementResult result;
+        boolean materializeChildren;
+        final AtomicInteger childCalls = new AtomicInteger();
+        Level lastChildLevel;
 
         @Override
         public WriteOutcome writeSection(SectionPos pos, VoxelVolume volume) {
-            throw new AssertionError("refinement must not write sections");
+            throw new AssertionError("refinement must not write isolated sections");
         }
 
         @Override
         public WriteOutcome writeRegion(SectionPos origin, Level level, VoxelVolume volume) {
             directRegionWrites++;
-            throw new AssertionError("GenerationSession must delegate child writes to the batch");
+            throw new AssertionError("refinement must publish through one parent batch");
         }
 
         @Override
@@ -271,47 +162,24 @@ class EndRefinementPipelineTest {
         public ParentRefinementResult refineParent(ParentRefinementIntent intent) {
             batchCommits++;
             this.intent = intent;
-            if (sampleChild) {
-                sampledChildLevel = Level.values()[intent.parentLevel().value() - 1];
-                sampledChild = intent.childVolumes().produce(
-                        sampledChildLevel,
-                        ParentRefinementBatch.childOrigins(
-                                intent.parentOrigin(), intent.parentLevel()).getFirst());
-            }
-            if (materializeAllChildren) {
-                Level childLevel = Level.values()[intent.parentLevel().value() - 1];
-                var origins = ParentRefinementBatch.childOrigins(
+            if (materializeChildren) {
+                Level child = Level.values()[intent.parentLevel().value() - 1];
+                List<SectionPos> origins = ParentRefinementBatch.childOrigins(
                         intent.parentOrigin(), intent.parentLevel());
                 for (int octant = 0; octant < 8; octant++) {
                     if ((intent.demandedChildMask() & (1 << octant)) == 0) continue;
-                    SectionPos childOrigin = origins.get(octant);
-                    intent.childVolumes().produce(childLevel, childOrigin);
-                    materializedChildLevels.add(childLevel);
+                    intent.childVolumes().produce(child, origins.get(octant));
+                    childCalls.incrementAndGet();
+                    lastChildLevel = child;
                 }
             }
-            return ParentRefinementResult.published(outcome);
+            return result != null ? result : ParentRefinementResult.published(
+                    WriteOutcome.written(Integer.bitCount(intent.demandedChildMask())),
+                    intent.demandedChildMask(), 0);
         }
     }
 
-    private static VoxyRequestDecoder.VoxyNodeRequest request(int level, boolean transaction) {
-        VoxyRequestDecoder.VoxyNodeRequest request = new VoxyRequestDecoder.VoxyNodeRequest();
-        request.lodLevel = level;
-        request.demandKind = transaction
-                ? VoxyDemandKind.VISUAL_REFINEMENT : VoxyDemandKind.HORIZON_COVERAGE;
-        request.workKind = transaction
-                ? net.lodiffusion.shadow.VoxyWorkKind.PARENT_REFINEMENT
-                : net.lodiffusion.shadow.VoxyWorkKind.HORIZON_LEAF;
-        return request;
-    }
-
-    private static WorldNoiseAccess solidNoise() {
-        WorldNoiseAccess noise = Mockito.mock(WorldNoiseAccess.class);
-        Mockito.when(noise.sampleFinalDensity(Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt()))
-                .thenReturn(1.0);
-        return noise;
-    }
-
-    private static VoxelVolume solidVolume() {
+    private static VoxelVolume solid() {
         return VoxelVolume.uniform(32, EndL4DeterministicCandidate.BLOCK_END_STONE, 0);
     }
 }

@@ -266,7 +266,9 @@ public final class RealVoxyVolumeWriter implements VoxelVolumeWriter {
             return ParentRefinementResult.parentMissing();
         }
         ParentRefinementBatch batch = ParentRefinementBatch.materialize(intent);
-        return ParentRefinementResult.published(commitParentRefinement(batch));
+        WriteOutcome outcome = commitParentRefinement(batch);
+        return ParentRefinementResult.published(
+                outcome, batch.nonEmptyMask(), batch.requiredMask() & ~batch.nonEmptyMask());
     }
 
     private WriteOutcome commitParentRefinement(ParentRefinementBatch batch) {

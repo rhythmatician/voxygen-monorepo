@@ -66,6 +66,12 @@ public final class WorldNoiseAccess {
     private final ChunkGenerator generator;
     private final NoiseConfig noiseConfig;
     private final BiomeSource biomeSource;
+    private final DensitySample finalDensity;
+
+    @FunctionalInterface
+    interface DensitySample {
+        double sample(int blockX, int blockY, int blockZ);
+    }
 
     private WorldNoiseAccess(ServerWorld serverWorld, ChunkGenerator generator,
                              NoiseConfig noiseConfig) {
@@ -73,6 +79,17 @@ public final class WorldNoiseAccess {
         this.generator = generator;
         this.noiseConfig = noiseConfig;
         this.biomeSource = generator.getBiomeSource();
+        DensityFunction density = noiseConfig.getNoiseRouter().finalDensity();
+        this.finalDensity = (blockX, blockY, blockZ) ->
+                density.sample(new DensityFunction.UnblendedNoisePos(blockX, blockY, blockZ));
+    }
+
+    WorldNoiseAccess(DensitySample finalDensity) {
+        this.serverWorld = null;
+        this.generator = null;
+        this.noiseConfig = null;
+        this.biomeSource = null;
+        this.finalDensity = finalDensity;
     }
 
     /**
@@ -658,8 +675,7 @@ public final class WorldNoiseAccess {
      * @return FINAL_DENSITY value at the block position; &gt;0 is solid
      */
     public double sampleFinalDensity(int blockX, int blockY, int blockZ) {
-        DensityFunction df = noiseConfig.getNoiseRouter().finalDensity();
-        return df.sample(new DensityFunction.UnblendedNoisePos(blockX, blockY, blockZ));
+        return finalDensity.sample(blockX, blockY, blockZ);
     }
 
     // -------------------------------------------------------------------------

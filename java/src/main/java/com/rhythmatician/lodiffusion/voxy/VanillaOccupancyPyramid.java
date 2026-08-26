@@ -181,6 +181,12 @@ final class VanillaOccupancyPyramid {
         return Collections.unmodifiableSet(new HashSet<>(urgentBoundary));
     }
 
+    void clear() {
+        occupiedDescendants.clear();
+        l0OctantMasks.clear();
+        urgentBoundary.clear();
+    }
+
     private Set<Cell> affectedBoundaryCells(Cell leaf) {
         Set<Cell> affected = new HashSet<>(9 * (MAX_LEVEL + 1));
         Cell ancestor = leaf;
