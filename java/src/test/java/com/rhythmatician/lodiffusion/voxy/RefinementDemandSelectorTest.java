@@ -6,10 +6,31 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 
 class RefinementDemandSelectorTest {
+    /**
+     * Covered L4 origin given as a canonical SectionPos (16-block lattice)
+     * that converts nontrivially on every axis under
+     * {@code sectionToWorldSection(_, L4)} ({@code >> 5}):
+     * x=96 -> wsX=3, y=32 -> wsY=1, z=-64 -> wsZ=-2. Using a nonzero,
+     * mixed-sign origin ensures the selector's lattice conversion is
+     * exercised by every test, not just the dedicated regression cases.
+     */
+    private static final SectionPos ORIGIN = new SectionPos(96, 32, -64);
+    private static final int WS_X = 3;
+    private static final int WS_Y = 1;
+    private static final int WS_Z = -2;
+
+    /** Block origin of the covered L4 WorldSection (WS_X, WS_Y, WS_Z). */
+    private static final int BASE_X = WS_X << 9;
+    private static final int BASE_Y = WS_Y << 9;
+    private static final int BASE_Z = WS_Z << 9;
+
     private static RefinementDemandSelector.Params params(int finest) {
+        // Camera sits at the same point relative to the covered region as the
+        // historical (256, 96, 256) sat in region (0, 0, 0), so all geometric
+        // expectations translate unchanged.
         return new RefinementDemandSelector.Params(
-                256, 96, 256, 1000, 64, finest, 1e9, Integer.MAX_VALUE,
-                List.of(new SectionPos(0, 0, 0)));
+                BASE_X + 256, BASE_Y + 96, BASE_Z + 256, 1000, 64, finest, 1e9,
+                Integer.MAX_VALUE, List.of(ORIGIN));
     }
 
     @Test
@@ -40,26 +61,26 @@ class RefinementDemandSelectorTest {
     @Test
     void parentCoordinatesCollapseEightChildDemands() {
         var out = RefinementDemandSelector.select(new RefinementDemandSelector.Params(
-                448, 300, 448, 10, 64, Level.L1.value(), 1e9, Integer.MAX_VALUE,
-                List.of(new SectionPos(0, 0, 0))));
+                BASE_X + 448, BASE_Y + 300, BASE_Z + 448, 10, 64, Level.L1.value(),
+                1e9, Integer.MAX_VALUE, List.of(ORIGIN)));
         assertEquals(3, out.size());
         assertTrue(out.stream().anyMatch(e -> e.request().equals(
-                new RefinementDemandSelector.NodeRequest(4, 0, 0, 0))));
+                new RefinementDemandSelector.NodeRequest(4, WS_X, WS_Y, WS_Z))));
         assertTrue(out.stream().anyMatch(e -> e.request().equals(
-                new RefinementDemandSelector.NodeRequest(3, 1, 1, 1))));
+                new RefinementDemandSelector.NodeRequest(3, WS_X * 2 + 1, WS_Y * 2 + 1, WS_Z * 2 + 1))));
         assertTrue(out.stream().anyMatch(e -> e.request().equals(
-                new RefinementDemandSelector.NodeRequest(2, 3, 2, 3))));
+                new RefinementDemandSelector.NodeRequest(2, WS_X * 4 + 3, WS_Y * 4 + 2, WS_Z * 4 + 3))));
     }
 
     @Test
     void parentDemandRetainsTheExactDemandedChildOctants() {
         var out = RefinementDemandSelector.select(new RefinementDemandSelector.Params(
-                448, 300, 448, 10, 64, Level.L1.value(), 1e9, Integer.MAX_VALUE,
-                List.of(new SectionPos(0, 0, 0))));
+                BASE_X + 448, BASE_Y + 300, BASE_Z + 448, 10, 64, Level.L1.value(),
+                1e9, Integer.MAX_VALUE, List.of(ORIGIN)));
 
         var l2 = out.stream()
-                .filter(e -> e.request().equals(
-                        new RefinementDemandSelector.NodeRequest(2, 3, 2, 3)))
+                .filter(e -> e.request().equals(new RefinementDemandSelector.NodeRequest(
+                        2, WS_X * 4 + 3, WS_Y * 4 + 2, WS_Z * 4 + 3)))
                 .findFirst().orElseThrow();
         assertEquals(0x0F, l2.demandedChildMask());
     }
@@ -69,8 +90,8 @@ class RefinementDemandSelectorTest {
         var out = RefinementDemandSelector.select(params(Level.L1.value()));
 
         var containingCamera = out.stream()
-                .filter(e -> e.request().equals(
-                        new RefinementDemandSelector.NodeRequest(2, 0, 0, 0)))
+                .filter(e -> e.request().equals(new RefinementDemandSelector.NodeRequest(
+                        2, WS_X * 4, WS_Y * 4, WS_Z * 4)))
                 .findFirst().orElseThrow();
         assertEquals(0xFF, containingCamera.demandedChildMask());
     }
