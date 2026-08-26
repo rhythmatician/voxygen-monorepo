@@ -7,9 +7,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 class FlightTourTest {
+    @BeforeEach
+    void resetTour() {
+        FlightTour.resetForTest();
+    }
+
     @Test
     void tourKeepsTheConfiguredCorridorAndThreeSecondObservationDwell() {
         assertEquals(6, FlightTour.waypointCountForTest());
@@ -48,6 +54,40 @@ class FlightTourTest {
 
         String finalStatus = events.get(events.size() - 1);
         assertTrue(finalStatus.startsWith("screenshot:tour-waypoint-06-after.png"));
+    }
+
+    @Test
+    void lifecycleUsesScenarioWaypointsPoseAndEvidencePrefix() {
+        FlightTour.resetForTest(new FlightTourScenario(
+                "synthetic",
+                "Synthetic contract tour",
+                "test:dimension",
+                "SyntheticWorld",
+                "synthetic-template",
+                2,
+                "synthetic-evidence",
+                List.of(
+                        new FlightTourScenario.Waypoint(11, 22, 33, 45.0F, -10.0F),
+                        new FlightTourScenario.Waypoint(-4, 5, -6, 90.0F, 15.0F))));
+        FlightTour.configureAutoStart(false, 100, 2);
+        FlightTour.start();
+        FlightTour.tickForTest(100);
+
+        assertEquals(List.of(
+                "teleport:11,22,33,45.0,-10.0",
+                "camera-lock:45.0,-10.0",
+                "screenshot:synthetic-evidence-01-before.png",
+                "camera-lock:45.0,-10.0",
+                "screenshot:synthetic-evidence-01-after.png",
+                "teleport:-4,5,-6,90.0,15.0",
+                "camera-lock:90.0,15.0",
+                "screenshot:synthetic-evidence-02-before.png",
+                "camera-lock:90.0,15.0",
+                "screenshot:synthetic-evidence-02-after.png"),
+                FlightTour.testEventsForTest());
+        assertEquals(1, FlightTour.testStatusesForTest().stream()
+                .filter("complete:all_waypoints"::equals)
+                .count());
     }
 
     @Test
@@ -91,6 +131,12 @@ class FlightTourTest {
 
         assertFalse(FlightTour.isAutoStartEnabled());
         assertTrue(FlightTour.shutdownRequestedForTest());
+        assertEquals(0, FlightTour.testStatusesForTest().stream()
+                .filter("complete:all_waypoints"::equals)
+                .count());
+        assertEquals(1, FlightTour.testStatusesForTest().stream()
+                .filter("failed:timeout"::equals)
+                .count());
     }
 
     @Test

@@ -4,7 +4,6 @@ import com.rhythmatician.lodiffusion.HelloTerrainMod;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.util.ScreenshotRecorder;
 import net.minecraft.text.Text;
-import net.minecraft.world.World;
 
 import java.io.IOException;
 import java.lang.reflect.Method;
@@ -20,15 +19,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * Client-only, opt-in or auto-start tour for repeatable Stage 2 flight verification.
  */
 public final class FlightTour {
-    private static final int DEFAULT_DWELL_TICKS = 60;
-    private static final float TOUR_YAW = 0.0F;
-    private static final float TOUR_PITCH = 0.0F;
     private static final String STATUS_FILE_NAME = "flight-tour-status.jsonl";
     private static final String SHUTDOWN_SUCCESS_EVENT = "all_waypoints";
-    private static final int[][] WAYPOINTS = {
-            {0, 96, 512}, {0, 96, 768}, {0, 96, 896},
-            {0, 96, 960}, {0, 96, 992}, {0, 96, 1008},
-    };
+    private static final FlightTourScenario END_SCENARIO = FlightTourScenario.endRefinement();
 
     private enum Phase { TELEPORT, SHOT_BEFORE, DWELL, SHOT_AFTER }
 
@@ -39,7 +32,8 @@ public final class FlightTour {
     private static Phase phase = Phase.TELEPORT;
     private static volatile boolean autoStartEnabled;
     private static int timeoutTicks = 20_000;
-    private static int dwellTicks = DEFAULT_DWELL_TICKS;
+    private static FlightTourScenario scenario = END_SCENARIO;
+    private static int dwellTicks = scenario.defaultDwellTicks();
     private static String runId = "";
     private static Path statusFilePath;
     private static boolean machineReadableEnabled = true;
@@ -82,7 +76,7 @@ public final class FlightTour {
         shutdownRequested.set(false);
         finalCompletion.cancel();
         enter(Phase.TELEPORT);
-        log("Tour started — " + WAYPOINTS.length + " waypoints");
+        log("Tour started — " + scenario.waypoints().size() + " waypoints");
         emitStatus("start", "ready");
     }
 
@@ -91,7 +85,7 @@ public final class FlightTour {
         active = false;
         autoStartEnabled = false;
         finalCompletion.cancel();
-        log("Tour stopped at waypoint " + (waypointIndex + 1) + "/" + WAYPOINTS.length);
+        log("Tour stopped at waypoint " + (waypointIndex + 1) + "/" + scenario.waypoints().size());
         emitStatus("stop", "manual");
     }
 
@@ -138,11 +132,16 @@ public final class FlightTour {
     }
 
     static void resetForTest() {
+        resetForTest(END_SCENARIO);
+    }
+
+    static void resetForTest(FlightTourScenario testScenario) {
         active = false;
         waypointIndex = 0;
         ticksInPhase = 0;
         ticksTotal = 0;
-        dwellTicks = DEFAULT_DWELL_TICKS;
+        scenario = testScenario;
+        dwellTicks = scenario.defaultDwellTicks();
         phase = Phase.TELEPORT;
         testMode = true;
         machineReadableEnabled = false;
@@ -155,7 +154,7 @@ public final class FlightTour {
     }
 
     static int waypointCountForTest() {
-        return WAYPOINTS.length;
+        return scenario.waypoints().size();
     }
 
     static int dwellTicksForTest() {
@@ -163,7 +162,8 @@ public final class FlightTour {
     }
 
     static int[] waypointForTest(int index) {
-        return WAYPOINTS[index].clone();
+        FlightTourScenario.Waypoint waypoint = scenario.waypoints().get(index);
+        return new int[] {waypoint.x(), waypoint.y(), waypoint.z()};
     }
 
     static List<String> testEventsForTest() {
@@ -189,7 +189,7 @@ public final class FlightTour {
         switch (phase) {
             case TELEPORT -> {
                 if (ticksInPhase == 1) {
-                    int[] waypoint = WAYPOINTS[waypointIndex];
+                    FlightTourScenario.Waypoint waypoint = scenario.waypoints().get(waypointIndex);
                     requestTeleport(client, waypoint);
                 }
                 enter(Phase.SHOT_BEFORE);
@@ -207,12 +207,12 @@ public final class FlightTour {
             }
             case SHOT_AFTER -> {
                 if (ticksInPhase == 1) {
-                    boolean isLastWaypoint = waypointIndex == WAYPOINTS.length - 1;
+                    boolean isLastWaypoint = waypointIndex == scenario.waypoints().size() - 1;
                     lockCamera(client);
                     requestScreenshot(client, waypointScreenshotName(true), isLastWaypoint);
                     emitStatus("screenshot_requested", "after");
                 }
-                if (waypointIndex < WAYPOINTS.length - 1) {
+                if (waypointIndex < scenario.waypoints().size() - 1) {
                     waypointIndex++;
                     enter(Phase.TELEPORT);
                 }
@@ -242,30 +242,31 @@ public final class FlightTour {
         }
     }
 
-    private static void requestTeleport(MinecraftClient client, int[] waypoint) {
-        String command = "tp @s " + waypoint[0] + " " + waypoint[1] + " " + waypoint[2]
-                + " " + TOUR_YAW + " " + TOUR_PITCH;
+    private static void requestTeleport(MinecraftClient client, FlightTourScenario.Waypoint waypoint) {
+        String command = "tp @s " + waypoint.x() + " " + waypoint.y() + " " + waypoint.z()
+                + " " + waypoint.yaw() + " " + waypoint.pitch();
         if (testMode) {
-            testEvents.add("teleport:" + waypoint[0] + "," + waypoint[1] + "," + waypoint[2]
-                    + "," + TOUR_YAW + "," + TOUR_PITCH);
+            testEvents.add("teleport:" + waypoint.x() + "," + waypoint.y() + "," + waypoint.z()
+                    + "," + waypoint.yaw() + "," + waypoint.pitch());
         } else if (client != null && client.player != null && client.player.networkHandler != null) {
             client.player.networkHandler.sendChatCommand(command);
         }
-        log("waypoint " + (waypointIndex + 1) + "/" + WAYPOINTS.length
-                + " -> " + waypoint[0] + " " + waypoint[1] + " " + waypoint[2]);
+        log("waypoint " + (waypointIndex + 1) + "/" + scenario.waypoints().size()
+                + " -> " + waypoint.x() + " " + waypoint.y() + " " + waypoint.z());
         emitStatus("teleport_requested", command);
     }
 
     private static void lockCamera(MinecraftClient client) {
+        FlightTourScenario.Waypoint waypoint = scenario.waypoints().get(waypointIndex);
         if (testMode) {
-            testEvents.add("camera-lock:" + TOUR_YAW + "," + TOUR_PITCH);
+            testEvents.add("camera-lock:" + waypoint.yaw() + "," + waypoint.pitch());
             return;
         }
         if (client == null || client.player == null) {
             return;
         }
-        client.player.setYaw(TOUR_YAW);
-        client.player.setPitch(TOUR_PITCH);
+        client.player.setYaw(waypoint.yaw());
+        client.player.setPitch(waypoint.pitch());
     }
 
     private static void requestScreenshot(MinecraftClient client, String name, boolean isFinalWaypointAfterShot) {
@@ -332,7 +333,7 @@ public final class FlightTour {
 
     private static String waypointScreenshotName(boolean after) {
         return String.format(
-                "tour-waypoint-%02d-%s.png",
+                scenario.evidencePrefix() + "-%02d-%s.png",
                 waypointIndex + 1,
                 after ? "after" : "before");
     }
@@ -359,7 +360,9 @@ public final class FlightTour {
     }
 
     private static boolean isEndClientReady(MinecraftClient client) {
-        return client.world != null && client.world.getRegistryKey().equals(World.END) && client.currentScreen == null;
+        return client.world != null
+                && client.world.getRegistryKey().getValue().toString().equals(scenario.expectedDimensionId())
+                && client.currentScreen == null;
     }
 
     private static void emitStatus(String event, String detail) {
