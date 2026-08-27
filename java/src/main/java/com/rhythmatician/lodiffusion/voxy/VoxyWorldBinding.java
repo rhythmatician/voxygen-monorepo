@@ -549,7 +549,8 @@ final class VoxyWorldBinding {
             preserveMask |= computeOccupiedOctantMask(data);
         }
 
-        if (preserveMask == 0) {
+        if (preserveMask == 0 && !containsNonAir(data)) {
+            // Fresh/empty destination: plain overwrite is safe and fastest.
             System.arraycopy(voxels, 0, data, 0, voxels.length);
         } else {
             copyUnpreservedOctants(voxels, data, preserveMask);
@@ -575,6 +576,13 @@ final class VoxyWorldBinding {
             int ox = (octant & 1) * 16;
             int oz = ((octant >> 1) & 1) * 16;
             int oy = ((octant >> 2) & 1) * 16;
+            // Air guard: an all-air candidate octant must not erase existing
+            // terrain. Coarse rasterizer misses over steep island edges would
+            // otherwise blank visible octants — coarse-but-present beats void.
+            if (!octantHasNonAir(source, ox, oy, oz)
+                    && octantHasNonAir(destination, ox, oy, oz)) {
+                continue;
+            }
             for (int iy = oy; iy < oy + 16; iy++) {
                 for (int iz = oz; iz < oz + 16; iz++) {
                     int base = (iy << 10) | (iz << 5) | ox;
@@ -582,6 +590,20 @@ final class VoxyWorldBinding {
                 }
             }
         }
+    }
+
+    private static boolean octantHasNonAir(long[] data, int ox, int oy, int oz) {
+        for (int iy = oy; iy < oy + 16; iy++) {
+            for (int iz = oz; iz < oz + 16; iz++) {
+                int base = (iy << 10) | (iz << 5) | ox;
+                for (int ix = 0; ix < 16; ix++) {
+                    if (!isAir(data[base + ix])) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
     }
 
     /** Claim a fallback and report whether stale/native child topology was cleared. */
@@ -998,5 +1020,10 @@ final class VoxyWorldBinding {
             }
         }
         return out;
+    }
+
+    /** Test seam exposing per-octant occupancy scanning. */
+    static byte computeOccupiedOctantMaskForTest(long[] data) {
+        return computeOccupiedOctantMask(data);
     }
 }

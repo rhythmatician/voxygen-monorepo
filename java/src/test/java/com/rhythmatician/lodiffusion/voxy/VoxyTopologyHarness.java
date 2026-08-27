@@ -46,6 +46,40 @@ final class VoxyTopologyHarness {
                 "real WorldSection dirty state must be set by the write notification");
     }
 
+    /**
+     * Writes a candidate volume through the production path where every
+     * octant EXCEPT the named ones is solid and the named octants are pure
+     * air — the shape of a coarse rasterizer miss over steep island edges.
+     */
+    void writeCandidateWithAirOctants(long solidVoxel, int... airOctants) {
+        long[] voxels = new long[32 * 32 * 32];
+        Arrays.fill(voxels, solidVoxel);
+        for (int octant : airOctants) {
+            int ox = (octant & 1) * 16;
+            int oz = ((octant >> 1) & 1) * 16;
+            int oy = ((octant >> 2) & 1) * 16;
+            for (int iy = oy; iy < oy + 16; iy++) {
+                for (int iz = oz; iz < oz + 16; iz++) {
+                    for (int ix = ox; ix < ox + 16; ix++) {
+                        voxels[(iy << 10) | (iz << 5) | ix] = 0L;
+                    }
+                }
+            }
+        }
+        VoxyWorldBinding.writeAcquiredWorldSection(
+                coarse,
+                coarse.lvl,
+                voxels,
+                (byte) 0,
+                (section, flags) -> ((WorldSection) section).markDirty());
+    }
+
+    /** True if any voxel in the named octant of the live section is non-air. */
+    boolean octantHasNonAir(int octant) {
+        return (VoxyWorldBinding.computeOccupiedOctantMaskForTest(
+                coarse._unsafeGetRawDataArray()) & (byte) (1 << octant)) != 0;
+    }
+
     void storeSolidChild(int octant, long voxel) {
         int childX = (coarse.x << 1) | (octant & 1);
         int childY = (coarse.y << 1) | ((octant >>> 2) & 1);

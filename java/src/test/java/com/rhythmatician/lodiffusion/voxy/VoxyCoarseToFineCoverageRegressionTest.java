@@ -143,4 +143,24 @@ class VoxyCoarseToFineCoverageRegressionTest {
                 "fallback claim on a populated section must preserve advertised children");
     }
 
+    /**
+     * A candidate write whose octants are pure air (a coarse rasterizer miss
+     * over steep island edges) must not erase existing terrain in those
+     * octants. Coarse-but-present terrain beats a void.
+     */
+    @Test
+    void allAirCandidateOctantDoesNotEraseExistingTerrain() {
+        var topology = new VoxyTopologyHarness(4, -3, 1, 5);
+        long solid = 1L << VoxyWorldBinding.BLOCK_ID_SHIFT;
+
+        // Existing section: every octant has real terrain.
+        topology.writeSolidCoarseGeometryThroughBinding(solid);
+
+        // Candidate: octant 0 is pure air (rasterizer missed the edge).
+        topology.writeCandidateWithAirOctants(solid, 0);
+
+        org.junit.jupiter.api.Assertions.assertTrue(topology.octantHasNonAir(0),
+                "all-air candidate octant must not erase existing terrain");
+    }
+
 }
