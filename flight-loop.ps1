@@ -284,3 +284,46 @@ if ($LASTEXITCODE -ne 0) {
     throw "Screenshot verdict helper failed with exit code $LASTEXITCODE."
 }
 Write-Host "Advisory screenshot verdict: $verdictPath"
+
+# Per-waypoint before/after pixel diff (replaces manual GIMP comparison).
+# Uses python/tools/img_diff.py; advisory only — never fails the loop.
+$diffTool = Join-Path $PSScriptRoot "python\tools\img_diff.py"
+$python = "C:\Python314\python.exe"
+$diffStats = @()
+if ((Test-Path $python) -and (Test-Path $diffTool)) {
+    for ($idx = 1; $idx -le $WaypointCount; $idx++) {
+        $tag = "{0:D2}" -f $idx
+        $before = Join-Path $screenshotsDir "tour-waypoint-$tag-before.png"
+        $after  = Join-Path $screenshotsDir "tour-waypoint-$tag-after.png"
+        if (-not ((Test-Path $before) -and (Test-Path $after))) { continue }
+        $overlay = Join-Path $runDir "tour-waypoint-$tag-diff-overlay.png"
+        # Terrain band: lower half of the frame, excluding the hotbar strip.
+        $out = & $python $diffTool $before $after --region 0 240 854 432 --out $overlay 2>&1
+        $changedPct = $null
+        $statLine = $out | Where-Object { $_ -match "changed pixels" } | Select-Object -First 1
+        if ($statLine -match "\(([\d.]+)%\)") {
+            $changedPct = [double]$Matches[1]
+        }
+        $bboxLine = ($out | Where-Object { $_ -match "^bbox" } | Select-Object -First 1)
+        $entry = [ordered]@{
+            waypoint   = $idx
+            changedPct = $changedPct
+            bbox       = if ($bboxLine) { $bboxLine -replace '^bbox\s*:\s*', '' } else { $null }
+            overlay    = $overlay
+            terrainBandEmpty = ($null -ne $changedPct -and $changedPct -lt 0.5)
+        }
+        $diffStats += $entry
+        $flag = if ($entry.terrainBandEmpty) { "  <-- TERRAIN BAND EMPTY" } else { "" }
+        Write-Host ("WP{0}: diff {1}% changed{2}" -f $idx, $changedPct, $flag)
+    }
+    $diffPath = Join-Path $runDir "flight-tour-diff-stats.json"
+    [ordered]@{
+        schemaVersion = 1
+        advisoryOnly = $true
+        region = "terrain band 0,240..854,432 (lower half minus hotbar)"
+        waypoints = $diffStats
+    } | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 $diffPath
+    Write-Host "Per-waypoint diff stats: $diffPath"
+} else {
+    Write-Warning "img_diff.py or python not found; skipping per-waypoint diff stats."
+}
