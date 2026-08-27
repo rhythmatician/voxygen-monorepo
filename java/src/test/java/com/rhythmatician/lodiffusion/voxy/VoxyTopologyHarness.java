@@ -67,6 +67,32 @@ final class VoxyTopologyHarness {
         VoxyWorldBinding.publishCompleteChildMaskForTest(coarse, mask);
     }
 
+    /**
+     * Publish a COMPLETE handoff: every stored child is present, every
+     * unstored octant is explicitly proved empty. Ownership ends because the
+     * handoff is complete — not because every octant is occupied.
+     */
+    void publishCompleteHandoff() {
+        byte present = 0;
+        for (int octant = 0; octant < children.length; octant++) {
+            if (children[octant] != null) {
+                present |= (byte) (1 << octant);
+            }
+        }
+        VoxyWorldBinding.publishCompleteChildMaskForTest(
+                coarse, present, CompleteChildHandoff.ofMasks(present & 0xFF, ~present & 0xFF));
+    }
+
+    /**
+     * Publish a COMPLETE handoff where all eight octants are proved empty:
+     * the sparsest legal complete handoff. The renderer must be told so the
+     * solid coarse leaf can be retired.
+     */
+    void publishCompleteHandoffWithNoChildren() {
+        VoxyWorldBinding.publishCompleteChildMaskForTest(
+                coarse, (byte) 0, CompleteChildHandoff.ofMasks(0, 0xFF));
+    }
+
     void startRendererAtCoarseLeaf() {
         nodeManager = new HeadlessNodeManagerProbe(coarse.key);
         nodeManager.completeCoarseLeaf(coarse.getNonEmptyChildren());

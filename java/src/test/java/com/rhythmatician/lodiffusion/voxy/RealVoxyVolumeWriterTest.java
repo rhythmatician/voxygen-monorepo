@@ -243,6 +243,38 @@ class RealVoxyVolumeWriterTest {
     }
 
     @Test
+    void allEmptyBatchPublishesCompleteHandoffWithNoPresentChildren() {
+        // A solid coarse parent whose eight children are all proved empty is a
+        // complete handoff: the renderer must be told so it can retire the
+        // coarse false-positive instead of silently keeping the leaf.
+        FakeRegionBackend backend = new FakeRegionBackend(new Object());
+        RealVoxyVolumeWriter writer = writer(backend);
+
+        ParentRefinementResult result = writer.refineParent(intent(Level.L2, 0));
+
+        assertEquals(ParentRefinementResult.Status.PUBLISHED, result.status());
+        assertEquals(1, backend.publicationCount);
+        assertEquals(0x00, backend.publishedPresentMask);
+        assertEquals(0xFF, backend.publishedEmptyMask);
+    }
+
+    @Test
+    void mixedTerminalBatchPublishesSparsePresentMaskWithProvedEmptyBits() {
+        FakeRegionBackend backend = new FakeRegionBackend(new Object());
+        backend.preexistingMask = 0b0000_0010;
+        backend.raceExistingMask = 0b0000_0100;
+        RealVoxyVolumeWriter writer = writer(backend);
+
+        ParentRefinementResult result = writer.refineParent(
+                intent(Level.L2, 0b0011_1111));
+
+        assertEquals(ParentRefinementResult.Status.PUBLISHED, result.status());
+        assertEquals(1, backend.publicationCount);
+        assertEquals(0b0011_1111, backend.publishedPresentMask);
+        assertEquals(0b1100_0000, backend.publishedEmptyMask);
+    }
+
+    @Test
     void mixedTransactionPublishesOneExactMaskAfterAllChildrenAreTerminal() {
         FakeRegionBackend backend = new FakeRegionBackend(new Object());
         backend.preexistingMask = 0b0000_0010;
@@ -304,6 +336,8 @@ class RealVoxyVolumeWriterTest {
         private int claimAttempts;
         private int publicationCount;
         private int publishedMask = -1;
+        private int publishedPresentMask = -1;
+        private int publishedEmptyMask = -1;
         private Level coveredParentLevel = Level.L2;
 
         private FakeRegionBackend(Object section) {
@@ -342,9 +376,12 @@ class RealVoxyVolumeWriterTest {
 
         @Override
         public void publishCompleteChildMask(
-                Object worldEngine, Level parentLevel, int wsX, int wsY, int wsZ, int mask) {
+                Object worldEngine, Level parentLevel, int wsX, int wsY, int wsZ,
+                CompleteChildHandoff handoff) {
             publicationCount++;
-            publishedMask = mask;
+            publishedMask = Byte.toUnsignedInt(handoff.presentMask());
+            publishedPresentMask = Byte.toUnsignedInt(handoff.presentMask());
+            publishedEmptyMask = Byte.toUnsignedInt(handoff.emptyMask());
         }
 
         private static int bitFor(SectionPos origin, Level level) {

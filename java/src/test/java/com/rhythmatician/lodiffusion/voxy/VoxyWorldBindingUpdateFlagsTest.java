@@ -26,8 +26,11 @@ class VoxyWorldBindingUpdateFlagsTest {
     }
 
     @Test
-    void allAirChildBatchKeepsTheOwnedFallbackLeaf() {
-        assertEquals(false, VoxyWorldBinding.shouldPublishCompleteHandoff((byte) 0));
-        assertEquals(true, VoxyWorldBinding.shouldPublishCompleteHandoff((byte) 1));
+    void allEmptyHandoffIsStillPublishedSoCoarseFalsePositiveCanBeRetired() {
+        // Complete topology knowledge is independent of child occupancy: an
+        // all-empty batch must still reach the renderer.
+        CompleteChildHandoff allEmpty = CompleteChildHandoff.ofMasks(0, 0xFF);
+        assertEquals((byte) 0, allEmpty.presentMask());
+        assertEquals((byte) 0xFF, allEmpty.emptyMask());
     }
 }

@@ -118,6 +118,29 @@ class EndRefinementPipelineTest {
         assertEquals(1, writer.batchCommits);
     }
 
+    @Test
+    void oneDemandedChildCreditsAllEightSiblingOutcomesFromTheTransaction() {
+        // The publication transaction materializes all eight children even
+        // when only one was demanded. The scheduler must remember every
+        // terminal outcome so a later demand for a sibling does not re-run
+        // the whole-parent transaction.
+        BatchOnlyWriter writer = new BatchOnlyWriter();
+        // Only octant 3 demanded; transaction reports all eight terminal
+        // (octants 0-4 represented, 5-7 proved empty).
+        writer.result = ParentRefinementResult.published(
+                WriteOutcome.written(5), 0b0001_1111, 0b1110_0000);
+        DefaultEndRefinement module = module(writer, (level, origin) -> solid());
+
+        module.observeFrontier(List.of(parent(new SectionPos(0, 0, 0))));
+        module.advance(frame(1));
+
+        assertEquals(1, writer.batchCommits);
+        assertTrue(module.snapshot().representedChildren() >= 5,
+                "all represented siblings from the transaction must be credited");
+        assertTrue(module.snapshot().deterministicEmptyChildren() >= 3,
+                "all proved-empty siblings from the transaction must be credited");
+    }
+
     private static DefaultEndRefinement module(
             VoxelVolumeWriter writer, DefaultEndRefinement.ChildTerrain terrain) {
         return new DefaultEndRefinement(CONFIG, writer::refineParent, terrain,

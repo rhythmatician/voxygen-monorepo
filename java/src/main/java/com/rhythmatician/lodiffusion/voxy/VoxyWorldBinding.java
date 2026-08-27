@@ -355,12 +355,9 @@ final class VoxyWorldBinding {
     /** Merge one complete child mask after every child outcome is terminal. */
     static void publishCompleteChildMask(Object worldEngine, int parentLvl,
                                          int parentWsX, int parentWsY, int parentWsZ,
-                                         int completeMask) {
+                                         CompleteChildHandoff handoff) {
         if (parentLvl < 1 || parentLvl > 4) {
             throw new IllegalArgumentException("parent level must be 1..4");
-        }
-        if ((completeMask & ~0xFF) != 0) {
-            throw new IllegalArgumentException("child mask must fit eight children");
         }
         ensureWorldSectionBindings();
         try {
@@ -368,10 +365,13 @@ final class VoxyWorldBinding {
                     worldEngine, parentLvl, parentWsX, parentWsY, parentWsZ);
             byte storedChildren = computeStoredChildDataMask(
                     worldEngine, parentLvl, parentWsX, parentWsY, parentWsZ);
-            byte finalMask = completeHandoffMask((byte) completeMask, storedChildren);
+            byte finalMask = completeHandoffMask(handoff.presentMask(), storedChildren);
             if (publishCompleteChildMaskToSection(parentSection, finalMask)) {
                 markDirty(worldEngine, parentSection, completeHandoffUpdateFlags(false));
             }
+            // Ownership ends because the handoff is COMPLETE (every octant
+            // terminal), not because every octant is occupied.
+            VoxyTopologyOwnership.releaseAfterHandoff(parentSection);
             VoxyEngine.worldSectionReleaseMethod.invoke(parentSection);
         } catch (Exception e) {
             throw new RuntimeException("publishCompleteChildMask failed at parent lvl=" + parentLvl
@@ -379,18 +379,13 @@ final class VoxyWorldBinding {
         }
     }
 
-    /** Publish topology before releasing ownership so observers cannot see a handoff void. */
+    /**
+     * Publish topology before releasing ownership so observers cannot see a handoff void.
+     * A sparse finalMask is legal: clear bits are octants whose finer representation is
+     * proved empty and must render nothing once the parent flips inner.
+     */
     private static boolean publishCompleteChildMaskToSection(Object parentSection, byte finalMask) {
-        if (!shouldPublishCompleteHandoff(finalMask)) {
-            return false;
-        }
-        boolean changed = mergeNonEmptyChildren(parentSection, finalMask);
-        byte publishedMask = (byte) worldSectionNecVarHandle.getVolatile(parentSection);
-        // Sparse publication still relies on the parent for every clear bit.
-        // Ownership ends only after every octant has a child fallback.
-        boolean released = publishedMask == (byte) 0xFF
-                && VoxyTopologyOwnership.releaseAfterHandoff(parentSection);
-        return changed || released;
+        return mergeNonEmptyChildren(parentSection, finalMask);
     }
 
     /**
@@ -597,6 +592,19 @@ final class VoxyWorldBinding {
     }
 
     /**
+     * Test seam for a COMPLETE handoff: publishes the present mask and ends
+     * ownership because every octant is terminal — mirroring the production
+     * {@code publishCompleteChildMask} path.
+     */
+    static boolean publishCompleteChildMaskForTest(
+            Object parentSection, byte finalMask, CompleteChildHandoff handoff) {
+        ensureWorldSectionBindings();
+        boolean changed = publishCompleteChildMaskToSection(parentSection, finalMask);
+        VoxyTopologyOwnership.releaseAfterHandoff(parentSection);
+        return changed;
+    }
+
+    /**
      * An owned L1-L4 section remains a leaf even when vanilla data already
      * populated its descendants. The promotion gate serializes this CAS against
      * native {@code updateEmptyChildState}; voxel and mip data are untouched.
@@ -736,10 +744,6 @@ final class VoxyWorldBinding {
 
     static int completeHandoffUpdateFlags(boolean parentGeometryChanged) {
         return CHILD_EXISTENCE_UPDATE_FLAG | (parentGeometryChanged ? BLOCK_UPDATE_FLAG : 0);
-    }
-
-    static boolean shouldPublishCompleteHandoff(byte completeMask) {
-        return completeMask != 0;
     }
 
     private static void markDirty(Object worldEngine, Object worldSection, int updateFlags)

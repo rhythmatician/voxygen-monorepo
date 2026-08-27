@@ -69,12 +69,10 @@ class VoxyTopologyOwnershipTest {
 
         assertEquals((byte) 0, VoxyWorldBinding.fallbackPresentationNec(
                 VoxyTopologyOwnership.isOwned(generatedChild), partialNativeNec));
-        assertFalse(VoxyWorldBinding.shouldPublishCompleteHandoff((byte) 0));
 
         byte publishedMask = VoxyWorldBinding.completeHandoffMask(
                 (byte) 0b0000_0101, (byte) 0b0100_0000);
         assertEquals((byte) 0b0100_0101, publishedMask);
-        assertTrue(VoxyWorldBinding.shouldPublishCompleteHandoff(publishedMask));
     }
 
     @Test

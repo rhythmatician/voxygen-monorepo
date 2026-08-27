@@ -340,14 +340,20 @@ final class DefaultEndRefinement implements EndRefinement {
                 return new StepResult(StepResult.Status.DEFERRED, false);
             }
 
-            int represented = result.representedMask() & claim.materializeMask();
-            int empty = result.emptyMask() & claim.materializeMask();
+            // The publication transaction is whole-parent: it materialized
+            // every sibling, so every terminal outcome it reports is credited
+            // regardless of which subset was originally demanded. This keeps
+            // scheduler accounting in sync with the work actually performed.
+            int represented = result.representedMask();
+            int empty = result.emptyMask();
             int terminal = represented | empty | claim.vanillaMask();
             state.represented |= represented;
             state.deterministicEmpty |= empty;
             state.vanillaCovered |= claim.vanillaMask();
             clearRetryState(state, terminal);
-            int unreported = claim.materializeMask() & ~(represented | empty);
+            int unreported = 0xFF & ~(state.represented
+                    | state.deterministicEmpty | state.vanillaCovered)
+                    & (claim.requestedMask() | claim.materializeMask());
             if (unreported != 0) scheduleRetry(state, unreported, now);
             lifecycle.recordAttempt(claim.parent().level().value(),
                     RefinementOutcome.published(result.writeOutcome()));

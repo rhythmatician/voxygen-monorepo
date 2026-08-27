@@ -54,7 +54,8 @@ public final class RealVoxyVolumeWriter implements VoxelVolumeWriter {
                 Object worldEngine, Level level, int wsX, int wsY, int wsZ, long[] voxels);
 
         void publishCompleteChildMask(
-                Object worldEngine, Level parentLevel, int wsX, int wsY, int wsZ, int mask);
+                Object worldEngine, Level parentLevel, int wsX, int wsY, int wsZ,
+                CompleteChildHandoff handoff);
     }
 
     private static final RegionBackend VOXY_REGION_BACKEND = new RegionBackend() {
@@ -92,9 +93,10 @@ public final class RealVoxyVolumeWriter implements VoxelVolumeWriter {
 
         @Override
         public void publishCompleteChildMask(
-                Object worldEngine, Level parentLevel, int wsX, int wsY, int wsZ, int mask) {
+                Object worldEngine, Level parentLevel, int wsX, int wsY, int wsZ,
+                CompleteChildHandoff handoff) {
             VoxyWorldBinding.publishCompleteChildMask(
-                    worldEngine, parentLevel.value(), wsX, wsY, wsZ, mask);
+                    worldEngine, parentLevel.value(), wsX, wsY, wsZ, handoff);
         }
     };
 
@@ -292,9 +294,12 @@ public final class RealVoxyVolumeWriter implements VoxelVolumeWriter {
                 batch.parentOrigin().z(), parentLevel);
         // This is the only parent advertisement seam. Child writes above have
         // already dirtied their geometry; no partial mask is ever published.
+        // Handoff completeness (all octants terminal) travels separately from
+        // child occupancy (presentMask) so proved-empty octants are explicit.
         regionBackend.publishCompleteChildMask(
                 worldEngine, batch.parentLevel(), parentWsX, parentWsY, parentWsZ,
-                batch.nonEmptyMask());
+                CompleteChildHandoff.ofMasks(batch.nonEmptyMask(),
+                        batch.requiredMask() & ~batch.nonEmptyMask()));
         return batch.nonEmptyMask() == 0
                 ? WriteOutcome.skippedAir()
                 : WriteOutcome.written(nonAir);

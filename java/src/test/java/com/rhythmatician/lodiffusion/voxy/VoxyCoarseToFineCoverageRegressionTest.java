@@ -78,7 +78,7 @@ class VoxyCoarseToFineCoverageRegressionTest {
         for (int octant = 0; octant < 8; octant++) {
             topology.storeSolidChild(octant, 2L << VoxyWorldBinding.BLOCK_ID_SHIFT);
         }
-        topology.publishStoredChildren();
+        topology.publishCompleteHandoff();
         topology.notifyRendererOfPublishedTopology();
         assertEquals(0xFF, Byte.toUnsignedInt(topology.childExistenceMask()));
         // Full handoff releases fallback ownership...
@@ -90,6 +90,30 @@ class VoxyCoarseToFineCoverageRegressionTest {
         }
         topology.assertAllOctantsEffectivelyRenderAtLevel(3);
         topology.assertNoNativeBufferLeak();
+    }
+
+    /**
+     * A complete handoff whose eight outcomes are ALL proved empty is still a
+     * complete handoff: ownership must end and the solid coarse parent must
+     * stop being advertised so the renderer can retire the false-positive
+     * leaf. The published NEC is legitimately sparse (zero here) — that is
+     * complete topology knowledge, not an incomplete handoff.
+     */
+    @Test
+    void allTerminalEmptyHandoffReleasesOwnershipAndRetiresCoarseLeaf() {
+        var topology = new VoxyTopologyHarness(4, -3, 1, 5);
+
+        topology.writeSolidCoarseGeometryThroughBinding(1L << VoxyWorldBinding.BLOCK_ID_SHIFT);
+        topology.startRendererAtCoarseLeaf();
+        topology.assertAllOctantsEffectivelyRenderAtLevel(4);
+
+        // No children stored: every octant is proved empty by the scheduler.
+        topology.publishCompleteHandoffWithNoChildren();
+        org.junit.jupiter.api.Assertions.assertFalse(VoxyTopologyOwnership.isOwned(
+                topology.coarseSectionForTest()),
+                "complete handoff with all-empty outcomes must release ownership");
+        assertEquals(0x00, Byte.toUnsignedInt(topology.childExistenceMask()),
+                "all-empty handoff publishes a zero present mask");
     }
 
 }
