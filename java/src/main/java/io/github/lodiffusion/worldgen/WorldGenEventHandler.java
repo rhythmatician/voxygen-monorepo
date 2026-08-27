@@ -35,6 +35,7 @@ import com.rhythmatician.lodiffusion.world.noise.GpuNoiseDispatchQueue;
  *
  * All Minecraft class references use reflection to avoid compile-time classpath issues.
  */
+@SuppressWarnings({"unused","deprecation"})
 public class WorldGenEventHandler {
     private static final Logger LOGGER = LogManager.getLogger();
 

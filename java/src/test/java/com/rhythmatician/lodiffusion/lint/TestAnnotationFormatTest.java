@@ -14,6 +14,7 @@ import java.util.stream.Stream;
 class TestAnnotationFormatTest {
     
     @Test
+    @SuppressWarnings("all")
     void testAllTestAnnotationsAreOnTheirOwnLine() throws IOException {
         Path root = Paths.get("src/test/java");
         try (Stream<Path> files = Files.walk(root)) {

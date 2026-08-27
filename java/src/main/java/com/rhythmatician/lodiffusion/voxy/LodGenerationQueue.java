@@ -46,7 +46,7 @@ public final class LodGenerationQueue {
             new ConcurrentHashMap<>();
 
     /** Per-stage priority queues.  Stage workers poll from their queue. */
-    @SuppressWarnings({"unchecked", "rawtypes"})
+    @SuppressWarnings("unchecked")
     private final PriorityBlockingQueue<SectionTask>[] stageQueues =
             new PriorityBlockingQueue[NUM_STAGES];
 

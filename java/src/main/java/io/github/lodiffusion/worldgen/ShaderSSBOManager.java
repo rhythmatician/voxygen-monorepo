@@ -582,7 +582,7 @@ public class ShaderSSBOManager {
         }
 
         long chunkKey = (((long) lastDispatchedChunkX) << 32) | (lastDispatchedChunkZ & 0xffffffffL);
-        long chunkBytes = readbackBytesByChunk.merge(chunkKey, bytes, Long::sum);
+        long chunkBytes = readbackBytesByChunk.merge(chunkKey, bytes, (a, b) -> Long.sum(a, b));
 
         LOGGER.info(
                 "ShaderSSBOManager metrics: readback_bytes_chunk[{},{}]={} readback_calls_sec={}",

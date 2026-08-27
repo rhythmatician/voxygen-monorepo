@@ -280,8 +280,11 @@ public final class FlightTour {
         if (testMode) {
             testEvents.add("teleport:" + waypoint.x() + "," + waypoint.y() + "," + waypoint.z()
                     + "," + waypoint.yaw() + "," + waypoint.pitch());
-        } else if (client != null && client.player != null && client.player.networkHandler != null) {
-            client.player.networkHandler.sendChatCommand(command);
+        } else if (client != null) {
+            var p = client.player;
+            if (p != null && p.networkHandler != null) {
+                p.networkHandler.sendChatCommand(command);
+            }
         }
         log("waypoint " + (waypointIndex + 1) + "/" + scenario.waypoints().size()
                 + " -> " + waypoint.x() + " " + waypoint.y() + " " + waypoint.z());
@@ -294,11 +297,15 @@ public final class FlightTour {
             testEvents.add("camera-lock:" + waypoint.yaw() + "," + waypoint.pitch());
             return;
         }
-        if (client == null || client.player == null) {
+        if (client == null) {
             return;
         }
-        client.player.setYaw(waypoint.yaw());
-        client.player.setPitch(waypoint.pitch());
+        var p2 = client.player;
+        if (p2 == null) {
+            return;
+        }
+        p2.setYaw(waypoint.yaw());
+        p2.setPitch(waypoint.pitch());
     }
 
     private static void requestScreenshot(MinecraftClient client, String name, boolean isFinalWaypointAfterShot) {
@@ -384,7 +391,9 @@ public final class FlightTour {
             return false;
         }
 
-        if (client.world == null || client.player == null || client.player.networkHandler == null) {
+        var w = client.world;
+        var pl = client.player;
+        if (w == null || pl == null || pl.networkHandler == null) {
             return false;
         }
 
@@ -392,8 +401,9 @@ public final class FlightTour {
     }
 
     private static boolean isEndClientReady(MinecraftClient client) {
-        return client.world != null
-                && client.world.getRegistryKey().getValue().toString().equals(scenario.expectedDimensionId())
+        var w2 = client.world;
+        return w2 != null
+                && w2.getRegistryKey().getValue().toString().equals(scenario.expectedDimensionId())
                 && client.currentScreen == null;
     }
 

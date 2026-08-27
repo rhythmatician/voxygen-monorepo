@@ -2,7 +2,6 @@ package net.lodiffusion.mixin.voxy;
 
 import com.rhythmatician.lodiffusion.voxy.VoxyNodeRequestRetry;
 import me.cortex.voxy.client.core.rendering.hierachical.NodeStoreAccessBridge;
-import me.cortex.voxy.common.world.WorldEngine;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;

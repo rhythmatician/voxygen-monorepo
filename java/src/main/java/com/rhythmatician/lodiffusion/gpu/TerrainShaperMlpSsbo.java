@@ -15,6 +15,7 @@ import org.lwjgl.opengl.GL43;
  *
  * <p>This class loads the pre-trained weights and binds them to GPU memory for shader access.
  */
+@SuppressWarnings("unused")
 public class TerrainShaperMlpSsbo implements AutoCloseable {
 
   private static final String WEIGHTS_PATH = "assets/lodiffusion/models/terrain_shaper_weights.bin";

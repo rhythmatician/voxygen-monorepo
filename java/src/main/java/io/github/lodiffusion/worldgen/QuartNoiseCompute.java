@@ -6,7 +6,6 @@ import org.apache.logging.log4j.Logger;
 import org.lwjgl.opengl.GL15C;
 import org.lwjgl.opengl.GL20C;
 import org.lwjgl.opengl.GL30C;
-import org.lwjgl.opengl.GL31C;
 import org.lwjgl.opengl.GL43C;
 
 import java.io.BufferedReader;
@@ -15,7 +14,6 @@ import java.io.InputStreamReader;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
-import java.nio.IntBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.stream.Collectors;
 

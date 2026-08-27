@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
  * Focused tests that the writer's canonical identity is decoupled from
  * the ONNX model vocabulary. No model file is loaded.
  */
+@SuppressWarnings("unused")
 class CanonicalVoxyMapsTest {
 
     // Stub mapper that returns deterministic Voxy IDs based on BlockState.
@@ -60,7 +61,7 @@ class CanonicalVoxyMapsTest {
         RealVoxyVolumeWriter w2 = new RealVoxyVolumeWriter(new Object(), new Object(), biomeMap, blockMap);
         assertNotNull(w2);
         // Via create factory
-        Object worldEngine = new Object();
+        @SuppressWarnings("unused") Object worldEngine = new Object();
         // create requires VoxyCompat.getMapper to succeed, but we test direct constructor only
         // This test proves no model vocab is needed for construction
     }

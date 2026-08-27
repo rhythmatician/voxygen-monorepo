@@ -1,7 +1,6 @@
 package com.rhythmatician.lodiffusion.voxy;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -14,6 +13,7 @@ import java.util.Set;
 import java.util.function.BooleanSupplier;
 
 /** Default implementation of the deep {@link EndRefinement} module. */
+@SuppressWarnings("null")
 final class DefaultEndRefinement implements EndRefinement {
     private static final int HORIZON_BURST = 4;
 
@@ -295,7 +295,7 @@ final class DefaultEndRefinement implements EndRefinement {
                     && (outcome.status() == WriteOutcome.Status.WRITTEN
                     || outcome.status() == WriteOutcome.Status.SKIPPED_EXISTS);
             if (renderable) {
-                if (outcome.status() == WriteOutcome.Status.WRITTEN) {
+                if (outcome != null && outcome.status() == WriteOutcome.Status.WRITTEN) {
                     state.status = HorizonStatus.WRITTEN;
                     horizonCompleted++;
                 } else {

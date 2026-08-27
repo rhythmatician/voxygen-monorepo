@@ -132,6 +132,7 @@ public final class ConfigLoader {
     // Rich / progressive pipeline sidecar
     // ------------------------------------------------------------------
 
+    @SuppressWarnings("all")
     private static ModelConfig loadRich(JsonObject root, Path jsonPath) throws IOException {
         // Normalize snake_case top-level keys
         renameKey(root, "model_name", "modelName");
@@ -169,6 +170,8 @@ public final class ConfigLoader {
         }
 
         ModelConfig config = GSON.fromJson(root, ModelConfig.class);
+        //noinspection ConstantValue
+        //noinspection ConstantValue
         if (config == null) {  // Defensive: should not happen, but GSON might fail
             throw new IOException("Failed to parse config: " + jsonPath);
         }

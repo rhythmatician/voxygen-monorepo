@@ -12,10 +12,23 @@ base {
 	archivesName = project.archives_base_name
 }
 
+def voxyArtifact = 'maven.modrinth:fxxUqruK:w33aHXHj'
+
 // Repository configuration moved to settings.gradle with dependencyResolutionManagement
 // to avoid conflicts and ensure proper dependency resolution
 // However, Fabric Loom requires repositories to be declared in build.gradle
 repositories {
+	exclusiveContent {
+		forRepository {
+			maven {
+				name = 'Modrinth'
+				url = uri('https://api.modrinth.com/maven')
+			}
+		}
+		filter {
+			includeModule('maven.modrinth', 'fxxUqruK')
+		}
+	}
 	mavenCentral()
 	maven {
 		name = 'Fabric'
@@ -102,16 +115,10 @@ dependencies {
 	testImplementation 'org.mockito:mockito-core:5.12.0'
 	testImplementation 'org.mockito:mockito-junit-jupiter:5.12.0'
 
-	// Voxy — modCompileOnly so Loom 1.14.10 remaps VoxyClient against Yarn mappings.
-	// modLocalRuntime was evaluated but not adopted: the remapped jar makes all Voxy engine
-	// bindings succeed in tests (Yarn MC names resolve), so RealVoxyVolumeWriterTest guard
-	// tests no longer see VolumeUnavailableException (they see RuntimeException from dummy
-	// objects reaching mipSection). testRuntimeOnly uses the raw jar, whose intermediary MC
-	// refs fail to load in the Yarn test env → LinkageError → caught → VolumeUnavailableException.
-	modCompileOnly fileTree(dir: 'mods', include: 'voxy-*.jar')
-	if (!providers.gradleProperty('excludeVoxyTestRuntime').isPresent()) {
-		testRuntimeOnly fileTree(dir: 'mods', include: 'voxy-*.jar')
-	}
+	// Production code compiles against the pinned real Voxy artifact from Modrinth
+	// (0.2.11-alpha) but does not bundle it. Only the voxyIntegrationTest suite
+	// receives it at runtime via modVoxyIntegrationTestImplementation.
+	modCompileOnly voxyArtifact
 
 	// NBT and MCA library for parsing Minecraft region files (1.18+ compatible)
 	// Using JitPack for reliable dependency resolution
@@ -159,43 +166,12 @@ jar {
 
 test {
 	useJUnitPlatform()
-	filter {
-		excludeTestsMatching 'com.rhythmatician.lodiffusion.voxy.VoxyCoarseToFineCoverageRegressionTest'
-		excludeTestsMatching 'com.rhythmatician.lodiffusion.voxy.RacedRequestRetryTest'
-	}
 	// Byte Buddy (used by Mockito inline mock-maker) requires this flag on Java 21+
 	// since Mockito 5.1.1 bundles an older Byte Buddy that only officially supports Java 20.
 	jvmArgs '-Dnet.bytebuddy.experimental=true'
 	finalizedBy jacocoTestReport
 }
 
-// Real Voxy characterization uses Loom's Yarn-remapped artifact. The ordinary
-// test task intentionally keeps the raw jar for legacy missing-backend tests.
-tasks.register('voxyTopologyTest', Test) {
-	group = 'verification'
-	description = 'Runs headless coarse-to-fine coverage tests against real remapped Voxy classes.'
-	dependsOn testClasses
-	testClassesDirs = sourceSets.test.output.classesDirs
-	useJUnitPlatform()
-	filter {
-		includeTestsMatching 'com.rhythmatician.lodiffusion.voxy.VoxyCoarseToFineCoverageRegressionTest'
-		includeTestsMatching 'com.rhythmatician.lodiffusion.voxy.VoxyOverlayLevelPackingTest'
-		includeTestsMatching 'com.rhythmatician.lodiffusion.voxy.RacedRequestRetryTest'
-	}
-	def rawVoxy = fileTree(dir: 'mods', include: 'voxy-*.jar').files
-	def remappedVoxy = sourceSets.test.compileClasspath.files.findAll {
-		it.name.startsWith('voxy-') && it.name.endsWith('.jar')
-	}
-	doFirst {
-		if (remappedVoxy.size() != 1) {
-			throw new GradleException("Expected one Loom-remapped Voxy jar, found ${remappedVoxy.size()}: ${remappedVoxy}")
-		}
-	}
-	classpath = files(sourceSets.test.runtimeClasspath.files.findAll { !rawVoxy.contains(it) })
-	classpath += files(remappedVoxy)
-}
-
-test.dependsOn tasks.named('voxyTopologyTest')
 
 // Auto-deploy built JAR to run/mods/ after remapJar
 tasks.register('deployToRunMods', Copy) {
@@ -232,7 +208,10 @@ jacocoTestReport {
 		csv.required = false
 	}
 
-	afterEvaluate {
+	
+
+
+afterEvaluate {
 		classDirectories.setFrom(files(classDirectories.files.collect {
 			fileTree(dir: it, exclude: [
 				// Exclude main mod class and data classes from coverage
@@ -294,8 +273,126 @@ tasks.register("lint", JavaCompile) {
 
 // Make lint run as part of check
 check.dependsOn lint
+// Guardrail: ordinary unit tests must not statically reference real Voxy.
+// Those belong in src/voxyIntegrationTest/java.
+tasks.register('verifyUnitTestIsolation') {
+	group = 'verification'
+	description = 'Fails if src/test/java references me.cortex.voxy (belongs in voxyIntegrationTest).'
+	def unitSources = fileTree('src/test/java') { include '**/*.java' }
+	inputs.files(unitSources)
+	doLast {
+		def offenders = unitSources.findAll { it.getText('UTF-8').contains('me.cortex.voxy') }
+		if (!offenders.isEmpty()) {
+			throw new RuntimeException(
+				"Real Voxy references belong in src/voxyIntegrationTest/java:\n" +
+						 offenders.collect { " - ${project.relativePath(it)}" }.join('\n'))
+		}
+	}
+}
+
+tasks.named('test') {
+	dependsOn tasks.named('verifyUnitTestIsolation')
+	doFirst {
+		def leaked = classpath.files.findAll { it.name.startsWith('voxy-') && it.name.endsWith('.jar') }
+		if (!leaked.isEmpty()) {
+			throw new RuntimeException("Ordinary test runtime must not contain Voxy: ${leaked}")
+		}
+	}
+}
+
+tasks.matching { it.name == 'voxyIntegrationTest' }.configureEach {
+	doFirst {
+		// Voxy is now fetched from Modrinth via modVoxyIntegrationTestImplementation; the jar lives in Gradle cache, not named voxy-*.jar
+		// Just assert we got the remapped artifact on classpath via the mod config
+		def voxyJars = classpath.files.findAll { (it.name.startsWith('voxy-') || it.name.contains('fxxUqruK')) && it.name.endsWith('.jar') }
+		if (voxyJars.size() != 1) {
+			throw new RuntimeException(
+					"Expected exactly one Voxy jar on voxyIntegrationTest classpath, found ${voxyJars.size()}: ${voxyJars}")
+		}
+	}
+}
+
 
 // publishing is already configured by fabric-loom, just need to add sources and javadoc
+
+// Separate JVM test suite: Voxy-linked headless integration tests run against
+// the exact pinned Modrinth artifact; ordinary `test` never sees Voxy.
+testing {
+	suites {
+		voxyIntegrationTest(JvmTestSuite) {
+			dependencies {
+				implementation project()
+				implementation sourceSets.named('client').get().output
+			}
+			targets {
+				all {
+					testTask.configure {
+						useJUnitPlatform()
+						shouldRunAfter tasks.named('test')
+						jvmArgs '-Dnet.bytebuddy.experimental=true'
+					}
+				}
+			}
+		}
+	}
+}
+
+// Loom's remapped configurations must be created after test suite source sets exist.
+afterEvaluate {
+	loom.createRemapConfigurations(sourceSets.voxyIntegrationTest)
+	dependencies {
+		modVoxyIntegrationTestImplementation voxyArtifact
+		voxyIntegrationTestImplementation 'it.unimi.dsi:fastutil:8.5.12'
+		voxyIntegrationTestImplementation 'org.ow2.asm:asm:9.7'
+		voxyIntegrationTestImplementation 'org.ow2.asm:asm-commons:9.7'
+		voxyIntegrationTestImplementation 'org.ow2.asm:asm-util:9.7'
+		voxyIntegrationTestImplementation 'org.lwjgl:lwjgl:3.3.6'
+		voxyIntegrationTestImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+		voxyIntegrationTestImplementation 'org.mockito:mockito-core:5.12.0'
+		voxyIntegrationTestImplementation 'org.mockito:mockito-junit-jupiter:5.12.0'
+		voxyIntegrationTestRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+	}
+	// Fabric Loom 1.14 with splitEnvironmentSourceSets() does not correctly produce
+	// remapped modVoxyIntegrationTest* artefacts (see dumpConfigs2: modVoxyIntegrationTestCompileClasspath == null).
+	// Consequently maven.modrinth:fxxUqruK on voxyIntegrationTest would stay obfuscated.
+	// We therefore put the already-remapped artefact from loom-cache on the suite's classpath
+	// (via a lazy file collection so a clean checkout still configures) and exclude the unmapped one.
+	def remappedVoxyCollection = layout.files(provider {
+		def remappedDir = file('.gradle/loom-cache/remapped_mods/remapped')
+		if (!remappedDir.isDirectory()) return []
+		def found = fileTree(dir: remappedDir, include: '**/fxxUqruK*.jar').files
+		found
+	})
+	dependencies {
+		voxyIntegrationTestImplementation remappedVoxyCollection
+		voxyIntegrationTestRuntimeOnly remappedVoxyCollection
+	}
+	configurations.named('voxyIntegrationTestCompileClasspath') {
+		def tryExtend = { String name ->
+			def c = configurations.findByName(name)
+			if (c != null) extendsFrom(c)
+			else logger.warn("voxyIntegrationTestCompileClasspath: configuration '${name}' not found, skipping extendsFrom")
+		}
+		tryExtend('minecraftCommonNamedCompile')
+		tryExtend('modCompileClasspathMapped')
+		tryExtend('modCompileClasspathMainMapped')
+		tryExtend('modCompileClasspathClientMapped')
+		exclude group: 'maven.modrinth', module: 'fxxUqruK'
+	}
+	configurations.named('voxyIntegrationTestRuntimeClasspath') {
+		def tryExtend = { String name ->
+			def c = configurations.findByName(name)
+			if (c != null) extendsFrom(c)
+			else logger.warn("voxyIntegrationTestRuntimeClasspath: configuration '${name}' not found, skipping extendsFrom")
+		}
+		tryExtend('minecraftCommonNamedRuntime')
+		tryExtend('modRuntimeClasspathMainMapped')
+		tryExtend('modRuntimeClasspathClientMapped')
+		exclude group: 'maven.modrinth', module: 'fxxUqruK'
+	}
+	check.dependsOn tasks.named('voxyIntegrationTest')
+}
+
 publishing {
 	publications {
 		maven(MavenPublication) {

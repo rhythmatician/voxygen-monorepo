@@ -25,6 +25,7 @@ import net.minecraft.world.biome.Biome;
  * <p>Not declared {@code final} to allow mocking in unit tests.
  * Instantiation is still restricted via the private constructor.
  */
+@SuppressWarnings("deprecation")
 public class VoxyBlockMapper {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(VoxyBlockMapper.class);

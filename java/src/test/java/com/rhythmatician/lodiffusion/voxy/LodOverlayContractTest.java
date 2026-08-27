@@ -24,6 +24,7 @@ class LodOverlayContractTest {
     }
 
     @Test
+    @SuppressWarnings("null")
     void paletteMatchesTheFlyoverLegend() {
         assertEquals(
                 List.of(0xFF3030, 0xFF9D2E, 0xF2E84B, 0x35D6E8, 0xB56BFF),

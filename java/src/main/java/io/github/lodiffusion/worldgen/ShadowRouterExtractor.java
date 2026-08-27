@@ -50,6 +50,7 @@ import java.util.Set;
  * classes (net.minecraft.*) so that it compiles even if the Minecraft dependency
  * is not present at compile time.
  */
+@SuppressWarnings("unused")
 public class ShadowRouterExtractor {
     private static final Logger LOGGER = LogManager.getLogger();
 

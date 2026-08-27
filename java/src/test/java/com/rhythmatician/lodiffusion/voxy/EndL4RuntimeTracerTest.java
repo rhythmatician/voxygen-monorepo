@@ -10,11 +10,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.util.List;
-import net.minecraft.world.biome.source.BiomeSource;
 import net.minecraft.world.gen.chunk.ChunkGenerator;
-import net.minecraft.world.gen.densityfunction.DensityFunction;
 import net.minecraft.world.gen.noise.NoiseConfig;
-import net.minecraft.world.gen.noise.NoiseRouter;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 
@@ -143,6 +140,7 @@ class EndL4RuntimeTracerTest {
         return new EndL4DeterministicCandidate(access);
     }
 
+    @SuppressWarnings("unused")
     private static WorldNoiseAccess newWorldNoiseAccess(
             ChunkGenerator generator, NoiseConfig config) throws Exception {
         Constructor<WorldNoiseAccess> constructor = WorldNoiseAccess.class.getDeclaredConstructor(

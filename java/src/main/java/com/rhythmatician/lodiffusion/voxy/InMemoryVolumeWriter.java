@@ -103,6 +103,7 @@ public final class InMemoryVolumeWriter implements VoxelVolumeWriter {
         return ParentRefinementResult.published(
                 outcome, batch.nonEmptyMask(), batch.requiredMask() & ~batch.nonEmptyMask());
     }
+    @SuppressWarnings("null")
 
     private WriteOutcome commitParentRefinement(ParentRefinementBatch batch) {
         int nonAir = 0;

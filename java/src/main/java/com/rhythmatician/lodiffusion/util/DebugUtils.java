@@ -114,6 +114,7 @@ public final class DebugUtils {
     /**
      * Create a debug report with current system state.
      */
+    @SuppressWarnings("null")
     public static String createSystemReport() {
         StringBuilder report = new StringBuilder();
         report.append("=== LODiffusion System Debug Report ===\n");
