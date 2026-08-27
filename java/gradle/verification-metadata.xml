@@ -13,6 +13,7 @@
          <trust file="junit-bom-.*\.(pom|module)" regex="true" reason="JUnit BOM - pom vs module variant per repository (MavenRepo vs MavenRepo2)"/>
          <trust file="groovy-bom-.*\.(pom|module)" regex="true" reason="Groovy BOM variant"/>
          <trust file="spring-framework-bom-.*\.(pom|module)" regex="true" reason="Spring BOM variant"/>
+         <trust file="lwjgl-.*-natives-.*\.jar" regex="true" reason="LWJGL natives - platform-specific classifier variants"/>
       </trusted-artifacts>
    </configuration>
    <components>
