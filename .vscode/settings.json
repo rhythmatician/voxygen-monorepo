@@ -13,10 +13,19 @@
         }
     },
     "ruff.lineLength": 100,
+    "ruff.nativeServer": "on",
     "ruff.interpreter": ["${workspaceFolder}/python/.venv"],
     "ruff.configurationPreference": "filesystemFirst",
     "autopep8.formatOnSave": false,
     "isort.formatOnSave": false,
+    "emeraldwalk.runonsave": {
+        "commands": [
+            {
+                "match": "\\.py$",
+                "cmd": "${workspaceFolder}\\python\\.venv\\Scripts\\ruff.exe format ${file}"
+            }
+        ]
+    },
     "[java]": {
         "editor.formatOnSave": true
     },
