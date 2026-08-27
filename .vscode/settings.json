@@ -13,6 +13,10 @@
         }
     },
     "ruff.lineLength": 100,
+    "ruff.interpreter": ["${workspaceFolder}/python/.venv"],
+    "ruff.configurationPreference": "filesystemFirst",
+    "autopep8.formatOnSave": false,
+    "isort.formatOnSave": false,
     "[java]": {
         "editor.formatOnSave": true
     },
