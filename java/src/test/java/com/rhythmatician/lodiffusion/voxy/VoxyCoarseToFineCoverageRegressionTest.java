@@ -4,6 +4,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class VoxyCoarseToFineCoverageRegressionTest {
     @AfterEach
@@ -161,6 +162,30 @@ class VoxyCoarseToFineCoverageRegressionTest {
 
         org.junit.jupiter.api.Assertions.assertTrue(topology.octantHasNonAir(0),
                 "all-air candidate octant must not erase existing terrain");
+    }
+
+    /**
+     * The write-path skip gate must verify actual child voxel data, not trust
+     * the parent's advertised nonEmptyChildren bits. A stale NEC=0xFF over
+     * empty octants would otherwise make written==0 map to preservedExisting()
+     * with advertiseToParent()==true — advertising a permanent void.
+     */
+    @Test
+    void skipGateRequiresVerifiedChildDataNotStaleAdvertisement() {
+        // Stale advertisement claims all children, but voxel verification
+        // finds none of them backed by real data: must NOT skip.
+        assertEquals(false, VoxyWorldBinding.shouldSkipWriteForVerifiedChildren(
+                (byte) 0xFF, (byte) 0x00));
+
+        // Verified full coverage genuinely has nothing to contribute: skip.
+        assertEquals(true, VoxyWorldBinding.shouldSkipWriteForVerifiedChildren(
+                (byte) 0xFF, (byte) 0xFF));
+
+        // Partial verified coverage: never skip.
+        assertEquals(false, VoxyWorldBinding.shouldSkipWriteForVerifiedChildren(
+                (byte) 0xFF, (byte) 0x41));
+        assertEquals(false, VoxyWorldBinding.shouldSkipWriteForVerifiedChildren(
+                (byte) 0x00, (byte) 0x00));
     }
 
 }

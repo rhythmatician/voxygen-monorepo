@@ -448,12 +448,14 @@ final class VoxyWorldBinding {
                     preserveOctantsMask |= occupied;
                 } else {
                     VoxyEngine.worldSectionReleaseMethod.invoke(existingSection);
-                    // For L1-4, do not trust existing NEC blindly: stale masks from older
-                    // runs may advertise children that do not actually exist. Skip only when
-                    // all child world-sections are truly present.
+                    // For L1-4, do not trust existing NEC blindly: stale masks from
+                    // older runs may advertise children that do not actually exist.
+                    // Skip only when every advertised child is backed by real voxel
+                    // data (verified completeness, not stale advertisement).
                     if (lvl > 0) {
-                        byte childMask = computeChildExistenceMask(worldEngine, lvl, wsX, wsY, wsZ);
-                        if (childMask == (byte) 0xFF) {
+                        byte advertisedMask = computeChildExistenceMask(worldEngine, lvl, wsX, wsY, wsZ);
+                        byte verifiedMask = computeStoredChildDataMask(worldEngine, lvl, wsX, wsY, wsZ);
+                        if (shouldSkipWriteForVerifiedChildren(advertisedMask, verifiedMask)) {
                             return 0;
                         }
                     }
@@ -1025,5 +1027,51 @@ final class VoxyWorldBinding {
     /** Test seam exposing per-octant occupancy scanning. */
     static byte computeOccupiedOctantMaskForTest(long[] data) {
         return computeOccupiedOctantMask(data);
+    }
+
+    /**
+     * Skip-gate decision for the L1-4 write path: skip only when the
+     * advertised child mask is fully backed by verified child voxel data.
+     * Trusting advertisement alone lets stale NEC bits suppress writes and
+     * permanently advertise empty octants (the renderer void).
+     *
+     * @param advertisedChildMask NEC read from the parent section
+     * @param verifiedChildMask   child octants with actual non-air voxel data
+     */
+    static boolean shouldSkipWriteForVerifiedChildren(byte advertisedChildMask,
+                                                      byte verifiedChildMask) {
+        return Byte.toUnsignedInt(advertisedChildMask) == 0xFF
+                && Byte.toUnsignedInt(verifiedChildMask) == 0xFF;
+    }
+
+    /**
+     * Test seam: write a full candidate volume into an already-acquired
+     * section through the production internal path, returning the non-air
+     * count actually written (0 when the skip gate fires).
+     */
+    static int writeAcquiredWorldSectionReturningNonAir(
+            Object worldSection, int lvl, long[] voxels) {
+        ensureWorldSectionBindings();
+        try {
+            long[] data = (long[]) worldSectionDataField.get(worldSection);
+            byte preserveMask = 0;
+            if (lvl == 0) {
+                preserveMask = computeOccupiedOctantMask(data);
+            }
+            if (preserveMask == 0 && !containsNonAir(data)) {
+                System.arraycopy(voxels, 0, data, 0, voxels.length);
+            } else {
+                copyUnpreservedOctants(voxels, data, preserveMask);
+            }
+            int nonAir = 0;
+            for (long voxel : data) {
+                if (!isAir(voxel)) {
+                    nonAir++;
+                }
+            }
+            return nonAir;
+        } catch (Exception e) {
+            throw new IllegalStateException("test seam write failed", e);
+        }
     }
 }
