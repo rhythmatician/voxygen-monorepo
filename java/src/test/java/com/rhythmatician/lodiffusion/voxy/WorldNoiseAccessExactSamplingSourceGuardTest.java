@@ -49,28 +49,48 @@ class WorldNoiseAccessExactSamplingSourceGuardTest {
      * WorldNoiseAccess owns concrete server dependencies and exposes no construction
      * seam for a real ServerWorld, NoiseChunkGenerator, and NoiseConfig test fixture.
      * Keep this narrow static guard until that real-world fixture exists.
+     *
+     * <p>Pins the sampler-direct walk per ADR 0013: one ChunkNoiseSampler(4) per
+     * chunk, no ProtoChunk materialization, band-restricted emission, and the
+     * doFill interpolation call order preserved.
      */
     @Test
-    void pinnedProtoChunkPathKeepsExactSamplingIsolated() throws Exception {
+    void pinnedSamplerWalkPathKeepsExactSamplingIsolated() throws Exception {
 
         String source = Files.readString(findSource("WorldNoiseAccess.java"));
         int exactStart = source.indexOf("void sampleExactEndBaseTerrainChunk(");
         String exactMethod = source.substring(exactStart,
                 source.indexOf("public ExactEndL1Probe probeExactEndL1", exactStart));
 
-        assertTrue(exactMethod.contains("new ProtoChunk("));
-        assertTrue(exactMethod.contains("populateNoise("));
-        assertTrue(exactMethod.contains("Blender.getNoBlending()"));
-        assertTrue(exactMethod.contains("new NoStructuresAccessor"));
-        assertFalse(exactMethod.contains("new ChunkNoiseSampler("));
-        assertFalse(exactMethod.contains("sampleBlockState()"));
+        // Sampler-direct: exactly one sampler via createNoiseSampler, no chunk objects.
+        assertTrue(exactMethod.contains("createNoiseSampler("));
+        assertTrue(exactMethod.contains("new ChunkNoiseSampler(") == false,
+                "must build the sampler through createNoiseSampler, not inline");
+        assertFalse(exactMethod.contains("new ProtoChunk("));
+        assertFalse(exactMethod.contains("populateNoise("));
+        assertFalse(exactMethod.contains("NoStructuresAccessor"));
+
+        // Band restriction: clamp against vanilla domain, skip whole cells.
+        assertTrue(exactMethod.contains("bandMin"), "must compute a clamped band minimum");
+        assertTrue(exactMethod.contains("bandMax"), "must compute a clamped band maximum");
+        assertTrue(exactMethod.contains("Math.max("), "band min must clamp against shape.minimumY()");
+        assertTrue(exactMethod.contains("Math.min("), "band max must clamp against shape top");
+        assertTrue(exactMethod.contains("cellIntersectsBand"),
+                "cells fully outside the band must be skipped wholesale");
+
+        // Interpolation state machine order preserved (mirrors doFill).
+        assertTrue(exactMethod.contains("sampleStartDensity()"));
+        assertTrue(exactMethod.contains("sampleEndDensity("));
+        assertTrue(exactMethod.contains("onSampledCellCorners("));
+        assertTrue(exactMethod.contains("interpolateY("));
+        assertTrue(exactMethod.contains("interpolateX("));
+        assertTrue(exactMethod.contains("interpolateZ("));
+        assertTrue(exactMethod.contains("sampleBlockState()"));
+        assertTrue(exactMethod.contains("stopInterpolation()"));
+
+        // Isolation: no world access beyond construction inputs.
         assertFalse(exactMethod.contains("getChunkManager("));
         assertFalse(exactMethod.contains("getChunk("));
-
-        String noStructures = source.substring(source.indexOf("private static final class NoStructuresAccessor"));
-        assertTrue(noStructures.contains("getStructureStarts("));
-        assertTrue(noStructures.contains("return List.of()"));
-        assertFalse(exactMethod.contains("getStructureAccessor("));
     }
 
     @Test

@@ -349,7 +349,18 @@ public final class WorldNoiseAccess {
         return new float[][][] { surface, oceanFloor };
     }
 
-    /** Samples one isolated virgin noise-stage chunk column without world insertion. */
+    /**
+     * Samples one isolated virgin noise-stage chunk column without world insertion.
+     *
+     * <p>Sampler-direct walk per ADR 0013: one {@link ChunkNoiseSampler}(4) per
+     * chunk via {@link #createNoiseSampler}, loop structure mirroring
+     * {@code NoiseBasedChunkGenerator.doFill} — no ProtoChunk materialization,
+     * no section writes, no heightmap tracking. Emission is restricted to the
+     * requested band clamped against the generator's own Y domain; cells fully
+     * outside the band are skipped wholesale (their corner densities can never
+     * feed an in-band row). Safe for The End: aquifers are disabled in End
+     * settings, so the fluid-update side effect is dead code.
+     */
     void sampleExactEndBaseTerrainChunk(
             int chunkX,
             int chunkZ,
@@ -360,46 +371,82 @@ public final class WorldNoiseAccess {
         if (retainMinY >= retainMaxY) {
             throw new IllegalArgumentException("retainMinY must not exceed retainMaxY");
         }
-        if (!(generator instanceof NoiseChunkGenerator noiseGenerator)) {
+        if (!(generator instanceof NoiseChunkGenerator)) {
             throw new IllegalStateException("exact noise sampling requires NoiseChunkGenerator");
         }
-        int startX = chunkX << 4;
-        int startZ = chunkZ << 4;
-        if (telemetry.claimHeightOracleProbe()) {
-            telemetry.recordHeightOracle(
-                    chunkX, chunkZ, retainMinY, retainMaxY,
-                    generator.getHeight(
-                    startX + 8,
-                    startZ + 8,
-                    Heightmap.Type.WORLD_SURFACE_WG,
-                    serverWorld,
-                    noiseConfig));
-        }
-        ProtoChunk proto = new ProtoChunk(
-                new ChunkPos(chunkX, chunkZ),
-                UpgradeData.NO_UPGRADE_DATA,
-                serverWorld,
-                serverWorld.getPalettesFactory(),
-                null);
-        Chunk generated = noiseGenerator.populateNoise(
-                Blender.getNoBlending(), noiseConfig,
-                new NoStructuresAccessor(serverWorld), proto).join();
-        telemetry.recordProtoChunk();
-        for (int blockY = retainMinY; blockY < retainMaxY; blockY++) {
-            ChunkSection section = generated.getSection(generated.getSectionIndex(blockY));
-            for (int localX = 0; localX < 16; localX++) {
-                for (int localZ = 0; localZ < 16; localZ++) {
-                    BlockState state = section.getBlockState(localX, blockY & 15, localZ);
-                    telemetry.recordRetainedCallback();
-                    if (state.isAir()) {
-                        telemetry.recordRawAir();
-                    } else {
-                        telemetry.recordRawExplicitNonAir();
+        NoiseSamplerSetup setup = createNoiseSampler(chunkX, chunkZ);
+        ChunkGeneratorSettings settings = setup.settings();
+        GenerationShapeConfig shape = setup.shape();
+        ChunkNoiseSampler sampler = setup.sampler();
+
+        // Band: requested retain range clamped to the generator's Y domain.
+        int domainMinY = shape.minimumY();
+        int domainMaxY = shape.minimumY() + shape.height();
+        int bandMin = Math.max(domainMinY, retainMinY);
+        int bandMax = Math.min(domainMaxY, retainMaxY);
+
+        int hCells   = 16 / shape.horizontalCellBlockCount();
+        int hCellB   = shape.horizontalCellBlockCount();
+        int vCellB   = shape.verticalCellBlockCount();
+        int minCellY = MathHelper.floorDiv(shape.minimumY(), vCellB);
+        int cellHeight = MathHelper.floorDiv(shape.height(), vCellB);
+        int startX   = chunkX << 4;
+        int startZ   = chunkZ << 4;
+
+        sampler.sampleStartDensity();
+
+        for (int o = 0; o < hCells; o++) {            // horizontal cell X (0-3)
+            sampler.sampleEndDensity(o);
+
+            for (int p = 0; p < hCells; p++) {        // horizontal cell Z (0-3)
+                for (int r = cellHeight - 1; r >= 0; r--) {  // vertical cell, top → bottom
+                    int cellBlockMinY = (minCellY + r) * vCellB;
+                    int cellBlockMaxY = cellBlockMinY + vCellB;
+                    boolean cellIntersectsBand =
+                            cellBlockMinY < bandMax && cellBlockMaxY > bandMin;
+                    if (!cellIntersectsBand) {
+                        continue;
                     }
-                    consumer.accept(startX + localX, blockY, startZ + localZ, !state.isAir());
+
+                    sampler.onSampledCellCorners(r, p);
+
+                    for (int s = vCellB - 1; s >= 0; s--) {  // block within cell, top → bottom
+                        int blockY = cellBlockMinY + s;
+                        if (blockY < bandMin || blockY >= bandMax) {
+                            continue;
+                        }
+                        sampler.interpolateY(blockY, (double) s / vCellB);
+
+                        for (int w = 0; w < hCellB; w++) {   // block X within cell
+                            int blockX = startX + o * hCellB + w;
+                            sampler.interpolateX(blockX, (double) w / hCellB);
+
+                            for (int z = 0; z < hCellB; z++) { // block Z within cell
+                                int blockZ = startZ + p * hCellB + z;
+                                sampler.interpolateZ(blockZ, (double) z / hCellB);
+
+                                BlockState state = sampler.sampleBlockState();
+                                // null from ChunkNoiseSampler means AIR; fall back
+                                // to default block (stone/end_stone) for density > 0
+                                BlockState actual = (state == null)
+                                        ? settings.defaultBlock() : state;
+
+                                telemetry.recordRetainedCallback();
+                                if (actual.isAir()) {
+                                    telemetry.recordRawAir();
+                                } else {
+                                    telemetry.recordRawExplicitNonAir();
+                                }
+                                consumer.accept(blockX, blockY, blockZ, !actual.isAir());
+                            }
+                        }
+                    }
                 }
             }
+            sampler.swapBuffers();
         }
+
+        sampler.stopInterpolation();
     }
 
     /**
@@ -469,18 +516,6 @@ public final class WorldNoiseAccess {
             ChunkNoiseSampler sampler,
             ChunkGeneratorSettings settings,
             GenerationShapeConfig shape) {}
-
-    private static final class NoStructuresAccessor extends StructureAccessor {
-        private NoStructuresAccessor(ServerWorld world) {
-            super(world, new GeneratorOptions(world.getSeed(), false, false), null);
-        }
-
-        @Override
-        public List<StructureStart> getStructureStarts(
-                ChunkPos pos, Predicate<Structure> predicate) {
-            return List.of();
-        }
-    }
 
     /**
      * Sample a heightmap of the given type for a 16×16 section column.
