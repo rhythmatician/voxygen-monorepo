@@ -2,6 +2,7 @@ package com.rhythmatician.lodiffusion.voxy;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -22,6 +23,8 @@ import com.rhythmatician.lodiffusion.world.noise.NoiseRouterSampler;
 import com.rhythmatician.lodiffusion.world.noise.NoiseRouterSamplerFactory;
 import com.rhythmatician.lodiffusion.world.noise.SectionNoiseData;
 import net.lodiffusion.shadow.ShadowRouterJobQueue;
+import net.lodiffusion.shadow.VoxyDemandKind;
+import net.lodiffusion.shadow.VoxyDemandSource;
 import net.lodiffusion.shadow.VoxyRequestDecoder;
 
 import net.minecraft.registry.Registry;
@@ -97,10 +100,6 @@ public final class GenerationSession {
             private static final int NEAR_SEED_MAX_QUEUE_DEPTH =
                 Config.getInt("nearSeedMaxQueueDepth", 384);
 
-            /** Interval between partial-fill scans (ms). */
-            private static final int PARTIAL_FILL_SCAN_INTERVAL_MS =
-                Config.getInt("partialFillScanIntervalMs", 5000);
-
             /** Minimum time between re-seeding the exact same (lod, wsX, wsY, wsZ). */
             private static final int NEAR_SEED_REENQUEUE_MS =
                 Config.getInt("nearSeedReenqueueMs", 8000);
@@ -114,18 +113,6 @@ public final class GenerationSession {
              * Because finer levels have smaller world-sections, this naturally shrinks
              * the block radius at each finer level without creating giant gaps.
              */
-            private static final int NEAR_SEED_L3_RADIUS =
-                Math.max(1, Config.getInt("nearSeedL3Radius", NEAR_SEED_L4_RADIUS));
-
-            private static final int NEAR_SEED_L2_RADIUS =
-                Math.max(1, Config.getInt("nearSeedL2Radius", NEAR_SEED_L4_RADIUS));
-
-            private static final int NEAR_SEED_L1_RADIUS =
-                Math.max(1, Config.getInt("nearSeedL1Radius", NEAR_SEED_L4_RADIUS));
-
-            private static final int NEAR_SEED_L0_RADIUS =
-                Math.max(1, Config.getInt("nearSeedL0Radius", NEAR_SEED_L4_RADIUS));
-
     /**
      * Mysterious-Name fix: {@code +4} is the voxel-center offset.
      * One WorldSection is 32 blocks; L0 is 16 blocks. Centering the sample
@@ -152,14 +139,9 @@ public final class GenerationSession {
                 RouterField.RIDGES.ordinal(),
             };
 
-    // --- End L4 deterministic tracer (model-free, The End, L4-only) ---
-    // Tracer mode is an explicit early session-mode decision before BOTH
-    // preloadModel() and resolveVoxyModel()/worker entry. Single decision,
-    // no scattered if(isEnd). Proven by no preloadFuture / no VoxyModelRunner
-    // / no ONNX file in tracer mode. L4 only; disables L3/L2/L1/L0 seeding
-    // and partial-fill descent. Demand is 121 L4 requests (X/Z -5..5, Y=0)
-    // around player at (0,96,0) in The End — horizon 2048+512 = 2560 blocks.
-    private volatile boolean endL4TracerMode = false;
+    // End uses only the top-down tracer/exact route. Compatibility publishers
+    // (heightmap and ONNX) remain available only in other dimensions.
+    private volatile TerrainPublicationRoute terrainRoute = TerrainPublicationRoute.PUBLICATION_DENIED;
     static final int END_L4_TRACER_RADIUS = 5;
     static final int END_L4_TRACER_WS_Y = 0;
     static final int END_L4_TRACER_TOTAL = 121; // 11*11
@@ -177,15 +159,21 @@ public final class GenerationSession {
     private final AtomicInteger tracerWritten = new AtomicInteger(0);
     private final AtomicInteger tracerSkipped = new AtomicInteger(0);
     private final AtomicInteger tracerFailed = new AtomicInteger(0);
+    private final ExactL1SamplingTelemetry exactL1Sampling =
+            new ExactL1SamplingTelemetry();
     private final AtomicBoolean tracerTerminalEmitted = new AtomicBoolean(false);
     private volatile TracerCompletion tracerCompletion = null;
 
     boolean isEndL4TracerMode() {
-        return endL4TracerMode;
+        return terrainRoute.usesTopDownEndRoute();
     }
 
     void setEndL4TracerModeForTest(boolean enabled) {
-        this.endL4TracerMode = enabled;
+        this.terrainRoute = enabled
+                ? TerrainPublicationRoute.END_TOP_DOWN
+                : TerrainPublicationRoute.COMPATIBILITY;
+        if (enabled && endRefinement == null) endRefinement = createEndRefinement();
+        if (!enabled) endRefinement = null;
     }
 
     void setRunningForTest(boolean value) {
@@ -214,64 +202,23 @@ public final class GenerationSession {
         tracerCompletion = null;
     }
 
-    private boolean decideEndL4TracerMode(World world) {
-        if (world == null) {
-            return false;
-        }
-        try {
-            net.minecraft.registry.RegistryKey<World> key = world.getRegistryKey();
-            if (key == null || key.getValue() == null) return false;
-            // Avoid direct World.END reference to keep test bootstrap-free; compare identifier
-            return key.getValue().equals(net.minecraft.util.Identifier.of("minecraft", "the_end"));
-        } catch (Exception e) {
-            return false;
-        }
+    void observeEndRefinementSnapshotForTest(EndRefinement.Snapshot snapshot) {
+        maybeEmitTracerTerminal(snapshot);
     }
 
     static int endL4TracerTotalRequests() {
         return END_L4_TRACER_TOTAL;
     }
 
-    /**
-     * Enqueue 121 L4 tracer requests (X/Z -5..5, Y=0) around the player's
-     * L4 WorldSection centre. Reuses dedup/backpressure via
-     * ShadowRouterJobQueue; no synchronous blocking barrier.
-     */
-    int enqueueEndL4TracerRequests() {
-        tracerStartMs = System.currentTimeMillis();
-        tracerWritten.set(0);
-        tracerSkipped.set(0);
-        tracerFailed.set(0);
-        tracerTerminalEmitted.set(false);
-        tracerCompletion = null;
-        int centerX = WorldSectionCoord.sectionToWorldSection(playerSectionX, 4);
-        int centerZ = WorldSectionCoord.sectionToWorldSection(playerSectionZ, 4);
-        int enqueued = 0;
-        for (int dz = -END_L4_TRACER_RADIUS; dz <= END_L4_TRACER_RADIUS; dz++) {
-            for (int dx = -END_L4_TRACER_RADIUS; dx <= END_L4_TRACER_RADIUS; dx++) {
-                int wsX = centerX + dx;
-                int wsZ = centerZ + dz;
-                int wsY = END_L4_TRACER_WS_Y;
-                VoxyRequestDecoder.VoxyNodeRequest req = new VoxyRequestDecoder.VoxyNodeRequest();
-                req.lodLevel = 4;
-                req.worldX = wsX;
-                req.worldY = wsY;
-                req.worldZ = wsZ;
-                ShadowRouterJobQueue.enqueue(req);
-                enqueued++;
-            }
-        }
-        return enqueued;
-    }
-
-    private void maybeEmitTracerTerminal() {
-        int written = tracerWritten.get();
-        int skipped = tracerSkipped.get();
-        int failed = tracerFailed.get();
-        int processed = written + skipped + failed;
-        if (processed != END_L4_TRACER_TOTAL) {
+    private void maybeEmitTracerTerminal(EndRefinement.Snapshot snapshot) {
+        EndRefinement.InitialHorizonSummary initial = snapshot.initialHorizon();
+        if (initial.targets() != END_L4_TRACER_TOTAL
+                || initial.terminal() != END_L4_TRACER_TOTAL) {
             return;
         }
+        int written = initial.written();
+        int skipped = initial.existing() + initial.empty();
+        int failed = initial.failed();
         if (!tracerTerminalEmitted.compareAndSet(false, true)) {
             return;
         }
@@ -279,6 +226,9 @@ public final class GenerationSession {
         String at = java.time.Instant.now().toString();
         String status = (written + skipped == END_L4_TRACER_TOTAL && failed == 0) ? "SUCCESS" : "FAILED";
         tracerCompletion = new TracerCompletion(status, written, skipped, failed, elapsedMs, at);
+        tracerWritten.set(written);
+        tracerSkipped.set(skipped);
+        tracerFailed.set(failed);
         HelloTerrainMod.LOGGER.info(
                 "[LodGen][Tracer] terminal 121/121 status={} written={} skipped={} failed={} elapsedMs={} at={}",
                 status, written, skipped, failed, elapsedMs, at);
@@ -370,6 +320,48 @@ public final class GenerationSession {
     GenerationSession(VoxelVolumeWriter writerOverride, TerrainCandidate candidateOverride) {
         this.writerOverride = writerOverride;
         this.candidateOverride = candidateOverride;
+        RefinementAdmissionGate.logResolvedModeOnce();
+    }
+
+    private EndRefinement createEndRefinement() {
+        return new DefaultEndRefinement(
+                DefaultEndRefinement.productionConfig(),
+                intent -> {
+                    VoxelVolumeWriter writer = activeEndWriter;
+                    if (writer == null) throw new IllegalStateException("End writer is not bound");
+                    return writer.refineParent(intent);
+                },
+                this::produceEndRefinementChild,
+                origin -> {
+                    VoxelVolumeWriter writer = activeEndWriter;
+                    World world = activeEndWorld;
+                    WorldNoiseAccess access = noiseAccess;
+                    if (writer == null || world == null || access == null) {
+                        throw new IllegalStateException("End horizon is not bound");
+                    }
+                    return writeEndHorizonLeaf(
+                            world, writer, new EndL4DeterministicCandidate(access), origin);
+                });
+    }
+
+    VoxelVolume produceEndRefinementChild(Level childLevel, SectionPos childOrigin) {
+        WorldNoiseAccess access = noiseAccess;
+        if (access == null) throw new IllegalStateException("End noise is not bound");
+        if (childLevel == Level.L1) {
+            ExactEndL1Candidate exactL1 = new ExactEndL1Candidate(access, exactL1Sampling);
+            return exactL1.produceExactL1(childOrigin);
+        }
+        EndL4DeterministicCandidate candidate = new EndL4DeterministicCandidate(access);
+        return candidate.produceRegion(childLevel, childOrigin);
+    }
+
+    void setNoiseAccessForTest(WorldNoiseAccess access) {
+        this.noiseAccess = access;
+    }
+
+    EndRefinement.Snapshot endRefinementSnapshotForTest() {
+        EndRefinement refinement = endRefinement;
+        return refinement == null ? null : refinement.snapshot();
     }
 
     /**
@@ -430,6 +422,11 @@ public final class GenerationSession {
     private volatile int lastSeedPlayerSectionZ = Integer.MIN_VALUE;
     private final ConcurrentHashMap<Long, Long> recentSeededAtMs = new ConcurrentHashMap<>();
 
+    private record FrontierEpoch(int playerL1X, int playerL1Z,
+                                 int vanillaRadiusBlocks, int leadBlocks) {}
+
+    private FrontierEpoch lastFrontierEpoch;
+
     /** Tracks which (section) positions we've already generated. Thread-safe. */
     private final Set<Long> generatedSections = ConcurrentHashMap.newKeySet();
 
@@ -448,6 +445,9 @@ public final class GenerationSession {
 
     /** Server-side noise access — null if unavailable (dedicated server). */
     private volatile WorldNoiseAccess noiseAccess;
+    private volatile EndRefinement endRefinement;
+    private volatile VoxelVolumeWriter activeEndWriter;
+    private volatile World activeEndWorld;
 
     /**
      * Hot-swappable sampler factory for the 15 NoiseRouter fields.
@@ -480,9 +480,14 @@ public final class GenerationSession {
      */
     // Early session-mode decision before BOTH preloadModel() and resolveVoxyModel()/worker entry
     public void preloadModel() {
-        // Early tracer-mode gate: must precede VoxyModelRunner creation
-        if (endL4TracerMode) {
-            HelloTerrainMod.LOGGER.info("[LodGen] End L4 tracer mode — skipping preloadModel (no ONNX)");
+        // A model is a compatibility-route dependency. Until a world identifies that
+        // route, fail closed instead of speculatively loading an End-inapplicable model.
+        if (terrainRoute.usesTopDownEndRoute()) {
+            HelloTerrainMod.LOGGER.info("[LodGen] End top-down route — skipping preloadModel (no ONNX)");
+            return;
+        }
+        if (!terrainRoute.allowsCompatibilityTerrainPublication()) {
+            HelloTerrainMod.LOGGER.info("[LodGen] World route unidentified — skipping preloadModel");
             return;
         }
         if (preloadFuture != null && !preloadFuture.isDone()) {
@@ -527,12 +532,14 @@ public final class GenerationSession {
         positionReady.set(false);
         generatedSections.clear();
         columnContextCache.clear();
+        resetFrontierGuardState();
         activeQueue = null;
         realDataSections.set(0);
         syntheticDataSections.set(0);
         noiseAccessSections.set(0);
         skippedAirSections.set(0);
         diagnosticCount.set(0);
+        exactL1Sampling.reset();
         if (samplerFactory != null) {
             try { samplerFactory.close(); } catch (Exception ignored) {}
             samplerFactory = null;
@@ -540,9 +547,12 @@ public final class GenerationSession {
         noiseAccess = null;
         this.server = server;
         // Early session-mode decision before BOTH preloadModel() and resolveVoxyModel()/worker entry
-        this.endL4TracerMode = decideEndL4TracerMode(world);
-        if (endL4TracerMode) {
-            HelloTerrainMod.LOGGER.info("[LodGen] End L4 tracer mode enabled — The End, model-free, L4-only");
+        this.terrainRoute = TerrainPublicationRoute.forWorld(world);
+        if (terrainRoute.usesTopDownEndRoute()) {
+            endRefinement = createEndRefinement();
+            HelloTerrainMod.LOGGER.info("[LodGen] End top-down route enabled — tracer/exact, model-free");
+        } else {
+            endRefinement = null;
         }
 
         workerThread = new Thread(() -> runWorker(world), "LODiffusion-Gen");
@@ -559,7 +569,6 @@ public final class GenerationSession {
         if (!running.get()) return;
 
         stopRequested.set(true);
-
         // Signal population done so stage workers can drain and exit
         LodGenerationQueue q = activeQueue;
         if (q != null) q.signalPopulationDone();
@@ -572,8 +581,18 @@ public final class GenerationSession {
             } catch (InterruptedException ignored) {}
         }
         running.set(false);
+        EndRefinement refinement = endRefinement;
+        if (refinement != null) {
+            refinement.advance(new EndRefinement.Frame(System.currentTimeMillis(),
+                    new SectionPos(playerSectionX, playerSectionY, playerSectionZ),
+                    List.of(), true));
+        }
+        endRefinement = null;
+        activeEndWriter = null;
+        activeEndWorld = null;
         generatedSections.clear();
         columnContextCache.clear();
+        resetFrontierGuardState();
         if (q != null) q.clear();
         activeQueue = null;
         if (samplerFactory != null) {
@@ -604,12 +623,80 @@ public final class GenerationSession {
         }
     }
 
+    /**
+     * Client-tick frontier update with only scalar values at the core boundary.
+     * Vanilla generation and Voxy ingestion remain entirely outside this planner.
+     */
+    public void updatePlayerPosition(BlockPos pos, double horizontalVelocityX,
+                                     double horizontalVelocityZ, int clientViewDistanceChunks,
+                                     int simulationDistanceChunks) {
+        updatePlayerPosition(pos);
+        if (running.get() && terrainRoute.usesTopDownEndRoute()) {
+            enqueueVanillaFrontierGuardForTest(
+                    new VanillaFrontierGuardPlanner.FrontierSnapshot(pos.getX(), pos.getZ(),
+                            horizontalVelocityX, horizontalVelocityZ,
+                            clientViewDistanceChunks, simulationDistanceChunks),
+                    Config.getInt("vanillaFrontierLeadTicks", 20));
+        }
+    }
+
+    synchronized int enqueueVanillaFrontierGuardForTest(
+            VanillaFrontierGuardPlanner.FrontierSnapshot snapshot, int leadTicks) {
+        VanillaFrontierGuardPlanner.Input input = snapshot.toInput(leadTicks);
+        FrontierEpoch epoch = new FrontierEpoch(
+                WorldSectionCoord.blockToWorldSection(input.playerBlockX(), Level.L1.value()),
+                WorldSectionCoord.blockToWorldSection(input.playerBlockZ(), Level.L1.value()),
+                input.vanillaRadiusBlocks(), input.leadBlocks());
+        if (epoch.equals(lastFrontierEpoch)) {
+            return 0;
+        }
+        lastFrontierEpoch = epoch;
+
+        int enqueued = 0;
+        EndRefinement refinement = endRefinement;
+        if (refinement != null) {
+            enqueued = refinement.observeFrontier(VanillaFrontierGuardPlanner.plan(input));
+        }
+        return enqueued;
+    }
+
+    private synchronized void resetFrontierGuardState() {
+        lastFrontierEpoch = null;
+    }
+
+    static int l0WorldSectionForChunk(int chunkCoordinate) {
+        return Math.floorDiv(chunkCoordinate, 2);
+    }
+
+    static int chunkColumnOwnershipMask(int chunkX, int chunkZ) {
+        int quadrant = Math.floorMod(chunkX, 2) | (Math.floorMod(chunkZ, 2) << 1);
+        return (1 << quadrant) | (1 << (quadrant + 4));
+    }
+
+    synchronized void observeVanillaChunkColumnForTest(int chunkX, int chunkZ) {
+        observeVanillaChunkColumn(chunkX, chunkZ);
+    }
+
+    /** Records a post-load vanilla chunk observation; this never participates in chunk loading. */
+    synchronized void observeVanillaChunkColumn(int chunkX, int chunkZ) {
+        int l0X = l0WorldSectionForChunk(chunkX);
+        int l0Z = l0WorldSectionForChunk(chunkZ);
+        int mask = chunkColumnOwnershipMask(chunkX, chunkZ);
+        for (int l0Y = 0; l0Y < 4; l0Y++) {
+            EndRefinement refinement = endRefinement;
+            if (refinement != null) {
+                refinement.observeVanilla(new EndRefinement.ObservedVanilla(
+                        new SectionPos(l0X << 1, l0Y << 1, l0Z << 1), mask));
+            }
+        }
+    }
+
     private void seedNearPlayerDemandIfNeeded() {
         if (!running.get()) {
             return;
         }
-        // End L4 tracer: 121 L4-only (X/Z -5..5, Y=0), disable L3/L2/L1/L0 seeding
-        if (endL4TracerMode) {
+        // End starts with the L4 horizon; child refinement enters through the typed queue.
+        if (terrainRoute.usesTopDownEndRoute()) {
             return;
         }
 
@@ -625,12 +712,7 @@ public final class GenerationSession {
             return;
         }
 
-        int enqueuedL4 = enqueueLocalSeedRing(4, NEAR_SEED_L4_RADIUS, now);
-        int enqueuedL3 = enqueueLocalSeedRing(3, NEAR_SEED_L3_RADIUS, now);
-        int enqueuedL2 = enqueueLocalSeedRing(2, NEAR_SEED_L2_RADIUS, now);
-        int enqueuedL1 = enqueueLocalSeedRing(1, NEAR_SEED_L1_RADIUS, now);
-        int enqueuedL0 = enqueueLocalSeedRing(0, NEAR_SEED_L0_RADIUS, now);
-        int enqueued = enqueuedL4 + enqueuedL3 + enqueuedL2 + enqueuedL1 + enqueuedL0;
+        int enqueued = enqueueLocalSeedRing(Level.L4.value(), NEAR_SEED_L4_RADIUS, now);
 
         lastSeedPlayerSectionX = playerSectionX;
         lastSeedPlayerSectionZ = playerSectionZ;
@@ -643,11 +725,8 @@ public final class GenerationSession {
 
         if (enqueued > 0 && (movedSection || (now % 5000L) < NEAR_SEED_INTERVAL_MS)) {
             HelloTerrainMod.LOGGER.info(
-                    "[LodGen][Seed] enqueued={} L4={} L3={} L2={} L1={} L0={} radii=[{},{},{},{},{}] queueDepth={} player=({}, {}, {})",
-                    enqueued,
-                    enqueuedL4, enqueuedL3, enqueuedL2, enqueuedL1, enqueuedL0,
-                    NEAR_SEED_L4_RADIUS, NEAR_SEED_L3_RADIUS, NEAR_SEED_L2_RADIUS,
-                    NEAR_SEED_L1_RADIUS, NEAR_SEED_L0_RADIUS,
+                    "[LodGen][Seed] enqueued={} L4 radius={} queueDepth={} player=({}, {}, {})",
+                    enqueued, NEAR_SEED_L4_RADIUS,
                     queueDepth,
                     playerSectionX, playerSectionY, playerSectionZ);
         }
@@ -659,14 +738,9 @@ public final class GenerationSession {
         int centerY = WorldSectionCoord.sectionToWorldSection(playerSectionY, level);
 
         int enqueued = 0;
-        // At L4, only wsY=0 produces a valid yPosition for the model.
-        // At finer levels, scan ±1 in Y.
-        int minDy = level >= 4 ? 0 : -1;
-        int maxDy = level >= 4 ? 0 : 1;
-        for (int dy = minDy; dy <= maxDy; dy++) {
-            int wsY = centerY + dy;
-            for (int dz = -radius; dz <= radius; dz++) {
-                for (int dx = -radius; dx <= radius; dx++) {
+        int wsY = centerY;
+        for (int dz = -radius; dz <= radius; dz++) {
+            for (int dx = -radius; dx <= radius; dx++) {
                     int wsX = centerX + dx;
                     int wsZ = centerZ + dz;
                     long seedKey = seedKey(level, wsX, wsY, wsZ);
@@ -680,10 +754,12 @@ public final class GenerationSession {
                     req.worldX = wsX;
                     req.worldY = wsY;
                     req.worldZ = wsZ;
+                    req.demandKind = VoxyDemandKind.HORIZON_COVERAGE;
+                    req.workKind = net.lodiffusion.shadow.VoxyWorkKind.HORIZON_LEAF;
+                    req.demandSource = VoxyDemandSource.HORIZON_SEED;
                     ShadowRouterJobQueue.enqueue(req);
                     recentSeededAtMs.put(seedKey, nowMs);
                     enqueued++;
-                }
             }
         }
         return enqueued;
@@ -724,13 +800,24 @@ public final class GenerationSession {
             if (noiseAccess == null) {
                 HelloTerrainMod.LOGGER.warn("[LodGen] Noise access unavailable — "
                         + "will fall back to heightmap-only generation");
-            } else {
-                HelloTerrainMod.LOGGER.info("[LodGen] Using REAL noise access — "
-                        + "no synthetic fallback needed");
+        } else {
+            HelloTerrainMod.LOGGER.info("[LodGen] Using REAL noise access — "
+                    + "no synthetic fallback needed");
+            if (terrainRoute.usesTopDownEndRoute()
+                    && Boolean.getBoolean("lodiffusion.flightTour.autoStart")) {
+                WorldNoiseAccess.ExactEndL1Probe probe =
+                        noiseAccess.probeExactEndL1(new SectionPos(0, 4, 0));
+                HelloTerrainMod.LOGGER.info(
+                        "[LodGen][ExactL1Control] main-island nonAir={} "
+                                + "unloadedBefore={} unloadedAfter={}",
+                        probe.nonAirVoxels(),
+                        probe.targetChunksUnloadedBefore(),
+                        probe.targetChunksUnloadedAfter());
             }
+        }
 
             // Early tracer-mode gate: must precede resolveVoxyModel()
-            if (endL4TracerMode) {
+            if (terrainRoute.usesTopDownEndRoute()) {
                 if (noiseAccess == null) {
                     HelloTerrainMod.LOGGER.error(
                             "[LodGen] End L4 tracer mode — noiseAccess unavailable, aborting");
@@ -746,8 +833,7 @@ public final class GenerationSession {
                     return;
                 }
                 HelloTerrainMod.LOGGER.info(
-                        "[LodGen] End L4 tracer mode — enqueuing 121 L4 requests (X/Z -5..5 Y=0)");
-                enqueueEndL4TracerRequests();
+                        "[LodGen] End L4 tracer mode — module owns 121 L4 horizon regions");
                 boolean tracerProduced = runEndL4TracerPipeline(world, tracerWriter);
                 HelloTerrainMod.LOGGER.info(
                         "[LodGen] End L4 tracer pipeline stopped: produced={}", tracerProduced);
@@ -1025,8 +1111,8 @@ public final class GenerationSession {
      * from the center, limited to the given radius.
      *
      * <p>Every pass covers a <em>full disc</em> — finer LOD passes
-     * naturally overwrite our earlier coarser data.  Voxy-native sections
-     * (from real chunk loading) are protected in {@link VoxySectionWriter}.
+     * naturally overwrite our earlier coarser data. Existing Voxy-native
+     * sections from real chunk loading are preserved by the writer seam.
      *
      * @param distantFirst if true, sort furthest-from-center first so
      *                     distant horizon terrain appears immediately.
@@ -1134,6 +1220,11 @@ public final class GenerationSession {
      * caching, surface Y-range filtering, and deduplication.
      */
     private void runFallbackPipeline(World world, VoxelVolumeWriter writer) {
+        if (terrainRoute.usesTopDownEndRoute()) {
+            HelloTerrainMod.LOGGER.error(
+                    "[LodGen] Refusing heightmap fallback writes in The End");
+            return;
+        }
         Object worldEngine = (writer instanceof RealVoxyVolumeWriter r) ? r.getWorldEngine() : null;
         int totalSections = 0;
         int skippedAir = 0;
@@ -1295,7 +1386,7 @@ public final class GenerationSession {
                 columnsProcessed, skippedAir, skippedExisting);
     }
 
-    private enum DemandProcessResult {
+    enum DemandProcessResult {
         WRITTEN,
         SKIPPED,
         DEFERRED,
@@ -1311,7 +1402,6 @@ public final class GenerationSession {
      * ShadowRouterJobQueue and servicing them through VoxyModelRunner.
      */
     private boolean runDemandVoxyPipeline(World world, VoxelVolumeWriter writer) {
-        Object worldEngine = (writer instanceof RealVoxyVolumeWriter r) ? r.getWorldEngine() : null;
         int dequeued = 0;
         int written = 0;
         int skipped = 0;
@@ -1319,29 +1409,8 @@ public final class GenerationSession {
         int failed = 0;
         long startMs = System.currentTimeMillis();
         long lastProgressLogMs = startMs;
-        long lastPartialFillScanMs = 0;
-
-        // Initial partial-fill scan across ALL levels before entering the main loop.
-        int initialFill = scanAndEnqueuePartialFillAllLevels(world, worldEngine, NEAR_SEED_L4_RADIUS);
-        if (initialFill > 0) {
-            HelloTerrainMod.LOGGER.info(
-                    "[LodGen][PartialFill] initial scan enqueued {} fill requests across all levels",
-                    initialFill);
-        }
 
         while (!stopRequested.get()) {
-            long now = System.currentTimeMillis();
-            if (!ShadowRouterJobQueue.hasPartialFillWork()
-                    && now - lastPartialFillScanMs >= PARTIAL_FILL_SCAN_INTERVAL_MS) {
-                int filled = scanAndEnqueuePartialFillAllLevels(world, worldEngine, NEAR_SEED_L4_RADIUS);
-                lastPartialFillScanMs = now;
-                if (filled > 0) {
-                    HelloTerrainMod.LOGGER.info(
-                            "[LodGen][PartialFill] rescan enqueued {} fill requests across all levels",
-                            filled);
-                }
-            }
-
             VoxyRequestDecoder.VoxyNodeRequest req = ShadowRouterJobQueue.dequeueAny();
             if (req == null) {
                 try {
@@ -1354,8 +1423,8 @@ public final class GenerationSession {
             }
 
             dequeued++;
-
             boolean requeued = false;
+            boolean failedRequest = false;
             try {
                 DemandProcessResult result =
                         processDemandRequest(world, writer, req);
@@ -1367,7 +1436,10 @@ public final class GenerationSession {
                         ShadowRouterJobQueue.requeue(req);
                         requeued = true;
                     }
-                    case FAILED -> failed++;
+                    case FAILED -> {
+                        failed++;
+                        failedRequest = true;
+                    }
                 }
 
                 long progressNow = System.currentTimeMillis();
@@ -1378,7 +1450,9 @@ public final class GenerationSession {
                     lastProgressLogMs = progressNow;
                 }
             } finally {
-                if (!requeued) {
+                if (failedRequest) {
+                    ShadowRouterJobQueue.markFailed(req);
+                } else if (!requeued) {
                     ShadowRouterJobQueue.markCompleted(req);
                 }
             }
@@ -1386,148 +1460,9 @@ public final class GenerationSession {
 
         logDemandProgress(startMs, dequeued, written, skipped, deferred, failed);
         HelloTerrainMod.LOGGER.info(
-                "[LodGen] Demand pipeline stopped: dequeued={} written={} skipped={} deferred={} failed={}",
-                dequeued, written, skipped, deferred, failed);
+                "[LodGen] Demand pipeline stopped: dequeued={} written={} skipped={} deferred={} failed={} exactL1={}",
+                dequeued, written, skipped, deferred, failed, exactL1Sampling.compact());
         return written > 0;
-    }
-
-    /**
-     * Scan ALL levels for partial WorldSections and enqueue fill requests.
-     * L0 must be discovered from actual voxel occupancy; L1-L4 can use child masks.
-     */
-    private int scanAndEnqueuePartialFillAllLevels(World world, Object worldEngine, int radius) {
-        int total = scanAndEnqueueL0PartialFill(world, worldEngine, NEAR_SEED_L0_RADIUS);
-        for (int parentLevel = 1; parentLevel <= 4; parentLevel++) {
-            total += scanAndEnqueuePartialFill(worldEngine, parentLevel, radius);
-        }
-        return total;
-    }
-
-    /**
-     * L0 has no child-existence mask for its internal 16^3 octants, so hybrid
-     * vanilla sections must be discovered by looking at actual voxel occupancy.
-     */
-    private int scanAndEnqueueL0PartialFill(World world, Object worldEngine, int radius) {
-        int centerX = WorldSectionCoord.sectionToWorldSection(playerSectionX, 0);
-        int centerZ = WorldSectionCoord.sectionToWorldSection(playerSectionZ, 0);
-        int centerY = WorldSectionCoord.sectionToWorldSection(playerSectionY, 0);
-
-        int enqueued = 0;
-        for (int dy = -1; dy <= 1; dy++) {
-            int wsY = centerY + dy;
-            if (isOutOfWorldY(0, wsY)) {
-                continue;
-            }
-            for (int dz = -radius; dz <= radius; dz++) {
-                for (int dx = -radius; dx <= radius; dx++) {
-                    int wsX = centerX + dx;
-                    int wsZ = centerZ + dz;
-
-                    byte loadedMask = loadedChunkOctantMask(world, 0, wsX, wsY, wsZ);
-                    if (loadedMask == 0 || loadedMask == (byte) 0xFF) {
-                        continue;
-                    }
-
-                    // Non-vanilla octants: the ones LODiffusion is responsible for filling.
-                    // getOccupiedOctantMask returns 0 when the section doesn't exist yet, so
-                    // we also enqueue when Voxy hasn't created the section yet (which is correct
-                    // — processDemandRequest will create it, writing only the non-vanilla octants).
-                    byte nonVanillaMask = (byte)(~loadedMask & 0xFF);
-                    byte occupiedMask = VoxyCompat.getOccupiedOctantMask(worldEngine, 0, wsX, wsY, wsZ);
-                    if ((occupiedMask & nonVanillaMask) == nonVanillaMask) {
-                        // All non-vanilla octants already have LODiffusion predictions.
-                        continue;
-                    }
-
-                    VoxyRequestDecoder.VoxyNodeRequest req = new VoxyRequestDecoder.VoxyNodeRequest();
-                    req.lodLevel = 0;
-                    req.worldX = wsX;
-                    req.worldY = wsY;
-                    req.worldZ = wsZ;
-                    req.isPartialFill = true;
-                    ShadowRouterJobQueue.enqueue(req);
-                    enqueued++;
-                }
-            }
-        }
-        return enqueued;
-    }
-
-    /**
-     * Scan existing WorldSections at {@code parentLevel} around the player and
-     * enqueue child-level generation requests for any octant that is missing.
-     *
-     * <p>This fills the "holes" in WorldSections that have partial child
-     * existence (0 &lt; NEC &lt; 0xFF), such as L4 sections with some vanilla
-     * L3 children.  The GPU descends into children when NEC bits are set; if
-     * only some children exist, the missing octants render as blank terrain.
-     *
-     * @return number of child-level requests enqueued
-     */
-    private int scanAndEnqueuePartialFill(Object worldEngine,
-                                           int parentLevel, int radius) {
-        if (parentLevel < 1 || parentLevel > 4) return 0;
-
-        int centerX = WorldSectionCoord.sectionToWorldSection(playerSectionX, parentLevel);
-        int centerZ = WorldSectionCoord.sectionToWorldSection(playerSectionZ, parentLevel);
-        int centerY = WorldSectionCoord.sectionToWorldSection(playerSectionY, parentLevel);
-
-        int childLevel = parentLevel - 1;
-        int enqueued = 0;
-
-        // At L4, only wsY=0 is valid for the model.
-        int minDy = parentLevel >= 4 ? 0 : -1;
-        int maxDy = parentLevel >= 4 ? 0 : 1;
-
-        for (int dy = minDy; dy <= maxDy; dy++) {
-            int wsY = centerY + dy;
-            for (int dz = -radius; dz <= radius; dz++) {
-                for (int dx = -radius; dx <= radius; dx++) {
-                    int wsX = centerX + dx;
-                    int wsZ = centerZ + dz;
-
-                    byte childMask = VoxyCompat.getChildExistenceMask(
-                            worldEngine, parentLevel, wsX, wsY, wsZ);
-                    if (childMask == (byte) 0xFF) {
-                        continue; // fully populated — nothing to fill
-                    }
-                    // childMask==0 could mean truly empty OR a written parent
-                    // with no children yet.  Only descend when the parent
-                    // section actually exists in Voxy.
-                    if (childMask == 0
-                            && !VoxyCompat.sectionExistsAtLevel(
-                                    worldEngine, parentLevel, wsX, wsY, wsZ)) {
-                        continue;
-                    }
-
-                    // Partial section — enqueue generation for missing children.
-                    for (int octant = 0; octant < 8; octant++) {
-                        if ((childMask & (1 << octant)) != 0) {
-                            continue; // this child already exists
-                        }
-
-                        int childWsX = (wsX << 1) + (octant & 1);
-                        int childWsY = (wsY << 1) + ((octant >> 2) & 1);
-                        int childWsZ = (wsZ << 1) + ((octant >> 1) & 1);
-
-                        if (isOutOfWorldY(childLevel, childWsY)) {
-                            continue;
-                        }
-
-                        VoxyRequestDecoder.VoxyNodeRequest req =
-                                new VoxyRequestDecoder.VoxyNodeRequest();
-                        req.lodLevel = childLevel;
-                        req.worldX = childWsX;
-                        req.worldY = childWsY;
-                        req.worldZ = childWsZ;
-                        req.isPartialFill = true;
-                        ShadowRouterJobQueue.enqueue(req);
-                        enqueued++;
-                    }
-                }
-            }
-        }
-        return enqueued;
     }
 
     private void logDemandProgress(long startMs, int dequeued,
@@ -1535,9 +1470,11 @@ public final class GenerationSession {
                                    int deferred, int failed) {
         long elapsedMs = Math.max(1L, System.currentTimeMillis() - startMs);
         HelloTerrainMod.LOGGER.info(
-                "[LodGen][Demand] dequeued={} written={} skipped={} deferred={} failed={} inFlight={} elapsed={}s",
+                "[LodGen][Demand] dequeued={} written={} skipped={} deferred={} failed={} inFlight={} demand={} exactL1={} elapsed={}s",
                 dequeued, written, skipped, deferred, failed,
-                ShadowRouterJobQueue.inFlightSize(), elapsedMs / 1000);
+                ShadowRouterJobQueue.inFlightSize(), ShadowRouterJobQueue.demandMetrics().compact(),
+                exactL1Sampling.compact(),
+                elapsedMs / 1000);
     }
 
     /**
@@ -1553,8 +1490,18 @@ public final class GenerationSession {
     private DemandProcessResult processDemandRequest(World world,
                                                      VoxelVolumeWriter writer,
                                                      VoxyRequestDecoder.VoxyNodeRequest req) {
+        if (req == null) {
+            return DemandProcessResult.FAILED;
+        }
+        if (writer == null) return DemandProcessResult.FAILED;
+        return processDemandLeaf(world, writer, req);
+    }
+
+    private DemandProcessResult processDemandLeaf(World world,
+                                                   VoxelVolumeWriter writer,
+                                                   VoxyRequestDecoder.VoxyNodeRequest req) {
         Object worldEngine = (writer instanceof RealVoxyVolumeWriter r) ? r.getWorldEngine() : null;
-        if (req == null || voxyModelRunner == null || samplerFactory == null) {
+        if (voxyModelRunner == null || samplerFactory == null) {
             return DemandProcessResult.FAILED;
         }
 
@@ -1650,7 +1597,7 @@ public final class GenerationSession {
         Level lvl = Level.values()[level];
         WriteOutcome outcome;
         try {
-            outcome = writer.writeRegion(origin, lvl, vol);
+            outcome = writer.writeRegion(origin, lvl, vol, preserveMask);
         } catch (VolumeUnavailableException e) {
             HelloTerrainMod.LOGGER.warn("[LodGen] Octree write unavailable: {}", e.getMessage());
             return DemandProcessResult.SKIPPED;
@@ -1854,6 +1801,9 @@ public final class GenerationSession {
         parentReq.worldX = pX;
         parentReq.worldY = pY;
         parentReq.worldZ = pZ;
+        parentReq.demandKind = VoxyDemandKind.HORIZON_COVERAGE;
+        parentReq.workKind = net.lodiffusion.shadow.VoxyWorkKind.HORIZON_LEAF;
+        parentReq.demandSource = VoxyDemandSource.PARENT_DEPENDENCY;
         ShadowRouterJobQueue.enqueue(parentReq);
     }
 
@@ -1946,15 +1896,12 @@ public final class GenerationSession {
         return mask;
     }
 
-    // --- End L4 tracer pipeline (L4-only, model-free) ---
+    // --- End top-down pipeline (initial L4 horizon, model-free) ---
 
     /**
-     * Tracer-mode demand pipeline: services 121 L4 requests via
-     * {@link EndL4DeterministicCandidate} and {@link VoxelVolumeWriter#writeRegion}.
-     * L4 only — disables L3/L2/L1/L0 seeding and partial-fill descent.
-     * Reuses dedup/backpressure via {@link ShadowRouterJobQueue}.
-     * Direct full-WorldSection path via {@link VoxyWorldBinding#writeFullWorldSection}
-     * (owns dirtying/preservation); does not fake nonEmptyChildren on leaf.
+     * Runs the End refinement module. It establishes the 121-target L4 horizon
+     * and interleaves bounded parent transactions without exposing either queue
+     * or child-mask lifecycle here.
      *
      * @return true if at least one region was written
      */
@@ -1963,84 +1910,43 @@ public final class GenerationSession {
             HelloTerrainMod.LOGGER.warn("[LodGen][Tracer] no noiseAccess — aborting tracer pipeline");
             return false;
         }
-        EndL4DeterministicCandidate tracerCandidate = new EndL4DeterministicCandidate(noiseAccess);
-        if (tracerStartMs == 0) {
-            tracerStartMs = System.currentTimeMillis();
+        activeEndWriter = writer;
+        activeEndWorld = world;
+        EndRefinement refinement = endRefinement;
+        if (refinement == null) {
+            activeEndWriter = null;
+            activeEndWorld = null;
+            return false;
         }
+        try {
+        tracerStartMs = System.currentTimeMillis();
+        tracerWritten.set(0);
+        tracerSkipped.set(0);
+        tracerFailed.set(0);
+        tracerTerminalEmitted.set(false);
+        tracerCompletion = null;
         long startMs = tracerStartMs;
         long lastProgressLogMs = startMs;
+        long idleSinceMs = 0L;
 
         while (!stopRequested.get()) {
-            VoxyRequestDecoder.VoxyNodeRequest req = ShadowRouterJobQueue.dequeueAny();
-            if (req == null) {
+            EndRefinement.StepResult step = refinement.advance(new EndRefinement.Frame(
+                    System.currentTimeMillis(),
+                    new SectionPos(playerSectionX, playerSectionY, playerSectionZ),
+                    cachedEndL4HorizonTargets(), false));
+            EndRefinement.Snapshot currentSnapshot = refinement.snapshot();
+            maybeEmitTracerTerminal(currentSnapshot);
+            if (step.status() == EndRefinement.StepResult.Status.IDLE) {
+                if (idleSinceMs == 0L) idleSinceMs = System.currentTimeMillis();
                 try {
-                    Thread.sleep(DEMAND_IDLE_SLEEP_MS);
+                    Thread.sleep(tracerIdleSleepMillis(idleSinceMs));
                 } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();
                     break;
                 }
-                // In tracer mode, idle after 121 means horizon filled — keep idling
-                // until stopRequested; do not busy-loop.
-                continue;
+            } else {
+                idleSinceMs = 0L;
             }
-
-            // Tracer enqueues only L4 Y=0; skip any stray levels (L3..L0 not seeded)
-            if (req.lodLevel != 4 || req.worldY != END_L4_TRACER_WS_Y) {
-                ShadowRouterJobQueue.markCompleted(req);
-                tracerSkipped.incrementAndGet();
-                maybeEmitTracerTerminal();
-                continue;
-            }
-
-            int wsX = req.worldX;
-            int wsY = req.worldY;
-            int wsZ = req.worldZ;
-
-            if (isOutOfWorldY(4, wsY)) {
-                ShadowRouterJobQueue.markCompleted(req);
-                tracerSkipped.incrementAndGet();
-                maybeEmitTracerTerminal();
-                continue;
-            }
-
-            // Preserve vanilla octants where present (Handoff Q7 B zero-gap: vanilla wins)
-            byte preserveMask = loadedChunkOctantMask(world, 4, wsX, wsY, wsZ);
-            if (preserveMask == (byte) 0xFF) {
-                ShadowRouterJobQueue.markCompleted(req);
-                tracerSkipped.incrementAndGet();
-                maybeEmitTracerTerminal();
-                continue;
-            }
-
-            int sx0 = WorldSectionCoord.worldSectionToBlockMin(wsX, 4) >> 4;
-            int sy0 = WorldSectionCoord.worldSectionToBlockMin(wsY, 4) >> 4;
-            int sz0 = WorldSectionCoord.worldSectionToBlockMin(wsZ, 4) >> 4;
-            SectionPos origin = new SectionPos(sx0, sy0, sz0);
-
-            if (writer.isRegionFullyPopulated(origin, Level.L4)) {
-                ShadowRouterJobQueue.markCompleted(req);
-                tracerSkipped.incrementAndGet();
-                maybeEmitTracerTerminal();
-                continue;
-            }
-
-            try {
-                VoxelVolume vol = tracerCandidate.produceRegion(Level.L4, origin);
-                WriteOutcome outcome = writer.writeRegion(origin, Level.L4, vol);
-                if (outcome.status() == WriteOutcome.Status.WRITTEN) {
-                    tracerWritten.incrementAndGet();
-                } else {
-                    tracerSkipped.incrementAndGet();
-                }
-            } catch (Exception e) {
-                HelloTerrainMod.LOGGER.warn(
-                        "[LodGen][Tracer] write failed ws=({},{},{}): {}",
-                        wsX, wsY, wsZ, e.getMessage());
-                tracerFailed.incrementAndGet();
-            } finally {
-                ShadowRouterJobQueue.markCompleted(req);
-            }
-            maybeEmitTracerTerminal();
 
             long now = System.currentTimeMillis();
             int w = tracerWritten.get();
@@ -2048,92 +1954,109 @@ public final class GenerationSession {
             int f = tracerFailed.get();
             if (w == 1 || now - lastProgressLogMs >= DEMAND_PROGRESS_LOG_MS) {
                 HelloTerrainMod.LOGGER.info(
-                        "[LodGen][Tracer] dequeued written={} skipped={} failed={} inFlight={}",
-                        w, s, f, ShadowRouterJobQueue.inFlightSize());
+                        "[LodGen][Tracer] dequeued written={} skipped={} failed={} inFlight={} demand={} refine={} exactL1={}",
+                        w, s, f, currentSnapshot.refinement().executing(),
+                        "H " + currentSnapshot.horizon().compact()
+                                + " R " + currentSnapshot.refinement().compact(),
+                        currentSnapshot.lifecycle(), exactL1Sampling.compact());
                 lastProgressLogMs = now;
             }
         }
 
+        EndRefinement.Snapshot stoppedSnapshot = refinement.snapshot();
         HelloTerrainMod.LOGGER.info(
-                "[LodGen][Tracer] stopped: written={} skipped={} failed={}",
-                tracerWritten.get(), tracerSkipped.get(), tracerFailed.get());
+                "[LodGen][Tracer] stopped: written={} skipped={} failed={} demand={} refine={} exactL1={}",
+                tracerWritten.get(), tracerSkipped.get(), tracerFailed.get(),
+                "H " + stoppedSnapshot.horizon().compact()
+                        + " R " + stoppedSnapshot.refinement().compact(),
+                stoppedSnapshot.lifecycle(),
+                exactL1Sampling.compact());
         return tracerWritten.get() > 0;
+        } finally {
+            refinement.advance(new EndRefinement.Frame(System.currentTimeMillis(),
+                    new SectionPos(playerSectionX, playerSectionY, playerSectionZ),
+                    List.of(), true));
+            activeEndWriter = null;
+            activeEndWorld = null;
+        }
     }
 
-    // Package-private single-request entry for unit tests (no loop/sleep)
-    WriteOutcome processTracerRequestForTest(VoxyRequestDecoder.VoxyNodeRequest req,
-                                              VoxelVolumeWriter writer, World world) {
-        if (req == null || writer == null || noiseAccess == null) {
-            return null;
-        }
-        if (tracerStartMs == 0) {
-            tracerStartMs = System.currentTimeMillis();
-        }
-        if (req.lodLevel != 4 || req.worldY != END_L4_TRACER_WS_Y) {
-            tracerSkipped.incrementAndGet();
-            maybeEmitTracerTerminal();
-            return WriteOutcome.skippedExists();
-        }
-        int wsX = req.worldX;
-        int wsY = req.worldY;
-        int wsZ = req.worldZ;
-        int sx0 = WorldSectionCoord.worldSectionToBlockMin(wsX, 4) >> 4;
-        int sy0 = WorldSectionCoord.worldSectionToBlockMin(wsY, 4) >> 4;
-        int sz0 = WorldSectionCoord.worldSectionToBlockMin(wsZ, 4) >> 4;
-        SectionPos origin = new SectionPos(sx0, sy0, sz0);
-        if (writer.isRegionFullyPopulated(origin, Level.L4)) {
-            tracerSkipped.incrementAndGet();
-            maybeEmitTracerTerminal();
-            return WriteOutcome.skippedExists();
-        }
-        try {
-            EndL4DeterministicCandidate tracerCandidate = new EndL4DeterministicCandidate(noiseAccess);
-            VoxelVolume vol = tracerCandidate.produceRegion(Level.L4, origin);
-            WriteOutcome outcome = writer.writeRegion(origin, Level.L4, vol);
-            if (outcome.status() == WriteOutcome.Status.WRITTEN) {
-                tracerWritten.incrementAndGet();
-            } else {
-                tracerSkipped.incrementAndGet();
+    private List<SectionPos> endL4HorizonTargets() {
+        int centerX = WorldSectionCoord.sectionToWorldSection(playerSectionX, Level.L4.value());
+        int centerZ = WorldSectionCoord.sectionToWorldSection(playerSectionZ, Level.L4.value());
+        List<SectionPos> covered = new ArrayList<>(END_L4_TRACER_TOTAL);
+        for (int dz = -END_L4_TRACER_RADIUS; dz <= END_L4_TRACER_RADIUS; dz++) {
+            for (int dx = -END_L4_TRACER_RADIUS; dx <= END_L4_TRACER_RADIUS; dx++) {
+                covered.add(new SectionPos((centerX + dx) << 5, 0, (centerZ + dz) << 5));
             }
-            maybeEmitTracerTerminal();
-            return outcome;
-        } catch (Exception e) {
-            tracerFailed.incrementAndGet();
-            maybeEmitTracerTerminal();
-            return null;
         }
+        return covered;
+    }
+
+    /** Cached horizon targets, keyed on the player's L4 world-section anchor. */
+    private volatile List<SectionPos> cachedHorizonTargets;
+    private volatile int cachedHorizonAnchorX = Integer.MIN_VALUE;
+    private volatile int cachedHorizonAnchorZ = Integer.MIN_VALUE;
+
+    /**
+     * The 121-target horizon list only changes when the player crosses an L4
+     * world-section boundary (32 chunks). Rebuilding and re-validating it on
+     * every advance tick is pure per-tick overhead — cache it per anchor.
+     */
+    private List<SectionPos> cachedEndL4HorizonTargets() {
+        int anchorX = WorldSectionCoord.sectionToWorldSection(playerSectionX, Level.L4.value());
+        int anchorZ = WorldSectionCoord.sectionToWorldSection(playerSectionZ, Level.L4.value());
+        List<SectionPos> cached = cachedHorizonTargets;
+        if (cached != null && cachedHorizonAnchorX == anchorX && cachedHorizonAnchorZ == anchorZ) {
+            return cached;
+        }
+        cached = endL4HorizonTargets();
+        cachedHorizonAnchorX = anchorX;
+        cachedHorizonAnchorZ = anchorZ;
+        cachedHorizonTargets = cached;
+        return cached;
     }
 
     /**
-     * Test-only helper to record a terminal failure without a writer.
-     * Increments failed and checks for terminal emission.
+     * Idle sleep for the tracer loop: exponential backoff from a near-instant
+     * floor up to {@code DEMAND_IDLE_SLEEP_MS}, so the loop reacts quickly
+     * when work becomes available shortly after going idle.
+     *
+     * @param idleSinceMillis wall-clock ms when the current idle streak began
      */
-    void recordTracerFailureForTest() {
-        if (tracerStartMs == 0) {
-            tracerStartMs = System.currentTimeMillis();
-        }
-        tracerFailed.incrementAndGet();
-        maybeEmitTracerTerminal();
+    private long tracerIdleSleepMillis(long idleSinceMillis) {
+        long idleFor = System.currentTimeMillis() - Math.max(1L, idleSinceMillis);
+        int shift = (int) Math.min(5, Math.max(0, idleFor / DEMAND_IDLE_SLEEP_MS));
+        return Math.min(DEMAND_IDLE_SLEEP_MS, 1L << shift);
     }
 
-    void recordTracerWrittenForTest() {
-        if (tracerStartMs == 0) {
-            tracerStartMs = System.currentTimeMillis();
+    private WriteOutcome writeEndHorizonLeaf(
+            World world, VoxelVolumeWriter writer,
+            EndL4DeterministicCandidate candidate, SectionPos origin) {
+        try {
+        int wsX = WorldSectionCoord.sectionToWorldSection(origin.x(), Level.L4.value());
+        int wsY = WorldSectionCoord.sectionToWorldSection(origin.y(), Level.L4.value());
+        int wsZ = WorldSectionCoord.sectionToWorldSection(origin.z(), Level.L4.value());
+        byte loadedMask = loadedChunkOctantMask(world, Level.L4.value(), wsX, wsY, wsZ);
+        if (isOutOfWorldY(Level.L4.value(), wsY)
+                || loadedMask == (byte) 0xFF
+                || writer.isRegionFullyPopulated(origin, Level.L4)) {
+            tracerSkipped.incrementAndGet();
+            return WriteOutcome.skippedExists();
         }
-        tracerWritten.incrementAndGet();
-        maybeEmitTracerTerminal();
-    }
-
-    void recordTracerSkippedForTest() {
-        if (tracerStartMs == 0) {
-            tracerStartMs = System.currentTimeMillis();
+        VoxelVolume volume = candidate.produceRegion(Level.L4, origin);
+        WriteOutcome outcome = writer.writeRegion(origin, Level.L4, volume, loadedMask);
+        if (outcome.status() == WriteOutcome.Status.WRITTEN) tracerWritten.incrementAndGet();
+        else tracerSkipped.incrementAndGet();
+        return outcome;
+        } catch (Exception failure) {
+            tracerFailed.incrementAndGet();
+            HelloTerrainMod.LOGGER.warn(
+                    "[LodGen][Tracer] horizon write failed origin={}: {}",
+                    origin, failure.getMessage());
+            throw failure instanceof RuntimeException runtime
+                    ? runtime : new RuntimeException(failure);
         }
-        tracerSkipped.incrementAndGet();
-        maybeEmitTracerTerminal();
-    }
-
-    void setNoiseAccessForTest(WorldNoiseAccess access) {
-        this.noiseAccess = access;
     }
 
     private VoxyModelRunner resolveVoxyModel() {

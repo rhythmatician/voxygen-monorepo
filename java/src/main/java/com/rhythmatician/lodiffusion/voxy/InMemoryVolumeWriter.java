@@ -30,6 +30,8 @@ public final class InMemoryVolumeWriter implements VoxelVolumeWriter {
     private final List<WriteRecord> records = new ArrayList<>();
     private final Set<SectionKey> writtenSections = new HashSet<>();
     private final Set<RegionKey> writtenRegions = new HashSet<>();
+    private final java.util.Map<RegionKey, Integer> committedChildMasks = new java.util.HashMap<>();
+    private final java.util.Map<RegionKey, Integer> childPublicationCounts = new java.util.HashMap<>();
     private boolean unavailable = false;
 
     @Override
@@ -40,6 +42,11 @@ public final class InMemoryVolumeWriter implements VoxelVolumeWriter {
     @Override
     public boolean isRegionFullyPopulated(SectionPos origin, Level level) {
         return false;
+    }
+
+    @Override
+    public boolean hasRegionCoverage(SectionPos origin, Level level) {
+        return writtenRegions.contains(new RegionKey(level, origin.x(), origin.y(), origin.z()));
     }
 
     public void setUnavailable(boolean unavailable) {
@@ -68,6 +75,54 @@ public final class InMemoryVolumeWriter implements VoxelVolumeWriter {
         records.clear();
         writtenSections.clear();
         writtenRegions.clear();
+        committedChildMasks.clear();
+        childPublicationCounts.clear();
+    }
+
+    public int committedChildMask(SectionPos parentOrigin, Level parentLevel) {
+        return committedChildMasks.getOrDefault(
+                new RegionKey(parentLevel, parentOrigin.x(), parentOrigin.y(), parentOrigin.z()), 0);
+    }
+
+    public int childPublicationCount(SectionPos parentOrigin, Level parentLevel) {
+        return childPublicationCounts.getOrDefault(
+                new RegionKey(parentLevel, parentOrigin.x(), parentOrigin.y(), parentOrigin.z()), 0);
+    }
+
+    @Override
+    public ParentRefinementResult refineParent(ParentRefinementIntent intent) {
+        if (unavailable) {
+            throw new VolumeUnavailableException("InMemory backend marked unavailable");
+        }
+        Objects.requireNonNull(intent, "intent");
+        if (!hasRegionCoverage(intent.parentOrigin(), intent.parentLevel())) {
+            return ParentRefinementResult.parentMissing();
+        }
+        ParentRefinementBatch batch = ParentRefinementBatch.materialize(intent);
+        WriteOutcome outcome = commitParentRefinement(batch);
+        return ParentRefinementResult.published(
+                outcome, batch.nonEmptyMask(), batch.requiredMask() & ~batch.nonEmptyMask());
+    }
+
+    private WriteOutcome commitParentRefinement(ParentRefinementBatch batch) {
+        int nonAir = 0;
+        for (ParentRefinementBatch.Child child : batch.children()) {
+            WriteOutcome outcome = writeRegion(child.origin(),
+                    Level.values()[batch.childLevel()], child.volume());
+            batch.recordTerminal(
+                    child.octant(), ChildMaterializationOutcome.fromWriteOutcome(outcome));
+            nonAir += outcome.nonAirWritten();
+        }
+        if (!batch.isComplete()) {
+            throw new IllegalStateException("parent refinement completed without all child outcomes");
+        }
+        RegionKey parentKey = new RegionKey(batch.parentLevel(), batch.parentOrigin().x(),
+                batch.parentOrigin().y(), batch.parentOrigin().z());
+        committedChildMasks.put(parentKey, batch.nonEmptyMask());
+        childPublicationCounts.merge(parentKey, 1, Integer::sum);
+        return batch.nonEmptyMask() == 0
+                ? WriteOutcome.skippedAir()
+                : WriteOutcome.written(nonAir);
     }
 
     @Override

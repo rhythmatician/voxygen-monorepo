@@ -1,6 +1,5 @@
 package com.rhythmatician.lodiffusion.voxy;
 
-import com.rhythmatician.lodiffusion.Config;
 import com.rhythmatician.lodiffusion.HelloTerrainMod;
 import net.lodiffusion.shadow.ShadowRouterJobQueue;
 
@@ -86,6 +85,9 @@ public final class LodGenerationService {
     private volatile GenerationSession session;
     private volatile RegistryKey<World> boundDimension;
     private final Object lock = new Object();
+    /** Durable per-world observations replayed into every newly bound End session. */
+    private final java.util.Map<RegistryKey<World>, java.util.Set<Long>> observedVanillaChunks =
+            new java.util.HashMap<>();
 
     /**
      * Pack section coordinates into a single long key for deduplication.
@@ -135,6 +137,7 @@ public final class LodGenerationService {
             } catch (Exception ignored) {
                 boundDimension = null;
             }
+            flushVanillaChunkObservations(s, boundDimension);
             HelloTerrainMod.LOGGER.info("[LodGen] Service started via GenerationSession");
         }
     }
@@ -150,10 +153,11 @@ public final class LodGenerationService {
             GenerationSession s = new GenerationSession();
             session = s;
             s.start(null, server);
-            boolean isEnd = key != null && key.getValue().equals(net.minecraft.util.Identifier.of("minecraft", "the_end"));
+            boolean isEnd = isEndDimension(key);
             s.setEndL4TracerModeForTest(isEnd);
             s.forceRunningForTest();
             boundDimension = key;
+            flushVanillaChunkObservations(s, boundDimension);
             HelloTerrainMod.LOGGER.info("[LodGen] Service startedForTest via GenerationSession key={} tracer={}", key, s.isEndL4TracerMode());
         }
     }
@@ -168,6 +172,7 @@ public final class LodGenerationService {
             ShadowRouterJobQueue.clear();
             session = null;
             boundDimension = null;
+            observedVanillaChunks.clear();
             HelloTerrainMod.LOGGER.info("[LodGen] Service stopped via GenerationSession");
         }
     }
@@ -178,8 +183,8 @@ public final class LodGenerationService {
      * <p>Detects {@code client.world.getRegistryKey()} != last bound dimension and rebinds
      * a fresh {@link GenerationSession} via {@code stop() + ShadowRouterJobQueue.clear() + start()}
      * on the render thread. Re-executes the early gate
-     * {@code endL4TracerMode = decideEndL4TracerMode(world)} before
-     * {@code preloadModel()}/{@code resolveVoxyModel()}/worker entry.
+     * {@link TerrainPublicationRoute#forWorld(World)} before
+     * model resolution or worker entry.
      * Debounced: ignore repeated ticks while stopping (synchronized on lock).
      *
      * @return true if a rebind was performed
@@ -217,10 +222,7 @@ public final class LodGenerationService {
             GenerationSession next = new GenerationSession();
             session = next;
             // worldForStart may be null in test when using RegistryKey overload; pass null or fake world
-            // GenerationSession.start handles null world as non-tracer safely (decide returns false)
-            // but we still set boundDimension to newKey afterwards so tracer flag is correct via next.start's decide.
-            // If worldForStart == null we manually set tracer mode via reflection is not needed because
-            // decideEndL4TracerMode(null) is false; so for test we set boundDimension directly after start.
+            // GenerationSession.start treats a null test world as compatibility mode.
             if (worldForStart != null) {
                 next.start(worldForStart, server);
                 try {
@@ -230,12 +232,13 @@ public final class LodGenerationService {
                 }
             } else {
                 next.start(null, server);
-                boolean isEnd = newKey.getValue().equals(net.minecraft.util.Identifier.of("minecraft", "the_end"));
+                boolean isEnd = isEndDimension(newKey);
                 next.setEndL4TracerModeForTest(isEnd);
                 boundDimension = newKey;
             }
             HelloTerrainMod.LOGGER.info(
                     "[LodGen] Rebound complete to {} tracer={}", newKey, next.isEndL4TracerMode());
+            flushVanillaChunkObservations(next, boundDimension);
             return true;
         }
     }
@@ -251,6 +254,61 @@ public final class LodGenerationService {
         if (s != null) {
             s.updatePlayerPosition(pos);
         }
+    }
+
+    /** Client-tick frontier snapshot expressed as scalar values at the service boundary. */
+    public void updatePlayerPosition(BlockPos pos, double horizontalVelocityX,
+                                     double horizontalVelocityZ, int clientViewDistanceChunks,
+                                     int simulationDistanceChunks) {
+        GenerationSession s = session;
+        if (s != null) {
+            s.updatePlayerPosition(pos, horizontalVelocityX, horizontalVelocityZ,
+                    clientViewDistanceChunks, simulationDistanceChunks);
+        }
+    }
+
+    /** Records a loaded vanilla chunk after Fabric has loaded it; never waits on generation. */
+    public void observeVanillaChunkColumn(World world, int chunkX, int chunkZ) {
+        if (world == null) return;
+        RegistryKey<World> key;
+        try {
+            key = world.getRegistryKey();
+        } catch (Exception ignored) {
+            return;
+        }
+        observeVanillaChunkColumn(key, chunkX, chunkZ);
+    }
+
+    void observeVanillaChunkColumnForTest(RegistryKey<World> key, int chunkX, int chunkZ) {
+        observeVanillaChunkColumn(key, chunkX, chunkZ);
+    }
+
+    private void observeVanillaChunkColumn(RegistryKey<World> key, int chunkX, int chunkZ) {
+        if (key == null) return;
+        synchronized (lock) {
+            java.util.Set<Long> observations = observedVanillaChunks.computeIfAbsent(key,
+                    ignored -> new java.util.HashSet<>());
+            long chunkKey = (((long) chunkX) << 32) ^ (chunkZ & 0xFFFF_FFFFL);
+            if (!observations.add(chunkKey)) return;
+            GenerationSession active = session;
+            if (active != null && active.isRunning() && key.equals(boundDimension)
+                    && isEndDimension(key)) {
+                active.observeVanillaChunkColumn(chunkX, chunkZ);
+            }
+        }
+    }
+
+    private void flushVanillaChunkObservations(GenerationSession target, RegistryKey<World> key) {
+        if (target == null || key == null || !isEndDimension(key)) return;
+        java.util.Set<Long> observations = observedVanillaChunks.get(key);
+        if (observations == null) return;
+        for (long chunkKey : observations) {
+            target.observeVanillaChunkColumn((int) (chunkKey >> 32), (int) chunkKey);
+        }
+    }
+
+    private static boolean isEndDimension(RegistryKey<World> key) {
+        return key != null && key.getValue().equals(net.minecraft.util.Identifier.of("minecraft", "the_end"));
     }
 
     public boolean isRunning() {

@@ -136,8 +136,13 @@ jobs:
       - name: Compile against real Voxy
         run: ./gradlew lint compileJava compileClientJava
         working-directory: java
-      - name: Run isolated unit and contract tests
-        run: ./gradlew test -PexcludeVoxyTestRuntime
+      - name: Run unit, contract, and topology tests
+        # No -PexcludeVoxyTestRuntime: JUnit discovery classloads every candidate
+        # class to apply even exclude filters, so any Voxy-linked test helper
+        # (HeadlessNodeManagerProbe etc.) fails with NoClassDefFoundError when
+        # Voxy is absent from the runtime classpath. Local dev never passes this
+        # property and is green; keep CI on the same shape.
+        run: ./gradlew test
         working-directory: java
       - name: Assemble deployable mod against real Voxy
         run: ./gradlew build -x test

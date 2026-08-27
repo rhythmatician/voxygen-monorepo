@@ -6,7 +6,25 @@
     "python.analysis.typeCheckingMode": "basic",
     "python.analysis.autoImportCompletions": true,
     "[python]": {
-        "editor.formatOnSave": true
+        "editor.defaultFormatter": "charliermarsh.ruff",
+        "editor.formatOnSave": true,
+        "editor.codeActionsOnSave": {
+            "source.organizeImports.ruff": "explicit"
+        }
+    },
+    "ruff.lineLength": 100,
+    "ruff.nativeServer": "on",
+    "ruff.interpreter": ["${workspaceFolder}/python/.venv"],
+    "ruff.configurationPreference": "filesystemFirst",
+    "autopep8.formatOnSave": false,
+    "isort.formatOnSave": false,
+    "emeraldwalk.runonsave": {
+        "commands": [
+            {
+                "match": "\\.py$",
+                "cmd": "${workspaceFolder}\\python\\.venv\\Scripts\\ruff.exe format ${file}"
+            }
+        ]
     },
     "[java]": {
         "editor.formatOnSave": true

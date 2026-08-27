@@ -60,6 +60,8 @@ Voxygen generates distant Minecraft terrain via learned octree diffusion and wri
 
 **Measurement Tracer**: Minimal non-statistical experiment establishing replay and face validity before a Measurement Protocol is frozen; it makes no population, threshold, confidence, or generalization claim. _Avoid_: one-seed pilot, tracer thresholds, repeatable wrong number as validity.
 
+**Flyover**: Real-client visual acceptance run that observes distant-terrain coverage and refinement from a configurable sequence of player positions. It is the final check for what the player can actually see, not a substitute for deterministic headless tests. _Avoid_: fixed-coordinate test, unit test, benchmark, manual flight as the definition.
+
 **Error Character and Honest Omission**: Evaluate a candidate against its declared stage target and separately against final vanilla so omission cost remains visible. Attribute error causally to an omitted responsibility only with a paired stage or counterfactual oracle; otherwise report spatial overlap with the omitted responsibility without causal allocation. _Avoid_: mask-only omission, final-only score, causal claim from an omission tag, double attribution.
 
 **Pop and Vanilla Convergence**: Pop is consecutive-Level visible transition error (L_n versus L_{n-1}); Vanilla Convergence is each Level's disagreement with eventual exact vanilla, retaining stage and omission context. Pop is secondary to correctness; both are acceptance-bearing under their Fidelity Profile. _Avoid_: single pop number, RGB transition error, hidden omission cost.

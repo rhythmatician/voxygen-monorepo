@@ -11,11 +11,19 @@ import net.minecraft.registry.entry.RegistryEntry;
 import net.minecraft.util.Identifier;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.world.ServerWorld;
+import net.minecraft.structure.StructureStart;
 import net.minecraft.util.math.MathHelper;
+import net.minecraft.util.math.ChunkPos;
 import net.minecraft.world.Heightmap;
 import net.minecraft.world.World;
 import net.minecraft.world.biome.Biome;
 import net.minecraft.world.biome.source.BiomeSource;
+import net.minecraft.world.chunk.Chunk;
+import net.minecraft.world.chunk.ChunkSection;
+import net.minecraft.world.chunk.ProtoChunk;
+import net.minecraft.world.chunk.UpgradeData;
+import net.minecraft.world.gen.GeneratorOptions;
+import net.minecraft.world.gen.StructureAccessor;
 import net.minecraft.world.gen.chunk.AquiferSampler;
 import net.minecraft.world.gen.chunk.Blender;
 import net.minecraft.world.gen.chunk.ChunkGenerator;
@@ -27,8 +35,10 @@ import net.minecraft.world.gen.densityfunction.DensityFunction;
 import net.minecraft.world.gen.densityfunction.DensityFunctionTypes;
 import net.minecraft.world.gen.noise.NoiseConfig;
 import net.minecraft.world.gen.noise.NoiseRouter;
+import net.minecraft.world.gen.structure.Structure;
 
 import java.util.Arrays;
+import java.util.List;
 import java.util.function.Predicate;
 
 
@@ -56,6 +66,30 @@ public final class WorldNoiseAccess {
     private final ChunkGenerator generator;
     private final NoiseConfig noiseConfig;
     private final BiomeSource biomeSource;
+    private final DensitySample finalDensity;
+
+    /**
+     * Reusable mutable position for density sampling. The tracer hot path
+     * samples up to 262k times per parent refinement; allocating an
+     * {@code UnblendedNoisePos} per call is pure GC pressure. Sampling is
+     * single-threaded per access instance (LOD worker thread), so one shared
+     * instance is safe. All three coordinates are reassigned before every
+     * sample, so no stale state can leak between calls.
+     */
+    private static final class MutableNoisePos implements DensityFunction.NoisePos {
+        int x;
+        int y;
+        int z;
+
+        @Override public int blockX() { return x; }
+        @Override public int blockY() { return y; }
+        @Override public int blockZ() { return z; }
+    }
+
+    @FunctionalInterface
+    interface DensitySample {
+        double sample(int blockX, int blockY, int blockZ);
+    }
 
     private WorldNoiseAccess(ServerWorld serverWorld, ChunkGenerator generator,
                              NoiseConfig noiseConfig) {
@@ -63,6 +97,22 @@ public final class WorldNoiseAccess {
         this.generator = generator;
         this.noiseConfig = noiseConfig;
         this.biomeSource = generator.getBiomeSource();
+        DensityFunction density = noiseConfig.getNoiseRouter().finalDensity();
+        MutableNoisePos pos = new MutableNoisePos();
+        this.finalDensity = (blockX, blockY, blockZ) -> {
+            pos.x = blockX;
+            pos.y = blockY;
+            pos.z = blockZ;
+            return density.sample(pos);
+        };
+    }
+
+    WorldNoiseAccess(DensitySample finalDensity) {
+        this.serverWorld = null;
+        this.generator = null;
+        this.noiseConfig = null;
+        this.biomeSource = null;
+        this.finalDensity = finalDensity;
     }
 
     /**
@@ -210,15 +260,16 @@ public final class WorldNoiseAccess {
      *         consistent with {@link ChunkGenerator#getHeight}.
      */
     public float[][][] sampleBothHeightmaps(int sectionX, int sectionZ) {
-        if (!(generator instanceof NoiseChunkGenerator ncg)) {
+        if (!(generator instanceof NoiseChunkGenerator)) {
             // Non-noise generator (e.g. flat world) — fall back to per-column sampling
             float[][] surface = sampleHeightmap(sectionX, sectionZ, Heightmap.Type.WORLD_SURFACE_WG);
             float[][] ocean   = sampleHeightmap(sectionX, sectionZ, Heightmap.Type.OCEAN_FLOOR_WG);
             return new float[][][] { surface, ocean };
         }
 
-        ChunkGeneratorSettings settings = ncg.getSettings().value();
-        GenerationShapeConfig shape = settings.generationShapeConfig().trimHeight(serverWorld);
+        NoiseSamplerSetup setup = createNoiseSampler(sectionX, sectionZ);
+        ChunkGeneratorSettings settings = setup.settings();
+        GenerationShapeConfig shape = setup.shape();
 
         // Standard overworld values: hCells=4, hCellB=4, vCellB=8, minCellY=-8, cellHeight=48
         int hCells     = 16 / shape.horizontalCellBlockCount();
@@ -228,22 +279,7 @@ public final class WorldNoiseAccess {
         int cellHeight = MathHelper.floorDiv(shape.height(),   vCellB);
         int startX     = sectionX * 16;
         int startZ     = sectionZ * 16;
-
-        // Replicate NoiseChunkGenerator.createFluidLevelSampler().
-        // The private Supplier<FluidLevelSampler> on NoiseChunkGenerator is
-        // inaccessible, so we reconstruct it from the public settings.
-        int seaLevel = settings.seaLevel();
-        AquiferSampler.FluidLevel lavaLevel = new AquiferSampler.FluidLevel(-54, Blocks.LAVA.getDefaultState());
-        AquiferSampler.FluidLevel seaFluid  = new AquiferSampler.FluidLevel(seaLevel, settings.defaultFluid());
-        AquiferSampler.FluidLevelSampler fluidSampler =
-                (x, y, z) -> y < Math.min(-54, seaLevel) ? lavaLevel : seaFluid;
-
-        // One sampler for the entire 16×16 chunk — 4 horizontal cells × 4.
-        // Beardifier.INSTANCE is a no-op since we have no structure bounding boxes.
-        ChunkNoiseSampler sampler = new ChunkNoiseSampler(
-                hCells, noiseConfig, startX, startZ, shape,
-                DensityFunctionTypes.Beardifier.INSTANCE,
-                settings, fluidSampler, Blender.getNoBlending());
+        ChunkNoiseSampler sampler = setup.sampler();
 
         Predicate<BlockState> surfacePred = Heightmap.Type.WORLD_SURFACE_WG.getBlockPredicate();
         Predicate<BlockState> oceanPred   = Heightmap.Type.OCEAN_FLOOR_WG.getBlockPredicate();
@@ -312,6 +348,174 @@ public final class WorldNoiseAccess {
         sampler.stopInterpolation();
         return new float[][][] { surface, oceanFloor };
     }
+
+    /**
+     * Samples one isolated virgin noise-stage chunk column without world insertion.
+     *
+     * <p>Sampler-direct walk per ADR 0013: one {@link ChunkNoiseSampler}(4) per
+     * chunk via {@link #createNoiseSampler}, loop structure mirroring
+     * {@code NoiseBasedChunkGenerator.doFill} — no ProtoChunk materialization,
+     * no section writes, no heightmap tracking. Emission is restricted to the
+     * requested band clamped against the generator's own Y domain; cells fully
+     * outside the band are skipped wholesale (their corner densities can never
+     * feed an in-band row). Safe for The End: aquifers are disabled in End
+     * settings, so the fluid-update side effect is dead code.
+     */
+    void sampleExactEndBaseTerrainChunk(
+            int chunkX,
+            int chunkZ,
+            int retainMinY,
+            int retainMaxY,
+            ExactEndL1Candidate.SolidBlockConsumer consumer,
+            ExactL1SamplingTelemetry telemetry) {
+        if (retainMinY >= retainMaxY) {
+            throw new IllegalArgumentException("retainMinY must not exceed retainMaxY");
+        }
+        if (!(generator instanceof NoiseChunkGenerator)) {
+            throw new IllegalStateException("exact noise sampling requires NoiseChunkGenerator");
+        }
+        NoiseSamplerSetup setup = createNoiseSampler(chunkX, chunkZ);
+        ChunkGeneratorSettings settings = setup.settings();
+        GenerationShapeConfig shape = setup.shape();
+        ChunkNoiseSampler sampler = setup.sampler();
+
+        // Band: requested retain range clamped to the generator's Y domain.
+        int domainMinY = shape.minimumY();
+        int domainMaxY = shape.minimumY() + shape.height();
+        int bandMin = Math.max(domainMinY, retainMinY);
+        int bandMax = Math.min(domainMaxY, retainMaxY);
+
+        int hCells   = 16 / shape.horizontalCellBlockCount();
+        int hCellB   = shape.horizontalCellBlockCount();
+        int vCellB   = shape.verticalCellBlockCount();
+        int minCellY = MathHelper.floorDiv(shape.minimumY(), vCellB);
+        int cellHeight = MathHelper.floorDiv(shape.height(), vCellB);
+        int startX   = chunkX << 4;
+        int startZ   = chunkZ << 4;
+
+        sampler.sampleStartDensity();
+
+        for (int o = 0; o < hCells; o++) {            // horizontal cell X (0-3)
+            sampler.sampleEndDensity(o);
+
+            for (int p = 0; p < hCells; p++) {        // horizontal cell Z (0-3)
+                for (int r = cellHeight - 1; r >= 0; r--) {  // vertical cell, top → bottom
+                    int cellBlockMinY = (minCellY + r) * vCellB;
+                    int cellBlockMaxY = cellBlockMinY + vCellB;
+                    boolean cellIntersectsBand =
+                            cellBlockMinY < bandMax && cellBlockMaxY > bandMin;
+                    if (!cellIntersectsBand) {
+                        continue;
+                    }
+
+                    sampler.onSampledCellCorners(r, p);
+
+                    for (int s = vCellB - 1; s >= 0; s--) {  // block within cell, top → bottom
+                        int blockY = cellBlockMinY + s;
+                        if (blockY < bandMin || blockY >= bandMax) {
+                            continue;
+                        }
+                        sampler.interpolateY(blockY, (double) s / vCellB);
+
+                        for (int w = 0; w < hCellB; w++) {   // block X within cell
+                            int blockX = startX + o * hCellB + w;
+                            sampler.interpolateX(blockX, (double) w / hCellB);
+
+                            for (int z = 0; z < hCellB; z++) { // block Z within cell
+                                int blockZ = startZ + p * hCellB + z;
+                                sampler.interpolateZ(blockZ, (double) z / hCellB);
+
+                                BlockState state = sampler.sampleBlockState();
+                                // null from ChunkNoiseSampler means AIR; fall back
+                                // to default block (stone/end_stone) for density > 0
+                                BlockState actual = (state == null)
+                                        ? settings.defaultBlock() : state;
+
+                                telemetry.recordRetainedCallback();
+                                if (actual.isAir()) {
+                                    telemetry.recordRawAir();
+                                } else {
+                                    telemetry.recordRawExplicitNonAir();
+                                }
+                                consumer.accept(blockX, blockY, blockZ, !actual.isAir());
+                            }
+                        }
+                    }
+                }
+            }
+            sampler.swapBuffers();
+        }
+
+        sampler.stopInterpolation();
+    }
+
+    /**
+     * Runs the real L1 producer against isolated noise-stage chunks and records
+     * whether its sixteen target chunks remained outside the loaded world.
+     */
+    public ExactEndL1Probe probeExactEndL1(SectionPos origin) {
+        if (!Level.L1.isAligned(origin)) {
+            throw new IllegalArgumentException("origin " + origin + " is not aligned to L1");
+        }
+        int firstChunkX = origin.x();
+        int firstChunkZ = origin.z();
+        boolean unloadedBefore = targetChunksAreUnloaded(firstChunkX, firstChunkZ);
+        VoxelVolume volume = new ExactEndL1Candidate(this).produceExactL1(origin);
+        boolean unloadedAfter = targetChunksAreUnloaded(firstChunkX, firstChunkZ);
+        return new ExactEndL1Probe(volume.countNonAir(), unloadedBefore, unloadedAfter);
+    }
+
+    private boolean targetChunksAreUnloaded(int firstChunkX, int firstChunkZ) {
+        for (int chunkX = firstChunkX; chunkX < firstChunkX + 4; chunkX++) {
+            for (int chunkZ = firstChunkZ; chunkZ < firstChunkZ + 4; chunkZ++) {
+                if (serverWorld.isChunkLoaded(chunkX, chunkZ)) return false;
+            }
+        }
+        return true;
+    }
+
+    public record ExactEndL1Probe(
+            int nonAirVoxels,
+            boolean targetChunksUnloadedBefore,
+            boolean targetChunksUnloadedAfter) {
+        public boolean isSuccessfulUnloadedSample() {
+            return nonAirVoxels > 0
+                    && targetChunksUnloadedBefore
+                    && targetChunksUnloadedAfter;
+        }
+    }
+
+    private NoiseSamplerSetup createNoiseSampler(int chunkX, int chunkZ) {
+        if (!(generator instanceof NoiseChunkGenerator noiseGenerator)) {
+            throw new IllegalStateException("exact noise sampling requires NoiseChunkGenerator");
+        }
+        ChunkGeneratorSettings settings = noiseGenerator.getSettings().value();
+        GenerationShapeConfig shape = settings.generationShapeConfig().trimHeight(serverWorld);
+        int horizontalCells = 16 / shape.horizontalCellBlockCount();
+        int seaLevel = settings.seaLevel();
+        AquiferSampler.FluidLevel lava =
+                new AquiferSampler.FluidLevel(-54, Blocks.LAVA.getDefaultState());
+        AquiferSampler.FluidLevel sea =
+                new AquiferSampler.FluidLevel(seaLevel, settings.defaultFluid());
+        AquiferSampler.FluidLevelSampler fluids =
+                (x, y, z) -> y < Math.min(-54, seaLevel) ? lava : sea;
+        ChunkNoiseSampler sampler = new ChunkNoiseSampler(
+                horizontalCells,
+                noiseConfig,
+                chunkX << 4,
+                chunkZ << 4,
+                shape,
+                DensityFunctionTypes.Beardifier.INSTANCE,
+                settings,
+                fluids,
+                Blender.getNoBlending());
+        return new NoiseSamplerSetup(sampler, settings, shape);
+    }
+
+    private record NoiseSamplerSetup(
+            ChunkNoiseSampler sampler,
+            ChunkGeneratorSettings settings,
+            GenerationShapeConfig shape) {}
 
     /**
      * Sample a heightmap of the given type for a 16×16 section column.
@@ -529,8 +733,7 @@ public final class WorldNoiseAccess {
      * @return FINAL_DENSITY value at the block position; &gt;0 is solid
      */
     public double sampleFinalDensity(int blockX, int blockY, int blockZ) {
-        DensityFunction df = noiseConfig.getNoiseRouter().finalDensity();
-        return df.sample(new DensityFunction.UnblendedNoisePos(blockX, blockY, blockZ));
+        return finalDensity.sample(blockX, blockY, blockZ);
     }
 
     // -------------------------------------------------------------------------

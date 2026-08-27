@@ -4,6 +4,10 @@
 
 Use YAGNI and DRY principles.
 
+## Testing
+
+Prefer fast headless integration tests against the pinned real Voxy and Minecraft classes over mocks or client flyovers. Fake only expensive external boundaries. Keep AFK flyovers as final client/rendering acceptance for behavior that cannot be proven headlessly.
+
 ## Token safety
 
 Use RTK for supported commands and potentially large command output. Do not blindly prefix PowerShell cmdlets, aliases, shell built-ins, or shell syntax with rtk. Prefer RTK-native equivalents when available, e.g. rtk read instead of Get-Content. For unsupported PowerShell operations, invoke PowerShell normally and explicitly bound potentially large output.

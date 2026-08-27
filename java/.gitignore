@@ -4,6 +4,7 @@
 
 # Minecraft example world
 /example-world/
+/flight-template/
 
 # Hephaistos
 /Hephaistos/
@@ -131,6 +132,7 @@ wandb/
 *.csv
 *.json
 !fabric.mod.json
+!*.mixins.json
 !lodiffusion.defaults.json
 *.pkl
 *.pickle

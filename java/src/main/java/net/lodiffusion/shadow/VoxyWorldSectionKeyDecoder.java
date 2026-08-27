@@ -20,6 +20,7 @@ public final class VoxyWorldSectionKeyDecoder {
     private static Method getXMethod;
     private static Method getYMethod;
     private static Method getZMethod;
+    private static Method getWorldSectionIdMethod;
     private static final AtomicBoolean loggedInitFailure = new AtomicBoolean(false);
 
     private VoxyWorldSectionKeyDecoder() {
@@ -43,6 +44,19 @@ public final class VoxyWorldSectionKeyDecoder {
         }
     }
 
+    public static Long encode(int level, int x, int y, int z) {
+        ensureInitialized();
+        if (getWorldSectionIdMethod == null) {
+            return null;
+        }
+        try {
+            return (Long) getWorldSectionIdMethod.invoke(null, level, x, y, z);
+        } catch (Exception e) {
+            HelloTerrainMod.LOGGER.warn("[LodGen][Bridge] Failed encoding section key: {}", e.toString());
+            return null;
+        }
+    }
+
     private static void ensureInitialized() {
         if (initialized) {
             return;
@@ -59,6 +73,8 @@ public final class VoxyWorldSectionKeyDecoder {
                 getXMethod = worldEngineClass.getMethod("getX", long.class);
                 getYMethod = worldEngineClass.getMethod("getY", long.class);
                 getZMethod = worldEngineClass.getMethod("getZ", long.class);
+                getWorldSectionIdMethod = worldEngineClass.getMethod(
+                        "getWorldSectionId", int.class, int.class, int.class, int.class);
             } catch (Exception e) {
                 if (loggedInitFailure.compareAndSet(false, true)) {
                     HelloTerrainMod.LOGGER.warn(

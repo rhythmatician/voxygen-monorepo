@@ -21,14 +21,19 @@ public class VoxyRequestDecoder {
         public int worldX;    // World X coordinate (signed, in 16-voxel units)
         public int worldY;    // World Y coordinate (signed, [-128, 127] valid)
         public int worldZ;    // World Z coordinate (signed, in 16-voxel units)
-        /** True when this request fills a missing child of a partial WorldSection. */
-        public boolean isPartialFill;
+        /** Explicit origin and scheduling policy; decoder/watch requests are horizon coverage. */
+        public VoxyDemandKind demandKind = VoxyDemandKind.HORIZON_COVERAGE;
+        /** Physical operation identity, independently of the reason it is urgent. */
+        public VoxyWorkKind workKind = VoxyWorkKind.HORIZON_LEAF;
+        /** Explicit provenance; current vanilla guard uses the radius-annulus source. */
+        public VoxyDemandSource demandSource = VoxyDemandSource.VOXY_WATCH_BRIDGE;
+        /** Child octants requested for PARENT_REFINEMENT; ignored for leaf work. */
+        public int demandedChildMask = 0xFF;
         
         @Override
         public String toString() {
             return String.format("VoxyNodeRequest{lod=%d, pos=(%d,%d,%d)%s}", 
-                lodLevel, worldX, worldY, worldZ,
-                isPartialFill ? ", PARTIAL_FILL" : "");
+                lodLevel, worldX, worldY, worldZ, ", " + workKind + ", " + demandKind + ", " + demandSource);
         }
     }
     
@@ -64,6 +69,9 @@ public class VoxyRequestDecoder {
         int zPart2 = (packedY >>> 28) & 0xF;        // Bits 31:28 of Y
         int z = zPart1 | zPart2;
         req.worldZ = (z << 8) >> 8;  // Sign-extend (arithmetic shift)
+        req.demandKind = VoxyDemandKind.HORIZON_COVERAGE;
+        req.workKind = VoxyWorkKind.HORIZON_LEAF;
+        req.demandSource = VoxyDemandSource.VOXY_WATCH_BRIDGE;
         
         return req;
     }
@@ -136,6 +144,9 @@ public class VoxyRequestDecoder {
         int zPart2 = (packedY >>> 28) & 0xF;
         int z = zPart1 | zPart2;
         req.worldZ = (z << 8) >> 8;
+        req.demandKind = VoxyDemandKind.HORIZON_COVERAGE;
+        req.workKind = VoxyWorkKind.HORIZON_LEAF;
+        req.demandSource = VoxyDemandSource.VOXY_WATCH_BRIDGE;
         
         return req;
     }

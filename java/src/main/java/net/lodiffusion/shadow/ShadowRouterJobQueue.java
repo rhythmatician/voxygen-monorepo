@@ -1,378 +1,544 @@
 package net.lodiffusion.shadow;
 
+import com.rhythmatician.lodiffusion.voxy.RefinementAdmissionGate;
 import java.util.Comparator;
-import java.util.HashSet;
+import java.util.HashMap;
+import java.util.ArrayList;
+import java.util.Map;
 import java.util.PriorityQueue;
 import java.util.Queue;
-import java.util.Set;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
-/**
- * Thread-safe job queue for LOD terrain generation requests from Voxy.
- * 
- * Maintains separate per-LOD priority queues (LOD 0–4) ordered by distance to player.
- * Supports enqueue (from mixin callback) and dequeue (from dispatcher).
- */
-public class ShadowRouterJobQueue {
-
-    private static final int[] PARTIAL_FILL_PRIORITY_ORDER = {0, 1, 2, 3, 4};
-    private static final int[] REGULAR_PRIORITY_ORDER = {4, 3, 2, 1, 0};
-
-    // Hard cap to prevent far-field request floods from starving nearby refinement.
-    // Units are player-section coordinates (16-block sections).
+/** Thread-safe scheduler for explicit Voxy terrain demand. */
+public final class ShadowRouterJobQueue {
+    private static final int[] COARSE_FIRST = {4, 3, 2, 1, 0};
     private static final double MAX_PLAYER_SECTION_DISTANCE = 256.0;
 
-    private record RequestKey(int lod, int x, int y, int z) {
-        static RequestKey of(VoxyRequestDecoder.VoxyNodeRequest req) {
-            return new RequestKey(req.lodLevel, req.worldX, req.worldY, req.worldZ);
+    public enum EnqueueResult {
+        QUEUED,
+        UPGRADED,
+        DUPLICATE,
+        IN_FLIGHT,
+        REJECTED;
+
+        public boolean representsScheduledWork() {
+            return this == QUEUED || this == UPGRADED || this == IN_FLIGHT;
         }
     }
-    
+
+    /** Lifecycle totals and current depths for one explicit demand kind. */
+    public record DemandMetrics(long queued, long dequeued, long completed, long failed,
+                                long skippedFull,
+                                int queuedDepth, int inFlightDepth) {}
+
+    /** Runtime-facing metrics for the three active top-down demand kinds. */
+    public record DemandMetricsSnapshot(DemandMetrics horizon, DemandMetrics guard,
+                                        DemandMetrics visual) {
+        public String compact() {
+            return "H=" + format(horizon) + " G=" + format(guard) + " V=" + format(visual);
+        }
+
+        private static String format(DemandMetrics metrics) {
+            return "q" + metrics.queued() + "/d" + metrics.dequeued() + "/c"
+                    + metrics.completed() + "/f" + metrics.failed() + "/full"
+                    + metrics.skippedFull() + "@" + metrics.queuedDepth() + "+"
+                    + metrics.inFlightDepth();
+        }
+    }
+
+    private record RequestKey(int lod, int x, int y, int z, VoxyWorkKind workKind) {
+        static RequestKey of(VoxyRequestDecoder.VoxyNodeRequest request) {
+            return new RequestKey(request.lodLevel, request.worldX, request.worldY, request.worldZ,
+                    request.workKind);
+        }
+    }
+
     private static final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
     @SuppressWarnings("unchecked")
-    private static final PriorityQueue<VoxyRequestDecoder.VoxyNodeRequest>[] lodQueues = 
-        new PriorityQueue[5];
-
-    // Separate per-LOD queues for partial-fill requests (highest priority).
+    private static final PriorityQueue<VoxyRequestDecoder.VoxyNodeRequest>[] horizonQueues =
+            new PriorityQueue[5];
     @SuppressWarnings("unchecked")
-    private static final PriorityQueue<VoxyRequestDecoder.VoxyNodeRequest>[] partialFillQueues =
-        new PriorityQueue[5];
+    private static final PriorityQueue<VoxyRequestDecoder.VoxyNodeRequest>[] guardQueues =
+            new PriorityQueue[5];
+    @SuppressWarnings("unchecked")
+    private static final PriorityQueue<VoxyRequestDecoder.VoxyNodeRequest>[] visualQueues =
+            new PriorityQueue[5];
 
-    // Player position in section-space units (updated by LodGenerationService).
-    private static volatile int playerSectionX = 0;
-    private static volatile int playerSectionZ = 0;
+    private static volatile int playerSectionX;
+    private static volatile int playerSectionZ;
+    /** A horizon dispatch earns one guard transaction when a guard is waiting. */
+    private static boolean guardTurn;
+    /** Coverage turns served while visual work was eligible; capped at four. */
+    private static int coverageDispatchesSinceVisual;
+    private static final Map<RequestKey, VoxyRequestDecoder.VoxyNodeRequest> queuedRequests =
+            new HashMap<>();
+    private static final Map<RequestKey, VoxyRequestDecoder.VoxyNodeRequest> inFlightRequests =
+            new HashMap<>();
+    private static final Map<RequestKey, VoxyRequestDecoder.VoxyNodeRequest> pendingFollowUps =
+            new HashMap<>();
+    private static final long[][] lifecycleCounts = new long[VoxyDemandKind.values().length][5];
 
-    // Requests currently queued but not yet handed out.
-    private static final Set<RequestKey> queuedKeys = new HashSet<>();
-    // Requests handed out by dequeue* and awaiting completion callback.
-    private static final Set<RequestKey> inFlightKeys = new HashSet<>();
-    
     static {
-        for (int i = 0; i < 5; i++) {
-            // Order by ascending distance: closest requests first
-            ShadowRouterJobQueue.lodQueues[i] = new PriorityQueue<>(
+        Comparator<VoxyRequestDecoder.VoxyNodeRequest> comparator =
                 Comparator.comparingDouble(ShadowRouterJobQueue::estimateDistance)
-            );
-            ShadowRouterJobQueue.partialFillQueues[i] = new PriorityQueue<>(
-                Comparator.comparingDouble(ShadowRouterJobQueue::estimateDistance)
-            );
+                        .thenComparing(Comparator.comparingInt(
+                                (VoxyRequestDecoder.VoxyNodeRequest request) -> request.lodLevel)
+                                .reversed())
+                        .thenComparingInt(request -> request.worldX)
+                        .thenComparingInt(request -> request.worldY)
+                        .thenComparingInt(request -> request.worldZ);
+        for (int level = 0; level <= 4; level++) {
+            horizonQueues[level] = new PriorityQueue<>(comparator);
+            guardQueues[level] = new PriorityQueue<>(comparator);
+            visualQueues[level] = new PriorityQueue<>(comparator);
         }
     }
-    
-    /**
-     * Enqueue a single request (called by VoxyShadowBridgeMixin).
-     * 
-     * @param request Decoded Voxy node request
-     */
-    public static void enqueue(VoxyRequestDecoder.VoxyNodeRequest request) {
-        if (request == null || request.lodLevel < 0 || request.lodLevel > 4) {
-            return;  // Ignore invalid requests
-        }
-        if (!request.isPartialFill && !shouldAccept(request)) {
-            return;
-        }
-        
+
+    private ShadowRouterJobQueue() {}
+
+    public static EnqueueResult enqueue(VoxyRequestDecoder.VoxyNodeRequest request) {
+        if (!isValid(request) || !RefinementAdmissionGate.allows(request.workKind)
+                || !shouldAccept(request)) return EnqueueResult.REJECTED;
         lock.writeLock().lock();
         try {
-            RequestKey key = RequestKey.of(request);
-            if (queuedKeys.contains(key) || inFlightKeys.contains(key)) {
-                return;
-            }
-            if (request.isPartialFill) {
-                partialFillQueues[request.lodLevel].offer(request);
-            } else {
-                lodQueues[request.lodLevel].offer(request);
-            }
-            queuedKeys.add(key);
+            return enqueueLocked(request);
         } finally {
             lock.writeLock().unlock();
         }
     }
-    
-    /**
-     * Enqueue multiple requests (batch optimization).
-     * 
-     * @param requests Array of requests to enqueue
-     */
+
     public static void enqueueBatch(VoxyRequestDecoder.VoxyNodeRequest[] requests) {
-        if (requests == null || requests.length == 0) {
-            return;
-        }
-        
+        if (requests == null || requests.length == 0) return;
         lock.writeLock().lock();
         try {
-            for (VoxyRequestDecoder.VoxyNodeRequest req : requests) {
-                if (req != null && req.lodLevel >= 0 && req.lodLevel <= 4) {
-                    if (!shouldAccept(req)) {
-                        continue;
-                    }
-                    RequestKey key = RequestKey.of(req);
-                    if (queuedKeys.contains(key) || inFlightKeys.contains(key)) {
-                        continue;
-                    }
-                    lodQueues[req.lodLevel].offer(req);
-                    queuedKeys.add(key);
-                }
+            for (VoxyRequestDecoder.VoxyNodeRequest request : requests) {
+                if (isValid(request) && RefinementAdmissionGate.allows(request.workKind)
+                        && shouldAccept(request)) enqueueLocked(request);
             }
         } finally {
             lock.writeLock().unlock();
         }
     }
-    
-    /**
-     * Dequeue the highest-priority request across all LOD levels.
-     * Priority: partial-fill first (L0 → L4), then regular generation (L4 → L0).
-     * 
-     * @return Next request to generate, or null if queue is empty
-     */
+
     public static VoxyRequestDecoder.VoxyNodeRequest dequeueAny() {
         lock.writeLock().lock();
         try {
-            // Priority 1: partial-fill from finest to coarsest.
-            for (int lod : PARTIAL_FILL_PRIORITY_ORDER) {
-                VoxyRequestDecoder.VoxyNodeRequest req = partialFillQueues[lod].poll();
-                if (req != null) {
-                    RequestKey key = RequestKey.of(req);
-                    queuedKeys.remove(key);
-                    inFlightKeys.add(key);
-                    return req;
-                }
-            }
-            // Priority 2: regular generation from coarsest to finest.
-            for (int lod : REGULAR_PRIORITY_ORDER) {
-                VoxyRequestDecoder.VoxyNodeRequest req = lodQueues[lod].poll();
-                if (req != null) {
-                    RequestKey key = RequestKey.of(req);
-                    queuedKeys.remove(key);
-                    inFlightKeys.add(key);
-                    return req;
-                }
-            }
-            return null;
+            VoxyRequestDecoder.VoxyNodeRequest request = dequeueFairLocked();
+            return takeLocked(request);
         } finally {
             lock.writeLock().unlock();
         }
     }
-    
-    /**
-     * Dequeue from a specific LOD level.
-     * 
-     * @param lod LOD level [0, 4]
-     * @return Next request at that LOD, or null
-     */
+
     public static VoxyRequestDecoder.VoxyNodeRequest dequeue(int lod) {
-        if (lod < 0 || lod > 4) {
-            return null;
-        }
-        
+        if (lod < 0 || lod > 4) return null;
         lock.writeLock().lock();
         try {
-            VoxyRequestDecoder.VoxyNodeRequest req = lodQueues[lod].poll();
-            if (req != null) {
-                RequestKey key = RequestKey.of(req);
-                queuedKeys.remove(key);
-                inFlightKeys.add(key);
-            }
-            return req;
+            VoxyRequestDecoder.VoxyNodeRequest request = dequeueFairForLodLocked(lod);
+            return takeLocked(request);
         } finally {
             lock.writeLock().unlock();
         }
     }
 
-    /**
-     * Mark a request as finished so it can be enqueued again in the future.
-     */
     public static void markCompleted(VoxyRequestDecoder.VoxyNodeRequest request) {
-        if (request == null) {
-            return;
-        }
+        if (request == null) return;
         lock.writeLock().lock();
         try {
-            inFlightKeys.remove(RequestKey.of(request));
+            finishInFlightLocked(request, 2);
         } finally {
             lock.writeLock().unlock();
         }
     }
 
-    /**
-     * Mark a request as not yet done and re-queue it if it is still unique.
-     */
-    public static void requeue(VoxyRequestDecoder.VoxyNodeRequest request) {
-        if (request == null || request.lodLevel < 0 || request.lodLevel > 4) {
-            return;
+    /** Marks an in-flight request as terminally failed for demand-specific telemetry. */
+    public static void markFailed(VoxyRequestDecoder.VoxyNodeRequest request) {
+        if (request == null) return;
+        lock.writeLock().lock();
+        try {
+            finishInFlightLocked(request, 3);
+        } finally {
+            lock.writeLock().unlock();
         }
-        if (!request.isPartialFill && !shouldAccept(request)) {
-            return;
-        }
+    }
 
+    /** Full-vanilla sections are terminally skipped because Voxy owns them. */
+    public static void markSkippedFull(VoxyRequestDecoder.VoxyNodeRequest request) {
+        if (request == null) return;
+        lock.writeLock().lock();
+        try {
+            finishInFlightLocked(request, 4);
+        } finally {
+            lock.writeLock().unlock();
+        }
+    }
+
+    public static void requeue(VoxyRequestDecoder.VoxyNodeRequest request) {
+        if (!isValid(request) || !RefinementAdmissionGate.allows(request.workKind)
+                || !shouldAccept(request)) return;
         lock.writeLock().lock();
         try {
             RequestKey key = RequestKey.of(request);
-            inFlightKeys.remove(key);
-            if (queuedKeys.contains(key)) {
-                return;
-            }
-            if (request.isPartialFill) {
-                partialFillQueues[request.lodLevel].offer(request);
-            } else {
-                lodQueues[request.lodLevel].offer(request);
-            }
-            queuedKeys.add(key);
+            VoxyRequestDecoder.VoxyNodeRequest active = inFlightRequests.remove(key);
+            if (active == null) return;
+            VoxyRequestDecoder.VoxyNodeRequest pending = pendingFollowUps.remove(key);
+            enqueueLocked(pending == null ? active : mergeRequests(active, pending));
         } finally {
             lock.writeLock().unlock();
         }
     }
-    
-    /**
-     * Get total queue size across all LODs.
-     */
+
     public static int size() {
         lock.readLock().lock();
         try {
-            int total = 0;
-            for (Queue<?> queue : lodQueues) {
-                total += queue.size();
-            }
-            for (Queue<?> queue : partialFillQueues) {
-                total += queue.size();
-            }
-            return total;
+            return sizeOf(horizonQueues) + sizeOf(guardQueues) + sizeOf(visualQueues);
         } finally {
             lock.readLock().unlock();
         }
     }
-    
-    /**
-     * Get queue size for a specific LOD.
-     */
+
     public static int sizeForLod(int lod) {
-        if (lod < 0 || lod > 4) {
-            return 0;
-        }
+        if (lod < 0 || lod > 4) return 0;
         lock.readLock().lock();
         try {
-            return lodQueues[lod].size() + partialFillQueues[lod].size();
+            return horizonQueues[lod].size() + guardQueues[lod].size() + visualQueues[lod].size();
         } finally {
             lock.readLock().unlock();
         }
     }
-    
-    /**
-     * Clear all queues.
-     */
+
     public static void clear() {
         lock.writeLock().lock();
         try {
-            for (Queue<?> queue : lodQueues) {
-                queue.clear();
-            }
-            for (Queue<?> queue : partialFillQueues) {
-                queue.clear();
-            }
-            queuedKeys.clear();
-            inFlightKeys.clear();
+            clear(horizonQueues);
+            clear(guardQueues);
+            clear(visualQueues);
+            queuedRequests.clear();
+            inFlightRequests.clear();
+            pendingFollowUps.clear();
+            clearLifecycleCounts();
+            guardTurn = false;
+            coverageDispatchesSinceVisual = 0;
         } finally {
             lock.writeLock().unlock();
         }
     }
 
-    /** Number of requests currently being processed by a consumer. */
     public static int inFlightSize() {
         lock.readLock().lock();
         try {
-            return inFlightKeys.size();
+            return inFlightRequests.size();
         } finally {
             lock.readLock().unlock();
         }
     }
-    
-    /**
-     * Check if any queue has pending requests.
-     */
+
+    /** Snapshot is consistent with queue state because it is captured under the queue lock. */
+    public static DemandMetricsSnapshot demandMetrics() {
+        lock.readLock().lock();
+        try {
+            return new DemandMetricsSnapshot(
+                    metricsFor(VoxyDemandKind.HORIZON_COVERAGE, horizonQueues),
+                    metricsFor(VoxyDemandKind.VANILLA_FRONTIER_GUARD, guardQueues),
+                    metricsFor(VoxyDemandKind.VISUAL_REFINEMENT, visualQueues));
+        } finally {
+            lock.readLock().unlock();
+        }
+    }
+
     public static boolean hasWork() {
         lock.readLock().lock();
         try {
-            for (Queue<?> queue : partialFillQueues) {
-                if (!queue.isEmpty()) {
-                    return true;
-                }
-            }
-            for (Queue<?> queue : lodQueues) {
-                if (!queue.isEmpty()) {
-                    return true;
-                }
-            }
-            return false;
+            return hasQueued(horizonQueues) || hasQueued(guardQueues) || hasQueued(visualQueues);
         } finally {
             lock.readLock().unlock();
         }
     }
 
-    /**
-     * Check if any partial-fill queue has pending requests.
-     */
-    public static boolean hasPartialFillWork() {
-        lock.readLock().lock();
-        try {
-            for (Queue<?> queue : partialFillQueues) {
-                if (!queue.isEmpty()) {
-                    return true;
-                }
-            }
-            return false;
-        } finally {
-            lock.readLock().unlock();
-        }
-    }
-    
-    /**
-     * Update player position in section-space units for distance estimation.
-     */
     public static void updatePlayerSection(int sectionX, int sectionZ) {
-        playerSectionX = sectionX;
-        playerSectionZ = sectionZ;
-    }
-
-    /**
-     * Estimate distance from request to player (simplified).
-     * 
-     * Uses player-relative section-space distance and a mild LOD penalty so
-     * nearby requests are preferred while still allowing coarser levels to drain.
-     */
-    private static double estimateDistance(VoxyRequestDecoder.VoxyNodeRequest req) {
-        if (req == null) {
-            return Double.MAX_VALUE;
+        lock.writeLock().lock();
+        try {
+            if (playerSectionX == sectionX && playerSectionZ == sectionZ) return;
+            playerSectionX = sectionX;
+            playerSectionZ = sectionZ;
+            reheapify(horizonQueues);
+            reheapify(guardQueues);
+            reheapify(visualQueues);
+        } finally {
+            lock.writeLock().unlock();
         }
-
-        // Convert world-section coords at level L into player-section-space center.
-        // worldSection(block, L) == playerSection >> (L+1), so inverse is << (L+1).
-        int sectionScale = 1 << (req.lodLevel + 1);
-        double reqCenterX = (req.worldX * (double) sectionScale) + (sectionScale * 0.5);
-        double reqCenterZ = (req.worldZ * (double) sectionScale) + (sectionScale * 0.5);
-
-        double dx = reqCenterX - playerSectionX;
-        double dz = reqCenterZ - playerSectionZ;
-        double distance = Math.sqrt((dx * dx) + (dz * dz));
-
-        // Prefer coarser levels slightly for the same location so dependency chains
-        // (L4->L3->L2->L1->L0) don't thrash on deferred child requests.
-        double lodBias = (4 - req.lodLevel) * 2.0;
-        return distance + lodBias;
     }
 
-    private static boolean shouldAccept(VoxyRequestDecoder.VoxyNodeRequest req) {
-        return estimateRawPlayerSectionDistance(req) <= MAX_PLAYER_SECTION_DISTANCE;
-    }
-
-    private static double estimateRawPlayerSectionDistance(VoxyRequestDecoder.VoxyNodeRequest req) {
-        if (req == null) {
-            return Double.MAX_VALUE;
+    private static EnqueueResult enqueueLocked(VoxyRequestDecoder.VoxyNodeRequest request) {
+        RequestKey key = RequestKey.of(request);
+        VoxyRequestDecoder.VoxyNodeRequest queued = queuedRequests.get(key);
+        if (queued != null) {
+            queued.demandedChildMask |= request.demandedChildMask;
+            if (request.demandKind.priority().ordinal() < queued.demandKind.priority().ordinal()) {
+                queueFor(queued)[queued.lodLevel].remove(queued);
+                queued.demandKind = request.demandKind;
+                queued.demandSource = request.demandSource;
+                queueFor(queued)[queued.lodLevel].offer(queued);
+                count(request.demandKind, 0);
+                return EnqueueResult.UPGRADED;
+            }
+            return EnqueueResult.DUPLICATE;
         }
-        int sectionScale = 1 << (req.lodLevel + 1);
-        double reqCenterX = (req.worldX * (double) sectionScale) + (sectionScale * 0.5);
-        double reqCenterZ = (req.worldZ * (double) sectionScale) + (sectionScale * 0.5);
-        double dx = reqCenterX - playerSectionX;
-        double dz = reqCenterZ - playerSectionZ;
+        VoxyRequestDecoder.VoxyNodeRequest inFlight = inFlightRequests.get(key);
+        if (inFlight != null) {
+            int pendingMask = request.demandedChildMask & ~inFlight.demandedChildMask;
+            boolean higherUrgency = request.demandKind.priority().ordinal()
+                    < inFlight.demandKind.priority().ordinal();
+            if (pendingMask != 0 || higherUrgency) {
+                VoxyRequestDecoder.VoxyNodeRequest followUp = copyRequest(request);
+                followUp.demandedChildMask = pendingMask;
+                pendingFollowUps.merge(key, followUp, ShadowRouterJobQueue::mergeRequests);
+            }
+            return EnqueueResult.IN_FLIGHT;
+        }
+        queueFor(request)[request.lodLevel].offer(request);
+        queuedRequests.put(key, request);
+        count(request.demandKind, 0);
+        return EnqueueResult.QUEUED;
+    }
+
+    private static VoxyRequestDecoder.VoxyNodeRequest dequeueFairLocked() {
+        boolean hasHorizon = hasQueued(horizonQueues);
+        boolean hasGuard = hasQueued(guardQueues);
+        boolean hasVisual = hasQueued(visualQueues);
+        if (!hasHorizon && !hasGuard) {
+            coverageDispatchesSinceVisual = 0;
+            return hasVisual ? poll(COARSE_FIRST, visualQueues) : null;
+        }
+        if (!hasVisual) {
+            coverageDispatchesSinceVisual = 0;
+            return dequeueCoverageLocked();
+        }
+        if (coverageDispatchesSinceVisual == 4) {
+            coverageDispatchesSinceVisual = 0;
+            return poll(COARSE_FIRST, visualQueues);
+        }
+        VoxyRequestDecoder.VoxyNodeRequest request = dequeueCoverageLocked();
+        if (request != null) coverageDispatchesSinceVisual++;
+        return request;
+    }
+
+    private static VoxyRequestDecoder.VoxyNodeRequest dequeueFairForLodLocked(int lod) {
+        boolean hasHorizon = !horizonQueues[lod].isEmpty();
+        boolean hasGuard = !guardQueues[lod].isEmpty();
+        boolean hasVisual = !visualQueues[lod].isEmpty();
+        if (!hasHorizon && !hasGuard) {
+            coverageDispatchesSinceVisual = 0;
+            return hasVisual ? visualQueues[lod].poll() : null;
+        }
+        if (!hasVisual) {
+            coverageDispatchesSinceVisual = 0;
+            return dequeueCoverageForLodLocked(lod);
+        }
+        if (coverageDispatchesSinceVisual == 4) {
+            coverageDispatchesSinceVisual = 0;
+            return visualQueues[lod].poll();
+        }
+        VoxyRequestDecoder.VoxyNodeRequest request = dequeueCoverageForLodLocked(lod);
+        if (request != null) coverageDispatchesSinceVisual++;
+        return request;
+    }
+
+    private static VoxyRequestDecoder.VoxyNodeRequest dequeueCoverageLocked() {
+        boolean hasHorizon = hasQueued(horizonQueues);
+        boolean hasGuard = hasQueued(guardQueues);
+        if (guardTurn && hasGuard) {
+            guardTurn = false;
+            return pollNearestGuardLocked();
+        }
+        if (hasHorizon) {
+            guardTurn = hasGuard;
+            return poll(COARSE_FIRST, horizonQueues);
+        }
+        guardTurn = false;
+        return hasGuard ? pollNearestGuardLocked() : null;
+    }
+
+    private static VoxyRequestDecoder.VoxyNodeRequest dequeueCoverageForLodLocked(int lod) {
+        boolean hasHorizon = !horizonQueues[lod].isEmpty();
+        boolean hasGuard = !guardQueues[lod].isEmpty();
+        if (guardTurn && hasGuard) {
+            guardTurn = false;
+            return guardQueues[lod].poll();
+        }
+        if (hasHorizon) {
+            guardTurn = hasGuard;
+            return horizonQueues[lod].poll();
+        }
+        guardTurn = false;
+        return hasGuard ? guardQueues[lod].poll() : null;
+    }
+
+    /** Guard urgency is spatial: compare every LOD's nearest pending footprint. */
+    private static VoxyRequestDecoder.VoxyNodeRequest pollNearestGuardLocked() {
+        VoxyRequestDecoder.VoxyNodeRequest nearest = null;
+        int nearestLod = -1;
+        for (int lod = 0; lod <= 4; lod++) {
+            VoxyRequestDecoder.VoxyNodeRequest candidate = guardQueues[lod].peek();
+            if (candidate != null && (nearest == null || compareGuards(candidate, nearest) < 0)) {
+                nearest = candidate;
+                nearestLod = lod;
+            }
+        }
+        return nearest == null ? null : guardQueues[nearestLod].poll();
+    }
+
+    private static int compareGuards(VoxyRequestDecoder.VoxyNodeRequest left,
+            VoxyRequestDecoder.VoxyNodeRequest right) {
+        int distance = Double.compare(estimateRawPlayerSectionDistance(left),
+                estimateRawPlayerSectionDistance(right));
+        if (distance != 0) return distance;
+        int lod = Integer.compare(right.lodLevel, left.lodLevel);
+        if (lod != 0) return lod;
+        int x = Integer.compare(left.worldX, right.worldX);
+        if (x != 0) return x;
+        int y = Integer.compare(left.worldY, right.worldY);
+        return y != 0 ? y : Integer.compare(left.worldZ, right.worldZ);
+    }
+
+    private static VoxyRequestDecoder.VoxyNodeRequest takeLocked(
+            VoxyRequestDecoder.VoxyNodeRequest request) {
+        if (request == null) return null;
+        RequestKey key = RequestKey.of(request);
+        queuedRequests.remove(key);
+        inFlightRequests.put(key, request);
+        count(request.demandKind, 1);
+        return request;
+    }
+
+    private static void finishInFlightLocked(
+            VoxyRequestDecoder.VoxyNodeRequest request, int lifecycleIndex) {
+        RequestKey key = RequestKey.of(request);
+        VoxyRequestDecoder.VoxyNodeRequest active = inFlightRequests.remove(key);
+        if (active == null) return;
+        count(active.demandKind, lifecycleIndex);
+        VoxyRequestDecoder.VoxyNodeRequest pending = pendingFollowUps.remove(key);
+        if (pending != null && pending.demandedChildMask != 0) {
+            enqueueLocked(pending);
+        }
+    }
+
+    private static VoxyRequestDecoder.VoxyNodeRequest mergeRequests(
+            VoxyRequestDecoder.VoxyNodeRequest left,
+            VoxyRequestDecoder.VoxyNodeRequest right) {
+        VoxyRequestDecoder.VoxyNodeRequest merged = copyRequest(left);
+        merged.demandedChildMask |= right.demandedChildMask;
+        if (right.demandKind.priority().ordinal()
+                < merged.demandKind.priority().ordinal()) {
+            merged.demandKind = right.demandKind;
+            merged.demandSource = right.demandSource;
+        }
+        return merged;
+    }
+
+    private static VoxyRequestDecoder.VoxyNodeRequest copyRequest(
+            VoxyRequestDecoder.VoxyNodeRequest source) {
+        VoxyRequestDecoder.VoxyNodeRequest copy = new VoxyRequestDecoder.VoxyNodeRequest();
+        copy.lodLevel = source.lodLevel;
+        copy.worldX = source.worldX;
+        copy.worldY = source.worldY;
+        copy.worldZ = source.worldZ;
+        copy.demandKind = source.demandKind;
+        copy.workKind = source.workKind;
+        copy.demandSource = source.demandSource;
+        copy.demandedChildMask = source.demandedChildMask;
+        return copy;
+    }
+
+    private static PriorityQueue<VoxyRequestDecoder.VoxyNodeRequest>[] queueFor(
+            VoxyRequestDecoder.VoxyNodeRequest request) {
+        return switch (request.demandKind) {
+            case HORIZON_COVERAGE -> horizonQueues;
+            case VANILLA_FRONTIER_GUARD -> guardQueues;
+            case VISUAL_REFINEMENT -> visualQueues;
+        };
+    }
+
+    private static VoxyRequestDecoder.VoxyNodeRequest poll(int[] order,
+            PriorityQueue<VoxyRequestDecoder.VoxyNodeRequest>[] queues) {
+        for (int lod : order) {
+            VoxyRequestDecoder.VoxyNodeRequest request = queues[lod].poll();
+            if (request != null) return request;
+        }
+        return null;
+    }
+
+    private static boolean isValid(VoxyRequestDecoder.VoxyNodeRequest request) {
+        return request != null && request.workKind != null && request.demandKind != null && request.demandSource != null
+                && request.lodLevel >= 0 && request.lodLevel <= 4;
+    }
+
+    private static boolean shouldAccept(VoxyRequestDecoder.VoxyNodeRequest request) {
+        return estimateRawPlayerSectionDistance(request) <= MAX_PLAYER_SECTION_DISTANCE;
+    }
+
+    private static boolean hasQueued(PriorityQueue<VoxyRequestDecoder.VoxyNodeRequest>[] queues) {
+        for (Queue<?> queue : queues) if (!queue.isEmpty()) return true;
+        return false;
+    }
+
+    private static DemandMetrics metricsFor(VoxyDemandKind kind,
+            PriorityQueue<VoxyRequestDecoder.VoxyNodeRequest>[] queues) {
+        long[] counts = lifecycleCounts[kind.ordinal()];
+        int inFlight = 0;
+        for (VoxyRequestDecoder.VoxyNodeRequest inFlightRequest : inFlightRequests.values()) {
+            if (inFlightRequest.demandKind == kind) inFlight++;
+        }
+        return new DemandMetrics(counts[0], counts[1], counts[2], counts[3], counts[4],
+                sizeOf(queues), inFlight);
+    }
+
+    private static void count(VoxyDemandKind kind, int lifecycleIndex) {
+        lifecycleCounts[kind.ordinal()][lifecycleIndex]++;
+    }
+
+    private static void clearLifecycleCounts() {
+        for (long[] counts : lifecycleCounts) {
+            java.util.Arrays.fill(counts, 0L);
+        }
+    }
+
+    private static int sizeOf(PriorityQueue<?>[] queues) {
+        int size = 0;
+        for (Queue<?> queue : queues) size += queue.size();
+        return size;
+    }
+
+    private static void clear(PriorityQueue<?>[] queues) {
+        for (Queue<?> queue : queues) queue.clear();
+    }
+
+    private static void reheapify(PriorityQueue<VoxyRequestDecoder.VoxyNodeRequest>[] queues) {
+        for (PriorityQueue<VoxyRequestDecoder.VoxyNodeRequest> queue : queues) {
+            if (queue.size() < 2) continue;
+            ArrayList<VoxyRequestDecoder.VoxyNodeRequest> requests = new ArrayList<>(queue);
+            queue.clear();
+            queue.addAll(requests);
+        }
+    }
+
+    private static double estimateDistance(VoxyRequestDecoder.VoxyNodeRequest request) {
+        return estimateRawPlayerSectionDistance(request) + ((4 - request.lodLevel) * 2.0);
+    }
+
+    private static double estimateRawPlayerSectionDistance(VoxyRequestDecoder.VoxyNodeRequest request) {
+        int sectionScale = 1 << (request.lodLevel + 1);
+        double minX = request.worldX * (double) sectionScale;
+        double maxX = minX + sectionScale;
+        double minZ = request.worldZ * (double) sectionScale;
+        double maxZ = minZ + sectionScale;
+        double dx = distanceToInterval(playerSectionX, minX, maxX);
+        double dz = distanceToInterval(playerSectionZ, minZ, maxZ);
         return Math.sqrt((dx * dx) + (dz * dz));
+    }
+
+    private static double distanceToInterval(double point, double minimum, double maximum) {
+        if (point < minimum) return minimum - point;
+        return point > maximum ? point - maximum : 0.0;
     }
 }

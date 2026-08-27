@@ -1,9 +1,12 @@
 package com.rhythmatician.lodiffusion;
 
+import com.rhythmatician.lodiffusion.client.FlightTour;
 import com.rhythmatician.lodiffusion.voxy.LodGenerationService;
 import com.rhythmatician.lodiffusion.voxy.VoxyCompat;
 import com.rhythmatician.lodiffusion.voxy.VoxyDatasetExportService;
 import com.rhythmatician.lodiffusion.voxy.VoxyDebugState;
+import com.rhythmatician.lodiffusion.voxy.LodOverlayState;
+import com.rhythmatician.lodiffusion.voxy.VoxyNativeLodStats;
 import com.rhythmatician.lodiffusion.world.noise.GpuNoiseDispatchQueue;
 
 
@@ -11,6 +14,7 @@ import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientChunkEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandManager;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
@@ -31,10 +35,10 @@ public class LodiffusionClient implements ClientModInitializer {
 
     private static final LodGenerationService LOD_SERVICE = new LodGenerationService();
     private static VoxyDatasetExportService DATASET_EXPORT_SERVICE = null;
-
     @Override
     public void onInitializeClient() {
         HelloTerrainMod.LOGGER.info("[LODiffusion] Client initializer starting");
+        configureFlightTourFromLaunchEnvironment();
 
         // Publish the singleton so server-side command handlers can query stats.
         LodGenerationService.setInstance(LOD_SERVICE);
@@ -75,6 +79,11 @@ public class LodiffusionClient implements ClientModInitializer {
             stopDatasetExportService();
         });
 
+        // This runs after vanilla has loaded a chunk. It records ownership only;
+        // it neither queues nor delays vanilla's ingestion path.
+        ClientChunkEvents.CHUNK_LOAD.register((world, chunk) ->
+                LOD_SERVICE.observeVanillaChunkColumn(world, chunk.getPos().x, chunk.getPos().z));
+
         // --- Client tick: update player position + dimension-change-aware rebind + drain GPU noise queue ---
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             // Dimension-change-aware rebind — teleport to the_end activates tracer without rejoin.
@@ -85,17 +94,44 @@ public class LodiffusionClient implements ClientModInitializer {
                 LOD_SERVICE.checkAndRebindIfNeeded(client.world, client.getServer());
             }
             if (LOD_SERVICE.isRunning() && client.player != null) {
-                LOD_SERVICE.updatePlayerPosition(client.player.getBlockPos());
+                var velocity = client.player.getVelocity();
+                int viewDistance = client.options.getViewDistance().getValue();
+                int simulationDistance = client.options.getSimulationDistance().getValue();
+                LOD_SERVICE.updatePlayerPosition(client.player.getBlockPos(), velocity.x, velocity.z,
+                        viewDistance, simulationDistance);
             }
             // Drain pending GPU noise requests on the render thread (GL context).
             // No-ops if the dispatch queue hasn't been initialised yet.
             GpuNoiseDispatchQueue.tickDrain();
+            if (client.world != null && client.player != null
+                    && client.currentScreen == null
+                    && client.worldRenderer != null
+                    && client.worldRenderer.getCompletedChunkCount() > 0
+                    && client.worldRenderer.isTerrainRenderComplete()) {
+                FlightTour.noteRenderedFrame();
+            }
+            FlightTour.tick(client);
         });
 
         // register debug toggle command in our own namespace
         ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) -> {
             dispatcher.register(
                 ClientCommandManager.literal("voxygen")
+                    .then(ClientCommandManager.literal("tour")
+                        .executes(ctx -> {
+                            FlightTour.start();
+                            ctx.getSource().sendFeedback(
+                                    Text.literal("Voxygen flight tour started; use /voxygen tour stop to cancel."));
+                            return 1;
+                        })
+                        .then(ClientCommandManager.literal("stop")
+                            .executes(ctx -> {
+                                FlightTour.stop();
+                                ctx.getSource().sendFeedback(Text.literal("Voxygen flight tour stopped."));
+                                return 1;
+                            })
+                        )
+                    )
                     .then(ClientCommandManager.literal("debug")
                         .executes(ctx -> {
                             int next = VoxyDebugState.occlusionDebugState == 0 ? 1 : 0;
@@ -110,6 +146,34 @@ public class LodiffusionClient implements ClientModInitializer {
         });
 
         HelloTerrainMod.LOGGER.info("[LODiffusion] Client initializer complete");
+    }
+
+    private static void configureFlightTourFromLaunchEnvironment() {
+        FlightTourLaunchConfig.ParseResult parsed =
+                FlightTourLaunchConfig.parse(System.getenv(), System.getProperties());
+        if (parsed.invalidTimeout() != null) {
+            HelloTerrainMod.LOGGER.warn("[LODiffusion] Invalid flight tour timeout '{}', using default timeout",
+                    parsed.invalidTimeout());
+        }
+        if (parsed.invalidDwell() != null) {
+            HelloTerrainMod.LOGGER.warn("[LODiffusion] Invalid flight tour dwell '{}', using launch default",
+                    parsed.invalidDwell());
+        }
+
+        FlightTourLaunchConfig config = parsed.config();
+        FlightTour.configureAutoStart(
+                config.autoStart(), config.timeoutTicks(), config.dwellTicks(), config.runId());
+        // Voxy selects the HAS_STATISTICS shader variant when its traverser is constructed.
+        // Client entrypoints run before that renderer construction, so this is the last safe
+        // opt-in point for both overlay and AFK evidence diagnostics.
+        VoxyNativeLodStats.enableForDiagnostics(LodOverlayState.isEnabled(), config.autoStart());
+        HelloTerrainMod.LOGGER.info(
+                "[LODiffusion][FlightTourLaunch] resolved runId={} autoStart={} timeout={} dwell={} ticks",
+                config.runId(), config.autoStart(), config.timeoutTicks(), config.dwellTicks());
+        if (config.autoStart()) {
+            HelloTerrainMod.LOGGER.info("[LODiffusion] Flight tour auto-start enabled; dwell={} ticks",
+                    config.dwellTicks());
+        }
     }
 
     /** Get the active LOD generation service (for status commands etc). */

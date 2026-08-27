@@ -63,7 +63,7 @@ final class VoxyEngine {
     static Method acquireIfExistsMethod;    // WorldEngine.acquireIfExists(int, int, int, int)
     static Method acquireMethod;            // WorldEngine.acquire(int, int, int, int)
     static Method worldSectionReleaseMethod; // WorldSection.release()
-    static Method markDirtyMethod;          // WorldEngine.markDirty(WorldSection)
+    static Method markDirtyWithFlagsMethod; // WorldEngine.markDirty(WorldSection, int, int)
 
     // Save-queue monitoring (for backpressure)
     private static Field  instanceInField;       // WorldEngine.instanceIn → VoxyInstance
@@ -114,8 +114,8 @@ final class VoxyEngine {
 
                 worldSectionClass = Class.forName(VoxyDetection.WORLD_SECTION_CLASS);
                 worldSectionReleaseMethod = worldSectionClass.getMethod("release");
-                markDirtyMethod = worldEngineClass.getMethod("markDirty", worldSectionClass);
-
+                markDirtyWithFlagsMethod = worldEngineClass.getMethod("markDirty",
+                        worldSectionClass, int.class, int.class);
                 engineBindingsReady = true;
                 LOGGER.info("Voxy engine bindings resolved");
             } catch (ClassNotFoundException | NoSuchMethodException e) {

@@ -16,14 +16,14 @@ package com.rhythmatician.lodiffusion.voxy;
  *       {@code composeVoxel}, {@code isAir}, {@code l0Index}).</li>
  * </ul>
  *
- * <p>This facade exists solely so that all existing callers ({@code VoxySectionWriter},
- * {@code LodGenerationService}, etc.) continue to compile and run without modification.
+ * <p>This facade keeps production writers and compatibility tooling on the same
+ * low-level bindings while migration to {@link VoxelVolumeWriter} completes.
  *
  * <p><b>Seam boundary — internal migration facade.</b> The intended deep module seam is
  * {@link VoxelVolumeWriter}; new code must use that interface. This facade is retained
  * solely for backwards compatibility during migration ( {@code LoDiffusionClient},
- * {@code ShaderSectionWriter}, {@code WorldGenEventHandler} and the in-package
- * {@code VoxySectionWriter} / {@code LodGenerationService} still call through here).
+ * {@code ShaderSectionWriter}, {@code WorldGenEventHandler}, and
+ * {@code LodGenerationService} still call through here).
  * It will be reduced to package-private / removed in a follow-up PR once all callers
  * are funneled through {@link RealVoxyVolumeWriter} / {@link VoxelVolumeWriter}.
  *
@@ -218,15 +218,11 @@ public final class VoxyCompat {
         return VoxyWorldBinding.writeFullWorldSection(worldEngine, lvl, wsX, wsY, wsZ, voxels);
     }
 
-    /**
-     * @deprecated Migration facade — new code use {@link VoxelVolumeWriter#writeRegion}.
-     * @see VoxyWorldBinding#writeFullWorldSection(Object, int, int, int, int, long[], byte)
-     */
-    @Deprecated
+    /** Preserve-mask variant: octants named in the mask survive candidate overwrite. */
     public static int writeFullWorldSection(Object worldEngine, int lvl,
-                                             int wsX, int wsY, int wsZ,
-                                             long[] voxels,
-                                             byte preserveOctantsMask) {
+                             int wsX, int wsY, int wsZ,
+                             long[] voxels,
+                             byte preserveOctantsMask) {
         return VoxyWorldBinding.writeFullWorldSection(
                 worldEngine, lvl, wsX, wsY, wsZ, voxels, preserveOctantsMask);
     }

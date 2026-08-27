@@ -232,6 +232,10 @@ public class WorldGenEventHandler {
      * Catches all exceptions so a Voxy API change never crashes world load.
      */
     private void writeBlocksToVoxy(ShaderSSBOManager manager, Object level, String dimensionInfo) {
+        if (!(level instanceof net.minecraft.world.World world)) {
+            LOGGER.debug("WS-2: non-world level — skipping block write");
+            return;
+        }
         if (!VoxyCompat.isAvailable()) {
             LOGGER.debug("WS-2: Voxy not available — skipping block write");
             return;
@@ -248,7 +252,7 @@ public class WorldGenEventHandler {
             }
 
             // Get Voxy world engine from the level (ServerLevel extends World)
-            Object worldEngine = VoxyCompat.getWorldEngine((net.minecraft.world.World) level);
+            Object worldEngine = VoxyCompat.getWorldEngine(world);
             if (worldEngine == null) {
                 LOGGER.warn("WS-2: Voxy world engine not available for this level");
                 return;
@@ -258,7 +262,13 @@ public class WorldGenEventHandler {
             Object mapper = VoxyCompat.getMapper(worldEngine);
             int defaultBiome = resolveDefaultBiome(mapper);
 
-            ShaderSectionWriter writer = new ShaderSectionWriter(worldEngine, defaultBiome);
+            ShaderSectionWriter writer;
+            try {
+                writer = ShaderSectionWriter.create(world, worldEngine, defaultBiome);
+            } catch (ShaderSectionWriter.PublicationRejectedException e) {
+                LOGGER.debug("WS-2: compatibility terrain publication skipped: {}", e.getMessage());
+                return;
+            }
             int nonAir = writer.writeColumn(blockMat, 0, 0);
             LOGGER.info("WS-2: wrote GPU chunk (0,0) to Voxy — {} non-air voxels", nonAir);
 
@@ -550,4 +560,3 @@ public class WorldGenEventHandler {
         return null;
     }
 }
-
