@@ -14,6 +14,7 @@
          <trust file="groovy-bom-.*\.(pom|module)" regex="true" reason="Groovy BOM variant"/>
          <trust file="spring-framework-bom-.*\.(pom|module)" regex="true" reason="Spring BOM variant"/>
          <trust file="lwjgl-.*-natives-.*\.jar" regex="true" reason="LWJGL natives - platform-specific classifier variants"/>
+         <trust file=".*-parent.*\.pom" regex="true" reason="Parent POMs - metadata-only, not variant selected (checkstyle guava-parent etc)"/>
       </trusted-artifacts>
    </configuration>
    <components>
