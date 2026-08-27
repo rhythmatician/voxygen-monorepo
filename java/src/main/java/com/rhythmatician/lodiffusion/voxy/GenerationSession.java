@@ -1927,21 +1927,25 @@ public final class GenerationSession {
         tracerCompletion = null;
         long startMs = tracerStartMs;
         long lastProgressLogMs = startMs;
+        long idleSinceMs = 0L;
 
         while (!stopRequested.get()) {
             EndRefinement.StepResult step = refinement.advance(new EndRefinement.Frame(
                     System.currentTimeMillis(),
                     new SectionPos(playerSectionX, playerSectionY, playerSectionZ),
-                    endL4HorizonTargets(), false));
+                    cachedEndL4HorizonTargets(), false));
             EndRefinement.Snapshot currentSnapshot = refinement.snapshot();
             maybeEmitTracerTerminal(currentSnapshot);
             if (step.status() == EndRefinement.StepResult.Status.IDLE) {
+                if (idleSinceMs == 0L) idleSinceMs = System.currentTimeMillis();
                 try {
-                    Thread.sleep(DEMAND_IDLE_SLEEP_MS);
+                    Thread.sleep(tracerIdleSleepMillis(idleSinceMs));
                 } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();
                     break;
                 }
+            } else {
+                idleSinceMs = 0L;
             }
 
             long now = System.currentTimeMillis();
@@ -1987,6 +1991,43 @@ public final class GenerationSession {
             }
         }
         return covered;
+    }
+
+    /** Cached horizon targets, keyed on the player's L4 world-section anchor. */
+    private volatile List<SectionPos> cachedHorizonTargets;
+    private volatile int cachedHorizonAnchorX = Integer.MIN_VALUE;
+    private volatile int cachedHorizonAnchorZ = Integer.MIN_VALUE;
+
+    /**
+     * The 121-target horizon list only changes when the player crosses an L4
+     * world-section boundary (32 chunks). Rebuilding and re-validating it on
+     * every advance tick is pure per-tick overhead — cache it per anchor.
+     */
+    private List<SectionPos> cachedEndL4HorizonTargets() {
+        int anchorX = WorldSectionCoord.sectionToWorldSection(playerSectionX, Level.L4.value());
+        int anchorZ = WorldSectionCoord.sectionToWorldSection(playerSectionZ, Level.L4.value());
+        List<SectionPos> cached = cachedHorizonTargets;
+        if (cached != null && cachedHorizonAnchorX == anchorX && cachedHorizonAnchorZ == anchorZ) {
+            return cached;
+        }
+        cached = endL4HorizonTargets();
+        cachedHorizonAnchorX = anchorX;
+        cachedHorizonAnchorZ = anchorZ;
+        cachedHorizonTargets = cached;
+        return cached;
+    }
+
+    /**
+     * Idle sleep for the tracer loop: exponential backoff from a near-instant
+     * floor up to {@code DEMAND_IDLE_SLEEP_MS}, so the loop reacts quickly
+     * when work becomes available shortly after going idle.
+     *
+     * @param idleSinceMillis wall-clock ms when the current idle streak began
+     */
+    private long tracerIdleSleepMillis(long idleSinceMillis) {
+        long idleFor = System.currentTimeMillis() - Math.max(1L, idleSinceMillis);
+        int shift = (int) Math.min(5, Math.max(0, idleFor / DEMAND_IDLE_SLEEP_MS));
+        return Math.min(DEMAND_IDLE_SLEEP_MS, 1L << shift);
     }
 
     private WriteOutcome writeEndHorizonLeaf(

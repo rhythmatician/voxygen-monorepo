@@ -192,4 +192,53 @@ class GenerationSessionTest {
         Class<?> c = GenerationSession.TerrainCandidate.class;
         assertFalse(java.lang.reflect.Modifier.isPublic(c.getModifiers()), "TerrainCandidate must be package-private, not public");
     }
+
+    /**
+     * The tracer driver rebuilds the 121-target horizon list on every advance
+     * tick. Targets only change when the player crosses an L4 world-section
+     * boundary, so the list must be cached per player position.
+     */
+    @Test
+    void endL4HorizonTargetsAreCachedPerPlayerPosition() throws Exception {
+        GenerationSession session = new GenerationSession();
+        java.lang.reflect.Method targets = GenerationSession.class.getDeclaredMethod(
+                "cachedEndL4HorizonTargets");
+        targets.setAccessible(true);
+
+        Object first = targets.invoke(session);
+        Object second = targets.invoke(session);
+        assertSame(first, second, "same player position must reuse the cached target list");
+
+        // Crossing an L4 world-section boundary invalidates the cache.
+        java.lang.reflect.Field px = GenerationSession.class.getDeclaredField("playerSectionX");
+        px.setAccessible(true);
+        int before = px.getInt(session);
+        px.setInt(session, before + 32); // one L4 world-section = 32 chunks
+        Object third = targets.invoke(session);
+        assertNotSame(first, third, "crossing an L4 boundary must rebuild the target list");
+    }
+
+    /**
+     * The idle sleep must back off exponentially from a short floor instead of
+     * a fixed 25 ms, so the loop reacts within ~1 ms when work becomes
+     * available right after an idle gap.
+     */
+    @Test
+    void tracerIdleBackoffStartsShortAndGrows() throws Exception {
+        Class<?> sessionClass = GenerationSession.class;
+        java.lang.reflect.Method compute = sessionClass.getDeclaredMethod(
+                "tracerIdleSleepMillis", long.class);
+        compute.setAccessible(true);
+        GenerationSession session = new GenerationSession();
+
+        // Just-went-idle: streak began now → near-instant sleep.
+        long first = (Long) compute.invoke(session, System.currentTimeMillis());
+        assertTrue(first <= 2, "first idle sleep should be near-instant, got " + first);
+
+        // Sustained idle: streak began 5s ago → grown but capped.
+        long grown = (Long) compute.invoke(session,
+                System.currentTimeMillis() - 5000L);
+        assertTrue(grown > first && grown <= 25,
+                "sustained idle should grow but stay capped at DEMAND_IDLE_SLEEP_MS, got " + grown);
+    }
 }
