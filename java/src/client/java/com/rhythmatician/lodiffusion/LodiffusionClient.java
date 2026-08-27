@@ -93,12 +93,15 @@ public class LodiffusionClient implements ClientModInitializer {
             if (client.world != null) {
                 LOD_SERVICE.checkAndRebindIfNeeded(client.world, client.getServer());
             }
-            if (LOD_SERVICE.isRunning() && client.player != null) {
-                var velocity = client.player.getVelocity();
+            if (LOD_SERVICE.isRunning()) {
+                var pl = client.player;
+                if (pl != null) {
+                    var velocity = pl.getVelocity();
                 int viewDistance = client.options.getViewDistance().getValue();
                 int simulationDistance = client.options.getSimulationDistance().getValue();
-                LOD_SERVICE.updatePlayerPosition(client.player.getBlockPos(), velocity.x, velocity.z,
+                LOD_SERVICE.updatePlayerPosition(pl.getBlockPos(), velocity.x, velocity.z,
                         viewDistance, simulationDistance);
+                }
             }
             // Drain pending GPU noise requests on the render thread (GL context).
             // No-ops if the dispatch queue hasn't been initialised yet.

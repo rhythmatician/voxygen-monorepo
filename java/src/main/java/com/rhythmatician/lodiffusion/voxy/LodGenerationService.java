@@ -19,7 +19,7 @@ import net.minecraft.world.World;
  * required by external callers ({@code ChunkScheduler}, {@code SectionTask},
  * tests).
  */
-@SuppressWarnings("deprecation")
+@SuppressWarnings({"deprecation", "unused"})
 public final class LodGenerationService {
 
     /** How many sections of Y range to generate (from y=-64 upward). */

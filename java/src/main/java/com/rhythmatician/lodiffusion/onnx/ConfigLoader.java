@@ -169,6 +169,7 @@ public final class ConfigLoader {
         }
 
         ModelConfig config = GSON.fromJson(root, ModelConfig.class);
+        //noinspection ConstantValue
         if (config == null) {  // Defensive: should not happen, but GSON might fail
             throw new IOException("Failed to parse config: " + jsonPath);
         }

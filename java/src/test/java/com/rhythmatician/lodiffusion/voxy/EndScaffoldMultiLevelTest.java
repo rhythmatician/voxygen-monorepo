@@ -25,6 +25,7 @@ class EndScaffoldMultiLevelTest {
         var cand = new EndL4DeterministicCandidate(solidNoise());
         for (Level level : new Level[] {Level.L4, Level.L3, Level.L2, Level.L1, Level.L0}) {
             int rs = level.regionSections();
+            assertTrue(rs > 0, "regionSections positive");
             SectionPos origin = new SectionPos(0, 0, 0); // aligned to all levels
             VoxelVolume vol = cand.produceRegion(level, origin);
             assertEquals(32, vol.extent(), "extent 32 at " + level);

@@ -51,6 +51,7 @@ public class PerformanceMonitorSmokeTest {
         assertEquals(3.0, totalTiming, 0.1);
     }
     
+    @SuppressWarnings("unused")
     @Test
     public void testTimingScope() {
         // Test try-with-resources timing

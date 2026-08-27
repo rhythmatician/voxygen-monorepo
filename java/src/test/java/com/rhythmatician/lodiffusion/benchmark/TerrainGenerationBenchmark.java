@@ -211,6 +211,7 @@ public class TerrainGenerationBenchmark {
     /**
      * Simulate terrain generation with realistic timing and resource usage.
      */
+    @SuppressWarnings("unused")
     private void simulateTerrainGeneration(String chunkId) {
         PerformanceMonitor.incrementCounter(PerformanceMonitor.CHUNKS_GENERATED);
         
