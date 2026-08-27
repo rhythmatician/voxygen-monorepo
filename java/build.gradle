@@ -352,34 +352,32 @@ afterEvaluate {
 		voxyIntegrationTestImplementation 'org.mockito:mockito-junit-jupiter:5.12.0'
 		voxyIntegrationTestRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 	}
-	// Loom's modVoxyIntegrationTest* configs are not remapped when splitEnvironmentSourceSets() is enabled,
-	// so the raw maven.modrinth:fxxUqruK artifact on voxyIntegrationTest classpath is obfuscated (class_2561).
-	// Wire the pre-remapped jar from loom-cache (already yarn-mapped) and the named Minecraft so
-	// net/minecraft/* resolves, while excluding the unmapped jar from the suite.
-	def remappedVoxyFiles = fileTree(dir: file('.gradle/loom-cache/remapped_mods/remapped'), include: '**/fxxUqruK*.jar').files
-	if (!remappedVoxyFiles.isEmpty()) {
-		dependencies {
-			voxyIntegrationTestImplementation files(remappedVoxyFiles)
-			voxyIntegrationTestRuntimeOnly files(remappedVoxyFiles)
-		}
+	// Fabric Loom 1.14 with splitEnvironmentSourceSets() does not correctly produce
+	// remapped modVoxyIntegrationTest* artefacts (see dumpConfigs2: modVoxyIntegrationTestCompileClasspath == null).
+	// Consequently maven.modrinth:fxxUqruK on voxyIntegrationTest would stay obfuscated.
+	// We therefore put the already-remapped artefact from loom-cache on the suite's classpath
+	// (via a lazy file collection so a clean checkout still configures) and exclude the unmapped one.
+	def remappedVoxyCollection = layout.files(provider {
+		def remappedDir = file('.gradle/loom-cache/remapped_mods/remapped')
+		if (!remappedDir.isDirectory()) return []
+		def found = fileTree(dir: remappedDir, include: '**/fxxUqruK*.jar').files
+		found
+	})
+	dependencies {
+		voxyIntegrationTestImplementation remappedVoxyCollection
+		voxyIntegrationTestRuntimeOnly remappedVoxyCollection
 	}
 	configurations.named('voxyIntegrationTestCompileClasspath') {
-		// Do NOT extend modVoxyIntegrationTestImplementation (unmapped) — use the remapped files above
 		extendsFrom(configurations.getByName('minecraftCommonNamedCompile'))
 		extendsFrom(configurations.getByName('modCompileClasspathMapped'))
 		extendsFrom(configurations.getByName('modCompileClasspathMainMapped'))
 		extendsFrom(configurations.getByName('modCompileClasspathClientMapped'))
+		exclude group: 'maven.modrinth', module: 'fxxUqruK'
 	}
 	configurations.named('voxyIntegrationTestRuntimeClasspath') {
 		extendsFrom(configurations.getByName('minecraftCommonNamedRuntime'))
 		extendsFrom(configurations.getByName('modRuntimeClasspathMainMapped'))
 		extendsFrom(configurations.getByName('modRuntimeClasspathClientMapped'))
-	}
-	// Exclude the unmapped Voxy jar from the suite runtime (it would be a duplicate and wrong mapping)
-	configurations.named('voxyIntegrationTestRuntimeClasspath') {
-		exclude group: 'maven.modrinth', module: 'fxxUqruK'
-	}
-	configurations.named('voxyIntegrationTestCompileClasspath') {
 		exclude group: 'maven.modrinth', module: 'fxxUqruK'
 	}
 	check.dependsOn tasks.named('voxyIntegrationTest')

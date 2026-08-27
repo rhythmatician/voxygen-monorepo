@@ -121,7 +121,7 @@ jobs:
       - run: uv run pytest voxel_tree --tb=short
 
   java:
-    name: Java build and real Voxy integration
+    name: Java build real Voxy integration
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -130,24 +130,31 @@ jobs:
           ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: "25", cache: gradle }
-      - name: Install pinned real Voxy artifact
-        run: bash .ci/install-voxy.sh install
       - run: chmod +x java/gradlew
-      - name: Compile against real Voxy
-        run: ./gradlew lint compileJava compileClientJava
+      - name: Compile against real Voxy (Modrinth w33aHXHj, remapped via Loom)
+        run: ./gradlew lint compileJava compileClientJava --info
         working-directory: java
-      - name: Run unit, contract, and topology tests
-        # No -PexcludeVoxyTestRuntime: JUnit discovery classloads every candidate
-        # class to apply even exclude filters, so any Voxy-linked test helper
-        # (HeadlessNodeManagerProbe etc.) fails with NoClassDefFoundError when
-        # Voxy is absent from the runtime classpath. Local dev never passes this
-        # property and is green; keep CI on the same shape.
-        run: ./gradlew test
+      - name: Unit and contract tests without Voxy runtime
+        run: ./gradlew test --info
         working-directory: java
-      - name: Assemble deployable mod against real Voxy
+      - name: Pinned real-Voxy integration tests (must fail, not skip, if artifact missing)
+        run: ./gradlew voxyIntegrationTest --info
+        working-directory: java
+      - name: Assemble deployable mod
         run: ./gradlew build -x test
         working-directory: java
       - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: java-test-reports-${{ github.sha }}
+          path: |
+            java/build/reports/tests/test
+            java/build/reports/tests/voxyIntegrationTest
+            java/build/test-results/test
+            java/build/test-results/voxyIntegrationTest
+          if-no-files-found: warn
+      - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: mod-jar-${{ github.sha }}
           path: java/build/libs/*.jar
