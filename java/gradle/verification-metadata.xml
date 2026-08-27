@@ -10,7 +10,9 @@
          <trust group="remapped\.maven\.modrinth" regex="true" reason="Fabric Loom local remap of Modrinth Voxy artifact"/>
          <trust file=".*minecraft-common.*\.jar" regex="true" reason="Fabric Loom locally transformed Minecraft jar (LoomLocalMinecraft)"/>
          <trust group="net\.minecraft" regex="true" reason="Fabric Loom local Minecraft transform"/>
-         <trust file=".*\.module" regex="true" reason="Gradle module metadata - transitive BOM metadata not yet in verification file"/>
+         <trust file="junit-bom-.*\.(pom|module)" regex="true" reason="JUnit BOM - pom vs module variant per repository (MavenRepo vs MavenRepo2)"/>
+         <trust file="groovy-bom-.*\.(pom|module)" regex="true" reason="Groovy BOM variant"/>
+         <trust file="spring-framework-bom-.*\.(pom|module)" regex="true" reason="Spring BOM variant"/>
       </trusted-artifacts>
    </configuration>
    <components>
