@@ -116,7 +116,6 @@ public final class VoxyTopologyOwnership {
         }
     }
 
-    @SuppressWarnings("unchecked")
     private static void drainCollectedSections() {
         IdentityWeakReference collected;
         while ((collected = (IdentityWeakReference) COLLECTED_SECTIONS.poll()) != null) {

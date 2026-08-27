@@ -284,6 +284,7 @@ public final class FlightTour {
             var p = client.player;
             if (p != null && p.networkHandler != null) {
                 p.networkHandler.sendChatCommand(command);
+            }
         }
         log("waypoint " + (waypointIndex + 1) + "/" + scenario.waypoints().size()
                 + " -> " + waypoint.x() + " " + waypoint.y() + " " + waypoint.z());

@@ -73,6 +73,7 @@ import ai.djl.translate.TranslateException;
  *
  * @see com.rhythmatician.lodiffusion.world.noise.NoiseRouterSampler
  */
+@SuppressWarnings({"unused","null"})
 public final class VoxyModelRunner implements AutoCloseable {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(VoxyModelRunner.class);
@@ -120,7 +121,6 @@ public final class VoxyModelRunner implements AutoCloseable {
     /** Guards one-shot diagnostic log. */
     private final AtomicBoolean debugOnce = new AtomicBoolean(false);
 
-    @SuppressWarnings("unchecked")
     private VoxyModelRunner(NDManager manager,
                             ZooModel<NDList, NDList>[] models,
                             ModelConfig[] configs,

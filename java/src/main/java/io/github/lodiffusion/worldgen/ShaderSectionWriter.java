@@ -37,6 +37,7 @@ import net.minecraft.world.World;
  * (section Y coordinates −4 to 19 for the overworld).  Each section is filled,
  * mipped, and inserted via Voxy's {@code insertUpdate} path.
  */
+@SuppressWarnings("deprecation")
 public final class ShaderSectionWriter {
 
     /** Signals that the world's terrain-publication route rejects this publisher. */

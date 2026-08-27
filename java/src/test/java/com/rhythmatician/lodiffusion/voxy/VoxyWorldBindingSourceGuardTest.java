@@ -1,6 +1,5 @@
 package com.rhythmatician.lodiffusion.voxy;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -44,6 +43,7 @@ class VoxyWorldBindingSourceGuardTest {
         return source.substring(start, end);
     }
 
+    @SuppressWarnings("unused")
     private static int countOccurrences(String haystack, String needle) {
         int count = 0;
         int index = 0;

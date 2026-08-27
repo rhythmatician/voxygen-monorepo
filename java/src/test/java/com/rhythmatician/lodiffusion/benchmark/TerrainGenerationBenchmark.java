@@ -186,7 +186,7 @@ public class TerrainGenerationBenchmark {
         // Benchmark with monitoring
         startTime = System.nanoTime();
         for (int i = 0; i < iterations; i++) {
-            try (var timer = PerformanceMonitor.startTiming("overhead_test")) {
+            try (@SuppressWarnings("unused") var timer = PerformanceMonitor.startTiming("overhead_test")) {
                 // Simulate minimal work
                 Math.sqrt(i);
             }

@@ -12,6 +12,7 @@ import com.rhythmatician.lodiffusion.voxy.VoxyCompat;
  * Integration tests for VoxyCompat raw API.
  * Requires Voxy jar on the test classpath.
  */
+@SuppressWarnings("deprecation")
 class VoxyCompatApiTest {
 
     @BeforeAll

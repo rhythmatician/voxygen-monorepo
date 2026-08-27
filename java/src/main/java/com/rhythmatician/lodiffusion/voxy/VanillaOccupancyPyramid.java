@@ -122,7 +122,7 @@ final class VanillaOccupancyPyramid {
         Cell cell = leaf;
         for (int level = 0; level <= MAX_LEVEL; level++) {
             Occupancy before = classify(cell);
-            occupiedDescendants.merge(cell, newlyOccupiedCount, Integer::sum);
+            occupiedDescendants.merge(cell, newlyOccupiedCount, (a, b) -> Integer.sum(a, b));
             Occupancy after = classify(cell);
             if (before == Occupancy.NONE && after == Occupancy.MIXED) {
                 newlyMixed.add(cell);

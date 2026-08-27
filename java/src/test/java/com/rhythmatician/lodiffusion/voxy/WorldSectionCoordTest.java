@@ -19,6 +19,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  * <p>Also does full end-to-end traces verifying that the octree L4→L0→Voxy
  * chain always contains the player's block coordinate at every level.
  */
+@SuppressWarnings("unused")
 class WorldSectionCoordTest {
 
     // ══════════════════════════════════════════════════════════════════════

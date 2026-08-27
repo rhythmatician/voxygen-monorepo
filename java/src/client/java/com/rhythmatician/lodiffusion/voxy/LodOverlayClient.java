@@ -12,6 +12,7 @@ import net.minecraft.text.Text;
 import net.minecraft.util.Identifier;
 
 /** Installs the independent LOD overlay command and persistent legend. */
+@SuppressWarnings("null")
 public final class LodOverlayClient implements ClientModInitializer {
     private static final Identifier HUD_ID = Identifier.of("lodiffusion", "lod_overlay_legend");
 

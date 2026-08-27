@@ -1,7 +1,6 @@
 package com.rhythmatician.lodiffusion.voxy;
 
 import java.io.Serializable;
-import java.util.Arrays;
 
 /**
  * A snapshot of a VoxelizedSection captured after mipping but before insertion into Voxy's

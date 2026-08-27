@@ -22,7 +22,8 @@ import net.minecraft.util.Identifier;
  *
  * <p>Index 0 is always {@code minecraft:air}.
  */
-public final class BlockVocabulary {
+public @SuppressWarnings("null")
+final class BlockVocabulary {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(BlockVocabulary.class);
 

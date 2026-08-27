@@ -31,6 +31,7 @@ import net.minecraft.text.Text;
  * <p>Also manages the optional dataset export service for collecting training data.
  */
 @Environment(EnvType.CLIENT)
+@SuppressWarnings("null")
 public class LodiffusionClient implements ClientModInitializer {
 
     private static final LodGenerationService LOD_SERVICE = new LodGenerationService();
