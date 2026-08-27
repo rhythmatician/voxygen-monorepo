@@ -93,6 +93,11 @@ final class VoxyTopologyHarness {
                 coarse, (byte) 0, CompleteChildHandoff.ofMasks(0, 0xFF));
     }
 
+    /** Re-claims the coarse section through the production fallback-claim path. */
+    void reclaimAsGeneratedFallback() {
+        VoxyWorldBinding.claimGeneratedFallbackForTest(coarse, coarse.lvl);
+    }
+
     void startRendererAtCoarseLeaf() {
         nodeManager = new HeadlessNodeManagerProbe(coarse.key);
         nodeManager.completeCoarseLeaf(coarse.getNonEmptyChildren());

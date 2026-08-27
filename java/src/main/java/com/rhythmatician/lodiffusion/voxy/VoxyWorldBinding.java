@@ -477,17 +477,20 @@ final class VoxyWorldBinding {
             Object worldSection = VoxyEngine.acquireMethod.invoke(
                     worldEngine, lvl, wsX, wsY, wsZ);
             byte preserveMask = preserveOctantsMask;
+            byte backedChildOctants = 0;
             if (lvl > 0) {
                 // Preserve physical child data, not the parent's advertised topology.
                 // Stored finer sections and this section's coarse voxel octants are
                 // separate representations even when they cover the same space.
-                preserveMask |= computeStoredChildDataMask(worldEngine, lvl, wsX, wsY, wsZ);
+                backedChildOctants = computeStoredChildDataMask(worldEngine, lvl, wsX, wsY, wsZ);
+                preserveMask |= backedChildOctants;
             }
             writeAcquiredWorldSection(
                     worldSection,
                     lvl,
                     voxels,
                     preserveMask,
+                    backedChildOctants,
                     (section, flags) -> markDirty(worldEngine, section, flags));
             VoxyEngine.worldSectionReleaseMethod.invoke(worldSection);
 
@@ -510,10 +513,21 @@ final class VoxyWorldBinding {
                                           long[] voxels,
                                           byte preserveOctantsMask,
                                           SectionDirtyNotifier dirtyNotifier) {
+        writeAcquiredWorldSection(worldSection, lvl, voxels, preserveOctantsMask,
+                (byte) 0, dirtyNotifier);
+    }
+
+    static void writeAcquiredWorldSection(Object worldSection,
+                                          int lvl,
+                                          long[] voxels,
+                                          byte preserveOctantsMask,
+                                          byte backedChildOctants,
+                                          SectionDirtyNotifier dirtyNotifier) {
         ensureWorldSectionBindings();
         try {
             writeAcquiredWorldSectionInternal(
-                    worldSection, lvl, voxels, preserveOctantsMask, dirtyNotifier);
+                    worldSection, lvl, voxels, preserveOctantsMask,
+                    backedChildOctants, dirtyNotifier);
         } catch (Exception e) {
             throw new IllegalStateException("Could not write acquired Voxy section", e);
         }
@@ -523,10 +537,11 @@ final class VoxyWorldBinding {
                                                            int lvl,
                                                            long[] voxels,
                                                            byte preserveOctantsMask,
+                                                           byte backedChildOctants,
                                                            SectionDirtyNotifier dirtyNotifier)
             throws Exception {
         boolean topologyChanged = lvl > Level.L0.value()
-                && claimGeneratedFallback(worldSection, lvl);
+                && claimGeneratedFallback(worldSection, lvl, backedChildOctants);
         long[] data = (long[]) worldSectionDataField.get(worldSection);
         byte preserveMask = preserveOctantsMask;
         if (lvl == 0) {
@@ -570,17 +585,21 @@ final class VoxyWorldBinding {
     }
 
     /** Claim a fallback and report whether stale/native child topology was cleared. */
-    private static boolean claimGeneratedFallback(Object worldSection, int lvl) throws Exception {
+    private static boolean claimGeneratedFallback(Object worldSection, int lvl,
+                                                  byte backedChildOctants) throws Exception {
         if (!VoxyTopologyOwnership.registerGeneratedFallback(worldSection, lvl)) {
             return false;
         }
-        return normalizeOwnedFallbackTopology(worldSection);
+        return normalizeOwnedFallbackTopology(worldSection, backedChildOctants);
     }
 
     static boolean claimGeneratedFallbackForTest(Object worldSection, int lvl) {
         ensureWorldSectionBindings();
         try {
-            return claimGeneratedFallback(worldSection, lvl);
+            // Test seam: treat every currently advertised octant as backed so
+            // the claim never wipes renderer topology the test installed.
+            byte currentNec = readNec(worldSection);
+            return claimGeneratedFallback(worldSection, lvl, currentNec);
         } catch (Exception e) {
             throw new IllegalStateException("Could not claim raw Voxy section", e);
         }
@@ -608,18 +627,32 @@ final class VoxyWorldBinding {
      * An owned L1-L4 section remains a leaf even when vanilla data already
      * populated its descendants. The promotion gate serializes this CAS against
      * native {@code updateEmptyChildState}; voxel and mip data are untouched.
+     *
+     * <p>Only NEC bits with no backing stored child data are cleared. Bits
+     * backed by real child sections survive: clearing them makes Voxy's
+     * NodeManager recursively delete rendered children, which blanks terrain
+     * until the next complete handoff republishes the mask. A genuinely new
+     * fallback (NEC=0) is unaffected; a stale mask over empty octants still
+     * gets cleaned.
      */
-    private static boolean normalizeOwnedFallbackTopology(Object worldSection) throws Exception {
+    private static boolean normalizeOwnedFallbackTopology(Object worldSection,
+                                                          byte backedChildOctants) throws Exception {
         if (worldSectionNecVarHandle == null) {
             throw new IllegalStateException("Voxy nonEmptyChildren VarHandle is unavailable");
         }
         byte previous;
+        byte next;
         do {
             previous = (byte) worldSectionNecVarHandle.getVolatile(worldSection);
-            if (previous == 0) {
+            byte unbacked = (byte) (previous & ~backedChildOctants);
+            if (unbacked == 0) {
                 return false;
             }
-        } while (!worldSectionNecVarHandle.compareAndSet(worldSection, previous, (byte) 0));
+            next = (byte) (previous & backedChildOctants);
+            if (next == previous) {
+                return false;
+            }
+        } while (!worldSectionNecVarHandle.compareAndSet(worldSection, previous, next));
         return true;
     }
 

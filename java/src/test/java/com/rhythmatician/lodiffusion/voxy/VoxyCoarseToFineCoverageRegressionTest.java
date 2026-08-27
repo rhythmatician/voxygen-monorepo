@@ -116,4 +116,31 @@ class VoxyCoarseToFineCoverageRegressionTest {
                 "all-empty handoff publishes a zero present mask");
     }
 
+    /**
+     * A fallback claim on a section that ALREADY advertises children (e.g. a
+     * post-handoff parent touched again by a vanilla-triggered demand write)
+     * must not wipe its nonEmptyChildren mask. Clearing NEC bits makes Voxy's
+     * NodeManager recursively delete rendered child nodes — the transient
+     * total-terrain-disappearance bug — until the next complete handoff
+     * republishes the mask seconds later.
+     */
+    @Test
+    void fallbackClaimOnPopulatedSectionPreservesAdvertisedChildren() {
+        var topology = new VoxyTopologyHarness(4, -3, 1, 5);
+
+        topology.writeSolidCoarseGeometryThroughBinding(1L << VoxyWorldBinding.BLOCK_ID_SHIFT);
+        for (int octant = 0; octant < 8; octant++) {
+            topology.storeSolidChild(octant, 2L << VoxyWorldBinding.BLOCK_ID_SHIFT);
+        }
+        topology.publishCompleteHandoff();
+        assertEquals(0xFF, Byte.toUnsignedInt(topology.childExistenceMask()));
+
+        // A later demand write re-acquires and claims this now-populated
+        // section as a "generated fallback". The advertised children must
+        // survive the claim.
+        topology.reclaimAsGeneratedFallback();
+        assertEquals(0xFF, Byte.toUnsignedInt(topology.childExistenceMask()),
+                "fallback claim on a populated section must preserve advertised children");
+    }
+
 }
