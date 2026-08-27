@@ -161,6 +161,7 @@ test {
 	useJUnitPlatform()
 	filter {
 		excludeTestsMatching 'com.rhythmatician.lodiffusion.voxy.VoxyCoarseToFineCoverageRegressionTest'
+		excludeTestsMatching 'com.rhythmatician.lodiffusion.voxy.RacedRequestRetryTest'
 	}
 	// Byte Buddy (used by Mockito inline mock-maker) requires this flag on Java 21+
 	// since Mockito 5.1.1 bundles an older Byte Buddy that only officially supports Java 20.
@@ -179,6 +180,7 @@ tasks.register('voxyTopologyTest', Test) {
 	filter {
 		includeTestsMatching 'com.rhythmatician.lodiffusion.voxy.VoxyCoarseToFineCoverageRegressionTest'
 		includeTestsMatching 'com.rhythmatician.lodiffusion.voxy.VoxyOverlayLevelPackingTest'
+		includeTestsMatching 'com.rhythmatician.lodiffusion.voxy.RacedRequestRetryTest'
 	}
 	def rawVoxy = fileTree(dir: 'mods', include: 'voxy-*.jar').files
 	def remappedVoxy = sourceSets.test.compileClasspath.files.findAll {

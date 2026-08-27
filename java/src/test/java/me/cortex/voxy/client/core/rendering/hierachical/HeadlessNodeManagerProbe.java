@@ -44,6 +44,71 @@ public final class HeadlessNodeManagerProbe {
         captureNodeChanges();
     }
 
+    /**
+     * Drives a NON-top-level leaf (a completed child) through the raced
+     * request path: the render tree asks for its expansion while its stored
+     * child existence is still empty — the exact refusal site of
+     * {@code makeLeafChildRequest} ("Not creating a leaf request with
+     * existence mask of 0"). The refusal is recorded in the production
+     * retry registry, mirroring {@code VoxyNodeRequestRetryRecorder}.
+     */
+    public void requestChildRefinementWhileEmpty(int octant) {
+        long position = childPosition(octant);
+        manager.processRequest(position);
+        // Mirror the recorder mixin: if no request is in flight for this
+        // leaf after processRequest and its stored existence is empty, the
+        // request was refused.
+        captureNodeChanges();
+        var node = gpuNodes.values().stream()
+                .filter(n -> n.position() == position)
+                .findFirst();
+        boolean inFlight = node.map(GpuNode::requestInFlight).orElse(false);
+        if (!inFlight) {
+            com.rhythmatician.lodiffusion.voxy.VoxyNodeRequestRetry.recordRefusal(position);
+        }
+    }
+
+    /** Publishes new child-existence for a non-top-level leaf after a refusal. */
+    public void publishGrandchildExistence(int octant, byte grandchildMask) {
+        long position = childPosition(octant);
+        manager.processChildChange(position, grandchildMask);
+        captureNodeChanges();
+        // Mirror the retry mixin: re-issue refused requests whose mask became non-empty.
+        if (com.rhythmatician.lodiffusion.voxy.VoxyNodeRequestRetry.shouldRetry(position, grandchildMask)) {
+            manager.processRequest(position);
+            // A SUCCESSFUL makeLeafChildRequest does not invalidate the node,
+            // so nothing lands in the change list; the observable effects are
+            // the watcher registrations on the new children. Force one
+            // invalidation round so the captured node reflects in-flight state.
+            manager.processChildChange(position, grandchildMask);
+            captureNodeChanges();
+        }
+    }
+
+    /** True if the named non-top-level leaf has an expansion request in flight. */
+    public boolean childRequestInFlight(int octant) {
+        long position = childPosition(octant);
+        return gpuNodes.values().stream()
+                .anyMatch(node -> node.position() == position && node.requestInFlight());
+    }
+
+    /** Positions watched for the named non-top-level leaf's children. */
+    public Set<Long> watchedGrandchildren(int octant) {
+        long parent = childPosition(octant);
+        var children = new HashSet<Long>();
+        for (int i = 0; i < 8; i++) {
+            int level = WorldEngine.getLevel(parent);
+            children.add(WorldEngine.getWorldSectionId(level - 1,
+                    (WorldEngine.getX(parent) << 1) | (i & 1),
+                    (WorldEngine.getY(parent) << 1) | ((i >>> 2) & 1),
+                    (WorldEngine.getZ(parent) << 1) | ((i >>> 1) & 1)));
+        }
+        var watched = new HashSet<>(watcher.positions());
+        watched.retainAll(children);
+        return Set.copyOf(watched);
+    }
+
+
     public void completeChild(int octant, byte childExistence) {
         long position = childPosition(octant);
         manager.processChildChange(position, childExistence);
@@ -143,6 +208,16 @@ public final class HeadlessNodeManagerProbe {
                 (WorldEngine.getX(parentPosition) << 1) | (octant & 1),
                 (WorldEngine.getY(parentPosition) << 1) | ((octant >>> 2) & 1),
                 (WorldEngine.getZ(parentPosition) << 1) | ((octant >>> 1) & 1));
+    }
+
+    /** Position of the named grandchild (octant {@code idx}) under child {@code octant}. */
+    public long grandchildPosition(int octant, int idx) {
+        long parent = childPosition(octant);
+        int level = WorldEngine.getLevel(parent);
+        return WorldEngine.getWorldSectionId(level - 1,
+                (WorldEngine.getX(parent) << 1) | (idx & 1),
+                (WorldEngine.getY(parent) << 1) | ((idx >>> 2) & 1),
+                (WorldEngine.getZ(parent) << 1) | ((idx >>> 1) & 1));
     }
 
     private static BuiltSection nonEmptySection(long position, byte childExistence) {

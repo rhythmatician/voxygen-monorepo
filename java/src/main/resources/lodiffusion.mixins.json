@@ -3,7 +3,9 @@
   "package": "net.lodiffusion.mixin.voxy",
   "compatibilityLevel": "JAVA_21",
   "client": [
-    "VoxyTopologyOwnershipMixin"
+    "VoxyTopologyOwnershipMixin",
+    "VoxyNodeRequestRetryMixin",
+    "VoxyNodeRequestRetryRecorder"
   ],
   "injectors": {
     "defaultRequire": 0
