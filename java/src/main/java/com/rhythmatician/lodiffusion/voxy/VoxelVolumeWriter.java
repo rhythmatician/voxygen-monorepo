@@ -65,6 +65,17 @@ public interface VoxelVolumeWriter {
     WriteOutcome writeRegion(SectionPos origin, Level level, VoxelVolume volume);
 
     /**
+     * Region write carrying a caller-computed vanilla-preserve octant mask.
+     * Octants named in the mask are protected from candidate overwrite by the
+     * storage backend so loaded vanilla terrain survives coarse writes.
+     * Default ignores the mask for writers that do not support preservation.
+     */
+    default WriteOutcome writeRegion(
+            SectionPos origin, Level level, VoxelVolume volume, byte preserveOctantsMask) {
+        return writeRegion(origin, level, volume);
+    }
+
+    /**
      * Write all children of one parent, then publish the exact non-empty child
      * mask once every child outcome is terminal. No partial mask may escape.
      */

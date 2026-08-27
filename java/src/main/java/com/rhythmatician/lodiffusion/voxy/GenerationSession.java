@@ -1597,7 +1597,7 @@ public final class GenerationSession {
         Level lvl = Level.values()[level];
         WriteOutcome outcome;
         try {
-            outcome = writer.writeRegion(origin, lvl, vol);
+            outcome = writer.writeRegion(origin, lvl, vol, preserveMask);
         } catch (VolumeUnavailableException e) {
             HelloTerrainMod.LOGGER.warn("[LodGen] Octree write unavailable: {}", e.getMessage());
             return DemandProcessResult.SKIPPED;
@@ -1996,14 +1996,15 @@ public final class GenerationSession {
         int wsX = WorldSectionCoord.sectionToWorldSection(origin.x(), Level.L4.value());
         int wsY = WorldSectionCoord.sectionToWorldSection(origin.y(), Level.L4.value());
         int wsZ = WorldSectionCoord.sectionToWorldSection(origin.z(), Level.L4.value());
+        byte loadedMask = loadedChunkOctantMask(world, Level.L4.value(), wsX, wsY, wsZ);
         if (isOutOfWorldY(Level.L4.value(), wsY)
-                || loadedChunkOctantMask(world, Level.L4.value(), wsX, wsY, wsZ) == (byte) 0xFF
+                || loadedMask == (byte) 0xFF
                 || writer.isRegionFullyPopulated(origin, Level.L4)) {
             tracerSkipped.incrementAndGet();
             return WriteOutcome.skippedExists();
         }
         VoxelVolume volume = candidate.produceRegion(Level.L4, origin);
-        WriteOutcome outcome = writer.writeRegion(origin, Level.L4, volume);
+        WriteOutcome outcome = writer.writeRegion(origin, Level.L4, volume, loadedMask);
         if (outcome.status() == WriteOutcome.Status.WRITTEN) tracerWritten.incrementAndGet();
         else tracerSkipped.incrementAndGet();
         return outcome;

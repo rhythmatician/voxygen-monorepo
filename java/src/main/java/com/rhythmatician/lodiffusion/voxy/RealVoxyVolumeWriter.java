@@ -51,7 +51,8 @@ public final class RealVoxyVolumeWriter implements VoxelVolumeWriter {
         boolean hasCoverage(Object worldEngine, SectionPos origin, Level level);
 
         int writeFullWorldSection(
-                Object worldEngine, Level level, int wsX, int wsY, int wsZ, long[] voxels);
+                Object worldEngine, Level level, int wsX, int wsY, int wsZ, long[] voxels,
+                byte preserveOctantsMask);
 
         void publishCompleteChildMask(
                 Object worldEngine, Level parentLevel, int wsX, int wsY, int wsZ,
@@ -86,9 +87,10 @@ public final class RealVoxyVolumeWriter implements VoxelVolumeWriter {
 
         @Override
         public int writeFullWorldSection(
-                Object worldEngine, Level level, int wsX, int wsY, int wsZ, long[] voxels) {
+                Object worldEngine, Level level, int wsX, int wsY, int wsZ, long[] voxels,
+                byte preserveOctantsMask) {
             return VoxyCompat.writeFullWorldSection(
-                    worldEngine, level.value(), wsX, wsY, wsZ, voxels);
+                    worldEngine, level.value(), wsX, wsY, wsZ, voxels, preserveOctantsMask);
         }
 
         @Override
@@ -253,7 +255,7 @@ public final class RealVoxyVolumeWriter implements VoxelVolumeWriter {
                     "origin " + origin + " not aligned to " + level + " regionSections=" + level.regionSections());
         }
         try {
-            return materializeRegion(origin, level, volume).asWriteOutcome();
+            return materializeRegion(origin, level, volume, (byte) 0).asWriteOutcome();
         } catch (VolumeUnavailableException e) {
             throw e;
         } catch (IllegalStateException | LinkageError e) {
@@ -277,7 +279,7 @@ public final class RealVoxyVolumeWriter implements VoxelVolumeWriter {
         int nonAir = 0;
         for (ParentRefinementBatch.Child child : batch.children()) {
             ChildMaterializationOutcome outcome = materializeRegion(
-                    child.origin(), Level.values()[batch.childLevel()], child.volume());
+                    child.origin(), Level.values()[batch.childLevel()], child.volume(), (byte) 0);
             batch.recordTerminal(child.octant(), outcome);
             nonAir += outcome.nonAirWritten();
         }
@@ -365,8 +367,34 @@ public final class RealVoxyVolumeWriter implements VoxelVolumeWriter {
         return nonAir;
     }
 
+    /**
+     * Region write carrying a caller-computed vanilla-preserve octant mask.
+     * Octants named in the mask are protected from candidate overwrite by the
+     * storage backend so loaded vanilla terrain survives coarse writes.
+     */
+    public WriteOutcome writeRegion(
+            SectionPos origin, Level level, VoxelVolume volume, byte preserveOctantsMask) {
+        Objects.requireNonNull(origin, "origin");
+        Objects.requireNonNull(level, "level");
+        Objects.requireNonNull(volume, "volume");
+        if (volume.extent() != 32) {
+            throw new IllegalArgumentException("writeRegion requires extent 32, got " + volume.extent());
+        }
+        if (!level.isAligned(origin)) {
+            throw new IllegalArgumentException(
+                    "origin " + origin + " not aligned to " + level + " regionSections=" + level.regionSections());
+        }
+        try {
+            return materializeRegion(origin, level, volume, preserveOctantsMask).asWriteOutcome();
+        } catch (VolumeUnavailableException e) {
+            throw e;
+        } catch (IllegalStateException | LinkageError e) {
+            throw new VolumeUnavailableException("Voxy not available: " + e.getMessage(), e);
+        }
+    }
+
     private ChildMaterializationOutcome materializeRegion(
-            SectionPos origin, Level level, VoxelVolume volume) {
+            SectionPos origin, Level level, VoxelVolume volume, byte preserveOctantsMask) {
         if (!regionBackend.isAvailable()) {
             throw new VolumeUnavailableException("Voxy not available");
         }
@@ -376,11 +404,11 @@ public final class RealVoxyVolumeWriter implements VoxelVolumeWriter {
         if (volume.isAllAir()) {
             return ChildMaterializationOutcome.empty();
         }
-        return writeRegionInternal(origin, level, volume);
+        return writeRegionInternal(origin, level, volume, preserveOctantsMask);
     }
 
     private ChildMaterializationOutcome writeRegionInternal(
-            SectionPos origin, Level level, VoxelVolume volume) {
+            SectionPos origin, Level level, VoxelVolume volume, byte preserveOctantsMask) {
         long[] voxels = new long[32 * 32 * 32];
         int nonAir = 0;
         for (int y = 0; y < 32; y++) {
@@ -399,7 +427,7 @@ public final class RealVoxyVolumeWriter implements VoxelVolumeWriter {
         int wsY = WorldSectionCoord.sectionToWorldSection(origin.y(), level.value());
         int wsZ = WorldSectionCoord.sectionToWorldSection(origin.z(), level.value());
         int written = regionBackend.writeFullWorldSection(
-                worldEngine, level, wsX, wsY, wsZ, voxels);
+                worldEngine, level, wsX, wsY, wsZ, voxels, preserveOctantsMask);
         if (written == 0) {
             return ChildMaterializationOutcome.preservedExisting();
         }

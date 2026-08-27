@@ -218,15 +218,11 @@ public final class VoxyCompat {
         return VoxyWorldBinding.writeFullWorldSection(worldEngine, lvl, wsX, wsY, wsZ, voxels);
     }
 
-    /**
-     * @deprecated Migration facade — new code use {@link VoxelVolumeWriter#writeRegion}.
-     * @see VoxyWorldBinding#writeFullWorldSection(Object, int, int, int, int, long[], byte)
-     */
-    @Deprecated
+    /** Preserve-mask variant: octants named in the mask survive candidate overwrite. */
     public static int writeFullWorldSection(Object worldEngine, int lvl,
-                                             int wsX, int wsY, int wsZ,
-                                             long[] voxels,
-                                             byte preserveOctantsMask) {
+                             int wsX, int wsY, int wsZ,
+                             long[] voxels,
+                             byte preserveOctantsMask) {
         return VoxyWorldBinding.writeFullWorldSection(
                 worldEngine, lvl, wsX, wsY, wsZ, voxels, preserveOctantsMask);
     }

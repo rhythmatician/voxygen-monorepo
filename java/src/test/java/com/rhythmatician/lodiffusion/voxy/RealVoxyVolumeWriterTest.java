@@ -229,6 +229,31 @@ class RealVoxyVolumeWriterTest {
         assertEquals(0, outcome.nonAirWritten());
     }
 
+    /**
+     * A region write that carries a vanilla-owned octant mask must forward
+     * that mask to the storage backend so vanilla terrain in those octants
+     * survives the coarse candidate overwrite.
+     */
+    @Test
+    void writeRegionForwardsVanillaPreserveMaskToBackend() {
+        FakeRegionBackend backend = new FakeRegionBackend(new Object());
+        RealVoxyVolumeWriter writer = writer(backend);
+
+        writer.writeRegion(new SectionPos(0, 0, 0), Level.L1, solidVolume(), (byte) 0x41);
+
+        assertEquals(0x41, backend.lastPreserveMask);
+    }
+
+    @Test
+    void plainWriteRegionPassesZeroPreserveMask() {
+        FakeRegionBackend backend = new FakeRegionBackend(new Object());
+        RealVoxyVolumeWriter writer = writer(backend);
+
+        writer.writeRegion(new SectionPos(0, 0, 0), Level.L1, solidVolume());
+
+        assertEquals(0, backend.lastPreserveMask);
+    }
+
     @Test
     void emptyChildIsNotOwnedOrAdvertised() {
         Object section = new Object();
@@ -333,6 +358,7 @@ class RealVoxyVolumeWriterTest {
         private int nativeNec;
         private boolean claimGeneratedOnWrite;
         private int writeCalls;
+        private int lastPreserveMask = -1;
         private int claimAttempts;
         private int publicationCount;
         private int publishedMask = -1;
@@ -361,8 +387,10 @@ class RealVoxyVolumeWriterTest {
 
         @Override
         public int writeFullWorldSection(
-                Object worldEngine, Level level, int wsX, int wsY, int wsZ, long[] voxels) {
+                Object worldEngine, Level level, int wsX, int wsY, int wsZ, long[] voxels,
+                byte preserveOctantsMask) {
             writeCalls++;
+            lastPreserveMask = preserveOctantsMask & 0xFF;
             int bit = 1 << ((wsX & 1) | ((wsZ & 1) << 1) | ((wsY & 1) << 2));
             if ((raceExistingMask & bit) != 0) {
                 return 0;
