@@ -151,6 +151,27 @@ class FlightTourTest {
     }
 
     @Test
+    void waypointOneBeforeShotWaitsForTheFirstRenderedFrame() {
+        FlightTour.resetForTest();
+        FlightTour.configureAutoStart(false, 20_000, 60);
+        FlightTour.start();
+        FlightTour.tickForTest(50, false);
+
+        // No rendered frame observed yet: the tour must not have taken any
+        // screenshot (waypoint 1's baseline would otherwise capture the
+        // loading screen).
+        assertTrue(FlightTour.testEventsForTest().stream()
+                .noneMatch(event -> event.startsWith("screenshot:")));
+
+        FlightTour.noteRenderedFrame();
+        FlightTour.tickForTest(500);
+
+        List<String> events = FlightTour.testEventsForTest();
+        assertTrue(events.stream().anyMatch(event ->
+                event.equals("screenshot:tour-waypoint-01-before.png")));
+    }
+
+    @Test
     void stoppedTourReleasesTheCameraForManualControl() {
         FlightTour.resetForTest();
         FlightTour.configureAutoStart(false, 20_000, 60);

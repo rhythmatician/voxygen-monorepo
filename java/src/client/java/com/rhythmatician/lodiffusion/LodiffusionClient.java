@@ -103,6 +103,11 @@ public class LodiffusionClient implements ClientModInitializer {
             // Drain pending GPU noise requests on the render thread (GL context).
             // No-ops if the dispatch queue hasn't been initialised yet.
             GpuNoiseDispatchQueue.tickDrain();
+            if (client.world != null && client.player != null
+                    && client.worldRenderer != null
+                    && client.worldRenderer.isTerrainRenderComplete()) {
+                FlightTour.noteRenderedFrame();
+            }
             FlightTour.tick(client);
         });
 

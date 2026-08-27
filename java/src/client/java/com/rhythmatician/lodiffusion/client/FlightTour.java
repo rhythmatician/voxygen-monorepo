@@ -24,13 +24,14 @@ public final class FlightTour {
     private static final String SHUTDOWN_SUCCESS_EVENT = "all_waypoints";
     private static final FlightTourScenario END_SCENARIO = FlightTourScenario.endRefinement();
 
-    private enum Phase { TELEPORT, SHOT_BEFORE, DWELL, SHOT_AFTER }
+    private enum Phase { TELEPORT, AWAIT_FIRST_FRAME, SHOT_BEFORE, DWELL, SHOT_AFTER }
 
     private static volatile boolean active;
     private static int waypointIndex;
     private static int ticksInPhase;
     private static int ticksTotal;
     private static Phase phase = Phase.TELEPORT;
+    private static volatile boolean renderedFrameObserved;
     private static volatile boolean autoStartEnabled;
     private static int timeoutTicks = 20_000;
     private static FlightTourScenario scenario = END_SCENARIO;
@@ -63,6 +64,7 @@ public final class FlightTour {
         }
         runId = configuredRunId == null ? "" : configuredRunId;
         statusFilePath = null;
+        renderedFrameObserved = false;
         finalCompletion.cancel();
         shutdownRequested.set(false);
     }
@@ -75,6 +77,7 @@ public final class FlightTour {
         ticksTotal = 0;
         closeClientAtTerminal = autoStartEnabled;
         shutdownRequested.set(false);
+        renderedFrameObserved = false;
         finalCompletion.cancel();
         enter(Phase.TELEPORT);
         log("Tour started — " + scenario.waypoints().size() + " waypoints");
@@ -92,6 +95,15 @@ public final class FlightTour {
 
     public static boolean isActive() {
         return active;
+    }
+
+    /**
+     * Records that the client has rendered at least one world frame. The tour
+     * gates waypoint 1's baseline capture on this so the "before" screenshot
+     * never records the loading screen.
+     */
+    public static void noteRenderedFrame() {
+        renderedFrameObserved = true;
     }
 
     public static boolean isAutoStartEnabled() {
@@ -122,8 +134,14 @@ public final class FlightTour {
     }
 
     static void tickForTest(int maxTicks) {
+        tickForTest(maxTicks, true);
+    }
+
+    /** Test hook; when {@code firstFrameObserved} is false the tour stalls in AWAIT_FIRST_FRAME. */
+    static void tickForTest(int maxTicks, boolean firstFrameObserved) {
         testMode = true;
         machineReadableEnabled = false;
+        renderedFrameObserved = renderedFrameObserved || firstFrameObserved;
         for (int i = 0; i < maxTicks && active; i++) {
             runTick(null);
             if (!active) {
@@ -148,6 +166,7 @@ public final class FlightTour {
         machineReadableEnabled = false;
         closeClientAtTerminal = false;
         shutdownRequested.set(false);
+        renderedFrameObserved = false;
         finalCompletion.cancel();
         statusFilePath = null;
         testEvents.clear();
@@ -193,7 +212,19 @@ public final class FlightTour {
                     FlightTourScenario.Waypoint waypoint = scenario.waypoints().get(waypointIndex);
                     requestTeleport(client, waypoint);
                 }
+                if (waypointIndex == 0 && !renderedFrameObserved) {
+                    // The first waypoint's baseline must capture a rendered
+                    // world frame, not the loading screen. Wait for the
+                    // harness to observe one before shooting.
+                    enter(Phase.AWAIT_FIRST_FRAME);
+                    break;
+                }
                 enter(Phase.SHOT_BEFORE);
+            }
+            case AWAIT_FIRST_FRAME -> {
+                if (renderedFrameObserved) {
+                    enter(Phase.SHOT_BEFORE);
+                }
             }
             case SHOT_BEFORE -> {
                 lockCamera(client);
