@@ -431,6 +431,9 @@ final class VoxyWorldBinding {
         try {
                 // Determine existing section ownership markers.
                 byte existingNec = 0;
+            // Fused child-topology probe result, computed lazily at most once
+            // per write and reused for both the skip gate and backing mask.
+            ChildTopologyMasks childTopology = null;
             Object existingSection = VoxyEngine.acquireIfExistsMethod.invoke(
                     worldEngine, lvl, wsX, wsY, wsZ);
             if (existingSection != null) {
@@ -453,9 +456,9 @@ final class VoxyWorldBinding {
                     // Skip only when every advertised child is backed by real voxel
                     // data (verified completeness, not stale advertisement).
                     if (lvl > 0) {
-                        byte advertisedMask = computeChildExistenceMask(worldEngine, lvl, wsX, wsY, wsZ);
-                        byte verifiedMask = computeStoredChildDataMask(worldEngine, lvl, wsX, wsY, wsZ);
-                        if (shouldSkipWriteForVerifiedChildren(advertisedMask, verifiedMask)) {
+                        childTopology = computeChildTopologyMasks(worldEngine, lvl, wsX, wsY, wsZ);
+                        if (shouldSkipWriteForVerifiedChildren(
+                                childTopology.advertised(), childTopology.storedData())) {
                             return 0;
                         }
                     }
@@ -471,6 +474,9 @@ final class VoxyWorldBinding {
             // Nothing useful to write — model predictions for unclaimed octants
             // are all-air.  Skip acquiring and dirtying the section.
             if (nonAir == 0) {
+                LOGGER.info("[VoidWatch] SKIP-ALLAIR lvl={} ws=({},{},{}) existingNec=0x{}",
+                        lvl, wsX, wsY, wsZ,
+                        Integer.toHexString(Byte.toUnsignedInt(existingNec)));
                 return 0;
             }
 
@@ -484,17 +490,28 @@ final class VoxyWorldBinding {
                 // Preserve physical child data, not the parent's advertised topology.
                 // Stored finer sections and this section's coarse voxel octants are
                 // separate representations even when they cover the same space.
-                backedChildOctants = computeStoredChildDataMask(worldEngine, lvl, wsX, wsY, wsZ);
+                // Reuse the fused probe when the skip gate already computed it;
+                // otherwise probe now (single pass either way).
+                if (childTopology == null) {
+                    childTopology = computeChildTopologyMasks(worldEngine, lvl, wsX, wsY, wsZ);
+                }
+                backedChildOctants = childTopology.storedData();
                 preserveMask |= backedChildOctants;
             }
             writeAcquiredWorldSection(
                     worldSection,
                     lvl,
+                    wsX, wsY, wsZ,
                     voxels,
                     preserveMask,
                     backedChildOctants,
                     (section, flags) -> markDirty(worldEngine, section, flags));
             VoxyEngine.worldSectionReleaseMethod.invoke(worldSection);
+            LOGGER.info("[VoidWatch] WRITE lvl={} ws=({},{},{}) nonAir={} preserve=0x{} backed=0x{} existingNec=0x{}",
+                    lvl, wsX, wsY, wsZ, nonAir,
+                    Integer.toHexString(Byte.toUnsignedInt(preserveMask)),
+                    Integer.toHexString(Byte.toUnsignedInt(backedChildOctants)),
+                    Integer.toHexString(Byte.toUnsignedInt(existingNec)));
 
         } catch (Exception e) {
             throw new RuntimeException(
@@ -515,12 +532,13 @@ final class VoxyWorldBinding {
                                           long[] voxels,
                                           byte preserveOctantsMask,
                                           SectionDirtyNotifier dirtyNotifier) {
-        writeAcquiredWorldSection(worldSection, lvl, voxels, preserveOctantsMask,
+        writeAcquiredWorldSection(worldSection, lvl, 0, 0, 0, voxels, preserveOctantsMask,
                 (byte) 0, dirtyNotifier);
     }
 
     static void writeAcquiredWorldSection(Object worldSection,
                                           int lvl,
+                                          int wsX, int wsY, int wsZ,
                                           long[] voxels,
                                           byte preserveOctantsMask,
                                           byte backedChildOctants,
@@ -528,7 +546,7 @@ final class VoxyWorldBinding {
         ensureWorldSectionBindings();
         try {
             writeAcquiredWorldSectionInternal(
-                    worldSection, lvl, voxels, preserveOctantsMask,
+                    worldSection, lvl, wsX, wsY, wsZ, voxels, preserveOctantsMask,
                     backedChildOctants, dirtyNotifier);
         } catch (Exception e) {
             throw new IllegalStateException("Could not write acquired Voxy section", e);
@@ -537,6 +555,7 @@ final class VoxyWorldBinding {
 
     private static void writeAcquiredWorldSectionInternal(Object worldSection,
                                                            int lvl,
+                                                           int sectionWsX, int sectionWsY, int sectionWsZ,
                                                            long[] voxels,
                                                            byte preserveOctantsMask,
                                                            byte backedChildOctants,
@@ -555,7 +574,7 @@ final class VoxyWorldBinding {
             // Fresh/empty destination: plain overwrite is safe and fastest.
             System.arraycopy(voxels, 0, data, 0, voxels.length);
         } else {
-            copyUnpreservedOctants(voxels, data, preserveMask);
+            copyUnpreservedOctants(voxels, data, preserveMask, lvl, sectionWsX, sectionWsY, sectionWsZ);
         }
 
         // nonEmptyChildren is renderer topology, not occupancy inside this
@@ -570,7 +589,8 @@ final class VoxyWorldBinding {
         dirtyNotifier.mark(worldSection, generatedFallbackUpdateFlags(topologyChanged));
     }
 
-    private static void copyUnpreservedOctants(long[] source, long[] destination, byte preserveMask) {
+    private static void copyUnpreservedOctants(long[] source, long[] destination, byte preserveMask,
+                                               int lvl, int wsX, int wsY, int wsZ) {
         for (int octant = 0; octant < 8; octant++) {
             if ((preserveMask & (byte) (1 << octant)) != 0) {
                 continue;
@@ -583,6 +603,8 @@ final class VoxyWorldBinding {
             // otherwise blank visible octants — coarse-but-present beats void.
             if (!octantHasNonAir(source, ox, oy, oz)
                     && octantHasNonAir(destination, ox, oy, oz)) {
+                LOGGER.info("[VoidWatch] AIRGUARD-KEPT lvl={} ws=({},{},{}) octant={}",
+                        lvl, wsX, wsY, wsZ, octant);
                 continue;
             }
             for (int iy = oy; iy < oy + 16; iy++) {
@@ -690,12 +712,31 @@ final class VoxyWorldBinding {
 
     private static byte computeChildExistenceMask(Object worldEngine, int lvl,
                                                   int wsX, int wsY, int wsZ) throws Exception {
+        return computeChildTopologyMasks(worldEngine, lvl, wsX, wsY, wsZ).advertised();
+    }
+
+    /**
+     * One fused probe of a parent's 8 child sections: derives both the
+     * advertised existence mask (child NEC non-zero) and the stored-data mask
+     * (child voxels contain non-air) in a single acquire/readNec/data/release
+     * pass per child.
+     *
+     * <p>The tracer hot path calls this up to 8× per parent refinement (once
+     * per child write's skip gate plus once for backing); separate probes
+     * would re-acquire and re-scan the same 32k-long child arrays three
+     * times over.
+     */
+    private record ChildTopologyMasks(byte advertised, byte storedData) {}
+
+    private static ChildTopologyMasks computeChildTopologyMasks(
+            Object worldEngine, int lvl, int wsX, int wsY, int wsZ) throws Exception {
         if (lvl <= 0) {
-            return 0;
+            return new ChildTopologyMasks((byte) 0, (byte) 0);
         }
 
         int childLvl = lvl - 1;
-        byte mask = 0;
+        byte advertised = 0;
+        byte storedData = 0;
         for (int octant = 0; octant < 8; octant++) {
             int childWsX = (wsX << 1) + (octant & 1);
             int childWsY = (wsY << 1) + ((octant >> 2) & 1);
@@ -703,18 +744,25 @@ final class VoxyWorldBinding {
 
             Object childSection = VoxyEngine.acquireIfExistsMethod.invoke(
                     worldEngine, childLvl, childWsX, childWsY, childWsZ);
-            if (childSection != null) {
+            if (childSection == null) {
+                continue;
+            }
+            try {
                 // Match Voxy's own semantic (DebugUtils.java L63):
                 // bit i is set only if the child's own NEC is non-zero,
                 // not merely if the section object exists in the LRU cache.
-                byte childNec = readNec(childSection);
-                VoxyEngine.worldSectionReleaseMethod.invoke(childSection);
-                if (childNec != 0) {
-                    mask |= (byte) (1 << octant);
+                if (readNec(childSection) != 0) {
+                    advertised |= (byte) (1 << octant);
                 }
+                long[] childData = (long[]) worldSectionDataField.get(childSection);
+                if (containsNonAir(childData)) {
+                    storedData |= (byte) (1 << octant);
+                }
+            } finally {
+                VoxyEngine.worldSectionReleaseMethod.invoke(childSection);
             }
         }
-        return mask;
+        return new ChildTopologyMasks(advertised, storedData);
     }
 
     /**
@@ -1061,7 +1109,7 @@ final class VoxyWorldBinding {
             if (preserveMask == 0 && !containsNonAir(data)) {
                 System.arraycopy(voxels, 0, data, 0, voxels.length);
             } else {
-                copyUnpreservedOctants(voxels, data, preserveMask);
+                copyUnpreservedOctants(voxels, data, preserveMask, lvl, 0, 0, 0);
             }
             int nonAir = 0;
             for (long voxel : data) {
