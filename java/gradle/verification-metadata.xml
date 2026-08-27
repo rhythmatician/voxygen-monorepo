@@ -8,6 +8,9 @@
          <trust file=".*fxxUqruK.*\.jar" regex="true" reason="Fabric Loom locally remapped Modrinth Voxy artifact"/>
          <trust group="remapped\.net\.fabricmc\.fabric-api" regex="true" reason="Fabric Loom local remaps (LoomLocalRemappedMods)"/>
          <trust group="remapped\.maven\.modrinth" regex="true" reason="Fabric Loom local remap of Modrinth Voxy artifact"/>
+         <trust file=".*minecraft-common.*\.jar" regex="true" reason="Fabric Loom locally transformed Minecraft jar (LoomLocalMinecraft)"/>
+         <trust group="net\.minecraft" regex="true" reason="Fabric Loom local Minecraft transform"/>
+         <trust file=".*\.module" regex="true" reason="Gradle module metadata - transitive BOM metadata not yet in verification file"/>
       </trusted-artifacts>
    </configuration>
    <components>
