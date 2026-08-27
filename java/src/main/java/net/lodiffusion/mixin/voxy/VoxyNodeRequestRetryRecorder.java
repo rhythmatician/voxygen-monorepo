@@ -1,6 +1,7 @@
 package net.lodiffusion.mixin.voxy;
 
 import com.rhythmatician.lodiffusion.voxy.VoxyNodeRequestRetry;
+import me.cortex.voxy.client.core.rendering.hierachical.NodeStoreAccessBridge;
 import me.cortex.voxy.common.world.WorldEngine;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
@@ -28,8 +29,11 @@ public class VoxyNodeRequestRetryRecorder {
             require = 0)
     private void voxygen$recordEmptyMaskRefusal(int nodeId, CallbackInfo ci) {
         // The refusal path is: warn -> unmarkRequestInFlight -> invalidateNode -> return.
-        // We recover the position from the node id through NodeStore.
+        // We recover the position from the node id through NodeStore. The accessor
+        // interface carries no default methods (mixin interfaces must stay
+        // accessor-only), so resolve the position through the reflection bridge.
         VoxyNodeRequestRetry.recordRefusal(
-                ((VoxyNodeStoreAccess) (Object) this).voxygen$nodePosition(nodeId));
+                NodeStoreAccessBridge.nodePosition(
+                        ((VoxyNodeStoreAccess) (Object) this).voxygen$nodeData(), nodeId));
     }
 }
