@@ -104,7 +104,9 @@ public class LodiffusionClient implements ClientModInitializer {
             // No-ops if the dispatch queue hasn't been initialised yet.
             GpuNoiseDispatchQueue.tickDrain();
             if (client.world != null && client.player != null
+                    && client.currentScreen == null
                     && client.worldRenderer != null
+                    && client.worldRenderer.getCompletedChunkCount() > 0
                     && client.worldRenderer.isTerrainRenderComplete()) {
                 FlightTour.noteRenderedFrame();
             }
