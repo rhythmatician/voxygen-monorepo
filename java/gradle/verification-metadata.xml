@@ -3,6 +3,12 @@
    <configuration>
       <verify-metadata>true</verify-metadata>
       <verify-signatures>false</verify-signatures>
+      <trusted-artifacts>
+         <trust file=".*-4b5d3c0a-common-.*\.jar" regex="true" reason="Fabric Loom locally remapped fabric-api artifacts - originals verified, remap is deterministic local transform"/>
+         <trust file=".*fxxUqruK.*\.jar" regex="true" reason="Fabric Loom locally remapped Modrinth Voxy artifact"/>
+         <trust group="remapped\.net\.fabricmc\.fabric-api" regex="true" reason="Fabric Loom local remaps (LoomLocalRemappedMods)"/>
+         <trust group="remapped\.maven\.modrinth" regex="true" reason="Fabric Loom local remap of Modrinth Voxy artifact"/>
+      </trusted-artifacts>
    </configuration>
    <components>
       <component group="ai.djl" name="api" version="0.30.0">
