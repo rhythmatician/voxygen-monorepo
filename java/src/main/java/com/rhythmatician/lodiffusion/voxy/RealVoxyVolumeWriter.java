@@ -409,7 +409,11 @@ public final class RealVoxyVolumeWriter implements VoxelVolumeWriter {
 
     private ChildMaterializationOutcome writeRegionInternal(
             SectionPos origin, Level level, VoxelVolume volume, byte preserveOctantsMask) {
-        long[] voxels = new long[32 * 32 * 32];
+        // Reusable per-thread scratch: a fresh long[32768] here is 256 KB of
+        // garbage per child write — 2 MB per 8-child parent refinement. The
+        // tracer pipeline runs on one worker thread; tests may call from
+        // others, so ThreadLocal keeps buffers independent and reused.
+        long[] voxels = regionScratchBuffer();
         int nonAir = 0;
         for (int y = 0; y < 32; y++) {
             for (int z = 0; z < 32; z++) {
@@ -439,6 +443,18 @@ public final class RealVoxyVolumeWriter implements VoxelVolumeWriter {
     /** YZX index for 32^3 WorldSection: (y<<10)|(z<<5)|x. Single source of truth. */
     static int yzxIndex(int x, int y, int z) {
         return (y << 10) | (z << 5) | x;
+    }
+
+    private static final ThreadLocal<long[]> SCRATCH = ThreadLocal.withInitial(
+            () -> new long[32 * 32 * 32]);
+
+    /** Per-thread reusable 32^3 voxel buffer for region writes. */
+    private static long[] regionScratchBuffer() {
+        return SCRATCH.get();
+    }
+
+    static long[] regionScratchBufferForTest() {
+        return regionScratchBuffer();
     }
 
     private int toVoxyBlock(int canonical) {
