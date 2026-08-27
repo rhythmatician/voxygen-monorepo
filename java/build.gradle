@@ -315,6 +315,10 @@ tasks.matching { it.name == 'voxyIntegrationTest' }.configureEach {
 testing {
 	suites {
 		voxyIntegrationTest(JvmTestSuite) {
+			dependencies {
+				implementation project()
+				implementation sourceSets.named('client').get().output
+			}
 			targets {
 				all {
 					testTask.configure {
@@ -339,9 +343,11 @@ afterEvaluate {
 		voxyIntegrationTestImplementation 'org.mockito:mockito-junit-jupiter:5.12.0'
 		voxyIntegrationTestRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 	}
-	// The integration suite compiles against the same Minecraft mappings as main.
 	configurations.named('voxyIntegrationTestCompileClasspath') {
-		extendsFrom(configurations.named('modCompileClasspath').get())
+		extendsFrom(configurations.getByName('modVoxyIntegrationTestImplementation'))
+	}
+	configurations.named('voxyIntegrationTestRuntimeClasspath') {
+		extendsFrom(configurations.getByName('modVoxyIntegrationTestImplementation'))
 	}
 	check.dependsOn tasks.named('voxyIntegrationTest')
 }
