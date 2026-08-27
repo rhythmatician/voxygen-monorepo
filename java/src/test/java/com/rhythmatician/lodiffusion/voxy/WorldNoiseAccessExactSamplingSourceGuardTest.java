@@ -83,6 +83,33 @@ class WorldNoiseAccessExactSamplingSourceGuardTest {
         assertTrue(source.contains("nonAirVoxels > 0"));
     }
 
+    /**
+     * The tracer hot path samples final density up to 262k times per parent
+     * refinement. Guard that the sampling lambda reuses one mutable position
+     * object instead of allocating an UnblendedNoisePos per call — and that it
+     * still assigns all three coordinates (no stale-state bug). Behavioral
+     * verification needs a bootstrapped MC registry, which the unit-test
+     * environment cannot provide; keep this narrow static guard until a real
+     * NoiseConfig fixture exists.
+     */
+    @Test
+    void pinnedFinalDensitySamplingReusesOneMutablePosition() throws Exception {
+        String source = Files.readString(findSource("WorldNoiseAccess.java"));
+        int ctorStart = source.indexOf("private WorldNoiseAccess(ServerWorld serverWorld");
+        assertTrue(ctorStart >= 0, "world-bound constructor not found");
+        int ctorEnd = source.indexOf("WorldNoiseAccess(DensitySample finalDensity)", ctorStart);
+        String ctor = source.substring(ctorStart, ctorEnd);
+
+        assertFalse(ctor.contains("new DensityFunction.UnblendedNoisePos(blockX, blockY, blockZ)"),
+                "finalDensity lambda must not allocate a new UnblendedNoisePos per sample");
+        assertTrue(ctor.contains("MutableNoisePos"),
+                "finalDensity lambda must reuse a mutable NoisePos implementation");
+        for (String coord : new String[] {"pos.x = blockX", "pos.y = blockY", "pos.z = blockZ"}) {
+            assertTrue(ctor.contains(coord),
+                    "position field must be assigned before each sample: " + coord);
+        }
+    }
+
     @Test
     void onlyL2ToL1UsesTheExactProducer() throws Exception {
         String source = Files.readString(findSource("GenerationSession.java"));

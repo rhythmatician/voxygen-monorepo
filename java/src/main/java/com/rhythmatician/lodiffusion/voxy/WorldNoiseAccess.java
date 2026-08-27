@@ -68,6 +68,24 @@ public final class WorldNoiseAccess {
     private final BiomeSource biomeSource;
     private final DensitySample finalDensity;
 
+    /**
+     * Reusable mutable position for density sampling. The tracer hot path
+     * samples up to 262k times per parent refinement; allocating an
+     * {@code UnblendedNoisePos} per call is pure GC pressure. Sampling is
+     * single-threaded per access instance (LOD worker thread), so one shared
+     * instance is safe. All three coordinates are reassigned before every
+     * sample, so no stale state can leak between calls.
+     */
+    private static final class MutableNoisePos implements DensityFunction.NoisePos {
+        int x;
+        int y;
+        int z;
+
+        @Override public int blockX() { return x; }
+        @Override public int blockY() { return y; }
+        @Override public int blockZ() { return z; }
+    }
+
     @FunctionalInterface
     interface DensitySample {
         double sample(int blockX, int blockY, int blockZ);
@@ -80,8 +98,13 @@ public final class WorldNoiseAccess {
         this.noiseConfig = noiseConfig;
         this.biomeSource = generator.getBiomeSource();
         DensityFunction density = noiseConfig.getNoiseRouter().finalDensity();
-        this.finalDensity = (blockX, blockY, blockZ) ->
-                density.sample(new DensityFunction.UnblendedNoisePos(blockX, blockY, blockZ));
+        MutableNoisePos pos = new MutableNoisePos();
+        this.finalDensity = (blockX, blockY, blockZ) -> {
+            pos.x = blockX;
+            pos.y = blockY;
+            pos.z = blockZ;
+            return density.sample(pos);
+        };
     }
 
     WorldNoiseAccess(DensitySample finalDensity) {
