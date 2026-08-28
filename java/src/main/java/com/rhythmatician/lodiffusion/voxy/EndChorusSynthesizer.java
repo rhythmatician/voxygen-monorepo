@@ -15,11 +15,7 @@ import net.minecraft.util.math.BlockPos;
  *
  * <p>Honest omissions: L4/L3 never contain chorus (coarse omission, documented
  * as residual cost). L2/L1/L0 include chorus via deterministic per-column
- * hash that reproduces vanilla {@code ChorusPlantFeature} placement seed
- * semantics without requiring a loaded chunk. View-time tolerance is 95%
- * voxel agreement with vanilla+Voxy bottom-up mip; population is correct over
- * many regions but single-voxel edge cases may differ due to centre-sample vs
- * any-solid and branch stochasticity.
+ * hash (%20, 3-6 height, branch) as a procedural approximation without requiring a loaded chunk. Not vanilla {@code ChorusPlantFeature} placement; no vanilla parity established. Honest omission L4/L3=0 is residual cost; single-voxel edge cases may differ due to centre-sample vs any-solid and branch stochasticity. See #220 for disposition.
  *
  * <p>Voxy parity: bottom-up is vanilla chunk (16x384x16 blocks with chorus)
  * -> Voxy ingest (VoxelizedSection 16^3 -> 32^3 WorldSection via {@code Mipper}
@@ -43,8 +39,8 @@ public final class EndChorusSynthesizer {
     public static final int BLOCK_CHORUS_PLANT = 197; // minecraft:chorus_plant
     public static final int BLOCK_CHORUS_FLOWER = 196; // minecraft:chorus_flower
     static final int EXTENT = 32;
-    static final int END_MIN_Y = 0;
-    static final int END_MAX_Y = 128;
+    static final int END_MIN_Y = DimensionGenerationDomain.END.minY();
+    static final int END_MAX_Y = DimensionGenerationDomain.END.maxY();
 
     /** Eligibility of a block column for chorus (biome gate). */
     @FunctionalInterface

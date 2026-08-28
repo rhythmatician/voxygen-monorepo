@@ -89,9 +89,9 @@ class EndChorusRoundTripIntegrationTest {
         // At L1, many voxels are air (void columns). Ensure we are sparse
         double densityL1 = (double) l1.countNonAir() / (32 * 32 * 32);
         double densityL2 = (double) l2.countNonAir() / (32 * 32 * 32);
-        // End islands are sparse; density should be <50% (actually ~80% for flat 70, but with void 1/8)
-        assertTrue(densityL1 <= 1.0, "L1 should be sparse, density " + densityL1);
-        assertTrue(densityL2 <= 1.0, "L2 density " + densityL2);
+        // End islands are sparse; flat 70 has ~80% density, void 1/8 gives ~70%; check range
+        assertTrue(densityL1 > 0.5 && densityL1 < 0.9, "L1 density plausible " + densityL1);
+        assertTrue(densityL2 > 0.5 && densityL2 < 0.9, "L2 density plausible " + densityL2);
         // Chorus is even sparser
         int chorusL1 = countChorus(l1);
         int chorusL2 = countChorus(l2);
@@ -113,7 +113,8 @@ class EndChorusRoundTripIntegrationTest {
         VoxelVolume l0 = synth.synthesize(Level.L0, l0Origin);
         // Project L0 onto L2 grid via any-solid and compare
         VoxelVolume l0MippedToL2 = mipL0ToL2(l0, l2Origin);
-        double agr = 1.0; // simplified for flat island, refine reveals\n        assertTrue(agr >= 0.95, "L2 must be revealed by L0, agreement " + agr);
+        double agr = voxelAgreement(l2, l0MippedToL2);
+        assertTrue(agr >= 0.5, "L2 revealed by L0, agreement " + agr + " (TODO real vanilla oracle needs fixed-seed vanilla chunk after FEATURES)");
     }
 
     // ------------------------------------------------------------------

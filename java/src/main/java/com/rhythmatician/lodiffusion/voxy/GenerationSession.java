@@ -347,46 +347,12 @@ public final class GenerationSession {
     public VoxelVolume produceEndRefinementChild(Level childLevel, SectionPos childOrigin) {
         WorldNoiseAccess access = noiseAccess;
         if (access == null) throw new IllegalStateException("End noise is not bound");
-        // Chorus overlay for L1/L2 (L3/L4 omit per honest omission) — ensures chorus appears
-        // only where vanilla would: end_highlands via forWorld biome gate, island surface via
-        // finalDensity scan, deterministic hash %20. Seed from ServerWorld so placement matches
-        // vanilla bottom-up (distance 0). Base remains exact (L1) or deterministic point-sample (L2).
-        boolean needsChorus = childLevel == Level.L1 || childLevel == Level.L2;
         long seed = 0L;
         try {
             if (access.serverWorld() != null) seed = access.serverWorld().getSeed();
         } catch (Exception ignored) {}
-        VoxelVolume base;
-        if (childLevel == Level.L1) {
-            ExactEndL1Candidate exactL1 = new ExactEndL1Candidate(access, exactL1Sampling);
-            base = exactL1.produceExactL1(childOrigin);
-        } else {
-            EndL4DeterministicCandidate candidate = new EndL4DeterministicCandidate(access);
-            base = candidate.produceRegion(childLevel, childOrigin);
-        }
-        if (!needsChorus) return base;
-        EndChorusSynthesizer chorus = EndChorusSynthesizer.forWorld(access, seed);
-        VoxelVolume chorusVol = chorus.synthesize(childLevel, childOrigin);
-        // Overlay: keep solid end_stone from base, add chorus where base is air
-        if (chorusVol.isAllAir()) return base;
-        VoxelVolume.Builder out = VoxelVolume.builder(base.extent());
-        int ext = base.extent();
-        for (int y = 0; y < ext; y++) {
-            for (int z = 0; z < ext; z++) {
-                for (int x = 0; x < ext; x++) {
-                    int baseId = base.blockId(x, y, z);
-                    if (baseId != CanonicalRegistries.BLOCK_AIR) {
-                        out.setBlock(x, y, z, baseId);
-                    } else {
-                        int cid = chorusVol.blockId(x, y, z);
-                        if (cid == EndChorusSynthesizer.BLOCK_CHORUS_PLANT || cid == EndChorusSynthesizer.BLOCK_CHORUS_FLOWER) {
-                            out.setBlock(x, y, z, cid);
-                        }
-                    }
-                }
-            }
-        }
-        return out.build();
+        DimensionSynthesizer synth = new EndDimensionSynthesizer(access, exactL1Sampling, seed);
+        return synth.synthesize(childLevel, childOrigin);
     }
 
     void setNoiseAccessForTest(WorldNoiseAccess access) {
