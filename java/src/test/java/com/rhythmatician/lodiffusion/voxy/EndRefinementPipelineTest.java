@@ -63,13 +63,28 @@ class EndRefinementPipelineTest {
         session.setNoiseAccessForTest(noise);
 
         VoxelVolume l1 = session.produceEndRefinementChild(Level.L1, new SectionPos(0, 0, 0));
-        assertEquals(16, l1.countNonAir());
+        assertTrue(l1.countNonAir() >= 16, "L1 with chorus overlay must have at least 16 base voxels");
         Mockito.verify(noise, Mockito.times(16)).sampleExactEndBaseTerrainChunk(
                 Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt(),
                 Mockito.any(), Mockito.any());
-        Mockito.verify(noise, Mockito.never()).sampleFinalDensity(
+        // L1 now also samples finalDensity for chorus surface (end_highlands gate + island top)
+        Mockito.verify(noise, Mockito.atLeastOnce()).sampleFinalDensity(
                 Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt());
 
+        Mockito.reset(noise);
+        Mockito.when(noise.sampleFinalDensity(Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt()))
+                .thenReturn(1.0);
+        Mockito.doAnswer(invocation -> {
+            int chunkX = invocation.getArgument(0);
+            int chunkZ = invocation.getArgument(1);
+            int minY = invocation.getArgument(2);
+            ExactEndL1Candidate.SolidBlockConsumer consumer = invocation.getArgument(4);
+            consumer.accept(chunkX << 4, minY, chunkZ << 4, true);
+            return null;
+        }).when(noise).sampleExactEndBaseTerrainChunk(
+                Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt(),
+                Mockito.any(), Mockito.any());
+        // Re-bind reset mock (session holds same reference, so reset is visible)
         VoxelVolume l2 = session.produceEndRefinementChild(Level.L2, new SectionPos(0, 0, 0));
         assertTrue(l2.countNonAir() > 0);
         Mockito.verify(noise, Mockito.atLeastOnce()).sampleFinalDensity(
