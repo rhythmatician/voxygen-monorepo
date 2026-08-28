@@ -35,6 +35,7 @@
 * `docs/adr/0010-preserve-upstream-wayfinder-triage-and-sandcastle-label-semantics.md`
 * `docs/adr/0011-screen-space-error-refinement-demand.md` (amended: shipped policy is a fixed-projection approximation)
 * `docs/adr/0012-respect-voxy-child-existence-semantics.md`
+* `docs/adr/0015-post-ingest-voxy-mip-parity-is-the-default-target.md`
 
 ### Implementation
 
