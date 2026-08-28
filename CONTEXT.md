@@ -26,6 +26,16 @@ Voxygen generates distant Minecraft terrain via learned octree diffusion and wri
 
 **WriteOutcome**: Result of a writer operation: WRITTEN, SKIPPED_AIR, SKIPPED_EXISTS; invalid non-null values throw IllegalArgumentException and null references throw NullPointerException; missing backend throws unchecked VolumeUnavailableException (extends IllegalStateException). _Avoid_: SKIPPED_BOUNDS, SKIPPED_INVALID.
 
+### Generation
+
+**Dimension**: Registry-key dimension identity minecraft:the_end / minecraft:the_nether / minecraft:overworld that selects frozen profile, generation domain, and synthesizer. Not a Level, not a SectionPos, not a World. _Avoid_: world, dimension type, Level as dimension.
+
+**Dimension Generation Domain**: Per-dimension closed Y interval [minY, maxY) plus NoiseSettings (minY, height, cellWidth, cellHeight) and profile flags (aquifersEnabled, beardifier, blending) that define which rows are vanilla-real and which side effects are dead code for that dimension. Derived via WorldSectionCoord.worldSectionToBlockMin/Max(wsY, Level). End [0,128) create(0,128,2,1) aquifersEnabled=false; Overworld [-64,320) create(-64,384,1,1) true; Nether [0,128) create(0,128,1,1). _Avoid_: hard-coded END_MIN_Y/MAX_Y as global, global height, one domain.
+
+**Feature Eligibility**: Level-aware predicate isEligible(blockX, blockZ, Level) ? bool that gates a placed block family (chorus_plant 197 / chorus_flower 196 / end_stone 359 and later oak_log / basalt / nether_wart) by biome and Level. Specialization BiomeEligibility.isChorusBiome(blockX,blockZ) is FeatureEligibility for chorus at all Levels; placed features are Profile-Inactive ? N/A when generate_structures=false. _Avoid_: BiomeEligibility as chorus-only global, feature as biome, placed feature as biome.
+
+**Dimension Synthesizer**: Deep module seam synthesize(Level, SectionPos) ? VoxelVolume[32] per Dimension that produces A?C without B (seed + surface + eligibility ? semantic volume without materializing a chunk), owns Mipper rule and L4/L3 honest omission per Fidelity Profile, and shares Mipper + CanonicalVoxyMaps + CanonicalRegistries. Not EndChorusSynthesizer as global, not BiomeSynthesizer as top seam, not Worldsection Synthesizer as duplicate of writeRegion. _Avoid_: EndChorusSynthesizer as global, BiomeSynthesizer as top seam, Worldsection Synthesizer as duplicate of VoxelVolumeWriter.writeRegion, GenerationSession if(End) branch.
+
 ### Correctness
 
 **Correct Distant Terrain**: Every Voxygen render representation L4..L0 must approximate the Authoritative Terrain for the same seed and frozen worldgen profile at the fidelity it claims; a mountain seen at distance must still be that mountain when reached. _Avoid_: plausible terrain, Minecraft-like, generic heightmap.
