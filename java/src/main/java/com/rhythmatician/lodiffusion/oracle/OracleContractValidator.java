@@ -28,11 +28,13 @@ public final class OracleContractValidator {
         boolean hasChorus = c.inspectedMinecraftReferences().stream().anyMatch(s -> s.contains("ChorusFlowerBlock") || s.contains("ChorusPlantFeature"));
         boolean hasBiomeSource = c.inspectedMinecraftReferences().stream().anyMatch(s -> s.contains("TheEndBiomeSource"));
         boolean hasGenStep = c.inspectedMinecraftReferences().stream().anyMatch(s -> s.contains("VEGETAL_DECORATION") || s.contains("GenerationStep"));
+        boolean hasDecorationSeed = c.inspectedMinecraftReferences().stream().anyMatch(s -> s.contains("WorldgenRandom") && s.contains("setDecorationSeed"));
         boolean hasRandomState = c.inspectedMinecraftReferences().stream().anyMatch(s -> s.contains("RandomState") && s.contains("PositionalRandomFactory"));
+        boolean hasRng = hasDecorationSeed || hasRandomState;
         if (!hasChorus) throw new IllegalArgumentException("inspectedMinecraftReferences must include ChorusFlowerBlock/ChorusPlantFeature");
         if (!hasBiomeSource) throw new IllegalArgumentException("inspectedMinecraftReferences must include TheEndBiomeSource");
         if (!hasGenStep) throw new IllegalArgumentException("inspectedMinecraftReferences must include GenerationStep VEGETAL_DECORATION");
-        if (!hasRandomState) throw new IllegalArgumentException("inspectedMinecraftReferences must document RandomState.getOrCreateRandomFactory PositionalRandomFactory");
+        if (!hasRng) throw new IllegalArgumentException("inspectedMinecraftReferences must document decoration RNG via WorldgenRandom#setDecorationSeed or RandomState PositionalRandomFactory");
         // Halo decomposition - keep components separate, combined is conservative effective area, not universal law
         var h = c.halo();
         if (h == null) throw new NullPointerException("halo is required");

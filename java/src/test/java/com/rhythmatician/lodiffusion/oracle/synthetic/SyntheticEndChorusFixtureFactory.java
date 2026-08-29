@@ -37,13 +37,21 @@ public final class SyntheticEndChorusFixtureFactory {
             throw new IllegalArgumentException("chorus tracer requires FEATURES stage, was " + contract.authoritativeGenerationStage());
         }
         Map<Level, VoxelVolume> vols = new EnumMap<>(Level.class);
-        SectionPos origin = new SectionPos(contract.region().originSectionX(), contract.region().originSectionY(), contract.region().originSectionZ());
         long seed = contract.seed();
-        vols.put(Level.L4, syntheticVolume(Level.L4, origin, seed, false));
-        vols.put(Level.L3, syntheticVolume(Level.L3, origin, seed, false));
-        vols.put(Level.L2, syntheticVolume(Level.L2, origin, seed, true));
-        vols.put(Level.L1, syntheticVolume(Level.L1, origin, seed, true));
-        vols.put(Level.L0, syntheticVolume(Level.L0, origin, seed, true));
+        // Derive per-Level SectionPos from blockRegion via floorDiv, not single region origin
+        var br = contract.blockRegionOrDerived();
+        for (Level lvl : Level.values()) {
+            var per = br.perLevelWorldSectionOrigin(lvl.value());
+            SectionPos perOrigin = new SectionPos(per.wsX() * lvl.regionSections(), per.wsY() * lvl.regionSections(), per.wsZ() * lvl.regionSections());
+            boolean includeChorus = (lvl != Level.L4 && lvl != Level.L3);
+            // For this hardening, synthetic still respects original L4/L3 omission is not claimed, but we generate empty for L4/L3 as before
+            // The verifier now requires per-Level origin, so we generate accordingly
+            if (lvl == Level.L4) vols.put(lvl, syntheticVolume(lvl, perOrigin, seed, false));
+            else if (lvl == Level.L3) vols.put(lvl, syntheticVolume(lvl, perOrigin, seed, false));
+            else if (lvl == Level.L2) vols.put(lvl, syntheticVolume(lvl, perOrigin, seed, true));
+            else if (lvl == Level.L1) vols.put(lvl, syntheticVolume(lvl, perOrigin, seed, true));
+            else vols.put(lvl, syntheticVolume(lvl, perOrigin, seed, true));
+        }
         String sha = OracleFixture.computeContentSha256(vols);
         return new OracleFixture(contract, vols, sha, System.currentTimeMillis());
     }

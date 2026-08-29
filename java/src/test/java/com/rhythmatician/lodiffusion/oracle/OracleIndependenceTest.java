@@ -36,8 +36,9 @@ class OracleIndependenceTest {
     void verifierUsesFixtureNotCandidateForExpected() {
         OracleContract c = EndChorusTracerContract.contract();
         OracleFixture f = SyntheticEndChorusFixtureFactory.generateSyntheticTracerFixture(c);
-        SectionPos origin = f.origin();
         Level level = Level.L1;
+        var per = c.blockRegionOrDerived().perLevelWorldSectionOrigin(level.value());
+        SectionPos origin = new SectionPos(per.wsX() * level.regionSections(), per.wsY() * level.regionSections(), per.wsZ() * level.regionSections());
         // Correct candidate passes
         VoxelVolume correct = f.volume(level);
         assertTrue(CandidateVerifier.verify(level, origin, correct, f).passed());
@@ -53,17 +54,13 @@ class OracleIndependenceTest {
 
     @Test
     void cantPassByMockingMipperWithCandidateHelper() {
-        // If verifier used a mocked Mipper or shared Mipper helper that is also used by candidate,
-        // a candidate that exactly matches that helper would pass even if wrong vs real Voxy.
-        // Our verifier uses exact voxel equality against fixture (which encodes real Mipper semantics),
-        // so a helper-consistent but fixture-inconsistent candidate fails.
         OracleContract c = EndChorusTracerContract.contract();
         OracleFixture f = SyntheticEndChorusFixtureFactory.generateSyntheticTracerFixture(c);
-        SectionPos origin = f.origin();
-        // Build a candidate that would be produced by a naive helper: centre-sample without Mipper
-        // For L1, naive centre sample would pick fewer chorus than Mipper-correct fixture; ensure verifier catches it
-        VoxelVolume naive = naiveCentreSampleWithoutMip(Level.L1, origin, c.seed());
-        var r = CandidateVerifier.verify(Level.L1, origin, naive, f);
+        Level lvl = Level.L1;
+        var per = c.blockRegionOrDerived().perLevelWorldSectionOrigin(lvl.value());
+        SectionPos origin = new SectionPos(per.wsX() * lvl.regionSections(), per.wsY() * lvl.regionSections(), per.wsZ() * lvl.regionSections());
+        VoxelVolume naive = naiveCentreSampleWithoutMip(lvl, origin, c.seed());
+        var r = CandidateVerifier.verify(lvl, origin, naive, f);
         // Not asserting pass/fail deterministically for naive (depends on seed), just that verifier executed and is not vacuous
         assertNotNull(r);
         assertTrue(r.mismatchedVoxels() >= 0);

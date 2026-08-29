@@ -19,8 +19,9 @@ class CorruptionProofTest {
     void shiftedChorusFails() {
         OracleContract c = EndChorusTracerContract.contract();
         OracleFixture f = SyntheticEndChorusFixtureFactory.generateSyntheticTracerFixture(c);
-        SectionPos origin = f.origin();
         Level level = Level.L1;
+        var per = c.blockRegionOrDerived().perLevelWorldSectionOrigin(level.value());
+        SectionPos origin = new SectionPos(per.wsX() * level.regionSections(), per.wsY() * level.regionSections(), per.wsZ() * level.regionSections());
         VoxelVolume correct = f.volume(level);
         // Shift chorus occupancy spatially by +1 in X (if possible)
         VoxelVolume.Builder shifted = VoxelVolume.builder(32);
@@ -43,8 +44,9 @@ class CorruptionProofTest {
     void erasedChorusFails() {
         OracleContract c = EndChorusTracerContract.contract();
         OracleFixture f = SyntheticEndChorusFixtureFactory.generateSyntheticTracerFixture(c);
-        SectionPos origin = f.origin();
         Level level = Level.L2;
+        var per = c.blockRegionOrDerived().perLevelWorldSectionOrigin(level.value());
+        SectionPos origin = new SectionPos(per.wsX() * level.regionSections(), per.wsY() * level.regionSections(), per.wsZ() * level.regionSections());
         VoxelVolume correct = f.volume(level);
         // Erase all chorus
         VoxelVolume.Builder erased = VoxelVolume.builder(32);
@@ -65,8 +67,9 @@ class CorruptionProofTest {
     void wrongMaterialFails() {
         OracleContract c = EndChorusTracerContract.contract();
         OracleFixture f = SyntheticEndChorusFixtureFactory.generateSyntheticTracerFixture(c);
-        SectionPos origin = f.origin();
         Level level = Level.L0;
+        var per = c.blockRegionOrDerived().perLevelWorldSectionOrigin(level.value());
+        SectionPos origin = new SectionPos(per.wsX() * level.regionSections(), per.wsY() * level.regionSections(), per.wsZ() * level.regionSections());
         VoxelVolume correct = f.volume(level);
         // Substitute chorus_plant (197) with end_stone (359) -- wrong canonical material
         VoxelVolume.Builder b = VoxelVolume.builder(32);
@@ -89,8 +92,9 @@ class CorruptionProofTest {
     void edgeCrossingCorruptionFails() {
         OracleContract c = EndChorusTracerContract.contract();
         OracleFixture f = SyntheticEndChorusFixtureFactory.generateSyntheticTracerFixture(c);
-        SectionPos origin = f.origin();
         Level level = Level.L1;
+        var per = c.blockRegionOrDerived().perLevelWorldSectionOrigin(level.value());
+        SectionPos origin = new SectionPos(per.wsX() * level.regionSections(), per.wsY() * level.regionSections(), per.wsZ() * level.regionSections());
         VoxelVolume correct = f.volume(level);
         // Perturb the edge-crossing chorus at +X boundary (31, mid, mid) that fixture intentionally places
         VoxelVolume.Builder b = VoxelVolume.builder(32);
@@ -115,9 +119,11 @@ class CorruptionProofTest {
     void trivialNonsenseFails() {
         OracleContract c = EndChorusTracerContract.contract();
         OracleFixture f = SyntheticEndChorusFixtureFactory.generateSyntheticTracerFixture(c);
-        SectionPos origin = f.origin();
-        VoxelVolume nonsense = VoxelVolume.uniform(32, 1, 255); // all acacia_button -- nonsense
-        var r = CandidateVerifier.verify(Level.L0, origin, nonsense, f);
+        Level level = Level.L0;
+        var per = c.blockRegionOrDerived().perLevelWorldSectionOrigin(level.value());
+        SectionPos origin = new SectionPos(per.wsX() * level.regionSections(), per.wsY() * level.regionSections(), per.wsZ() * level.regionSections());
+        VoxelVolume nonsense = VoxelVolume.uniform(32, 1, 255);
+        var r = CandidateVerifier.verify(level, origin, nonsense, f);
         assertTrue(r.failed());
     }
 }

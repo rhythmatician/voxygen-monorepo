@@ -35,10 +35,13 @@ public final class EndChorusTracerContract {
                         "net.minecraft.world.level.levelgen.GenerationStep:11#VEGETAL_DECORATION chorus in END_HIGHLANDS",
                         "net.minecraft.data.worldgen.biome.EndBiomes:24-46#END_HIGHLANDS chorus placement",
                         "net.minecraft.data.worldgen.placement.EndPlacements:22#CHORUS_PLANT CountPlacement 0-4 InSquare HEIGHTMAP BiomeFilter",
-                        "net.minecraft.world.level.levelgen.placement.PlacedFeature:42-61#placeWithContext -> PlacementContext + decoration seed via RandomState.getOrCreateRandomFactory(PlacedFeature).at(x,y,z).fromHashOf(worldSeed/biome/feature)",
-                        "net.minecraft.world.level.levelgen.RandomState:122#getOrCreateRandomFactory(HolderGetter<PlacedFeature>) -> PositionalRandomFactory at BlockPos for VEGETAL_DECORATION step",
-                        "net.minecraft.world.level.levelgen.WorldgenRandom:22#<init>(XoroshiroRandomSource) -> Xoroshiro128PlusPlus seeded from RandomState.getOrCreateRandomFactory hash",
-                        "net.minecraft.world.level.chunk.ChunkGenerator:342#applyBiomeDecoration(ServerLevel, ChunkAccess, StructureManager) -> iterates PlacedFeature at VEGETAL_DECORATION order per EndBiomes"
+                        // RNG: decoration uses WorldgenRandom#setDecorationSeed(worldSeed, blockX, blockZ) inside ChunkGenerator#applyBiomeDecoration
+                        // which seeds a legacy WorldgenRandom (not Xoroshiro) per chunk for PlacedFeature placement.
+                        // Fabric 1.21.11 pinned source: ChunkGenerator.java 310-360 inspection shows decoration loop via PlacedFeature.placeWithContext using WorldgenRandom.
+                        "net.minecraft.world.level.levelgen.WorldgenRandom:22#setDecorationSeed(long worldSeed, int blockX, int blockZ) -> seeds legacy Random for decoration",
+                        "net.minecraft.world.level.chunk.ChunkGenerator:342#applyBiomeDecoration(ServerLevel, ChunkAccess, StructureManager) -> iterates PlacedFeature at VEGETAL_DECORATION; FEATURES output may depend on chunk generation order (neighbor reads/writes shared borders) - must record request order Morton sorted and prove determinism via 2x clean-world contentSha recomparison",
+                        "net.minecraft.world.level.levelgen.placement.PlacedFeature:42-61#placeWithContext -> PlacementContext + decoration seed via WorldgenRandom#setDecorationSeed",
+                        "net.minecraft.world.level.levelgen.RandomState:122#getOrCreateRandomFactory(HolderGetter<PlacedFeature>) -> PositionalRandomFactory (alternative path, verify vs WorldgenRandom)"
                 ))
                 .inspectedVoxyReferences(List.of(
                         "me.cortex.voxy.common.voxelization.WorldConversionFactory:130-220#convert(PalettedContainer->Mapper.composeMappingId)",

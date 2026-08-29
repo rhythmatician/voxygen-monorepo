@@ -34,6 +34,6 @@ validate:
 oracle_end_chorus:
   seed: 42
   level_name: oracle_end_chorus
-  server_port: 25565
-  rcon_port: 25575
+  server_port: 25567
+  rcon_port: 25577
   rcon_password: voxeltree
