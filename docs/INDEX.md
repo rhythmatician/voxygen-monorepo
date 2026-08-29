@@ -56,6 +56,7 @@
 * `docs/reference/upstream/minecraft-1.21.11-terrain-signal-lattices.md` — 1.21.11 signal lattices (executable mirror in `voxel_tree.contracts.terrain_signals`).
 * `docs/external/l1-availability-contract.md` — WorldNoiseAccess availability contract (wayfinder:research, version-bound).
 * `docs/external/minecraft-1.21.11-worldgen-dag-overworld-nether-end.md` — 1.21.11 worldgen DAG per dimension.
+* `docs/external/minecraft-1.21.11-feature-pipeline-and-voxy-version-churn.md` — feature-pipeline stability audit + Voxy 11-branch cross-version compatibility matrix (wayfinder:research, #235; feeds #85 partition and #234 feature-generation skill).
 * `docs/external/port-vanilla-batch-subtree-sharing.md` — subtree-sharing research for Layer-2 batch port.
 * `external/` — read-only mirrored upstream sources (`voxy`, `minecraft-src`, `fabric-api`, `ogn`).
 
