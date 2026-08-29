@@ -149,6 +149,57 @@ public class LodiffusionClient implements ClientModInitializer {
             );
         });
 
+        // Oracle capture file trigger — deterministic process-level oracle regeneration (DataHarvester pipeline)
+        try {
+            com.rhythmatician.lodiffusion.oracle.capture.OracleFileTrigger.register();
+        } catch (Exception e) {
+            HelloTerrainMod.LOGGER.warn("[LODiffusion] OracleFileTrigger register failed", e);
+        }
+
+        // Client command for manual oracle capture: /voxygen oracle capture
+        ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) -> {
+            dispatcher.register(
+                net.fabricmc.fabric.api.client.command.v2.ClientCommandManager.literal("voxygen")
+                    .then(net.fabricmc.fabric.api.client.command.v2.ClientCommandManager.literal("oracle")
+                        .then(net.fabricmc.fabric.api.client.command.v2.ClientCommandManager.literal("capture")
+                            .executes(ctx -> {
+                                try {
+                                    var contract = com.rhythmatician.lodiffusion.oracle.EndChorusTracerContract.contract();
+                                    var fixture = com.rhythmatician.lodiffusion.oracle.capture.WorldSectionOracleCapture.capture(contract);
+                                    var out = com.rhythmatician.lodiffusion.oracle.capture.OracleFixtureWriter.defaultFixturePath(contract);
+                                    com.rhythmatician.lodiffusion.oracle.capture.OracleFixtureWriter.write(fixture, out);
+                                    ctx.getSource().sendFeedback(net.minecraft.text.Text.literal("Oracle fixture captured: " + fixture.provenanceId() + " sha=" + fixture.contentSha256().substring(0,12) + " -> " + out));
+                                    return 1;
+                                } catch (Exception e) {
+                                    ctx.getSource().sendError(net.minecraft.text.Text.literal("Oracle capture failed: " + e.getMessage()));
+                                    HelloTerrainMod.LOGGER.error("[Oracle] capture failed", e);
+                                    return 0;
+                                }
+                            })
+                        )
+                        .then(net.fabricmc.fabric.api.client.command.v2.ClientCommandManager.literal("status")
+                            .executes(ctx -> {
+                                var level = net.minecraft.client.MinecraftClient.getInstance().world;
+                                if (level == null) {
+                                    ctx.getSource().sendError(net.minecraft.text.Text.literal("No world loaded"));
+                                    return 0;
+                                }
+                                Object we = null;
+                                try {
+                                    Class<?> ve = Class.forName("com.rhythmatician.lodiffusion.voxy.VoxyEngine");
+                                    var m = ve.getDeclaredMethod("getWorldEngine", net.minecraft.world.World.class);
+                                    m.setAccessible(true);
+                                    we = m.invoke(null, level);
+                                } catch (Exception e) { we = null; }
+                                String msg = we != null ? "Voxy WorldEngine available: " + we.getClass().getSimpleName() : "Voxy WorldEngine not available (Voxy not installed or world not loaded)";
+                                ctx.getSource().sendFeedback(net.minecraft.text.Text.literal(msg));
+                                return 1;
+                            })
+                        )
+                    )
+            );
+        });
+
         HelloTerrainMod.LOGGER.info("[LODiffusion] Client initializer complete");
     }
 

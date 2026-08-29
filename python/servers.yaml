@@ -30,3 +30,10 @@ validate:
   server_port: 25566
   rcon_port: 25576
   rcon_password: voxeltree
+
+oracle_end_chorus:
+  seed: 42
+  level_name: oracle_end_chorus
+  server_port: 25565
+  rcon_port: 25575
+  rcon_password: voxeltree

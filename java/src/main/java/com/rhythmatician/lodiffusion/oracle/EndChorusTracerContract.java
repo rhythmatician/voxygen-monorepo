@@ -32,9 +32,11 @@ public final class EndChorusTracerContract {
                         "net.minecraft.world.level.levelgen.NoiseGeneratorSettings:70#END NoiseSettings(0,128,2,1) cell 8x4 aquifersEnabled=false",
                         "net.minecraft.world.level.levelgen.GenerationStep:11#VEGETAL_DECORATION chorus in END_HIGHLANDS",
                         "net.minecraft.data.worldgen.biome.EndBiomes:24-46#END_HIGHLANDS chorus placement",
-                        "net.minecraft.world.level.levelgen.placement.PlacedFeature:xx#placeWithContext -> WorldgenRandom seed derivation: worldSeed ^ chunkPos ^ step ^ featureIndex",
-                        "net.minecraft.util.RandomSource:xx#Xoroshiro seed -> PositionalRandomFactory at(x,y,z)",
-                        "net.minecraft.world.level.levelgen.feature.FeaturePlaceContext:xx#origin + RandomSource per placed feature"
+                        "net.minecraft.world.level.levelgen.placement.PlacedFeature:42-61#placeWithContext -> PlacementContext + decoration seed via RandomState.getOrCreateRandomFactory(PlacedFeature).at(x,y,z).fromHashOf(worldSeed/biome/feature)",
+                        "net.minecraft.world.level.levelgen.RandomState:xx#getOrCreateRandomFactory -> PositionalRandomFactory for VEGETAL_DECORATION step (decoration seed = worldSeed ^ chunkPosHash ^ generationStep ^ placedFeatureIndex)",
+                        "net.minecraft.world.level.levelgen.WorldgenRandom:xx#Xoroshiro128PlusPlus seeded from decoration hash; FeaturePlaceContext.origin + RandomSource per placed feature attempt",
+                        "net.minecraft.util.RandomSource:xx#create(worldSeed) -> Xoroshiro128PlusPlus(pos=chunkPos) -> PositionalRandomFactory.at(x,y,z) determines chorus placement attempts for given worldSeed/chunk/step/feature ordering (exact hash in ChunkGenerator.applyBiomeDecoration)",
+                        "net.minecraft.world.level.chunk.ChunkGenerator:xx#applyBiomeDecoration(PlacedFeature ordering per biome holds generationStep VEGETAL_DECORATION, featureIndex within END_HIGHLANDS)"
                 ))
                 .inspectedVoxyReferences(List.of(
                         "me.cortex.voxy.common.voxelization.WorldConversionFactory:130-220#convert(PalettedContainer->Mapper.composeMappingId)",
