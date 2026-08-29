@@ -19,46 +19,35 @@ import org.slf4j.LoggerFactory;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.reflect.Method;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
-/**
- * Client-side handler for {@link IngestPayload} packets.
- *
- * <p>When the server's {@code /ingestall} command sends a chunk's sections,
- * this handler deserialises them back into vanilla {@link LevelChunkSection}
- * objects and calls Voxy's {@code VoxelIngestService.rawIngest()} via
- * reflection — <em>the exact same code path</em> as VoxyWorldGen v2's
- * {@code NetworkClientHandler.handleLODData()}.
- *
- * <p>This guarantees <strong>absolute parity</strong> with Voxy's
- * ingestion algorithm:
- * <ol>
- *   <li>{@code WorldConversionFactory.convert()} — BlockState/Biome/Light → packed long[]</li>
- *   <li>{@code WorldConversionFactory.mipSection()} — build L0–L4 mip levels via {@code Mipper}</li>
- *   <li>{@code WorldUpdater.insertUpdate()} — write 32³ WorldSections + cascade up LOD tree</li>
- *   <li>{@code SectionSavingService} → ZSTD-compressed RocksDB persistence</li>
- * </ol>
- */
 public class IngestClientHandler {
 
     private static final Logger LOGGER = LoggerFactory.getLogger("dataharvester");
 
-    // ---- Voxy reflection bridge (initialised on first payload) ----
     private static boolean bridgeInitialized;
     private static MethodHandle rawIngestMethod;
     private static MethodHandle worldIdOfMethod;
     private static int sectionsIngested;
-    // Batch tracking for oracle ingest barrier - true Voxy completion via insertUpdate RETURN
+
+    // Hardened BatchState: exact expected (cx,cy,cz) keys, synchronized, before rawIngest registration
+    private static final Object BATCH_LOCK = new Object();
     private static String currentBatchId = "";
     private static int expectedChunksForBatch = 0;
-    private static java.util.Set<net.minecraft.world.level.ChunkPos> receivedChunksForBatch = new java.util.HashSet<>();
-    private static int completedSectionsForBatch = 0;
-    private static int expectedEnqueuedSections = 0;
+    private static final Set<net.minecraft.world.level.ChunkPos> receivedChunksForBatch = Collections.synchronizedSet(new HashSet<>());
+    private static final Set<Long> pendingKeys = ConcurrentHashMap.newKeySet();
+    private static final Set<Long> completedKeys = ConcurrentHashMap.newKeySet();
+    private static volatile boolean allPayloadsProcessed = false;
     private static int failedEnqueuesForBatch = 0;
+    private static int expectedEnqueuedSections = 0;
 
-    /**
-     * Register the client-side payload handler.
-     * Call from {@link com.voxeltree.harvester.DataHarvesterClient#onInitializeClient()}.
-     */
+    private static long keyFor(int cx, int cy, int cz) {
+        return ((long) cx << 32) ^ ((long) cy << 16) ^ (cz & 0xFFFFL);
+    }
+
     public static void init() {
         ClientPlayNetworking.registerGlobalReceiver(IngestPayload.TYPE,
                 (payload, context) -> context.client().execute(
@@ -66,125 +55,125 @@ public class IngestClientHandler {
         LOGGER.info("[DataHarvester] Client ingest handler registered.");
     }
 
-    // ==================== payload processing ====================
-
-    /**
-     * Deserialise each section from the payload and ingest it into Voxy.
-     *
-     * <p>This mirrors VoxyWorldGen v2's
-     * {@code NetworkClientHandler.handleLODData()} line-for-line:
-     * <ol>
-     *   <li>Create an empty {@link LevelChunkSection} from a {@link PalettedContainerFactory}</li>
-     *   <li>Read the serialised block-state palette into the section</li>
-     *   <li>Read the serialised biome palette into the section</li>
-     *   <li>Reconstruct light {@link DataLayer} objects</li>
-     *   <li>Call Voxy's {@code VoxelIngestService.rawIngest()} via reflection</li>
-     * </ol>
-     */
     @SuppressWarnings("unchecked")
     private static void handlePayload(IngestPayload payload) {
         ClientLevel level = Minecraft.getInstance().level;
         if (level == null) return;
 
         if (!bridgeInitialized) initVoxyBridge();
-        if (rawIngestMethod == null) return; // Voxy not available
+        if (rawIngestMethod == null) return;
 
-        // Track batch for ack barrier
         String batchId = payload.batchId();
         int batchTotal = payload.batchTotal();
-        if (batchId != null && !batchId.isEmpty()) {
-            if (!batchId.equals(currentBatchId)) {
-                currentBatchId = batchId;
-                expectedChunksForBatch = batchTotal;
-                receivedChunksForBatch.clear();
-                completedSectionsForBatch = 0;
-                expectedEnqueuedSections = 0;
-                failedEnqueuesForBatch = 0;
-                // Clear prior ack if exists
-                try { java.nio.file.Files.deleteIfExists(java.nio.file.Path.of("config", "oracle_ingest_ack.json")); } catch (Exception ignored) {}
-                LOGGER.info("[DataHarvester] Starting batch {} expecting {} chunks (true RETURN barrier)", batchId, batchTotal);
+        boolean isOracle = batchId != null && !batchId.isEmpty();
+        if (isOracle) {
+            synchronized (BATCH_LOCK) {
+                if (!batchId.equals(currentBatchId)) {
+                    currentBatchId = batchId;
+                    expectedChunksForBatch = batchTotal;
+                    receivedChunksForBatch.clear();
+                    pendingKeys.clear();
+                    completedKeys.clear();
+                    allPayloadsProcessed = false;
+                    failedEnqueuesForBatch = 0;
+                    expectedEnqueuedSections = 0;
+                    try { java.nio.file.Files.deleteIfExists(java.nio.file.Path.of("config", "oracle_ingest_ack.json")); } catch (Exception ignored) {}
+                    LOGGER.info("[DataHarvester] Starting oracle batch {} expecting {} chunks (exact keys, RETURN barrier)", batchId, batchTotal);
+                }
             }
-            receivedChunksForBatch.add(payload.pos());
         }
 
+        // For oracle, we will track pending keys before enqueue
+        // Note: receivedChunks should only be considered after all sections for this payload are enqueued, to avoid race where RETURN sees all chunks before final enqueue
+        boolean payloadEnqueueFailed = false;
+        int enqueuedThisPayload = 0;
         for (IngestPayload.SectionData sd : payload.sections()) {
             io.netty.buffer.ByteBuf statesRaw =
                     io.netty.buffer.Unpooled.wrappedBuffer(sd.states());
             io.netty.buffer.ByteBuf biomesRaw =
                     io.netty.buffer.Unpooled.wrappedBuffer(sd.biomes());
             try {
-                // 1. Create empty section with correct registry backing
                 PalettedContainerFactory factory =
                         PalettedContainerFactory.create(level.registryAccess());
                 LevelChunkSection section = new LevelChunkSection(factory);
-
-                // 2. Deserialise block-state palette
                 RegistryFriendlyByteBuf statesBuf = new RegistryFriendlyByteBuf(
                         new FriendlyByteBuf(statesRaw), level.registryAccess());
                 ((PalettedContainer<BlockState>) section.getStates()).read(statesBuf);
-
-                // 3. Deserialise biome palette
                 RegistryFriendlyByteBuf biomesBuf = new RegistryFriendlyByteBuf(
                         new FriendlyByteBuf(biomesRaw), level.registryAccess());
                 ((PalettedContainer<Holder<Biome>>) section.getBiomes()).read(biomesBuf);
-
-                // 4. Reconstruct light layers
                 DataLayer bl = sd.blockLight() != null
                         ? new DataLayer(sd.blockLight()) : null;
                 DataLayer sl = sd.skyLight() != null
                         ? new DataLayer(sd.skyLight()) : null;
 
-                // 5. Feed to Voxy's ingestion pipeline - oracle must fail closed
+                if (isOracle) {
+                    long key = keyFor(payload.pos().x, sd.y(), payload.pos().z);
+                    // Register before enqueue
+                    pendingKeys.add(key);
+                    synchronized (BATCH_LOCK) { expectedEnqueuedSections++; }
+                }
                 boolean enqueued = invokeRawIngest(level, section,
                         payload.pos().x, sd.y(), payload.pos().z, bl, sl);
-                if (enqueued) {
-                    expectedEnqueuedSections++;
-                } else {
-                    failedEnqueuesForBatch++;
-                    LOGGER.error("[DataHarvester] Oracle batch {} failed to enqueue section ({},{},{}) - batch will not ack success",
-                            currentBatchId, payload.pos().x, sd.y(), payload.pos().z);
+                if (isOracle) {
+                    if (enqueued) {
+                        enqueuedThisPayload++;
+                    } else {
+                        long key = keyFor(payload.pos().x, sd.y(), payload.pos().z);
+                        pendingKeys.remove(key);
+                        synchronized (BATCH_LOCK) { failedEnqueuesForBatch++; }
+                        LOGGER.error("[DataHarvester] Oracle batch {} failed to enqueue section ({},{},{})", currentBatchId, payload.pos().x, sd.y(), payload.pos().z);
+                        payloadEnqueueFailed = true;
+                    }
                 }
-
                 sectionsIngested++;
-                // Do NOT increment completedSectionsForBatch here - wait for WorldUpdater.insertUpdate RETURN via mixin
                 if (sectionsIngested % 5000 == 0) {
-                    LOGGER.info("[DataHarvester] Client: {} sections ingested into Voxy (batch {} {}/{})",
+                    LOGGER.info("[DataHarvester] Client: {} sections ingested (batch {} {}/{})",
                             sectionsIngested, currentBatchId, receivedChunksForBatch.size(), expectedChunksForBatch);
                 }
-
             } catch (Exception e) {
                 LOGGER.error("[DataHarvester] Section ({}, {}, {}) ingest failed",
                         payload.pos().x, sd.y(), payload.pos().z, e);
+                if (isOracle) {
+                    long key = keyFor(payload.pos().x, sd.y(), payload.pos().z);
+                    pendingKeys.remove(key);
+                    synchronized (BATCH_LOCK) { failedEnqueuesForBatch++; }
+                }
             } finally {
                 statesRaw.release();
                 biomesRaw.release();
             }
         }
-        // Batch ack barrier: oracle must wait for true Voxy RETURN completion, not enqueue count.
-        // Ack is now driven by notifyInsertUpdateReturn() when completedSections >= expectedEnqueuedSections.
-        // If any enqueue failed, we must NOT ack success - write failure ack instead.
-        if (batchId != null && !batchId.isEmpty() && expectedChunksForBatch > 0) {
-            if (receivedChunksForBatch.size() >= expectedChunksForBatch) {
+        if (isOracle) {
+            // Now mark this chunk as received, after all its sections enqueued
+            receivedChunksForBatch.add(payload.pos());
+            synchronized (BATCH_LOCK) {
+                if (receivedChunksForBatch.size() >= expectedChunksForBatch) {
+                    allPayloadsProcessed = true;
+                }
+            }
+            // Check for completion or failure
+            synchronized (BATCH_LOCK) {
                 if (failedEnqueuesForBatch > 0) {
-                    LOGGER.error("[DataHarvester] Batch {} has {} failed enqueues - will not ack success, python must fail", batchId, failedEnqueuesForBatch);
-                    writeIngestFailure(batchId, expectedChunksForBatch, receivedChunksForBatch.size(), completedSectionsForBatch, failedEnqueuesForBatch);
-                } else {
-                    // If we already have all enqueues and inserts returned, ack may have been written by RETURN handler.
-                    // If not yet completed, log waiting
-                    if (expectedEnqueuedSections > 0 && completedSectionsForBatch < expectedEnqueuedSections) {
-                        LOGGER.info("[DataHarvester] Batch {} enqueued {}/{} chunks, waiting for RETURN {}/{} sections", batchId, receivedChunksForBatch.size(), expectedChunksForBatch, completedSectionsForBatch, expectedEnqueuedSections);
-                    }
+                    LOGGER.error("[DataHarvester] Batch {} has {} failed enqueues - writing failure ack", batchId, failedEnqueuesForBatch);
+                    writeIngestFailure(batchId, expectedChunksForBatch, receivedChunksForBatch.size(), completedKeys.size(), failedEnqueuesForBatch, expectedEnqueuedSections);
+                } else if (allPayloadsProcessed && pendingKeys.isEmpty() && receivedChunksForBatch.size() >= expectedChunksForBatch) {
+                    // All enqueued and all RETURNed
+                    LOGGER.info("[DataHarvester] Batch {} TRUE completion: {}/{} chunks, {}/{} sections via RETURN", batchId, receivedChunksForBatch.size(), expectedChunksForBatch, completedKeys.size(), expectedEnqueuedSections);
+                    writeIngestAck(batchId, expectedChunksForBatch, receivedChunksForBatch.size(), completedKeys.size(), expectedEnqueuedSections);
+                } else if (allPayloadsProcessed) {
+                    LOGGER.info("[DataHarvester] Batch {} enqueued {}/{} chunks, pending {} completed {} / {}", batchId, receivedChunksForBatch.size(), expectedChunksForBatch, pendingKeys.size(), completedKeys.size(), expectedEnqueuedSections);
                 }
             }
         }
     }
 
-    private static void writeIngestAck(String batchId, int expected, int received, int sections) {
+    private static void writeIngestAck(String batchId, int expected, int received, int completed, int expectedSections) {
         try {
             java.nio.file.Path ackPath = java.nio.file.Path.of("config", "oracle_ingest_ack.json");
             java.nio.file.Files.createDirectories(ackPath.getParent());
             String json = String.format("{\"batchId\":\"%s\",\"expectedChunks\":%d,\"receivedChunks\":%d,\"completedSections\":%d,\"expectedEnqueuedSections\":%d,\"timestamp\":%d,\"success\":true}",
-                    batchId, expected, received, sections, expectedEnqueuedSections, System.currentTimeMillis());
+                    batchId, expected, received, completed, expectedSections, System.currentTimeMillis());
             java.nio.file.Files.writeString(ackPath, json);
             LOGGER.info("[DataHarvester] Wrote ingest ack {}", ackPath.toAbsolutePath());
         } catch (Exception e) {
@@ -192,12 +181,12 @@ public class IngestClientHandler {
         }
     }
 
-    private static void writeIngestFailure(String batchId, int expected, int received, int sections, int failed) {
+    private static void writeIngestFailure(String batchId, int expected, int received, int completed, int failed, int expectedSections) {
         try {
             java.nio.file.Path ackPath = java.nio.file.Path.of("config", "oracle_ingest_ack.json");
             java.nio.file.Files.createDirectories(ackPath.getParent());
-            String json = String.format("{\"batchId\":\"%s\",\"expectedChunks\":%d,\"receivedChunks\":%d,\"completedSections\":%d,\"failedEnqueues\":%d,\"timestamp\":%d,\"success\":false,\"error\":\"enqueue failed\"}",
-                    batchId, expected, received, sections, failed, System.currentTimeMillis());
+            String json = String.format("{\"batchId\":\"%s\",\"expectedChunks\":%d,\"receivedChunks\":%d,\"completedSections\":%d,\"expectedEnqueuedSections\":%d,\"failedEnqueues\":%d,\"timestamp\":%d,\"success\":false,\"error\":\"enqueue failed\"}",
+                    batchId, expected, received, completed, expectedSections, failed, System.currentTimeMillis());
             java.nio.file.Files.writeString(ackPath, json);
             LOGGER.error("[DataHarvester] Wrote ingest FAILURE ack {}", ackPath.toAbsolutePath());
         } catch (Exception e) {
@@ -205,18 +194,6 @@ public class IngestClientHandler {
         }
     }
 
-    // ==================== Voxy reflection bridge ====================
-
-    /**
-     * One-time reflection setup to find Voxy's ingest API.
-     *
-     * <p>Mirrors VoxyWorldGen v2's {@code VoxyIntegration} approach:
-     * <ul>
-     *   <li>{@code WorldIdentifier.of(Level)} — get dimension identity</li>
-     *   <li>{@code VoxelIngestService.rawIngest(WorldIdentifier, LevelChunkSection,
-     *       cx, cy, cz, DataLayer, DataLayer)} — static ingest entry point</li>
-     * </ul>
-     */
     private static void initVoxyBridge() {
         bridgeInitialized = true;
         try {
@@ -224,25 +201,16 @@ public class IngestClientHandler {
                     "me.cortex.voxy.common.world.service.VoxelIngestService");
             Class<?> worldIdClass = Class.forName(
                     "me.cortex.voxy.commonImpl.WorldIdentifier");
-
             MethodHandles.Lookup lookup = MethodHandles.lookup();
-
-            // VoxelIngestService.rawIngest(WorldIdentifier, LevelChunkSection,
-            //                              int cx, int cy, int cz,
-            //                              DataLayer blockLight, DataLayer skyLight)
             Method raw = ingestClass.getMethod("rawIngest",
                     worldIdClass,
                     LevelChunkSection.class,
                     int.class, int.class, int.class,
                     DataLayer.class, DataLayer.class);
             rawIngestMethod = lookup.unreflect(raw);
-
-            // WorldIdentifier.of(Level)
             Method of = worldIdClass.getMethod("of", Level.class);
             worldIdOfMethod = lookup.unreflect(of);
-
             LOGGER.info("[DataHarvester] Voxy ingest bridge initialised (rawIngest found).");
-
         } catch (ClassNotFoundException e) {
             LOGGER.warn("[DataHarvester] Voxy not found — ingest bridge disabled. "
                     + "Install Voxy to enable /ingestall client-side ingestion.");
@@ -251,7 +219,6 @@ public class IngestClientHandler {
         }
     }
 
-    /** Call Voxy's rawIngest via reflection. Returns true if enqueue succeeded, false if rejected. */
     private static boolean invokeRawIngest(Level level, LevelChunkSection section,
                                         int cx, int cy, int cz,
                                         DataLayer blockLight, DataLayer skyLight) {
@@ -268,24 +235,24 @@ public class IngestClientHandler {
         }
     }
 
-    // Called by OracleInsertUpdateTrackerMixin at RETURN of WorldUpdater.insertUpdate to count true Voxy completion
     public static void notifyInsertUpdateReturn(int cx, int cy, int cz) {
-        // Only count if we have an active oracle batch
         if (currentBatchId == null || currentBatchId.isEmpty() || expectedChunksForBatch <= 0) return;
-        completedSectionsForBatch++;
-        // Log periodically
-        if (completedSectionsForBatch % 1000 == 0) {
-            LOGGER.info("[DataHarvester] Oracle batch {} insertUpdate RETURN {}/{} sections (expectedChunks {})",
-                    currentBatchId, completedSectionsForBatch, expectedChunksForBatch * 8, expectedChunksForBatch);
+        long key = keyFor(cx, cy, cz);
+        // Only complete if key was expected for this batch
+        boolean wasPending = pendingKeys.remove(key);
+        if (!wasPending) {
+            // Unrelated Voxy insert (e.g., other chunks, duplicates) - ignore
+            return;
         }
-        // Check if all expected inserts have returned
-        // For oracle, expectedSections is approximated as expectedChunks * sections per chunk for End (8 sections 0..128)
-        // But we track via enqueue count: expectedEnqueuedSections holds number of sections we enqueued
-        if (expectedEnqueuedSections > 0 && completedSectionsForBatch >= expectedEnqueuedSections && receivedChunksForBatch.size() >= expectedChunksForBatch) {
-            // All enqueued sections have been inserted - ack true completion
-            LOGGER.info("[DataHarvester] Batch {} TRUE completion: {}/{} chunks, {}/{} sections inserted via RETURN",
-                    currentBatchId, receivedChunksForBatch.size(), expectedChunksForBatch, completedSectionsForBatch, expectedEnqueuedSections);
-            writeIngestAck(currentBatchId, expectedChunksForBatch, receivedChunksForBatch.size(), completedSectionsForBatch);
+        completedKeys.add(key);
+        if (completedKeys.size() % 1000 == 0) {
+            LOGGER.info("[DataHarvester] Oracle batch {} RETURN {}/{} sections", currentBatchId, completedKeys.size(), expectedEnqueuedSections);
+        }
+        synchronized (BATCH_LOCK) {
+            if (allPayloadsProcessed && pendingKeys.isEmpty() && failedEnqueuesForBatch == 0 && receivedChunksForBatch.size() >= expectedChunksForBatch) {
+                LOGGER.info("[DataHarvester] Batch {} TRUE completion via RETURN: {}/{} chunks, {}/{} sections", currentBatchId, receivedChunksForBatch.size(), expectedChunksForBatch, completedKeys.size(), expectedEnqueuedSections);
+                writeIngestAck(currentBatchId, expectedChunksForBatch, receivedChunksForBatch.size(), completedKeys.size(), expectedEnqueuedSections);
+            }
         }
     }
 }

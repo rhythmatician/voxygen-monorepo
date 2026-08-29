@@ -225,7 +225,22 @@ def _run_ingest_via_rcon(radius_chunks: int | None = None) -> None:
     import uuid
     batch_id = str(uuid.uuid4())[:8]
     expected_chunks = (maxCx - minCx + 1) * (maxCz - minCz + 1)
+    # Ensure client is in The End and away from target to avoid simultaneous client chunk loading interfering with oracle
     with RconClient(host, port, password, timeout=10) as rc:
+        tp_resp = rc.command("execute as @a in minecraft:the_end run tp @s 0 80 0")
+        print(f"[oracle] Teleported client to central End island (0 80 0) away from target: {tp_resp}")
+        import time as _t
+        _t.sleep(3)
+        # Verify eligible player exists in The End
+        eligible = rc.command("execute as @a in minecraft:the_end run say eligible")
+        if "eligible" not in eligible.lower() and "@a" not in eligible:
+            # Fallback check via list
+            list_resp = rc.command("list")
+            print(f"[oracle] Checking eligible player in End, list: {list_resp}")
+            # We still require at least one player; if none, fail
+            if "0 players" in list_resp or "players online: 0" in list_resp.lower():
+                print(f"[oracle] ERROR: No eligible player in The End for ingest - DataHarvester requires client in same dimension as activeLevel", file=sys.stderr)
+                sys.exit(1)
         resp = rc.command(f"execute in minecraft:the_end run ingestall oracle {minCx} {minCz} {maxCx} {maxCz} {batch_id} {expected_chunks}")
         print(f"[oracle] /ingestall oracle {minCx} {minCz} {maxCx} {maxCz} {batch_id} {expected_chunks}: {resp}")
         if "Unknown" in resp or "Incorrect" in resp or "No such" in resp:
@@ -240,21 +255,33 @@ def _run_ingest_via_rcon(radius_chunks: int | None = None) -> None:
         else:
             print(f"[oracle] ingest did not report complete within timeout", file=sys.stderr)
             sys.exit(1)
-    # Real client completion barrier: wait for client ack file with matching batchId - must be true Voxy RETURN barrier (WorldUpdater.insertUpdate RETURN count), not just rawIngest enqueue
-    deadline = time.time() + 120
+    # Hardened barrier: require success true, exact receivedChunks, exact expectedEnqueuedSections == completedSections, failures==0
+    deadline = time.time() + 180
     while time.time() < deadline:
         if INGEST_ACK_PATH.exists():
             try:
                 ack = json.loads(INGEST_ACK_PATH.read_text())
-                if ack.get("batchId") == batch_id and ack.get("expectedChunks") == expected_chunks:
-                    if ack.get("receivedChunks", 0) >= expected_chunks and ack.get("completedSections", 0) >= expected_chunks * 2:  # at least some sections
-                        print(f"[oracle] Client ack received for batch {batch_id}: {ack}")
+                if ack.get("batchId") == batch_id:
+                    if ack.get("success") is not True:
+                        print(f"[oracle] Ack indicates failure (success false): {ack}", file=sys.stderr)
+                        sys.exit(1)
+                    if ack.get("expectedChunks") != expected_chunks:
+                        print(f"[oracle] Ack expectedChunks mismatch {ack.get('expectedChunks')} != {expected_chunks} waiting...", file=sys.stderr)
+                    elif ack.get("receivedChunks", 0) != expected_chunks:
+                        print(f"[oracle] Ack receivedChunks {ack.get('receivedChunks')} != expected {expected_chunks} waiting...", file=sys.stderr)
+                    elif ack.get("expectedEnqueuedSections", ack.get("completedSections",0)) != ack.get("completedSections",0):
+                        print(f"[oracle] Ack pending keys not empty: expectedEnqueued {ack.get('expectedEnqueuedSections')} completed {ack.get('completedSections')} waiting...", file=sys.stderr)
+                    elif ack.get("failedEnqueues",0) != 0:
+                        print(f"[oracle] Ack has failedEnqueues {ack.get('failedEnqueues')} - failing", file=sys.stderr)
+                        sys.exit(1)
+                    else:
+                        print(f"[oracle] Client TRUE ack received for batch {batch_id}: {ack}")
                         return
                     print(f"[oracle] Ack incomplete {ack} waiting...", file=sys.stderr)
             except Exception as e:
                 print(f"[oracle] ack read failed: {e}")
         time.sleep(1)
-    print(f"[oracle] ERROR: no client ack for batch {batch_id} within 120s - WorldEngine may not have flushed, fixture would be partial. Ensure client is running with Voxy + DataHarvester and insertUpdate RETURN barrier is active.", file=sys.stderr)
+    print(f"[oracle] ERROR: no successful client ack for batch {batch_id} within 180s - WorldEngine may not have flushed or batch had failures. Ensure client is running with Voxy + DataHarvester and insertUpdate RETURN barrier is active. Ack must have success:true, exact receivedChunks, and pendingKeys empty.", file=sys.stderr)
     sys.exit(1)
 
 def _trigger_capture() -> None:
@@ -279,7 +306,7 @@ def _trigger_capture() -> None:
         "perLevelWorldSectionOrigins": per,
         "halo": ORACLE_ROLE["halo"],
         "seed": ORACLE_ROLE["seed"],
-        "generationOrder": "Morton sorted by distance to center of L4 rect, then server tick order",
+        "generationOrder": "squared distance to center of L4 rect (dx*dx+dz*dz) -> X -> Z, then server tick order",
     }
     REQUEST_PATH.write_text(json.dumps(req, indent=2))
     print(f"[oracle] Wrote capture request {REQUEST_PATH}: {json.dumps(req, indent=2)}")
@@ -342,8 +369,29 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.reset_world:
         _reset_disposable_world()
-
-    _patch_server_properties_for_oracle()
+        _patch_server_properties_for_oracle()
+        if not _wait_for_rcon(timeout=5):
+            print("[oracle] Server not running after reset - attempting to start oracle_end_chorus role", file=sys.stderr)
+            _start_oracle_server_via_manager()
+            if not _wait_for_rcon(timeout=120):
+                print("[oracle] Server not running — start it via: python -m voxel_tree --server start --role oracle_end_chorus (isolated port 25567)", file=sys.stderr)
+                sys.exit(1)
+        # Wait for client to connect before proceeding
+        print("[oracle] Waiting for client to auto-connect...")
+        import time as _t2
+        for _ in range(30):
+            try:
+                from voxel_tree.utils.rcon import RconClient as _RC
+                with _RC("localhost", ORACLE_ROLE["rcon_port"], ORACLE_ROLE["rcon_password"], timeout=2) as _rc:
+                    lst = _rc.command("list")
+                    if "players online" in lst.lower():
+                        # At least one player online
+                        break
+            except Exception:
+                pass
+            _t2.sleep(2)
+    else:
+        _patch_server_properties_for_oracle()
 
     if not _wait_for_rcon(timeout=5):
         print("[oracle] Server not running — start it via: python -m voxel_tree --server start --role oracle_end_chorus (isolated port 25567)", file=sys.stderr)
@@ -354,7 +402,25 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(1)
 
     if args.cheap_scan:
+        print("[oracle] Running cheap scan in separate preflight world to avoid polluting authoritative generation history")
+        # Preflight: use separate level_name to isolate generation history
+        orig_level = ORACLE_ROLE["level_name"]
+        ORACLE_ROLE["level_name"] = "oracle_end_chorus_preflight"
+        _reset_disposable_world()
+        _patch_server_properties_for_oracle()
+        # Start preflight server if not running
+        if not _wait_for_rcon(timeout=5):
+            print("[oracle] Preflight server not running - attempting to start oracle_end_chorus_preflight via manager", file=sys.stderr)
+            _start_oracle_server_via_manager()
+            if not _wait_for_rcon(timeout=120):
+                print("[oracle] Preflight server failed to start", file=sys.stderr)
+                sys.exit(1)
         _cheap_chorus_scan()
+        # Destroy preflight world and Voxy state before real capture
+        print("[oracle] Destroying preflight world before pristine real capture")
+        _reset_disposable_world()
+        ORACLE_ROLE["level_name"] = orig_level
+        _patch_server_properties_for_oracle()
 
     _run_ingest_via_rcon(radius_chunks=args.radius_chunks)
     if args.ingest_only:
