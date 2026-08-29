@@ -54,3 +54,12 @@ verify.tmp
 # Canary/Migration evidence logs (ignored, generated receipts)
 .sandcastle/logs/
 python/tools/.mypy_cache/
+
+# Java
+libraries/
+
+# Minecraft Servers
+eula.txt
+server.properties
+versions/
+logs/
