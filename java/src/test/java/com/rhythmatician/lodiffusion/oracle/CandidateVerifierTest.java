@@ -2,6 +2,7 @@ package com.rhythmatician.lodiffusion.oracle;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import com.rhythmatician.lodiffusion.oracle.synthetic.SyntheticEndChorusFixtureFactory;
 import com.rhythmatician.lodiffusion.voxy.Level;
 import com.rhythmatician.lodiffusion.voxy.SectionPos;
 import com.rhythmatician.lodiffusion.voxy.VoxelVolume;
@@ -12,7 +13,7 @@ class CandidateVerifierTest {
     @Test
     void correctCandidatePassesAllLevels() {
         OracleContract c = EndChorusTracerContract.contract();
-        OracleFixture f = VanillaVoxyOracle.generateSyntheticTracerFixture(c);
+        OracleFixture f = SyntheticEndChorusFixtureFactory.generateSyntheticTracerFixture(c);
         SectionPos origin = f.origin();
         for (Level l : Level.values()) {
             VoxelVolume candidate = f.volume(l);
@@ -24,7 +25,7 @@ class CandidateVerifierTest {
     @Test
     void verifierSupportsEachLevelIndependently() {
         OracleContract c = EndChorusTracerContract.contract();
-        OracleFixture f = VanillaVoxyOracle.generateSyntheticTracerFixture(c);
+        OracleFixture f = SyntheticEndChorusFixtureFactory.generateSyntheticTracerFixture(c);
         SectionPos origin = f.origin();
         // Verify each level independently - mismatched level data should fail
         VoxelVolume l1Vol = f.volume(Level.L1);
@@ -37,7 +38,7 @@ class CandidateVerifierTest {
     @Test
     void verifierDoesNotUseCandidateProductionCodeForExpected() {
         OracleContract c = EndChorusTracerContract.contract();
-        OracleFixture f = VanillaVoxyOracle.generateSyntheticTracerFixture(c);
+        OracleFixture f = SyntheticEndChorusFixtureFactory.generateSyntheticTracerFixture(c);
         SectionPos origin = f.origin();
         Level level = Level.L1;
         VoxelVolume expected = f.volume(level);
@@ -59,18 +60,19 @@ class CandidateVerifierTest {
                 base.canonicalBiomeRegistryVersion(), base.canonicalBiomeRegistrySha256(),
                 base.inspectedMinecraftReferences(), base.inspectedVoxyReferences(),
                 base.seed(), base.region(), base.halo(), base.authoritativeGenerationStage(),
-                base.fixtureFormatVersion(), base.oracleFixtureId(), base.perLevelDisposition(),
-                base.claimRole(), base.dependencyRole(), base.benchmarkPolicy());
-        // Contract itself fails validation, fixture construction should also fail
+                base.fixtureFormatVersion(), base.provenanceId(), base.perLevelDecisions(), base.roles(), base.benchmarkPolicy());
         assertThrows(IllegalArgumentException.class, broken::validate);
     }
 
     @Test
     void wrongOriginFails() {
         OracleContract c = EndChorusTracerContract.contract();
-        OracleFixture f = VanillaVoxyOracle.generateSyntheticTracerFixture(c);
+        OracleFixture f = SyntheticEndChorusFixtureFactory.generateSyntheticTracerFixture(c);
         VoxelVolume candidate = f.volume(Level.L0);
         SectionPos wrong = new SectionPos(99, 99, 99);
         assertThrows(IllegalArgumentException.class, () -> CandidateVerifier.verify(Level.L0, wrong, candidate, f));
     }
 }
+
+
+

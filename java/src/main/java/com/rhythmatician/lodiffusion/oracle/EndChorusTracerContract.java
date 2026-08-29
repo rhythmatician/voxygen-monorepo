@@ -3,13 +3,6 @@ package com.rhythmatician.lodiffusion.oracle;
 import com.rhythmatician.lodiffusion.voxy.CanonicalRegistries;
 import java.util.List;
 
-/**
- * Pinned tracer contract for End chorus (#233). Single source of truth for the
- * executable contract that initial oracle fixtures and candidate verifiers must satisfy.
- *
- * <p>Values are grounded in inspected upstream sources; changing any versioned
- * input creates a distinct evidence identity (distinct oracleFixtureId).
- */
 public final class EndChorusTracerContract {
     private EndChorusTracerContract() {}
 
@@ -38,34 +31,44 @@ public final class EndChorusTracerContract {
                         "net.minecraft.world.level.chunk.status.ChunkPyramid:18#GENERATION_PYRAMID FEATURES writeRadius=1 requires CARVERS@1 STRUCTURE_STARTS@8",
                         "net.minecraft.world.level.levelgen.NoiseGeneratorSettings:70#END NoiseSettings(0,128,2,1) cell 8x4 aquifersEnabled=false",
                         "net.minecraft.world.level.levelgen.GenerationStep:11#VEGETAL_DECORATION chorus in END_HIGHLANDS",
-                        "net.minecraft.data.worldgen.biome.EndBiomes:24-46#END_HIGHLANDS chorus placement"
+                        "net.minecraft.data.worldgen.biome.EndBiomes:24-46#END_HIGHLANDS chorus placement",
+                        "net.minecraft.world.level.levelgen.placement.PlacedFeature:xx#placeWithContext -> WorldgenRandom seed derivation: worldSeed ^ chunkPos ^ step ^ featureIndex",
+                        "net.minecraft.util.RandomSource:xx#Xoroshiro seed -> PositionalRandomFactory at(x,y,z)",
+                        "net.minecraft.world.level.levelgen.feature.FeaturePlaceContext:xx#origin + RandomSource per placed feature"
                 ))
                 .inspectedVoxyReferences(List.of(
                         "me.cortex.voxy.common.voxelization.WorldConversionFactory:130-220#convert(PalettedContainer->Mapper.composeMappingId)",
                         "me.cortex.voxy.common.voxelization.VoxelizedSection:1-60#long[4681] pyramid offsets 0/4096/4608/4672/4680",
-                        "me.cortex.voxy.common.world.other.Mipper:9-55#mip(opacity<<4|cornorPriority I111=7..I000=0, air averages light)",
+                        "me.cortex.voxy.common.world.other.Mipper:9-55#mip(opacity<<4|cornerPriority I111=7..I000=0, air averages light)",
                         "me.cortex.voxy.common.world.other.Mapper:1-120#per-world sequential block/biome IDs via putIdMapping/getIdMappingsData key (type<<30)|id bits 63..56 light 55..47 biome 46..27 blockId",
                         "me.cortex.voxy.common.world.WorldUpdater:14-90#insertUpdate(WorldEngine acquire lvl x>>(lvl+1) -> insertSectionLvlIntoWorld -> nonEmptyChildren)",
                         "me.cortex.voxy.common.world.WorldSection:1-40#32^3 voxels long[32768] YZX (y<<10)|(z<<5)|x nonEmptyChildren octant mask",
-                        "me.cortex.voxy.common.world.WorldEngine:60#getWorldSectionId lvl<<60 y&0xFF<<52 z<<28 x<<4"
+                        "me.cortex.voxy.common.world.WorldEngine:60#getWorldSectionId lvl<<60 y&0xFF<<52 z<<28 x<<4",
+                        "me.cortex.voxy.common.world.WorldEngine:xx#acquire/markDirty + ActiveSectionTracker MRU 1024/2048"
                 ))
                 .seed(42L)
                 .region(new OracleContract.RegionSpec(0, 0, 0, 2))
-                .halo(new OracleContract.HaloSpec(24, "ChorusPlantFeature maxHorizontalSpread 8 + ChunkPyramid FEATURES writeRadius 1 chunk (16) = 24 blocks", "ChorusFlowerBlock.java:200 + ChunkPyramid.java:18"))
+                .halo(new OracleContract.HaloSpec(
+                        8, "Chorus max horizontal spread 8 blocks from origin (maxHorizontalSpread parameter in generatePlant)", "ChorusFlowerBlock.java:178-210 growTreeRecursive maxHorizontalSpread=8",
+                        1, "FEATURES reads CARVERS@1 and STRUCTURE_STARTS@8, writes 1 chunk; need +1 chunk halo to make placement well-defined at boundary", "ChunkPyramid.java:18 ChunkStatus.java:28",
+                        1, "Voxy 2x2x2 Mipper group crossing WorldSection boundary needs 1 block halo", "Mipper.java:9-55 + WorldSection.java YZX",
+                        25))
                 .authoritativeGenerationStage("FEATURES")
                 .fixtureFormatVersion(OracleContract.CURRENT_FIXTURE_FORMAT_VERSION)
-                .oracleFixtureId("end_chorus__s42__r0_0_0_e2__h24__mc1.21.11_voxy0.2.11-alpha__fmtv1")
-                .perLevelDisposition(new OracleContract.PerLevelDisposition(
-                        "omit",
-                        "omit",
-                        "claim",
-                        "claim",
-                        "claim"
+                .provenanceId("end_chorus__s42__r0_0_0_e2__fh8_gh1c_vh1_ch25__mc1.21.11_voxy0.2.11-alpha__fmtv2")
+                .perLevelDecisions(new OracleContract.PerLevelPartitionDecisions(
+                        OracleContract.PartitionDecision.unresolved("L4 chorus visibility requires real oracle evidence; coarse mip may suppress thin features via opacity"),
+                        OracleContract.PartitionDecision.unresolved("L3 chorus visibility requires real oracle evidence; coarse mip may suppress"),
+                        OracleContract.PartitionDecision.unresolved("L2 chorus is UNRESOLVED until real capture; honest omission vs learned vs deterministic not decided"),
+                        OracleContract.PartitionDecision.unresolved("L1 chorus is UNRESOLVED until real capture"),
+                        OracleContract.PartitionDecision.unresolved("L0 chorus is UNRESOLVED until real capture; closest to vanilla FEATURES")
                 ))
-                .claimRole("end_chorus visibility at L2/L1/L0 is acceptance-bearing per Fidelity Profile")
-                .dependencyRole("end_chorus at L4/L3 is dependency-only; coarse omission is expected via Mipper")
+                .roles(new OracleContract.ClaimDependencyRoles(
+                        "end_chorus claim at L0 is not yet decided; all Levels are UNRESOLVED per partition",
+                        "end_chorus dependency at coarse Levels not yet decided",
+                        "L4..L0 partition decisions remain UNRESOLVED until real vanilla->Voxy fixture provides evidence; claim/dependency orthogonal to disposition"
+                ))
                 .benchmarkPolicy(new OracleContract.BenchmarkPolicy(5, 20, "median of 20 after 5 warmup, wall ms per volume"))
                 .build();
     }
 }
-
