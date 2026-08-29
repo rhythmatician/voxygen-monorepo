@@ -63,3 +63,4 @@ eula.txt
 server.properties
 versions/
 logs/
+python/tools/fabric-server/runtime/oracle_end_chorus/

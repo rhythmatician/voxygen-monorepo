@@ -7,7 +7,7 @@ public final class EndChorusTracerContract {
     private EndChorusTracerContract() {}
 
     public static OracleContract contract() {
-        // Outer-island END_HIGHLANDS tracer for seed 42: block 1536,64,0 extent 32 (SectionPos 96,4,0) - Y=64 contains chorus surface; X/Z outer highlands.
+        // Outer-island END_HIGHLANDS tracer for seed 42: block 1600,64,128 extent 32 (SectionPos 100,4,8) - Y=64 contains chorus surface; X/Z outer highlands.
         // Per-Level WorldSections derived independently via floorDiv (L0 ws 48,2,0; L4 ws 3,0,0). Deterministic anchor will be verified by inspecting real outer-island chunks for actual chorus_plant at seed 42 and pinning the containing L0 WorldSection.
         return OracleContract.builder()
                 .schemaVersion(OracleContract.CURRENT_SCHEMA_VERSION)
@@ -54,8 +54,8 @@ public final class EndChorusTracerContract {
                         "me.cortex.voxy.common.world.WorldEngine:110#acquireIfExists(lvl,x,y,z) -> WorldSection + ActiveSectionTracker:1024/2048 MRU"
                 ))
                 .seed(42L)
-                .region(new OracleContract.RegionSpec(96, 4, 0, 2))
-                .blockRegion(new OracleContract.BlockRegionSpec(1536, 64, 0, 32))
+                .region(new OracleContract.RegionSpec(100, 4, 8, 2))
+                .blockRegion(new OracleContract.BlockRegionSpec(1600, 64, 128, 32))
                 .halo(new OracleContract.HaloSpec(
                         8, "Chorus max horizontal spread 8 blocks from origin (maxHorizontalSpread parameter in generatePlant)", "ChorusFlowerBlock.java:178-210 growTreeRecursive maxHorizontalSpread=8",
                         1, "FEATURES reads CARVERS@1 and STRUCTURE_STARTS@8, writes 1 chunk; need +1 chunk halo to make placement well-defined at boundary", "ChunkPyramid.java:18 ChunkStatus.java:28",
@@ -63,7 +63,7 @@ public final class EndChorusTracerContract {
                         25))
                 .authoritativeGenerationStage("FEATURES")
                 .fixtureFormatVersion(OracleContract.CURRENT_FIXTURE_FORMAT_VERSION)
-                .provenanceId("end_chorus__s42__b1536_64_0_e32__fh8_gh1c_vh1_ch25__mc1.21.11_voxy0.2.11-alpha__fmtv3")
+                .provenanceId("end_chorus__s42__b1600_64_128_e32__fh8_gh1c_vh1_ch25__mc1.21.11_voxy0.2.11-alpha__fmtv3")
                 .perLevelDecisions(new OracleContract.PerLevelPartitionDecisions(
                         OracleContract.PartitionDecision.unresolved("L4 chorus visibility requires real oracle evidence; coarse mip may suppress thin features via opacity"),
                         OracleContract.PartitionDecision.unresolved("L3 chorus visibility requires real oracle evidence; coarse mip may suppress"),
