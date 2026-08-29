@@ -285,20 +285,27 @@ public class IngestAllCommand {
         long deadlineNanos = System.nanoTime() + TICK_BUDGET_MS * 1_000_000L;
         int batchCount = 0;
 
+        boolean isOracleBatch = activeBatchId != null && !activeBatchId.isEmpty();
         while (!q.isEmpty() && System.nanoTime() < deadlineNanos) {
             ChunkPos pos = q.poll();
             try {
-                // Synchronous load — fast for pre-generated chunks on disk
                 LevelChunk chunk = level.getChunk(pos.x, pos.z);
-                if (chunk.isEmpty()) {
+                // Oracle mode must not skip isEmpty() - every exact-bounds chunk must contribute to batch contract
+                if (!isOracleBatch && chunk.isEmpty()) {
                     skippedChunks++;
                     continue;
                 }
 
                 IngestPayload payload = serializeChunk(chunk, activeBatchId, activeBatchTotal);
                 if (payload == null) {
-                    skippedChunks++;
-                    continue;
+                    // For oracle, null payload still counts as needing ack (empty chunk still part of L4 footprint), so don't skip
+                    if (isOracleBatch) {
+                        // Send empty payload for empty chunk to keep completion well-defined
+                        payload = new IngestPayload(chunk.getPos(), chunk.getMinSectionY(), java.util.Collections.emptyList(), activeBatchId, activeBatchTotal);
+                    } else {
+                        skippedChunks++;
+                        continue;
+                    }
                 }
 
                 for (ServerPlayer player : receivers) {
