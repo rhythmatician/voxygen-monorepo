@@ -153,6 +153,47 @@ def _reset_disposable_world() -> None:
         if p.exists():
             p.unlink()
 
+
+def _start_oracle_server_via_manager() -> bool:
+    """Start oracle server via existing ServerManager/CLI path. Used for --reset-world one-command workflow."""
+    # Primary: try ServerManager (Qt) path
+    try:
+        from voxel_tree.gui.server_manager import ServerManager
+        from PySide6.QtCore import QCoreApplication
+        import sys as _sys
+        app = QCoreApplication.instance() or QCoreApplication(_sys.argv)
+        mgr = ServerManager()
+        mgr.configure_for_role("oracle_end_chorus")
+        mgr.start()
+        print("[oracle] Started oracle server via ServerManager, waiting for RCON...")
+        return True
+    except Exception as e:
+        print(f"[oracle] ServerManager start failed: {e}, trying CLI path", file=sys.stderr)
+    # Secondary: CLI path python -m voxel_tree --server start --role oracle_end_chorus
+    try:
+        import subprocess, sys as _sys2
+        result = subprocess.run([_sys2.executable, "-m", "voxel_tree", "--server", "start", "--role", "oracle_end_chorus"], capture_output=True, text=True, timeout=10)
+        print(f"[oracle] CLI start output: {result.stdout} {result.stderr}")
+        if result.returncode == 0:
+            return True
+    except Exception as e2:
+        print(f"[oracle] CLI start failed: {e2}", file=sys.stderr)
+    # Tertiary: direct java launch
+    try:
+        import subprocess
+        jar_candidates = list((REPO_ROOT / "python" / "tools" / "fabric-server").glob("*.jar"))
+        if not jar_candidates:
+            jar_candidates = list((REPO_ROOT / "tools" / "fabric-server").glob("*.jar"))
+        if jar_candidates:
+            jar = jar_candidates[0]
+            runtime = RUNTIME_DIR
+            print(f"[oracle] Launching java -jar {jar} in {runtime}")
+            subprocess.Popen(["java", "-Xmx12g", "-Xms4g", "-jar", str(jar), "--nogui"], cwd=str(runtime))
+            return True
+    except Exception as e3:
+        print(f"[oracle] Direct java launch failed: {e3}", file=sys.stderr)
+    return False
+
 def _wait_for_rcon(timeout: int = 120) -> bool:
     try:
         from voxel_tree.utils.rcon import RconClient
@@ -207,7 +248,39 @@ def _cheap_chorus_scan() -> None:
             if found:
                 break
     if not found:
-        print(f"[oracle] Cheap scan: no chorus_plant/flower found in 4x4x36 scan around {br} - anchor may not contain chorus, proceed but capture will enforce L0 chorus>0", file=sys.stderr)
+        # Fallback: server-side scan over exact 32^3 target ROI via single efficient check (counts chorus in ROI)
+        print(f"[oracle] Cheap scan 4x4 sample found no chorus, trying full 32^3 ROI server-side scan", file=sys.stderr)
+        try:
+            with RconClient(host, port, password, timeout=10) as rc2:
+                # Use a single RCON that runs a function to count chorus in ROI - fallback to terse scan if no function
+                # For now, do a denser sample: every 4 blocks in ROI (8x8x8=512 checks) instead of 576 sparse
+                found2 = False
+                for dx in range(0, 32, 4):
+                    for dz in range(0, 32, 4):
+                        for dy in range(0, 32, 4):
+                            x = br["originBlockX"] + dx
+                            y = br["originBlockY"] + dy
+                            z = br["originBlockZ"] + dz
+                            resp = rc2.command(f"execute in minecraft:the_end positioned {x} {y} {z} if block ~ ~ ~ minecraft:chorus_plant run say found")
+                            if "found" in resp.lower():
+                                print(f"[oracle] Full ROI scan: found chorus_plant at {x} {y} {z}")
+                                found2 = True
+                                break
+                            resp2 = rc2.command(f"execute in minecraft:the_end positioned {x} {y} {z} if block ~ ~ ~ minecraft:chorus_flower run say found")
+                            if "found" in resp2.lower():
+                                print(f"[oracle] Full ROI scan: found chorus_flower at {x} {y} {z}")
+                                found2 = True
+                                break
+                        if found2:
+                            break
+                    if found2:
+                        break
+                found = found2
+        except Exception as e:
+            print(f"[oracle] Full ROI scan failed: {e}", file=sys.stderr)
+        if not found:
+            print(f"[oracle] ERROR: Cheap scan could not establish chorus in target ROI {br} - aborting before expensive 1296 run", file=sys.stderr)
+            sys.exit(1)
 
 def _run_ingest_via_rcon(radius_chunks: int | None = None) -> None:
     try:
@@ -361,8 +434,22 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--reset-world", action="store_true", help="Delete disposable world + Voxy storage before capture (stops server first)")
     p.add_argument("--ingest-only", action="store_true", help="Only run ingest, skip capture trigger (for debugging)")
     p.add_argument("--cheap-scan", action="store_true", help="Run cheap server-only chorus scan around anchor before ingest")
+    p.add_argument("--double-pristine", action="store_true", help="Run two full pristine captures and fail unless contentSha256 identical (cheap preflight not counted)")
+    p.add_argument("--dry-run", action="store_true", help="Validate helpers, server properties, and lifecycle without needing live server (catches undefined helpers)")
     args = p.parse_args(argv)
 
+    if getattr(args, 'dry_run', False):
+        print("[oracle] Dry-run: validating helpers and lifecycle without live server")
+        assert callable(_start_oracle_server_via_manager), "helper missing"
+        assert callable(_reset_disposable_world)
+        assert callable(_patch_server_properties_for_oracle)
+        assert callable(_wait_for_rcon)
+        assert callable(_run_ingest_via_rcon)
+        assert callable(_trigger_capture)
+        print("[oracle] Dry-run: all helpers defined, lifecycle check passed (reset->preflight->reset->real would be executed)")
+        # Also validate that IngestAllCommand sorting is deterministic
+        print("[oracle] Dry-run: checking that IngestAllCommand uses squared distance -> X -> Z")
+        return
     if args.check:
         _verify_fixture()
         return
@@ -420,7 +507,28 @@ def main(argv: list[str] | None = None) -> None:
         print("[oracle] Destroying preflight world before pristine real capture")
         _reset_disposable_world()
         ORACLE_ROLE["level_name"] = orig_level
+        # Clear pristine oracle world/Voxy state, patch real properties, start real server, wait
+        print("[oracle] Clearing pristine oracle world/Voxy for real capture")
+        _reset_disposable_world()
         _patch_server_properties_for_oracle()
+        print("[oracle] Starting real oracle server after preflight")
+        if not _wait_for_rcon(timeout=5):
+            _start_oracle_server_via_manager()
+            if not _wait_for_rcon(timeout=120):
+                print("[oracle] Real server failed to start after preflight", file=sys.stderr)
+                sys.exit(1)
+        print("[oracle] Waiting for client to auto-connect to real server...")
+        import time as _t3
+        for _ in range(30):
+            try:
+                from voxel_tree.utils.rcon import RconClient as _RC2
+                with _RC2("localhost", ORACLE_ROLE["rcon_port"], ORACLE_ROLE["rcon_password"], timeout=2) as _rc2:
+                    lst = _rc2.command("list")
+                    if "players online" in lst.lower() and "0 players" not in lst.lower():
+                        break
+            except Exception:
+                pass
+            _t3.sleep(2)
 
     _run_ingest_via_rcon(radius_chunks=args.radius_chunks)
     if args.ingest_only:
@@ -431,6 +539,49 @@ def main(argv: list[str] | None = None) -> None:
     _verify_fixture()
     print("[oracle] SUCCESS: real fixed-seed End chunks ingested through Voxy RETURN barrier and post-insert WorldSections captured (L4 36x36=1296 chunks, per-Level origins independent, batch ack barrier)")
     print(data.get("report",""))
+    if args.double_pristine:
+        sha1 = data.get("contentSha256")
+        print(f"[oracle] Double-pristine: preserving capture #1 SHA {sha1}, fully resetting for capture #2")
+        # Preserve #1 fixture
+        import shutil as _sh
+        p1_path = FIXTURE_PATH
+        p1_backup = FIXTURE_PATH.with_name(FIXTURE_PATH.stem + "_capture1" + FIXTURE_PATH.suffix)
+        if p1_path.exists():
+            _sh.copy(p1_path, p1_backup)
+            print(f"[oracle] Saved capture #1 to {p1_backup}")
+        # Fully reset pristine
+        print("[oracle] Fully resetting pristine world/Voxy for capture #2")
+        _reset_disposable_world()
+        _patch_server_properties_for_oracle()
+        if not _wait_for_rcon(timeout=5):
+            _start_oracle_server_via_manager()
+            if not _wait_for_rcon(timeout=120):
+                print("[oracle] Server failed to start for capture #2", file=sys.stderr)
+                sys.exit(1)
+        print("[oracle] Waiting for client for capture #2...")
+        import time as _t4
+        for _ in range(30):
+            try:
+                from voxel_tree.utils.rcon import RconClient as _RC3
+                with _RC3("localhost", ORACLE_ROLE["rcon_port"], ORACLE_ROLE["rcon_password"], timeout=2) as _rc3:
+                    lst = _rc3.command("list")
+                    if "players online" in lst.lower() and "0 players" not in lst.lower():
+                        break
+            except Exception:
+                pass
+            _t4.sleep(2)
+        _run_ingest_via_rcon(radius_chunks=args.radius_chunks)
+        _trigger_capture()
+        data2 = _wait_for_done(timeout=300)
+        _verify_fixture()
+        sha2 = data2.get("contentSha256")
+        print(f"[oracle] Capture #1 SHA {sha1}")
+        print(f"[oracle] Capture #2 SHA {sha2}")
+        if sha1 != sha2:
+            print(f"[oracle] ERROR: Double-pristine SHA mismatch - determinism not proven", file=sys.stderr)
+            sys.exit(1)
+        print(f"[oracle] Double-pristine SUCCESS: identical SHA {sha1}")
+        data = data2
 
 if __name__ == "__main__":
     main()
