@@ -11,7 +11,7 @@ class OracleContractValidationTest {
     void tracerContractValidates() {
         OracleContract c = EndChorusTracerContract.contract();
         assertDoesNotThrow(c::validate);
-        assertEquals("voxygen.oracle.contract.v2", c.schemaVersion());
+        assertEquals("voxygen.oracle.contract.v3", c.schemaVersion());
         assertEquals(8, c.halo().featureReachBlocks());
         assertEquals(1, c.halo().minecraftGenerationHaloChunks());
         assertEquals(1, c.halo().voxyMipHaloBlocks());
@@ -122,9 +122,7 @@ class OracleContractValidationTest {
                 base.inspectedMinecraftReferences(), base.inspectedVoxyReferences(),
                 base.seed(), base.region(), base.halo(), "NOISE",
                 base.fixtureFormatVersion(), base.provenanceId(), base.perLevelDecisions(), base.roles(), base.benchmarkPolicy());
-        assertDoesNotThrow(broken::validate);
-        // Synthetic factory requires FEATURES, so it should fail
-        assertThrows(IllegalArgumentException.class, () -> com.rhythmatician.lodiffusion.oracle.synthetic.SyntheticEndChorusFixtureFactory.generateSyntheticTracerFixture(broken));
+        assertThrows(IllegalArgumentException.class, broken::validate);
     }
 
     @Test

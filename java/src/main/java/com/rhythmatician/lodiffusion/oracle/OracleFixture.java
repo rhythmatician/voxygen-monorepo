@@ -31,8 +31,13 @@ public final class OracleFixture {
     private final String provenanceId;
     private final String contentSha256;
     private final long createdAtEpochMs;
+    private final String actualCaptureStage;
 
     public OracleFixture(OracleContract contract, Map<Level, VoxelVolume> volumes, String contentSha256, long createdAtEpochMs) {
+        this(contract, volumes, contentSha256, createdAtEpochMs, contract.authoritativeGenerationStage());
+    }
+
+    public OracleFixture(OracleContract contract, Map<Level, VoxelVolume> volumes, String contentSha256, long createdAtEpochMs, String actualCaptureStage) {
         Objects.requireNonNull(contract, "contract");
         Objects.requireNonNull(volumes, "volumes");
         if (volumes.isEmpty()) throw new IllegalArgumentException("volumes must be non-empty");
@@ -47,6 +52,7 @@ public final class OracleFixture {
         this.provenanceId = contract.provenanceId();
         this.contentSha256 = contentSha256;
         this.createdAtEpochMs = createdAtEpochMs;
+        this.actualCaptureStage = actualCaptureStage != null ? actualCaptureStage : contract.authoritativeGenerationStage();
         contract.validate();
         // Verify content hash matches actual voxel data (defense against synthetic substitution)
         String computed = computeContentSha256(volumes);
@@ -88,6 +94,7 @@ public final class OracleFixture {
     // Legacy accessor
     public String fixtureSha256() { return contentSha256; }
     public long createdAtEpochMs() { return createdAtEpochMs; }
+    public String actualCaptureStage() { return actualCaptureStage; }
     public SectionPos origin() {
         return new SectionPos(contract.region().originSectionX(), contract.region().originSectionY(), contract.region().originSectionZ());
     }

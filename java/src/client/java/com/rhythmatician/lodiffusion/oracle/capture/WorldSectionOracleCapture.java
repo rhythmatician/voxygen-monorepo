@@ -34,6 +34,16 @@ public final class WorldSectionOracleCapture {
     private static final Logger LOGGER = LoggerFactory.getLogger(WorldSectionOracleCapture.class);
     private static final int WS_SIZE = 32;
 
+    // ThreadLocal for actualCaptureStage supplied by OracleFileTrigger (FULL vs FEATURES)
+    static final class ActualStageHolder {
+        private static final ThreadLocal<String> TL = new ThreadLocal<>();
+        static void set(String s) { TL.set(s); }
+        static String get() { return TL.get(); }
+        static void clear() { TL.remove(); }
+    }
+    public static void setActualCaptureStage(String s) { ActualStageHolder.set(s); }
+    public static void clearActualCaptureStage() { ActualStageHolder.clear(); }
+
     private WorldSectionOracleCapture() {}
 
     /**
@@ -88,7 +98,10 @@ public final class WorldSectionOracleCapture {
         }
 
         String sha = OracleFixture.computeContentSha256(volumes);
-        OracleFixture fixture = new OracleFixture(contract, volumes, sha, System.currentTimeMillis());
+        // actualCaptureStage is supplied by caller (OracleFileTrigger) via ThreadLocal or via contract's authoritative; for direct calls use FULL if requested
+        String actualStage = WorldSectionOracleCapture.ActualStageHolder.get();
+        if (actualStage == null) actualStage = contract.authoritativeGenerationStage();
+        OracleFixture fixture = new OracleFixture(contract, volumes, sha, System.currentTimeMillis(), actualStage);
         LOGGER.info("[OracleCapture] Fixture provenance={} sha={} halo={} stage={} region={} volumes={}", fixture.provenanceId(), sha, contract.halo().combinedHaloBlocks(), stage, origin, volumes.size());
         return fixture;
     }

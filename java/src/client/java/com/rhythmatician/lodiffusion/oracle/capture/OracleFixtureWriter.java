@@ -80,7 +80,7 @@ public final class OracleFixtureWriter {
         halo.addProperty("combinedHaloBlocks", c.halo().combinedHaloBlocks());
         root.add("halo", halo);
         root.addProperty("authoritativeGenerationStage", c.authoritativeGenerationStage());
-        root.addProperty("actualCaptureStage", c.authoritativeGenerationStage()); // offline oracle may capture at FULL; record actual stage
+        root.addProperty("actualCaptureStage", fixture.actualCaptureStage());
 
         // Volumes: per-Level 32^3 ints XYZ order (blockId, biomeId)
         JsonObject volumes = new JsonObject();
@@ -120,6 +120,7 @@ public final class OracleFixtureWriter {
         // Reconstruct contract from stored header — for now delegate to EndChorusTracerContract.contract()
         // and verify provenance matches; full generic contract deserialization can be added later.
         // We do not recompute contract from JSON; we load the canonical tracer contract and check id.
+        String actualCaptureStage = root.has("actualCaptureStage") ? root.get("actualCaptureStage").getAsString() : root.get("authoritativeGenerationStage").getAsString();
         OracleContract contract = com.rhythmatician.lodiffusion.oracle.EndChorusTracerContract.contract();
         if (!contract.provenanceId().equals(provenanceId)) {
             LOGGER.warn("[OracleFixtureWriter] Provenance mismatch: file {} vs tracer {}", provenanceId, contract.provenanceId());
@@ -153,6 +154,6 @@ public final class OracleFixtureWriter {
         if (!computed.equalsIgnoreCase(contentSha256)) {
             throw new IllegalStateException("Fixture contentSha mismatch at " + path + ": file " + contentSha256 + " computed " + computed);
         }
-        return new OracleFixture(contract, map, contentSha256, createdAt);
+        return new OracleFixture(contract, map, contentSha256, createdAt, actualCaptureStage);
     }
 }

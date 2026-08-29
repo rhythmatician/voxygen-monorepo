@@ -7,6 +7,8 @@ public final class EndChorusTracerContract {
     private EndChorusTracerContract() {}
 
     public static OracleContract contract() {
+        // Outer-island END_HIGHLANDS tracer for seed 42: block 1536,64,0 extent 32 (SectionPos 96,4,0) - Y=64 contains chorus surface; X/Z outer highlands.
+        // Per-Level WorldSections derived independently via floorDiv (L0 ws 48,2,0; L4 ws 3,0,0). Deterministic anchor will be verified by inspecting real outer-island chunks for actual chorus_plant at seed 42 and pinning the containing L0 WorldSection.
         return OracleContract.builder()
                 .schemaVersion(OracleContract.CURRENT_SCHEMA_VERSION)
                 .responsibilityId("end_chorus")
@@ -21,9 +23,9 @@ public final class EndChorusTracerContract {
                 .canonicalBlockRegistryVersion(CanonicalRegistries.BLOCK_REGISTRY_VERSION)
                 .canonicalBlockRegistrySha256(CanonicalRegistries.BLOCK_REGISTRY_SHA256)
                 .canonicalBiomeRegistryVersion("voxygen.biomes.v1")
-                .canonicalBiomeRegistrySha256("b18e5a6b9f3e0b8c7c9f0e1a2d3c4b5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3")
+                .canonicalBiomeRegistrySha256("66848491c9e88c0d992075ad197c8d4734dff9f11927b7995efb0c1e45e9fc4e")
                 .inspectedMinecraftReferences(List.of(
-                        "net.minecraft.world.level.levelgen.feature.ChorusPlantFeature:18,27-35#place()->ChorusFlowerBlock.generatePlant",
+                        "net.minecraft.world.level.levelgen.feature.ChorusPlantFeature:27-35#place()->ChorusFlowerBlock.generatePlant",
                         "net.minecraft.world.level.block.ChorusFlowerBlock:178-210#generatePlant()->growTreeRecursive(maxHorizontalSpread=8, depth<4, stems=random.nextInt(4)+1)",
                         "net.minecraft.world.level.block.ChorusFlowerBlock:106-148#canSurvive/allNeighborsEmpty",
                         "net.minecraft.world.level.biome.TheEndBiomeSource:48-79#getNoiseBiome(thresholds 0.25/-0.0625/-0.21875, chunkRadius 64)",
@@ -32,11 +34,11 @@ public final class EndChorusTracerContract {
                         "net.minecraft.world.level.levelgen.NoiseGeneratorSettings:70#END NoiseSettings(0,128,2,1) cell 8x4 aquifersEnabled=false",
                         "net.minecraft.world.level.levelgen.GenerationStep:11#VEGETAL_DECORATION chorus in END_HIGHLANDS",
                         "net.minecraft.data.worldgen.biome.EndBiomes:24-46#END_HIGHLANDS chorus placement",
+                        "net.minecraft.data.worldgen.placement.EndPlacements:22#CHORUS_PLANT CountPlacement 0-4 InSquare HEIGHTMAP BiomeFilter",
                         "net.minecraft.world.level.levelgen.placement.PlacedFeature:42-61#placeWithContext -> PlacementContext + decoration seed via RandomState.getOrCreateRandomFactory(PlacedFeature).at(x,y,z).fromHashOf(worldSeed/biome/feature)",
-                        "net.minecraft.world.level.levelgen.RandomState:xx#getOrCreateRandomFactory -> PositionalRandomFactory for VEGETAL_DECORATION step (decoration seed = worldSeed ^ chunkPosHash ^ generationStep ^ placedFeatureIndex)",
-                        "net.minecraft.world.level.levelgen.WorldgenRandom:xx#Xoroshiro128PlusPlus seeded from decoration hash; FeaturePlaceContext.origin + RandomSource per placed feature attempt",
-                        "net.minecraft.util.RandomSource:xx#create(worldSeed) -> Xoroshiro128PlusPlus(pos=chunkPos) -> PositionalRandomFactory.at(x,y,z) determines chorus placement attempts for given worldSeed/chunk/step/feature ordering (exact hash in ChunkGenerator.applyBiomeDecoration)",
-                        "net.minecraft.world.level.chunk.ChunkGenerator:xx#applyBiomeDecoration(PlacedFeature ordering per biome holds generationStep VEGETAL_DECORATION, featureIndex within END_HIGHLANDS)"
+                        "net.minecraft.world.level.levelgen.RandomState:122#getOrCreateRandomFactory(HolderGetter<PlacedFeature>) -> PositionalRandomFactory at BlockPos for VEGETAL_DECORATION step",
+                        "net.minecraft.world.level.levelgen.WorldgenRandom:22#<init>(XoroshiroRandomSource) -> Xoroshiro128PlusPlus seeded from RandomState.getOrCreateRandomFactory hash",
+                        "net.minecraft.world.level.chunk.ChunkGenerator:342#applyBiomeDecoration(ServerLevel, ChunkAccess, StructureManager) -> iterates PlacedFeature at VEGETAL_DECORATION order per EndBiomes"
                 ))
                 .inspectedVoxyReferences(List.of(
                         "me.cortex.voxy.common.voxelization.WorldConversionFactory:130-220#convert(PalettedContainer->Mapper.composeMappingId)",
@@ -46,10 +48,11 @@ public final class EndChorusTracerContract {
                         "me.cortex.voxy.common.world.WorldUpdater:14-90#insertUpdate(WorldEngine acquire lvl x>>(lvl+1) -> insertSectionLvlIntoWorld -> nonEmptyChildren)",
                         "me.cortex.voxy.common.world.WorldSection:1-40#32^3 voxels long[32768] YZX (y<<10)|(z<<5)|x nonEmptyChildren octant mask",
                         "me.cortex.voxy.common.world.WorldEngine:60#getWorldSectionId lvl<<60 y&0xFF<<52 z<<28 x<<4",
-                        "me.cortex.voxy.common.world.WorldEngine:xx#acquire/markDirty + ActiveSectionTracker MRU 1024/2048"
+                        "me.cortex.voxy.common.world.WorldEngine:110#acquireIfExists(lvl,x,y,z) -> WorldSection + ActiveSectionTracker:1024/2048 MRU"
                 ))
                 .seed(42L)
-                .region(new OracleContract.RegionSpec(0, 0, 0, 2))
+                .region(new OracleContract.RegionSpec(96, 4, 0, 2))
+                .blockRegion(new OracleContract.BlockRegionSpec(1536, 64, 0, 32))
                 .halo(new OracleContract.HaloSpec(
                         8, "Chorus max horizontal spread 8 blocks from origin (maxHorizontalSpread parameter in generatePlant)", "ChorusFlowerBlock.java:178-210 growTreeRecursive maxHorizontalSpread=8",
                         1, "FEATURES reads CARVERS@1 and STRUCTURE_STARTS@8, writes 1 chunk; need +1 chunk halo to make placement well-defined at boundary", "ChunkPyramid.java:18 ChunkStatus.java:28",
@@ -57,7 +60,7 @@ public final class EndChorusTracerContract {
                         25))
                 .authoritativeGenerationStage("FEATURES")
                 .fixtureFormatVersion(OracleContract.CURRENT_FIXTURE_FORMAT_VERSION)
-                .provenanceId("end_chorus__s42__r0_0_0_e2__fh8_gh1c_vh1_ch25__mc1.21.11_voxy0.2.11-alpha__fmtv2")
+                .provenanceId("end_chorus__s42__b1536_64_0_e32__fh8_gh1c_vh1_ch25__mc1.21.11_voxy0.2.11-alpha__fmtv3")
                 .perLevelDecisions(new OracleContract.PerLevelPartitionDecisions(
                         OracleContract.PartitionDecision.unresolved("L4 chorus visibility requires real oracle evidence; coarse mip may suppress thin features via opacity"),
                         OracleContract.PartitionDecision.unresolved("L3 chorus visibility requires real oracle evidence; coarse mip may suppress"),

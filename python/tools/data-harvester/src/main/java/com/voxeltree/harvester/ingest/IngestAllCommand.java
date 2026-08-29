@@ -74,6 +74,8 @@ public class IngestAllCommand {
     private static int errorChunks;
     private static long startTimeMs;
     private static boolean tickListenerRegistered;
+    private static String activeBatchId = "";
+    private static int activeBatchTotal = 0;
 
     /**
      * Register the {@code /ingestall} command tree.  Should be called
@@ -88,6 +90,25 @@ public class IngestAllCommand {
                         .executes(ctx -> stopIngest(ctx.getSource())))
                 .then(Commands.literal("status")
                         .executes(ctx -> showStatus(ctx.getSource())))
+                .then(Commands.literal("oracle")
+                        .then(Commands.argument("minX", IntegerArgumentType.integer(-30000000, 30000000))
+                        .then(Commands.argument("minZ", IntegerArgumentType.integer(-30000000, 30000000))
+                        .then(Commands.argument("maxX", IntegerArgumentType.integer(-30000000, 30000000))
+                        .then(Commands.argument("maxZ", IntegerArgumentType.integer(-30000000, 30000000))
+                        .executes(ctx -> startIngestBounds(ctx.getSource(),
+                                IntegerArgumentType.getInteger(ctx, "minX"),
+                                IntegerArgumentType.getInteger(ctx, "minZ"),
+                                IntegerArgumentType.getInteger(ctx, "maxX"),
+                                IntegerArgumentType.getInteger(ctx, "maxZ"))))
+                        .then(Commands.argument("batchId", net.minecraft.commands.arguments.StringArgumentType.string())
+                        .then(Commands.argument("batchTotal", IntegerArgumentType.integer(1, 1000000))
+                        .executes(ctx -> startIngestBounds(ctx.getSource(),
+                                IntegerArgumentType.getInteger(ctx, "minX"),
+                                IntegerArgumentType.getInteger(ctx, "minZ"),
+                                IntegerArgumentType.getInteger(ctx, "maxX"),
+                                IntegerArgumentType.getInteger(ctx, "maxZ"),
+                                net.minecraft.commands.arguments.StringArgumentType.getString(ctx, "batchId"),
+                                IntegerArgumentType.getInteger(ctx, "batchTotal"))))))))
                 .then(Commands.argument("radius", IntegerArgumentType.integer(1, 4096))
                         .executes(ctx -> startIngest(ctx.getSource(),
                                 IntegerArgumentType.getInteger(ctx, "radius")))));
@@ -139,6 +160,8 @@ public class IngestAllCommand {
         processedChunks = 0;
         skippedChunks = 0;
         errorChunks = 0;
+        activeBatchId = "";
+        activeBatchTotal = totalChunks;
         startTimeMs = System.currentTimeMillis();
 
         // 4. Register tick listener (idempotent — never unregistered)
@@ -154,6 +177,58 @@ public class IngestAllCommand {
         source.sendSuccess(() -> Component.literal(
                 String.format("Starting ingest of %,d chunks%s", totalChunks, scopeDesc)), true);
         LOGGER.info("[DataHarvester] /ingestall: {} chunks queued{}", totalChunks, scopeDesc);
+        return 1;
+    }
+
+    private static int startIngestBounds(CommandSourceStack source, int minX, int minZ, int maxX, int maxZ) {
+        return startIngestBounds(source, minX, minZ, maxX, maxZ, "", 0);
+    }
+
+    private static int startIngestBounds(CommandSourceStack source, int minX, int minZ, int maxX, int maxZ, String batchId, int batchTotal) {
+        if (queue != null) {
+            source.sendFailure(Component.literal(
+                    "Ingest already running (" + processedChunks + "/" + totalChunks
+                    + "). Use /ingestall stop first."));
+            return 0;
+        }
+        if (minX > maxX || minZ > maxZ) {
+            source.sendFailure(Component.literal("Invalid bounds: min > max"));
+            return 0;
+        }
+        ServerLevel level = source.getLevel();
+        // Exact bounds mode: enqueue every chunk in [minX..maxX] x [minZ..maxZ] directly via ServerLevel.getChunk (generates if needed)
+        List<ChunkPos> chunks = new java.util.ArrayList<>();
+        for (int x = minX; x <= maxX; x++) {
+            for (int z = minZ; z <= maxZ; z++) {
+                chunks.add(new ChunkPos(x, z));
+            }
+        }
+        // Sort by distance to center of bounds (matches Voxy spiral)
+        int centerX = (minX + maxX) / 2;
+        int centerZ = (minZ + maxZ) / 2;
+        chunks.sort(Comparator.comparingLong(pos -> {
+            long dx = (long) pos.x - centerX;
+            long dz = (long) pos.z - centerZ;
+            return dx * dx + dz * dz;
+        }));
+        queue = new ArrayDeque<>(chunks);
+        activeLevel = level;
+        activeSource = source;
+        totalChunks = chunks.size();
+        processedChunks = 0;
+        skippedChunks = 0;
+        errorChunks = 0;
+        activeBatchId = batchId != null ? batchId : "";
+        activeBatchTotal = batchTotal > 0 ? batchTotal : totalChunks;
+        startTimeMs = System.currentTimeMillis();
+        if (!tickListenerRegistered) {
+            ServerTickEvents.END_SERVER_TICK.register(IngestAllCommand::onServerTick);
+            tickListenerRegistered = true;
+        }
+        String scopeDesc2 = String.format(" within oracle bounds [%d,%d -> %d,%d] (%d chunks) batch %s", minX, minZ, maxX, maxZ, totalChunks, activeBatchId);
+        source.sendSuccess(() -> Component.literal(
+                String.format("Starting ingest of %,d chunks%s", totalChunks, scopeDesc2)), true);
+        LOGGER.info("[DataHarvester] /ingestall oracle: {} chunks queued{}", totalChunks, scopeDesc2);
         return 1;
     }
 
@@ -220,7 +295,7 @@ public class IngestAllCommand {
                     continue;
                 }
 
-                IngestPayload payload = serializeChunk(chunk);
+                IngestPayload payload = serializeChunk(chunk, activeBatchId, activeBatchTotal);
                 if (payload == null) {
                     skippedChunks++;
                     continue;
@@ -261,7 +336,7 @@ public class IngestAllCommand {
      *
      * @return the payload, or {@code null} if the chunk has no non-air sections
      */
-    private static IngestPayload serializeChunk(LevelChunk chunk) {
+    private static IngestPayload serializeChunk(LevelChunk chunk, String batchId, int batchTotal) {
         int minY = chunk.getMinSectionY();
         List<IngestPayload.SectionData> sections = new ArrayList<>();
         var lightEngine = chunk.getLevel().getLightEngine();
@@ -307,7 +382,7 @@ public class IngestAllCommand {
         }
 
         return sections.isEmpty() ? null
-                : new IngestPayload(chunk.getPos(), minY, sections);
+                : new IngestPayload(chunk.getPos(), minY, sections, batchId, batchTotal);
     }
 
     // ==================== region file scanning ====================
