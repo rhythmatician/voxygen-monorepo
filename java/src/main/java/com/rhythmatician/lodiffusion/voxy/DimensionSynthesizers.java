@@ -22,18 +22,10 @@ public final class DimensionSynthesizers {
             ExactL1SamplingTelemetry telemetry,
             long seed) {
         if (dimension == null) throw new IllegalArgumentException("dimension is null");
-        boolean isEnd, isOverworld, isNether;
-        try {
-            isEnd = dimension.equals(World.END);
-            isOverworld = dimension.equals(World.OVERWORLD);
-            isNether = dimension.equals(World.NETHER);
-        } catch (Throwable t2) {
-            // Headless unit-test JVM without Minecraft bootstrap - fall back to identifier string comparison.
-            var id = dimension.getValue();
-            isEnd = id.equals(Identifier.of("minecraft", "the_end"));
-            isOverworld = id.equals(Identifier.of("minecraft", "overworld"));
-            isNether = id.equals(Identifier.of("minecraft", "the_nether"));
-        }
+        var id = dimension.getValue();
+        boolean isEnd = id.equals(Identifier.of("minecraft", "the_end"));
+        boolean isOverworld = id.equals(Identifier.of("minecraft", "overworld"));
+        boolean isNether = id.equals(Identifier.of("minecraft", "the_nether"));
         if (!isEnd && !isOverworld && !isNether)
             throw new IllegalArgumentException("unknown dimension " + dimension);
         if (isEnd) {

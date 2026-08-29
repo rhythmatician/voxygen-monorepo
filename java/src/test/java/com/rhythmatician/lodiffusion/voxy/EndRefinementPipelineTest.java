@@ -122,25 +122,16 @@ class EndRefinementPipelineTest {
         Mockito.verify(noise, Mockito.atLeastOnce()).sampleFinalDensity(
                 Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt());
 
-        // Behavioral: L2/L3/L4 must NOT use exact sampler (only L1 does)
+        // Behavioral: L2/L3/L4 must NOT use exact sampler (only L1 does); base deterministic path samples final density for each active voxel
         for (Level lvl : new Level[]{Level.L2, Level.L3, Level.L4}) {
             Mockito.reset(noise);
             Mockito.when(noise.sampleFinalDensity(Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt())).thenReturn(1.0);
-            // stub exact to detect if called - should never be called for non-L1
             Mockito.doAnswer(inv -> { throw new AssertionError("exact sampler must not be called for " + lvl); })
                     .when(noise).sampleExactEndBaseTerrainChunk(Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt(), Mockito.any(), Mockito.any());
-            // Need to re-stub produceRegion path via EndL4DeterministicCandidate - it uses sampleFinalDensity? Actually L2/L3/L4 use deterministic, not exact, so exact must never
-            // For this check we use explicit seed path without chorus
-            try {
-                VoxelVolume v = session.produceRefinementChildWithSeed(lvl, new SectionPos(0, 0, 0), RegistryKey.of(RegistryKeys.WORLD, Identifier.of("minecraft", "the_end")), 0x5EED5EEDL);
-                // For L2, deterministic will still sample finalDensity for surface? No, base deterministic does not use finalDensity, only chorus does. So verify never for exact.
-                Mockito.verify(noise, Mockito.never()).sampleExactEndBaseTerrainChunk(Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt(), Mockito.any(), Mockito.any());
-            } catch (AssertionError e) {
-                throw e;
-            } catch (Exception e) {
-                // ignore other setup issues, but exact must not have been called
-                Mockito.verify(noise, Mockito.never()).sampleExactEndBaseTerrainChunk(Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt(), Mockito.any(), Mockito.any());
-            }
+            VoxelVolume v = session.produceRefinementChildWithSeed(lvl, new SectionPos(0, 0, 0), RegistryKey.of(RegistryKeys.WORLD, Identifier.of("minecraft", "the_end")), 0x5EED5EEDL);
+            assertNotNull(v);
+            assertTrue(v.extent() > 0);
+            Mockito.verify(noise, Mockito.never()).sampleExactEndBaseTerrainChunk(Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt(), Mockito.any(), Mockito.any());
         }
     }
 

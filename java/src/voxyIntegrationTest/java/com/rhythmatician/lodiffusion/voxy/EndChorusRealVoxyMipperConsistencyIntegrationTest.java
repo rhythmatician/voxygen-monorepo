@@ -145,7 +145,7 @@ class EndChorusRealVoxyMipperConsistencyIntegrationTest {
     }
 
     @Test
-    void l1TopDownEqualsBottomUpViaRealMipperAndMapper() {
+    void l1SyntheticFieldMatchesRealVoxyMipperSelection() {
         Mapper mapper = createMapper();
         int endStoneBlock = 1;
         int plantBlock = 2;

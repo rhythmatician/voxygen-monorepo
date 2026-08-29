@@ -351,12 +351,7 @@ public final class GenerationSession {
         var world = access.serverWorld();
         if (world == null) throw new IllegalStateException("World seed not bound for end - serverWorld is null (seed is required; inject explicitly via produceRefinementChildWithSeed for headless tests)");
         net.minecraft.registry.RegistryKey<World> boundDim = world.getRegistryKey();
-        boolean isEnd;
-        try {
-            isEnd = boundDim.equals(World.END);
-        } catch (Throwable t2) {
-            isEnd = boundDim.getValue().equals(Identifier.of("minecraft", "the_end"));
-        }
+        boolean isEnd = boundDim.getValue().equals(Identifier.of("minecraft", "the_end"));
         if (!isEnd) throw new IllegalStateException("produceEndRefinementChild called but bound dimension is " + boundDim + " not END");
         long seed;
         try {
