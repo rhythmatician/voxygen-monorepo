@@ -2,6 +2,7 @@ package com.rhythmatician.lodiffusion.oracle;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import com.rhythmatician.lodiffusion.oracle.synthetic.SyntheticEndChorusFixtureFactory;
 import com.rhythmatician.lodiffusion.voxy.Level;
 import com.rhythmatician.lodiffusion.voxy.SectionPos;
 import com.rhythmatician.lodiffusion.voxy.VoxelVolume;
@@ -34,7 +35,7 @@ class OracleIndependenceTest {
     @Test
     void verifierUsesFixtureNotCandidateForExpected() {
         OracleContract c = EndChorusTracerContract.contract();
-        OracleFixture f = VanillaVoxyOracle.generateSyntheticTracerFixture(c);
+        OracleFixture f = SyntheticEndChorusFixtureFactory.generateSyntheticTracerFixture(c);
         SectionPos origin = f.origin();
         Level level = Level.L1;
         // Correct candidate passes
@@ -57,7 +58,7 @@ class OracleIndependenceTest {
         // Our verifier uses exact voxel equality against fixture (which encodes real Mipper semantics),
         // so a helper-consistent but fixture-inconsistent candidate fails.
         OracleContract c = EndChorusTracerContract.contract();
-        OracleFixture f = VanillaVoxyOracle.generateSyntheticTracerFixture(c);
+        OracleFixture f = SyntheticEndChorusFixtureFactory.generateSyntheticTracerFixture(c);
         SectionPos origin = f.origin();
         // Build a candidate that would be produced by a naive helper: centre-sample without Mipper
         // For L1, naive centre sample would pick fewer chorus than Mipper-correct fixture; ensure verifier catches it
@@ -89,3 +90,5 @@ class OracleIndependenceTest {
         return b.build();
     }
 }
+
+

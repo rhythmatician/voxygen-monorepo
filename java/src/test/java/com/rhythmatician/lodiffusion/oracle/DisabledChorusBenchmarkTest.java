@@ -3,6 +3,7 @@ package com.rhythmatician.lodiffusion.oracle;
 import static org.junit.jupiter.api.Assertions.*;
 
 import com.rhythmatician.lodiffusion.voxy.EndChorusSynthesizer;
+import com.rhythmatician.lodiffusion.oracle.synthetic.SyntheticEndChorusFixtureFactory;
 import com.rhythmatician.lodiffusion.voxy.Level;
 import com.rhythmatician.lodiffusion.voxy.SectionPos;
 import com.rhythmatician.lodiffusion.voxy.VoxelVolume;
@@ -18,7 +19,7 @@ class DisabledChorusBenchmarkTest {
     @Test
     void benchmarkExistingDisabledCandidate() {
         OracleContract c = EndChorusTracerContract.contract();
-        OracleFixture f = VanillaVoxyOracle.generateSyntheticTracerFixture(c);
+        OracleFixture f = SyntheticEndChorusFixtureFactory.generateSyntheticTracerFixture(c);
         SectionPos origin = f.origin();
 
         // Candidate is disabled in production; we measure the experimental path explicitly
@@ -36,7 +37,7 @@ class DisabledChorusBenchmarkTest {
 
             assertTrue(receipt.wallNanos() >= 0);
             assertEquals(level, receipt.level());
-            assertEquals(c.oracleFixtureId(), receipt.fixtureId());
+            assertEquals(c.provenanceId(), receipt.fixtureId());
             // Log receipt for evidence; not an assertion on threshold
             System.out.printf("BENCHMARK level=%s region=%d seed=%d wallMs=%.2f warmup=%d iters=%d policy=%s%n",
                     receipt.level(), receipt.regionBlocks(), receipt.seed(), receipt.wallMillis(),
@@ -53,7 +54,7 @@ class DisabledChorusBenchmarkTest {
     @Test
     void benchmarkReceiptIsDeterministicAndRecordsWarmup() {
         OracleContract c = EndChorusTracerContract.contract();
-        OracleFixture f = VanillaVoxyOracle.generateSyntheticTracerFixture(c);
+        OracleFixture f = SyntheticEndChorusFixtureFactory.generateSyntheticTracerFixture(c);
         SectionPos origin = f.origin();
         EndChorusSynthesizer synth = EndChorusSynthesizer.forTesting(42L);
         BenchmarkReceipt r1 = BenchmarkReceipt.measure(Level.L1, 64, f, () -> synth.synthesize(Level.L1, origin), 2, 5, "median of 5 after 2 warmup");
@@ -69,7 +70,10 @@ class DisabledChorusBenchmarkTest {
         com.rhythmatician.lodiffusion.voxy.DimensionSynthesizers synthFactory = null;
         // Use contract to prove disabled disposition at coarse levels
         OracleContract c = EndChorusTracerContract.contract();
-        assertEquals("omit", c.perLevelDisposition().l4());
-        assertEquals("omit", c.perLevelDisposition().l3());
+        assertEquals("UNRESOLVED", c.perLevelDecisions().l4().disposition());
+        assertEquals("UNRESOLVED", c.perLevelDecisions().l3().disposition());
     }
 }
+
+
+

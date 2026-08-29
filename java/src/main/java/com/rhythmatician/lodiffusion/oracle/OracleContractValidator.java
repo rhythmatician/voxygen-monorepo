@@ -3,10 +3,6 @@ package com.rhythmatician.lodiffusion.oracle;
 import java.util.List;
 import java.util.Objects;
 
-/**
- * Validator for {@link OracleContract}. Fails closed on any malformed or incomplete contract
- * before candidate correctness tests run. No thresholds invented here.
- */
 public final class OracleContractValidator {
     private OracleContractValidator() {}
 
@@ -30,26 +26,50 @@ public final class OracleContractValidator {
         requireList(c.inspectedVoxyReferences(), "inspectedVoxyReferences");
         Objects.requireNonNull(c.region(), "region is required");
         Objects.requireNonNull(c.halo(), "halo is required");
-        require(c.halo().evidence(), "halo.evidence");
-        require(c.halo().source(), "halo.source");
-        if (c.halo().haloBlocks() <= 0) throw new IllegalArgumentException("halo.haloBlocks must be >0, was " + c.halo().haloBlocks());
+        // New decomposed halo validation
+        if (c.halo().featureReachBlocks() < 0) throw new IllegalArgumentException("halo.featureReachBlocks must be >=0");
+        require(c.halo().featureReachEvidence(), "halo.featureReachEvidence");
+        require(c.halo().featureReachSource(), "halo.featureReachSource");
+        if (c.halo().minecraftGenerationHaloChunks() < 0) throw new IllegalArgumentException("halo.minecraftGenerationHaloChunks must be >=0");
+        require(c.halo().minecraftGenerationHaloEvidence(), "halo.minecraftGenerationHaloEvidence");
+        require(c.halo().minecraftGenerationHaloSource(), "halo.minecraftGenerationHaloSource");
+        if (c.halo().voxyMipHaloBlocks() < 0) throw new IllegalArgumentException("halo.voxyMipHaloBlocks must be >=0");
+        require(c.halo().voxyMipHaloEvidence(), "halo.voxyMipHaloEvidence");
+        require(c.halo().voxyMipHaloSource(), "halo.voxyMipHaloSource");
+        if (c.halo().combinedHaloBlocks() <= 0) throw new IllegalArgumentException("halo.combinedHaloBlocks must be >0, was " + c.halo().combinedHaloBlocks());
+        // Legacy combined accessor still validated via above, but also check legacy path
+        if (c.halo().haloBlocks() <= 0) throw new IllegalArgumentException("halo.haloBlocks must be >0");
         require(c.authoritativeGenerationStage(), "authoritativeGenerationStage");
         require(c.fixtureFormatVersion(), "fixtureFormatVersion");
-        require(c.oracleFixtureId(), "oracleFixtureId");
-        Objects.requireNonNull(c.perLevelDisposition(), "perLevelDisposition is required");
-        require(c.perLevelDisposition().l4(), "perLevelDisposition.l4");
-        require(c.perLevelDisposition().l3(), "perLevelDisposition.l3");
-        require(c.perLevelDisposition().l2(), "perLevelDisposition.l2");
-        require(c.perLevelDisposition().l1(), "perLevelDisposition.l1");
-        require(c.perLevelDisposition().l0(), "perLevelDisposition.l0");
-        require(c.claimRole(), "claimRole");
-        require(c.dependencyRole(), "dependencyRole");
+        require(c.provenanceId(), "provenanceId");
+        Objects.requireNonNull(c.perLevelDecisions(), "perLevelDecisions is required");
+        requireDisposition(c.perLevelDecisions().l4(), "perLevelDecisions.l4");
+        requireDisposition(c.perLevelDecisions().l3(), "perLevelDecisions.l3");
+        requireDisposition(c.perLevelDecisions().l2(), "perLevelDecisions.l2");
+        requireDisposition(c.perLevelDecisions().l1(), "perLevelDecisions.l1");
+        requireDisposition(c.perLevelDecisions().l0(), "perLevelDecisions.l0");
+        Objects.requireNonNull(c.roles(), "roles is required");
+        require(c.roles().claimRole(), "roles.claimRole");
+        require(c.roles().dependencyRole(), "roles.dependencyRole");
+        require(c.roles().rationale(), "roles.rationale");
         Objects.requireNonNull(c.benchmarkPolicy(), "benchmarkPolicy is required");
         if (c.benchmarkPolicy().warmupIterations() < 0) throw new IllegalArgumentException("benchmarkPolicy.warmupIterations must be >=0");
         if (c.benchmarkPolicy().measurementIterations() <= 0) throw new IllegalArgumentException("benchmarkPolicy.measurementIterations must be >0");
         require(c.benchmarkPolicy().repetitionPolicy(), "benchmarkPolicy.repetitionPolicy");
         if (!c.dimension().startsWith("minecraft:")) throw new IllegalArgumentException("dimension must be minecraft:* key, was " + c.dimension());
         if (!isKnownStage(c.authoritativeGenerationStage())) throw new IllegalArgumentException("unknown authoritativeGenerationStage " + c.authoritativeGenerationStage());
+    }
+
+    private static void requireDisposition(OracleContract.PartitionDecision d, String field) {
+        Objects.requireNonNull(d, field + " is required");
+        require(d.disposition(), field + ".disposition");
+        // Only allow known dispositions
+        String disp = d.disposition();
+        if (!disp.equals("UNRESOLVED") && !disp.equals("OMIT") && !disp.equals("DETERMINISTIC") && !disp.equals("LEARNED_RESIDUAL") && !disp.equals("LEARNED_FULL") && !disp.equals("EXACT_PORT") && !disp.equals("REUSE_VANILLA")) {
+            throw new IllegalArgumentException(field + ".disposition must be UNRESOLVED/OMIT/DETERMINISTIC/LEARNED_RESIDUAL/LEARNED_FULL/EXACT_PORT/REUSE_VANILLA, was " + disp);
+        }
+        Objects.requireNonNull(d.candidates(), field + ".candidates");
+        require(d.rationale(), field + ".rationale");
     }
 
     private static void require(String v, String field) {

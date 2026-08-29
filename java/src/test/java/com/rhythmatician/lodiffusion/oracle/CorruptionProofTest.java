@@ -2,6 +2,7 @@ package com.rhythmatician.lodiffusion.oracle;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import com.rhythmatician.lodiffusion.oracle.synthetic.SyntheticEndChorusFixtureFactory;
 import com.rhythmatician.lodiffusion.voxy.Level;
 import com.rhythmatician.lodiffusion.voxy.SectionPos;
 import com.rhythmatician.lodiffusion.voxy.VoxelVolume;
@@ -17,7 +18,7 @@ class CorruptionProofTest {
     @Test
     void shiftedChorusFails() {
         OracleContract c = EndChorusTracerContract.contract();
-        OracleFixture f = VanillaVoxyOracle.generateSyntheticTracerFixture(c);
+        OracleFixture f = SyntheticEndChorusFixtureFactory.generateSyntheticTracerFixture(c);
         SectionPos origin = f.origin();
         Level level = Level.L1;
         VoxelVolume correct = f.volume(level);
@@ -41,7 +42,7 @@ class CorruptionProofTest {
     @Test
     void erasedChorusFails() {
         OracleContract c = EndChorusTracerContract.contract();
-        OracleFixture f = VanillaVoxyOracle.generateSyntheticTracerFixture(c);
+        OracleFixture f = SyntheticEndChorusFixtureFactory.generateSyntheticTracerFixture(c);
         SectionPos origin = f.origin();
         Level level = Level.L2;
         VoxelVolume correct = f.volume(level);
@@ -63,7 +64,7 @@ class CorruptionProofTest {
     @Test
     void wrongMaterialFails() {
         OracleContract c = EndChorusTracerContract.contract();
-        OracleFixture f = VanillaVoxyOracle.generateSyntheticTracerFixture(c);
+        OracleFixture f = SyntheticEndChorusFixtureFactory.generateSyntheticTracerFixture(c);
         SectionPos origin = f.origin();
         Level level = Level.L0;
         VoxelVolume correct = f.volume(level);
@@ -87,7 +88,7 @@ class CorruptionProofTest {
     @Test
     void edgeCrossingCorruptionFails() {
         OracleContract c = EndChorusTracerContract.contract();
-        OracleFixture f = VanillaVoxyOracle.generateSyntheticTracerFixture(c);
+        OracleFixture f = SyntheticEndChorusFixtureFactory.generateSyntheticTracerFixture(c);
         SectionPos origin = f.origin();
         Level level = Level.L1;
         VoxelVolume correct = f.volume(level);
@@ -113,10 +114,12 @@ class CorruptionProofTest {
     @Test
     void trivialNonsenseFails() {
         OracleContract c = EndChorusTracerContract.contract();
-        OracleFixture f = VanillaVoxyOracle.generateSyntheticTracerFixture(c);
+        OracleFixture f = SyntheticEndChorusFixtureFactory.generateSyntheticTracerFixture(c);
         SectionPos origin = f.origin();
         VoxelVolume nonsense = VoxelVolume.uniform(32, 1, 255); // all acacia_button -- nonsense
         var r = CandidateVerifier.verify(Level.L0, origin, nonsense, f);
         assertTrue(r.failed());
     }
 }
+
+
