@@ -331,7 +331,7 @@ public final class GenerationSession {
                     if (writer == null) throw new IllegalStateException("End writer is not bound");
                     return writer.refineParent(intent);
                 },
-                this::produceEndRefinementChild,
+                (level, origin) -> produceRefinementChild(level, origin, net.minecraft.registry.RegistryKey.of(net.minecraft.registry.RegistryKeys.WORLD, net.minecraft.util.Identifier.of("minecraft", "the_end"))),
                 origin -> {
                     VoxelVolumeWriter writer = activeEndWriter;
                     World world = activeEndWorld;
@@ -345,13 +345,17 @@ public final class GenerationSession {
     }
 
     public VoxelVolume produceEndRefinementChild(Level childLevel, SectionPos childOrigin) {
+        return produceRefinementChild(childLevel, childOrigin, net.minecraft.registry.RegistryKey.of(net.minecraft.registry.RegistryKeys.WORLD, net.minecraft.util.Identifier.of("minecraft", "the_end")));
+    }
+
+    public VoxelVolume produceRefinementChild(Level childLevel, SectionPos childOrigin, net.minecraft.registry.RegistryKey<net.minecraft.world.World> dimension) {
         WorldNoiseAccess access = noiseAccess;
-        if (access == null) throw new IllegalStateException("End noise is not bound");
+        if (access == null) throw new IllegalStateException("Noise is not bound for " + dimension);
         long seed = 0L;
         try {
             if (access.serverWorld() != null) seed = access.serverWorld().getSeed();
         } catch (Exception ignored) {}
-        DimensionSynthesizer synth = new EndDimensionSynthesizer(access, exactL1Sampling, seed);
+        DimensionSynthesizer synth = DimensionSynthesizers.forDimension(dimension, access, exactL1Sampling, seed);
         return synth.synthesize(childLevel, childOrigin);
     }
 

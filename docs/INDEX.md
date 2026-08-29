@@ -38,7 +38,6 @@
 * `docs/adr/0013-sampler-direct-end-base-terrain.md`
 * `docs/adr/0014-dimension-partitioned-synthesizer-seam.md`
 * `docs/adr/0015-post-ingest-voxy-mip-parity-is-the-default-target.md`
-* `docs/adr/0016-feature-overlay-per-dimension-synthesizer.md`
 
 ### Implementation
 
