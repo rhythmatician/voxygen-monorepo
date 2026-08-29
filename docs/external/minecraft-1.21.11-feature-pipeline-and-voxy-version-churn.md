@@ -3,7 +3,7 @@
 > **Status:** wayfinder:research -- version-bound upstream research -- do not silently edit to describe a different upstream version.
 >
 > doc-type: external-reference
-> source-revision: Minecraft 26.1-snapshot-11 (CFR 0.152 decompiled corpus `external/minecraft-src/`, jar SHA-256 `556C0FA70D367A2D0EC2DF5C9796C77EABE164BF08E0C581FC9CE17FA7436822`, no git SHA) + Voxy 0.2.11-alpha (`337b919d` on `dev`, jar SHA-256 `63d1747017041b659ef620f589006d079d3574e3124dbdb165f9998533a7920c`) + Voxy current `dev` head `02dfb1b7` (2026-08-29) + Fabric API 0.143.11 + Voxy 8-branch cross-version evidence (`origin/master..origin/dev` 2024-07-26 .. 2026-08-29)
+> source-revision: Minecraft 26.1-snapshot-11 (CFR 0.152 decompiled corpus `external/minecraft-src/`, jar SHA-256 `556C0FA70D367A2D0EC2DF5C9796C77EABE164BF08E0C581FC9CE17FA7436822`, no git SHA) + Voxy 0.2.11-alpha (`337b919d` on `dev`, jar SHA-256 `63d1747017041b659ef620f589006d079d3574e3124dbdb165f9998533a7920c`) + Voxy current `dev` head `02dfb1b7` (2026-08-29) + Fabric API 0.143.11 + Voxy 11-branch cross-version evidence (`origin/master..origin/dev` 2024-07-26 .. 2026-08-29)
 >
 > **Wayfinder map:** #22 · ticket #235 (this research) · informs #85 (`worldgen-partition`) and #234 (future feature-generation skill) · referenced by #233 (oracle contract) once available
 >
@@ -14,7 +14,7 @@
 > - [`port-vanilla-batch-subtree-sharing.md`](port-vanilla-batch-subtree-sharing.md) -- Layer-2 tile/cache-key math
 > - [`../reference/upstream/VOXY-FORMAT.md`](../reference/upstream/VOXY-FORMAT.md) -- pinned Voxy on-disk format
 >
-> **Research completion date:** 2026-08-28
+> **Current research pass:** 2026-08-28 (cross-Minecraft-version responsibility diff remains open — see §1.2)
 >
 > **Scope:** Documents the **feature-pipeline stability** audit (Minecraft 1.21.11 single-version corpus) and the **Voxy version-compatibility** audit (verified over the `337b919d` → `02dfb1b7` window; broader Voxy history surveyed by file presence only, not semantically diffed -- see §5.3/§5.6). The **cross-Minecraft-version responsibility diff is a required #235 deliverable that is not yet complete**: the project currently vendors a single Minecraft decompiled corpus, and the comparison corpora #235 requires have not been procured (§1.2, §9.1).
 >
@@ -24,7 +24,7 @@
 
 ## 0. TL;DR -- the three takeaways for #85
 
-1. **The feature-pipeline machinery is small, stable-shaped, and worth porting once.** The placement/configured/placed/predicate stack is 16 `PlacementModifier` types, 38 `FeatureConfiguration` record types, ~50 `Feature` implementations, and 10 + 11 datapack registries (~200 KB of vanilla data). None of those core abstractions (`PlacedFeature.placeWithContext` stream-flatMap, `PlacementModifier.getPositions(PlacementContext, RandomSource, BlockPos) → Stream<BlockPos>`, `ConfiguredFeature.place(WorldGenLevel, ChunkGenerator, RandomSource, BlockPos)`) have changed semantically in the 1.21.11 corpus. Treat this surface as **small, generic, and a plausible port boundary within 1.21.11**. Cross-Minecraft-version stability is the open question this research has **not** answered -- no second MC corpus was diffed (§1.2) -- so "port once" here means "port once for the pinned 1.21.11 corpus", not "port once across MC versions".
+1. **The feature-pipeline machinery is small, stable-shaped, and a strong port candidate.** The placement/configured/placed/predicate stack is 16 `PlacementModifier` types, 38 `FeatureConfiguration` record types, ~50 `Feature` implementations, and 10 + 11 datapack registries (~200 KB of vanilla data). None of those core abstractions (`PlacedFeature.placeWithContext` stream-flatMap, `PlacementModifier.getPositions(PlacementContext, RandomSource, BlockPos) → Stream<BlockPos>`, `ConfiguredFeature.place(WorldGenLevel, ChunkGenerator, RandomSource, BlockPos)`) have changed semantically in the 1.21.11 corpus. Treat this surface as **small, generic, and a plausible port boundary within 1.21.11**. Cross-Minecraft-version stability is the open question this research has **not** answered -- no second MC corpus was diffed (§1.2) -- so "port candidate" here means "candidate for the pinned 1.21.11 corpus", not "port once across MC versions". Whether to port is #85's decision.
 2. **The feature content is overwhelmingly data/configuration and belongs in a normalized profile.** The datapack registry bodies (`OreFeatures` 11.1 KB, `VegetationFeatures` 35.9 KB, `TreeFeatures` 31.9 KB, `CaveFeatures` 18.5 KB, `VegetationPlacements` 37.8 KB, `OrePlacements` 17.6 KB, `TreePlacements` 16.6 KB, `OverworldBiomes` 49.6 KB) describe what to place, where, and how often. A new MC version is *expected* to change these bodies (new biomes, new features, new rarity curves) rather than the engine -- an expectation from published Mojang release behavior, **not verified against a second local corpus** (§1.2). The most defensible cost-reduction is to express the bodies as **versioned data fixtures** behind a single execution engine, not to reimplement per-version.
 3. **Voxy `VoxelVolumeWriter` is correct as the adapter seam.** Across the audit window 2026-08-10 (audited `337b919d`) → 2026-08-29 (current `origin/dev` `02dfb1b7`), the only changes to `me.cortex.voxy.common.world.*` are a 6-line refactor of `SaveLoadSystem3`, a 19-line refactor of `WorldUpdater` (rename `airCount`→`nonAirCount`, add JMH-visible helper), and a 6-line `Mapper.isNotAirInt` micro-opt. **Zero changes** to `WorldSection`, `WorldEngine`, `Mipper`, `VoxelizedSection`, `WorldConversionFactory`, `SectionStorage`, `ActiveSectionTracker` -- i.e. the data-model and target-semantic surface are stable. VoxelVolumeWriter (which sits above `VoxyCompat`/`WorldEngine`) absorbs the small backend drift; no Voxygen code or model retraining is required for the audit-window delta.
 
@@ -142,7 +142,7 @@ Source: `external/minecraft-src/src/net/minecraft/world/level/levelgen/placement
 
 The shape is **a stream-flatMap over a generic `getPositions(PlacementContext, RandomSource, BlockPos) → Stream<BlockPos>`** and a terminal `ConfiguredFeature.place(WorldGenLevel, ChunkGenerator, RandomSource, BlockPos)`. Every dimension's feature pipeline, every biome's placed-feature list, every structure's `GenerationStep.Decoration` runs through this exact shape. There is no dimension- or family-specific override of the *machinery*.
 
-### 3.2 Generic placement machinery -- small, stable, port-worthy
+### 3.2 Generic placement machinery -- small, stable, shared-code candidate
 
 The 16 `PlacementModifier` types in `external/minecraft-src/src/net/minecraft/world/level/levelgen/placement/`:
 
@@ -190,10 +190,10 @@ The ticket's deliverable #2 names four categories. They are separated below:
 
 | Category | Layer | # items | Total size | Stays in code or data? | Cross-MC-version expectation |
 |---|---|---|---|---|---|
-| **Generic placement machinery** (code) | `PlacementModifier` impls | 16 | ~50 KB | **Code, port once** | The set is stable; new modifiers (e.g. `EnvironmentScanPlacement`) appear occasionally; rare mutation of existing modifiers. Strong expectation, unverified locally. |
-| **Generic placement machinery** (code) | `PlacedFeature.placeWithContext` loop + `PlacementContext` + `PlacedFeature.placeWithBiomeCheck` | 3 | ~3 KB | **Code, port once** | The shape is dimension- and family-agnostic; survives version churn. |
-| **Generic data shape** (code) | `FeatureConfiguration` records | 38 | ~85 KB | **Code, port once** | New MC = new `*Configuration` records for new features; existing ones almost never change shape. Strong expectation, unverified. |
-| **Generic data shape** (code) | `ConfiguredFeature` + `Feature` base classes (registry + dispatch) | 2 | ~24 KB | **Code, port once** | Stable interface; per-version delta is in the registry contents, not the class shape. |
+| **Generic placement machinery** (code) | `PlacementModifier` impls | 16 | ~50 KB | **Shared-code candidate** | The set is stable; new modifiers (e.g. `EnvironmentScanPlacement`) appear occasionally; rare mutation of existing modifiers. Strong expectation, unverified locally. |
+| **Generic placement machinery** (code) | `PlacedFeature.placeWithContext` loop + `PlacementContext` + `PlacedFeature.placeWithBiomeCheck` | 3 | ~3 KB | **Shared-code candidate** | The shape is dimension- and family-agnostic; survives version churn. |
+| **Generic data shape** (code) | `FeatureConfiguration` records | 38 | ~85 KB | **Shared-code candidate** | New MC = new `*Configuration` records for new features; existing ones almost never change shape. Strong expectation, unverified. |
+| **Generic data shape** (code) | `ConfiguredFeature` + `Feature` base classes (registry + dispatch) | 2 | ~24 KB | **Shared-code candidate** | Stable interface; per-version delta is in the registry contents, not the class shape. |
 | **Feature-family logic** (code, bespoke) | `Feature` impls | ~50 | ~250 KB | **Code, port per family, each bespoke** | New MC = a few new `Feature` impls; existing ones occasionally gain new fields. Strong expectation, unverified. |
 | **Data/configuration** (data, dimension-agnostic) | Feature registries (`features/*.java`) | 10 | ~124 KB | **Data adapter** (extract to JSON/datapack adapter) | New MC = register more entries, mostly additive. |
 | **Data/configuration** (data, dimension-agnostic) | Placement registries (`placement/*.java`) | 11 | ~117 KB | **Data adapter** (extract to JSON/datapack adapter) | New MC = register more entries, mostly additive. |
@@ -236,13 +236,13 @@ The ticket asks whether a useful normalized boundary is **cheaper to maintain th
 
 | ID | Boundary | Shape | Status | Cross-MC-version expectation | Notes |
 |---|---|---|---|---|---|
-| 4.1 | Climate / scaffold | `Seed + Climate.Sampler → {block_pos → climate 6-tuple}` | **Sealed** | Minimal port per version (interface expected stable since 1.18; `none-local` -- unverified against a second corpus) | Already ported as `VanillaNoiseRouterSampler` (480-float quart); cost is upstream `BlendedNoise` octave table + `NoiseGeneratorSettings` per-dimension change, addressed by `RandomState` wiring. |
-| 4.2 | Biome / profile identity | `(dim, climate, pos) → canonical biome id` | **Sealed** | Medium cost (biome IDs are intentionally not stable across MC versions) | Already implemented as `BiomeMapping.toCanonicalId` (54-entry alpha for OW; equivalent for Nether/End if extended); contract metadata hash (CONTEXT.md: `Canonical Biome Registry`) is the enforcement point. |
+| 4.1 | Climate / scaffold | `Seed + Climate.Sampler → {block_pos → climate 6-tuple}` | **Implemented** (ADR 0013 seals the End sampler-direct approach; OW/Nether extension is not sealed) | Minimal port per version (interface expected stable since 1.18; `none-local` -- unverified against a second corpus) | Already ported as `VanillaNoiseRouterSampler` (480-float quart); cost is upstream `BlendedNoise` octave table + `NoiseGeneratorSettings` per-dimension change, addressed by `RandomState` wiring. |
+| 4.2 | Biome / profile identity | `(dim, climate, pos) → canonical biome id` | **Implemented** (project contract: `Canonical Biome Registry` in CONTEXT.md; not an ADR-sealed boundary) | Medium cost (biome IDs are intentionally not stable across MC versions) | Already implemented as `BiomeMapping.toCanonicalId` (54-entry alpha for OW; equivalent for Nether/End if extended); contract metadata hash is the enforcement point. |
 | 4.3 | Surface/material family | `(biome, column, noise) → material family id` | **Open** | Small fixed mapping per dimension per MC version (data) | Vanilla's `SurfaceSystem` is a biome-tagged `MaterialRule` tree; ADR 0015 §"Hierarchical Material Taxonomy" names this; mapping is data, not code. |
 | 4.4 | Generic placement intent | `(biome, feature_intent, surface) → {position, count, modifier-chain}` | **Open** | Cost bounded by which `Feature` family is ported; not universal | The audit shows `PlacedFeature.placeWithContext` is generic, but vanilla does not provide a "feature-instance descriptor" abstraction (each `Feature` is bespoke); bounded port of a single family (e.g. vanilla trees) is the cheapest test. |
 | 4.5 | Deterministic scaffold + sparse learned residual | `(seed, dim, pos) → {coarse_geometry, fine_residual}` | **Open** | Medium OW / low End / low-medium Nether | Scaffold Preference / Residual Default (CONTEXT.md) applied to the partition; End vertical slice already does this for chorus (ADR 0013, 0014); extending to OW/Nether requires the partition to commit to a stable scaffold shape. |
 | 4.6 | Per-Level post-ingest semantic target | `(level, post_voxy_mip(scaffold))` | **Sealed** | Zero cost if Mipper rule and Mapper layout are stable in Voxy (see §5) | ADR 0015 fixes this as the default correctness target; the oracle will produce the post-ingest Voxy representation for any `(seed, dim, pos)` per #233. |
-| 4.7 | Verdict (order to test) | -- | **Sealed** | n/a | §4.6 (committed by ADR 0015) → §4.1 (already ported) → §4.2 (already canonicalized) → §4.4 (bounded port of a single feature family) → §4.3 (next, coarser) → §4.5 (last, as a full OW port). Each step either confirms or refutes the boundary with measured evidence. |
+| 4.7 | Verdict (order to test) | -- | **Test order** (not a boundary; no seal implied) | n/a | §4.6 (committed by ADR 0015) → §4.1 (already ported) → §4.2 (already canonicalized) → §4.4 (bounded port of a single feature family) → §4.3 (next, coarser) → §4.5 (last, as a full OW port). Each step either confirms or refutes the boundary with measured evidence. |
 
 ---
 
@@ -379,7 +379,7 @@ private boolean placeWithContext(PlacementContext context, RandomSource random, 
 
 **Why this is "stable/shared":** the loop is a **single, generic, dimension-agnostic** operation: a chain of `PlacementModifier.getPositions` and one terminal `ConfiguredFeature.place`. It is used by **every dimension, every biome, every GenerationStep.Decoration** -- the only specialization is the `List<PlacementModifier>` chain contents and the `ConfiguredFeature` impl. If Voxygen were to port this loop, the cost is ~25 lines of code; the rest is data.
 
-**Implication for #85:** the placement machinery is a prime port candidate. The cost is bounded, the surface is well-defined, and the per-version delta is purely the modifier list contents (data). A Voxygen port of the loop can run unmodified against any MC version that preserves the `PlacementContext` / `PlacementModifier` / `ConfiguredFeature` interface (the published Mojang history suggests this is stable since 1.18; unverified locally).
+**Implication for #85:** the placement machinery is a strong shared-code candidate — evidence favors testing an exact port. The cost is bounded, the surface is well-defined, and the per-version delta is purely the modifier list contents (data). A Voxygen port of the loop could run unmodified against any MC version that preserves the `PlacementContext` / `PlacementModifier` / `ConfiguredFeature` interface (the published Mojang history suggests this is stable since 1.18; unverified locally). Whether to port is #85's decision.
 
 ### 6.2 Example B (mostly data-driven/version-volatile content) -- biome→feature wiring
 
@@ -449,7 +449,7 @@ public class EndSpikeFeature extends Feature<EndSpikeConfiguration> {
 
 ## 7. Quantitative residual/oracle experiment (cheapest available)
 
-Per the ticket §6 ("Bound the ML role instead of training a giant model"), this section separates two experiments with **different evidentiary strength**: a synthetic Mipper-survival probe the existing infrastructure can run today (heuristic only), and the authoritative vanilla→Voxy post-ingest residual, which requires #233's oracle. The synthetic probe re-uses `python/voxel_tree/contracts/`, `python/voxel_tree/voxy_format/`, and the test surface in `python/voxel_tree/tests/test_voxy_format.py` (the Voxy-format decoder tests). `python/voxel_tree/contracts/`, `python/voxel_tree/voxy_format/`, and the test surface in `python/voxel_tree/tests/test_voxy_format.py` (the Voxy-format decoder tests).
+Per the ticket §6 ("Bound the ML role instead of training a giant model"), this section separates two experiments with **different evidentiary strength**: a synthetic Mipper-survival probe (heuristic only) and the authoritative vanilla→Voxy post-ingest residual, which requires #233's oracle.
 
 ### 7.1 What can be measured today, without #233
 
@@ -468,12 +468,12 @@ What is **not** yet available (per the ticket's "if not, state exactly what #233
 
 ### 7.2 Two experiments with different evidentiary strength -- do not conflate them
 
-- **E1 -- synthetic Mipper-survival probe (runnable now; heuristic evidence only).** Places one vanilla feature through a real placement chain, applies the known Mipper rule in Python, and compares against an empty-region mip. This measures *how much of a feature's silhouette survives the mip rule in isolation*. It needs no #233 infrastructure and can execute within #235. It does **not** pass through real vanilla→Voxy ingestion and therefore does **not** establish the authoritative post-ingest residual.
+- **E1 -- synthetic Mipper-survival probe (heuristic evidence only; needs a thin capture harness).** Places one vanilla feature through a real placement chain, applies the known Mipper rule in Python, and compares against an empty-region mip. This measures *how much of a feature's silhouette survives the mip rule in isolation*. It needs no #233 infrastructure. **Missing link:** the existing infrastructure can decode Voxy and apply the mip semantics, but there is **no executable entry point today that runs an actual vanilla `PlacedFeature` plus its actual modifier chain and captures the resulting `BlockPos` set** — E1 requires a thin capture harness (a small Java runner against the pinned 1.21.11 corpus, or an equivalent headless driver) before it can execute. It also does **not** pass through real vanilla→Voxy ingestion and therefore does **not** establish the authoritative post-ingest residual.
 - **E2 -- authoritative post-ingest residual (blocked on #233).** Compares candidate output against the post-ingest Voxy representation of authoritative vanilla terrain. This is the residual the winner rule actually needs, and it requires #233's independent oracle harness (or equivalent independent evidence) -- see §7.1 for exactly which #233 capabilities are missing.
 
 E1 design (single, fixed 1.21.11 corpus + pinned Voxy 0.2.11-alpha; one internally consistent dimension/biome/feature chain taken from actual registration and placement source):
 
-1. Choose the **End** dimension, the `end_highlands` biome, and `EndSpikeFeature` + `EndSpikeConfiguration` (registered in `EndFeatures`; placed via the End placement chain).
+1. Choose the **End** dimension, the `end_highlands` biome, and `EndSpikeFeature` + `EndSpikeConfiguration` (registered in `EndFeatures`; placed via the End placement chain). **Verify before running** that the chosen scenario actually exercises the generic `PlacedFeature` pathway (registry → placed-feature entry → modifier chain → `Feature.place`) rather than a structure-set or direct-spawn path that bypasses it; if it does not, pick a feature that does.
 2. Run the vanilla feature with its actual `PlacementModifier` chain (e.g. `InSquarePlacement` + `HeightmapPlacement` + `BiomeFilter` + `CountPlacement`).
 3. Capture the (deterministic) set of `BlockPos` per placement in a small JSON fixture.
 4. Mip the result through the Voxy mip rule (5 lines of Python using `voxy_format`).
@@ -489,7 +489,7 @@ Cost: ~200 lines of Python, no new Java, no training, no model. The result is a 
 | Small non-zero (silhouette hint) | **Deterministic approximation** at L4/L3 (e.g. one column block per spike); **port or approx** at L2; **port** at L1/L0 |
 | Large (feature fills its bounding box at mip) | **Port** at L4 if cost permits; **learned residual** as alternative |
 
-The current **End vertical slice** is the existing evidence that "deterministic approximation" works for `EndSpikeFeature` at L4 -- the central island spike silhouette is generated by the deterministic-scaffold path (the project's `EndDimensionSynthesizer` shape from ADR 0014). The experiment above extends that evidence to a non-End feature family and to the L3 mip target.
+The current **End vertical slice** demonstrates deterministic approximation for **base End terrain only** (`EndL4DeterministicCandidate` produces an `air | end_stone` vocabulary and **intentionally omits placed features, explicitly including obsidian pillars and gateways**, recorded as honest omission). It provides **no evidence yet** about the mip survival or approximation quality of `EndSpikeFeature`. The experiment above would produce the first such evidence.
 
 ---
 
@@ -562,9 +562,9 @@ The ticket's success criterion:
 
 The audit:
 
-- ✓ §3.1-3.2: stable/shared machinery is small and port-worthy (16 `PlacementModifier` + 38 `FeatureConfiguration` records + ~50 `Feature` impls + `PlacedFeature.placeWithContext` shape = ~250-300 KB total).
+- ✓ §3.1-3.2: stable/shared machinery is small and a strong shared-code candidate (16 `PlacementModifier` + 38 `FeatureConfiguration` records + ~50 `Feature` impls + `PlacedFeature.placeWithContext` shape = ~250-300 KB total).
 - ✓ §3.3, §4: version-specific content is overwhelmingly data (~316 KB of registries + 33 KB of `BiomeDefaultFeatures` wiring).
-- ✓ §6.3, §7: ML output space is *expected* to be dramatically smaller than full block prediction for any single bespoke feature family (a column-block mask for `EndSpikeFeature` is ~5% of the bits a full `VoxelVolume` would carry). **Status: hypothesis, not measured** -- §7.2's probe has not been executed, and the authoritative residual requires #233's oracle.
+- ✗ **Not yet measured -- ML output space**: §6.3/§7 *expect* the ML output space to be dramatically smaller than full block prediction for any single bespoke feature family (a column-block mask for `EndSpikeFeature` is ~5% of the bits a full `VoxelVolume` would carry), but §7.2's probe has not been executed and the authoritative residual requires #233's oracle. This criterion is **unchecked** until a number exists.
 - ✓ §5.2: L4/L3 runtime (post-ingest Voxy mip target) is unchanged across the **audited** Voxy window (`337b919d` → `02dfb1b7`), so existing L4/L3 generation remains compatible over that interval. Broader Voxy-history stability is unverified (§5.3, §9.1 item 2).
 - ✓ §8: version-support recommendation has bounded regeneration / adapter / retraining classifications per change type (with the §8.1 invariants explicitly marked verified-window-only where applicable).
 - ✗ **Not yet satisfied -- research-program §1**: the cross-Minecraft-version responsibility diff has **not** been produced (only one MC corpus is vendored; no comparison corpus procured). Every cross-MC-version stability claim in this document is therefore bounded to `none-local` evidence, and the winner-rule verdict below is provisional until that diff lands.
@@ -572,10 +572,10 @@ The audit:
 The research also records:
 
 - A **do-not-port** finding: the 10 feature registries + 11 placement registries + 4 biome registries are data and should be a profile, not code (§3.3).
-- A **do-not-learn** finding: the 16 `PlacementModifier` machinery is stable, cheap, and should be ported, not learned (§3.2).
+- A **do-not-learn** finding: the 16 `PlacementModifier` machinery is stable and cheap on 1.21.11 evidence — learning it is unjustified; whether to port it is #85's call (§3.2).
 - A **decision-deferred** finding: the 50 `Feature` impls are bespoke and each is a separate empirical question for #85; no blanket port/learn/omit decision is made here.
 
-The hybrid hypothesis is supported for **most** responsibilities **on 1.21.11-only evidence** and is **not** forced: §6.3 records that `EndSpikeFeature` could be cheap enough to port, and the End vertical slice already proves "deterministic approximation" works for at least one bespoke family. This verdict is **provisional** pending the cross-MC-version diff (research-program §1) and the residual measurement (§7.2 E2 / #233). The partition (#85) can choose, with measured evidence, between deterministic approximation and learned residual per family.
+The hybrid hypothesis is supported for **most** responsibilities **on 1.21.11-only evidence** and is **not** forced: §6.3 records that `EndSpikeFeature` could be cheap enough to port, and the End vertical slice proves "deterministic approximation" works for base End terrain (features are honestly omitted, not approximated — §7.3). This verdict is **provisional** pending the cross-MC-version diff (research-program §1) and the residual measurement (§7.2 E2 / #233). The partition (#85) can choose, with measured evidence, between deterministic approximation and learned residual per family.
 
 ---
 
