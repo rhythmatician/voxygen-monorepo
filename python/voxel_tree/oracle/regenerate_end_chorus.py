@@ -49,8 +49,8 @@ ORACLE_ROLE = {
         "voxyMipHaloSource": "Mipper.java:9-55 + WorldSection.java YZX",
         "combinedHaloBlocks": 25,
     },
-    "region": {"originSectionX": 96, "originSectionY": 4, "originSectionZ": 0, "extentSections": 2},
-    "blockRegion": {"originBlockX": 1536, "originBlockY": 64, "originBlockZ": 0, "extentBlocks": 32},
+    "region": {"originSectionX": 100, "originSectionY": 4, "originSectionZ": 8, "extentSections": 2},
+    "blockRegion": {"originBlockX": 1600, "originBlockY": 64, "originBlockZ": 128, "extentBlocks": 32},
     "authoritativeGenerationStage": "FEATURES",
     "actualCaptureStage": "FULL",
     "captureStage": "FULL",
@@ -59,7 +59,7 @@ ORACLE_ROLE = {
 REQUEST_PATH = Path("config/oracle_capture_request.json")
 DONE_PATH = Path("config/oracle_capture_done.json")
 INGEST_ACK_PATH = Path("config/oracle_ingest_ack.json")
-FIXTURE_PATH = Path("java/oracle-fixtures/end_chorus__s42__b1536_64_0_e32__fh8_gh1c_vh1_ch25__mc1.21.11_voxy0.2.11-alpha__fmtv3.json")
+FIXTURE_PATH = Path("java/oracle-fixtures/end_chorus__s42__b1600_64_128_e32__fh8_gh1c_vh1_ch25__mc1.21.11_voxy0.2.11-alpha__fmtv3.json")
 
 def _chunk_rect_with_halo(blockRegion, haloBlocks):
     minBx = blockRegion["originBlockX"] - haloBlocks
@@ -74,7 +74,7 @@ def _chunk_rect_with_halo(blockRegion, haloBlocks):
     return (minCx, minCz, maxCx, maxCz)
 
 def _l4_chunk_rect_with_halo(blockRegion, haloBlocks):
-    """Derive ingest coverage from union of per-Level WorldSection footprints, i.e. L4. For anchor 1536,64,0: L4 ws [3,0,0] 512 blocks => chunks 96..127 x 0..31 plus halo 25 => 94..129 x -2..33 = 1296 chunks."""
+    """Derive ingest coverage from union of per-Level WorldSection footprints, i.e. L4. For anchor 1600,64,128: L4 ws [3,0,0] 512 blocks => chunks 96..127 x 0..31 plus halo 25 => 94..129 x -2..33 = 1296 chunks."""
     import math
     # L4 WorldSection containing the tracer blockRegion origin
     wsBlockSize = 32 * (1 << 4)  # 512
@@ -93,7 +93,6 @@ def _l4_chunk_rect_with_halo(blockRegion, haloBlocks):
     return (minCx, minCz, maxCx, maxCz)
 
 def _patch_server_properties_for_oracle() -> None:
-    from voxel_tree.gui.server_manager import _patch_server_properties  # type: ignore
     patches = {
         "level-name": ORACLE_ROLE["level_name"],
         "level-seed": str(ORACLE_ROLE["seed"]),
@@ -103,7 +102,33 @@ def _patch_server_properties_for_oracle() -> None:
         "enable-rcon": "true",
         "generate-structures": "false",
     }
-    _patch_server_properties(patches)
+    # Prefer server_manager helper, fallback to manual without Qt dependency
+    try:
+        from voxel_tree.gui.server_manager import _patch_server_properties  # type: ignore
+        _patch_server_properties(patches)
+    except Exception as e:
+        print(f"[oracle] server_manager _patch import failed ({e}), falling back to manual server.properties patch", file=sys.stderr)
+        # Manual patch: same logic as server_manager._patch_server_properties
+        import pathlib as _pl
+        # Determine server.properties path from RUNTIME_DIR
+        _sp = RUNTIME_DIR / "server.properties"
+        try:
+            text = _sp.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            text = ""
+        remaining = dict(patches)
+        new_lines = []
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped and not stripped.startswith("#") and "=" in stripped:
+                key = stripped.split("=", 1)[0].strip()
+                if key in remaining:
+                    new_lines.append(f"{key}={remaining.pop(key)}")
+                    continue
+            new_lines.append(line)
+        for k, v in remaining.items():
+            new_lines.append(f"{k}={v}")
+        _sp.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
     rect = _l4_chunk_rect_with_halo(ORACLE_ROLE["blockRegion"], ORACLE_ROLE["halo"]["combinedHaloBlocks"])
     print(f"[oracle] Patched server.properties for role {ORACLE_ROLE['name']}: seed={ORACLE_ROLE['seed']} level={ORACLE_ROLE['level_name']} structures=false blockRegion={ORACLE_ROLE['blockRegion']} L4 chunkRect={rect} ({(rect[2]-rect[0]+1)*(rect[3]-rect[1]+1)} chunks)")
 
@@ -155,44 +180,64 @@ def _reset_disposable_world() -> None:
 
 
 def _start_oracle_server_via_manager() -> bool:
-    """Start oracle server via existing ServerManager/CLI path. Used for --reset-world one-command workflow."""
-    # Primary: try ServerManager (Qt) path
+    """Start oracle server respecting already-patched server.properties. Nonblocking Popen; respects existing server.properties and avoids role reconfiguration."""
+    _JVM_FLAGS = [
+        "-Xmx12g",
+        "-Xms4g",
+        "-XX:+UseG1GC",
+        "-XX:+ParallelRefProcEnabled",
+        "-XX:MaxGCPauseMillis=200",
+        "-XX:+UnlockExperimentalVMOptions",
+        "-XX:+DisableExplicitGC",
+        "-XX:G1NewSizePercent=30",
+        "-XX:G1MaxNewSizePercent=40",
+        "-XX:G1HeapRegionSize=8M",
+        "-XX:G1ReservePercent=20",
+        "-XX:InitiatingHeapOccupancyPercent=15",
+    ]
+    # Prefer reusing _JAR_PATH, _RUNTIME_DIR from server_manager.py; fallback to manual discovery if PySide6 not available
     try:
-        from voxel_tree.gui.server_manager import ServerManager
-        from PySide6.QtCore import QCoreApplication
-        import sys as _sys
-        app = QCoreApplication.instance() or QCoreApplication(_sys.argv)
-        mgr = ServerManager()
-        mgr.configure_for_role("oracle_end_chorus")
-        mgr.start()
-        print("[oracle] Started oracle server via ServerManager, waiting for RCON...")
+        from voxel_tree.gui.server_manager import _JAR_PATH as _SM_JAR, _RUNTIME_DIR as _SM_RUNTIME
+        _JAR_PATH = _SM_JAR
+        _RUNTIME_DIR = _SM_RUNTIME
+    except Exception as e:
+        print(f"[oracle] server_manager import failed ({e}), falling back to manual JAR discovery", file=sys.stderr)
+        def _find_tools_dir() -> Path:
+            cur = Path(__file__).resolve()
+            for _ in range(6):
+                cand = cur.parent / "tools" / "fabric-server"
+                if cand.exists():
+                    return cand
+                cur = cur.parent
+            return REPO_ROOT / "python" / "tools" / "fabric-server"
+        _td = _find_tools_dir()
+        if not _td.exists():
+            _td = REPO_ROOT / "tools" / "fabric-server"
+        _RUNTIME_DIR = _td / "runtime"
+        cands = list(_td.glob("*.jar"))
+        _JAR_PATH = cands[0] if cands else None
+    try:
+        if not _JAR_PATH or not _JAR_PATH.exists():
+            print(f"[oracle] JAR not found at {_JAR_PATH}", file=sys.stderr)
+            return False
+        if not _RUNTIME_DIR.exists():
+            print(f"[oracle] Runtime dir not found at {_RUNTIME_DIR}", file=sys.stderr)
+            return False
+        import subprocess
+        print(f"[oracle] Launching oracle server (nonblocking) java {' '.join(_JVM_FLAGS)} -jar {_JAR_PATH.name} --nogui cwd={_RUNTIME_DIR} respecting patched server.properties")
+        proc = subprocess.Popen(
+            ["java", *_JVM_FLAGS, "-jar", str(_JAR_PATH), "--nogui"],
+            cwd=str(_RUNTIME_DIR),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        print(f"[oracle] Started oracle server pid={proc.pid}, waiting for RCON...")
         return True
     except Exception as e:
-        print(f"[oracle] ServerManager start failed: {e}, trying CLI path", file=sys.stderr)
-    # Secondary: CLI path python -m voxel_tree --server start --role oracle_end_chorus
-    try:
-        import subprocess, sys as _sys2
-        result = subprocess.run([_sys2.executable, "-m", "voxel_tree", "--server", "start", "--role", "oracle_end_chorus"], capture_output=True, text=True, timeout=10)
-        print(f"[oracle] CLI start output: {result.stdout} {result.stderr}")
-        if result.returncode == 0:
-            return True
-    except Exception as e2:
-        print(f"[oracle] CLI start failed: {e2}", file=sys.stderr)
-    # Tertiary: direct java launch
-    try:
-        import subprocess
-        jar_candidates = list((REPO_ROOT / "python" / "tools" / "fabric-server").glob("*.jar"))
-        if not jar_candidates:
-            jar_candidates = list((REPO_ROOT / "tools" / "fabric-server").glob("*.jar"))
-        if jar_candidates:
-            jar = jar_candidates[0]
-            runtime = RUNTIME_DIR
-            print(f"[oracle] Launching java -jar {jar} in {runtime}")
-            subprocess.Popen(["java", "-Xmx12g", "-Xms4g", "-jar", str(jar), "--nogui"], cwd=str(runtime))
-            return True
-    except Exception as e3:
-        print(f"[oracle] Direct java launch failed: {e3}", file=sys.stderr)
-    return False
+        print(f"[oracle] Direct launch failed: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
+        return False
 
 def _wait_for_rcon(timeout: int = 120) -> bool:
     try:
@@ -215,72 +260,92 @@ def _wait_for_rcon(timeout: int = 120) -> bool:
     return False
 
 def _cheap_chorus_scan() -> None:
-    """Cheap server-only scan around proposed anchor before paying for 1296-chunk Voxy run. Verifies outer-island contains real chorus via server block checks."""
+    """Exact preflight chorus check: force-load chunks covering 32^3 tracer ROI, then destructively /fill replace count across entire ROI."""
     try:
         from voxel_tree.utils.rcon import RconClient
     except ImportError:
         from utils.rcon import RconClient  # type: ignore
+    import math
     host = "localhost"
     port = ORACLE_ROLE["rcon_port"]
     password = ORACLE_ROLE["rcon_password"]
     br = ORACLE_ROLE["blockRegion"]
-    # Scan a few highland columns for chorus_plant/flower using /execute if block - deterministic cheap check
-    found = False
+    x1 = br["originBlockX"]
+    y1 = br["originBlockY"]
+    z1 = br["originBlockZ"]
+    x2 = br["originBlockX"] + br["extentBlocks"] - 1
+    y2 = br["originBlockY"] + br["extentBlocks"] - 1
+    z2 = br["originBlockZ"] + br["extentBlocks"] - 1
+    minCx = math.floor(x1 / 16)
+    maxCx = math.floor(x2 / 16)
+    minCz = math.floor(z1 / 16)
+    maxCz = math.floor(z2 / 16)
+    print(f"[oracle] Cheap preflight: force-loading chunks [{minCx},{minCz} -> {maxCx},{maxCz}] for ROI {x1} {y1} {z1} -> {x2} {y2} {z2}")
+
+    def _parse_fill_count(resp: str) -> int:
+        import re
+        if not resp:
+            return 0
+        low = resp.lower()
+        if "no blocks" in low or "failed" in low or "unknown" in low:
+            return 0
+        m = re.search(r"(\d+)\s+block", low)
+        if m:
+            try:
+                return int(m.group(1))
+            except:
+                return 0
+        if "0 block" in low:
+            return 0
+        return 0
+
     with RconClient(host, port, password, timeout=10) as rc:
-        for dx in [0, 8, 16, 24]:
-            for dz in [0, 8, 16, 24]:
-                for dy in range(64, 100):
-                    x = br["originBlockX"] + dx
-                    y = dy
-                    z = br["originBlockZ"] + dz
-                    resp = rc.command(f"execute in minecraft:the_end positioned {x} {y} {z} if block ~ ~ ~ minecraft:chorus_plant run say found")
-                    if "found" in resp.lower():
-                        print(f"[oracle] Cheap scan: found chorus_plant at {x} {y} {z}")
-                        found = True
-                        break
-                    resp2 = rc.command(f"execute in minecraft:the_end positioned {x} {y} {z} if block ~ ~ ~ minecraft:chorus_flower run say found")
-                    if "found" in resp2.lower():
-                        print(f"[oracle] Cheap scan: found chorus_flower at {x} {y} {z}")
-                        found = True
-                        break
-                if found:
-                    break
-            if found:
-                break
-    if not found:
-        # Fallback: server-side scan over exact 32^3 target ROI via single efficient check (counts chorus in ROI)
-        print(f"[oracle] Cheap scan 4x4 sample found no chorus, trying full 32^3 ROI server-side scan", file=sys.stderr)
+        # Force-load chunks covering ROI in The End (dimension-aware) so fill operates on generated chunks
+        # Use block coordinates for forceload (interpreted as block pos -> chunk), executed in the_end
         try:
-            with RconClient(host, port, password, timeout=10) as rc2:
-                # Use a single RCON that runs a function to count chorus in ROI - fallback to terse scan if no function
-                # For now, do a denser sample: every 4 blocks in ROI (8x8x8=512 checks) instead of 576 sparse
-                found2 = False
-                for dx in range(0, 32, 4):
-                    for dz in range(0, 32, 4):
-                        for dy in range(0, 32, 4):
-                            x = br["originBlockX"] + dx
-                            y = br["originBlockY"] + dy
-                            z = br["originBlockZ"] + dz
-                            resp = rc2.command(f"execute in minecraft:the_end positioned {x} {y} {z} if block ~ ~ ~ minecraft:chorus_plant run say found")
-                            if "found" in resp.lower():
-                                print(f"[oracle] Full ROI scan: found chorus_plant at {x} {y} {z}")
-                                found2 = True
-                                break
-                            resp2 = rc2.command(f"execute in minecraft:the_end positioned {x} {y} {z} if block ~ ~ ~ minecraft:chorus_flower run say found")
-                            if "found" in resp2.lower():
-                                print(f"[oracle] Full ROI scan: found chorus_flower at {x} {y} {z}")
-                                found2 = True
-                                break
-                        if found2:
-                            break
-                    if found2:
-                        break
-                found = found2
-        except Exception as e:
-            print(f"[oracle] Full ROI scan failed: {e}", file=sys.stderr)
+            resp = rc.command(f"execute in minecraft:the_end run forceload add {x1} {z1} {x2} {z2}")
+            print(f"[oracle] forceload range add: {resp}")
+            if "Unknown" in resp or "Incorrect" in resp or "Expected" in resp:
+                raise RuntimeError(resp)
+        except Exception:
+            for cx in range(minCx, maxCx + 1):
+                for cz in range(minCz, maxCz + 1):
+                    try:
+                        # Use block coords for chunk corners to ensure correct chunk is loaded in the_end
+                        bx = cx * 16
+                        bz = cz * 16
+                        r = rc.command(f"execute in minecraft:the_end run forceload add {bx} {bz}")
+                        print(f"[oracle] forceload add {cx} {cz} (block {bx} {bz}): {r}")
+                    except Exception as e:
+                        print(f"[oracle] forceload {cx} {cz} failed: {e}", file=sys.stderr)
+        time.sleep(3)
+        print(f"[oracle] Cheap preflight: counting chorus_plant across ROI via /fill ... replace")
+        resp_plant = rc.command(f"execute in minecraft:the_end run fill {x1} {y1} {z1} {x2} {y2} {z2} minecraft:air replace minecraft:chorus_plant")
+        print(f"[oracle] fill chorus_plant result: {resp_plant}")
+        count_plant = _parse_fill_count(resp_plant)
+        print(f"[oracle] chorus_plant replaced: {count_plant}")
+        print(f"[oracle] Cheap preflight: counting chorus_flower across ROI via /fill ... replace")
+        resp_flower = rc.command(f"execute in minecraft:the_end run fill {x1} {y1} {z1} {x2} {y2} {z2} minecraft:air replace minecraft:chorus_flower")
+        print(f"[oracle] fill chorus_flower result: {resp_flower}")
+        count_flower = _parse_fill_count(resp_flower)
+        print(f"[oracle] chorus_flower replaced: {count_flower}")
+        try:
+            rc.command(f"execute in minecraft:the_end run forceload remove {x1} {z1} {x2} {z2}")
+        except Exception:
+            pass
+        for cx in range(minCx, maxCx + 1):
+            for cz in range(minCz, maxCz + 1):
+                try:
+                    bx = cx * 16
+                    bz = cz * 16
+                    rc.command(f"execute in minecraft:the_end run forceload remove {bx} {bz}")
+                except Exception:
+                    pass
+        found = (count_plant > 0) or (count_flower > 0)
         if not found:
-            print(f"[oracle] ERROR: Cheap scan could not establish chorus in target ROI {br} - aborting before expensive 1296 run", file=sys.stderr)
+            print(f"[oracle] ERROR: Cheap scan destructively checked entire ROI {x1} {y1} {z1} -> {x2} {y2} {z2}: chorus_plant={count_plant} chorus_flower={count_flower} -- no chorus in target ROI, aborting before expensive 1296 run", file=sys.stderr)
             sys.exit(1)
+        print(f"[oracle] Cheap preflight SUCCESS: ROI contains chorus chorus_plant={count_plant} chorus_flower={count_flower}")
 
 def _run_ingest_via_rcon(radius_chunks: int | None = None) -> None:
     try:
@@ -370,7 +435,7 @@ def _trigger_capture() -> None:
         wsZ = math.floor(br["originBlockZ"]/wsBlockSize)
         per[f"L{L}"] = {"wsX": wsX, "wsY": wsY, "wsZ": wsZ, "blockSize": wsBlockSize}
     req = {
-        "provenanceId": "end_chorus__s42__b1536_64_0_e32__fh8_gh1c_vh1_ch25__mc1.21.11_voxy0.2.11-alpha__fmtv3",
+        "provenanceId": "end_chorus__s42__b1600_64_128_e32__fh8_gh1c_vh1_ch25__mc1.21.11_voxy0.2.11-alpha__fmtv3",
         "authoritativeGenerationStage": ORACLE_ROLE["authoritativeGenerationStage"],
         "actualCaptureStage": ORACLE_ROLE["actualCaptureStage"],
         "region": ORACLE_ROLE["region"],
@@ -449,6 +514,27 @@ def main(argv: list[str] | None = None) -> None:
         print("[oracle] Dry-run: all helpers defined, lifecycle check passed (reset->preflight->reset->real would be executed)")
         # Also validate that IngestAllCommand sorting is deterministic
         print("[oracle] Dry-run: checking that IngestAllCommand uses squared distance -> X -> Z")
+        # Dry-run assertion: starting while preflight must not rewrite to oracle_end_chorus
+        import inspect
+        src = inspect.getsource(_start_oracle_server_via_manager)
+        assert "configure_for_role(" not in src, "launcher must not call configure_for_role (would overwrite preflight level_name)"
+        orig_level = ORACLE_ROLE["level_name"]
+        ORACLE_ROLE["level_name"] = "oracle_end_chorus_preflight"
+        try:
+            import subprocess
+            from unittest import mock
+            with mock.patch("subprocess.Popen") as _mp:
+                _mock_proc = mock.Mock()
+                _mock_proc.pid = 99999
+                _mp.return_value = _mock_proc
+                try:
+                    _start_oracle_server_via_manager()
+                except Exception:
+                    pass
+                assert ORACLE_ROLE["level_name"] == "oracle_end_chorus_preflight", f"launcher rewrote level_name to {ORACLE_ROLE['level_name']}"
+                print("[oracle] Dry-run: launcher preserved preflight level_name (did not rewrite to oracle_end_chorus)")
+        finally:
+            ORACLE_ROLE["level_name"] = orig_level
         return
     if args.check:
         _verify_fixture()

@@ -103,7 +103,7 @@ public final class OracleFixtureWriter {
         haloRect.addProperty("minChunkZ", rect[1]);
         haloRect.addProperty("maxChunkX", rect[2]);
         haloRect.addProperty("maxChunkZ", rect[3]);
-        // Also compute L4 footprint rect for oracle coverage verification (36x36 for 1536,64,0)
+        // Also compute L4 footprint rect for oracle coverage verification (36x36 for 1600,64,128)
         var l4per = br.perLevelWorldSectionOrigin(4);
         int wsBlockSizeL4 = 32 * (1 << 4);
         int minBxL4 = l4per.wsX() * wsBlockSizeL4 - c.halo().combinedHaloBlocks();
