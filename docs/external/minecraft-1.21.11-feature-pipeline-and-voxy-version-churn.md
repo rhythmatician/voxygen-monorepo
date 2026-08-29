@@ -184,17 +184,21 @@ SurfaceWaterDepthFilter.java      2.0K
 
 `BiomeDefaultFeatures.java` (33.1 KB) wires biome→feature lists per dimension.
 
-### 3.3 Stability table — what is generic and reusable vs data-driven vs bespoke
+### 3.3 Stability table — generic machinery vs data/configuration vs feature-family logic vs biome-specific content
 
-| Layer | Type | # items | Total size | Stays in code or data? | Cross-MC-version expectation |
+The ticket's deliverable #2 names four categories. They are separated below:
+
+| Category | Layer | # items | Total size | Stays in code or data? | Cross-MC-version expectation |
 |---|---|---|---|---|---|
-| `PlacementModifier` impls | Generic machinery | 16 | ~50 KB | **Code, port once** | The set is stable; new modifiers (e.g. `EnvironmentScanPlacement`) appear occasionally; rare mutation of existing modifiers. Strong expectation, unverified locally. |
-| `FeatureConfiguration` records | Generic data shape | 38 | ~85 KB | **Code, port once** | New MC = new `*Configuration` records for new features; existing ones almost never change shape. Strong expectation, unverified. |
-| `Feature` impls | Family-specific logic | ~50 | ~250 KB | **Code, port once, but each is bespoke** | New MC = a few new `Feature` impls; existing ones occasionally gain new fields. Strong expectation, unverified. |
-| Feature registries (`features/*.java`) | Data + glue | 10 | ~124 KB | **Data adapter** (extract to JSON/datapack adapter) | New MC = register more entries, mostly additive. |
-| Placement registries (`placement/*.java`) | Data + glue | 11 | ~117 KB | **Data adapter** (extract to JSON/datapack adapter) | New MC = register more entries, mostly additive. |
-| Biome registries (`biome/*.java`) | Data + glue | 4 | ~75 KB | **Data adapter** (extract to JSON/datapack adapter) | New MC = new biomes; existing biome IDs are **not** stable across versions (canonical mapping required). |
-| `BiomeDefaultFeatures` wiring | Data + glue | 1 | 33 KB | **Data adapter** | New MC = new biome→feature lists. |
+| **Generic placement machinery** (code) | `PlacementModifier` impls | 16 | ~50 KB | **Code, port once** | The set is stable; new modifiers (e.g. `EnvironmentScanPlacement`) appear occasionally; rare mutation of existing modifiers. Strong expectation, unverified locally. |
+| **Generic placement machinery** (code) | `PlacedFeature.placeWithContext` loop + `PlacementContext` + `PlacedFeature.placeWithBiomeCheck` | 3 | ~3 KB | **Code, port once** | The shape is dimension- and family-agnostic; survives version churn. |
+| **Generic data shape** (code) | `FeatureConfiguration` records | 38 | ~85 KB | **Code, port once** | New MC = new `*Configuration` records for new features; existing ones almost never change shape. Strong expectation, unverified. |
+| **Generic data shape** (code) | `ConfiguredFeature` + `Feature` base classes (registry + dispatch) | 2 | ~24 KB | **Code, port once** | Stable interface; per-version delta is in the registry contents, not the class shape. |
+| **Feature-family logic** (code, bespoke) | `Feature` impls | ~50 | ~250 KB | **Code, port per family, each bespoke** | New MC = a few new `Feature` impls; existing ones occasionally gain new fields. Strong expectation, unverified. |
+| **Data/configuration** (data, dimension-agnostic) | Feature registries (`features/*.java`) | 10 | ~124 KB | **Data adapter** (extract to JSON/datapack adapter) | New MC = register more entries, mostly additive. |
+| **Data/configuration** (data, dimension-agnostic) | Placement registries (`placement/*.java`) | 11 | ~117 KB | **Data adapter** (extract to JSON/datapack adapter) | New MC = register more entries, mostly additive. |
+| **Biome-specific content** (data, dimension-specific) | Biome registries (`biome/*.java`) | 4 | ~75 KB | **Data adapter** (extract to JSON/datapack adapter) | New MC = new biomes; existing biome IDs are **not** stable across versions (canonical mapping required). |
+| **Biome-specific content** (data, biome-keyed) | `BiomeDefaultFeatures` biome→feature wiring | 1 | 33 KB | **Data adapter** (keyed by biome ID) | New MC = new biome→feature lists; this is the most volatile single file. |
 
 ### 3.4 Answering the §1 questions concretely
 
@@ -230,33 +234,15 @@ This is a partition decision (`#85`), not a research conclusion. The research ob
 
 The ticket asks whether a useful normalized boundary is **cheaper to maintain than direct version-specific code**. The candidates below are framed as experiments, not decisions. For each, the test is the same: does expressing the responsibility at this boundary reduce the per-version port cost relative to direct per-version code?
 
-### 4.1 Climate / scaffold (sealed) — `Seed + Climate.Sampler → {block_pos → climate 6-tuple}`
-
-Cheap boundary. The 6 climate `DensityFunction`s are 2D quart-cached and have a fixed interface. Representing the climate output as `(temperature, vegetation, continents, erosion, depth, ridges): float[6]` per `(blockX, blockZ)` column is the cheapest possible schema. Already implemented in `VanillaNoiseRouterSampler` (480-float quart). **Estimated per-version port: minimal** if the interface holds; the cost is the upstream `BlendedNoise` octave table and per-dimension `NoiseGeneratorSettings` change, both already addressed by `RandomState` wiring.
-
-### 4.2 Biome / profile identity (sealed) — `(dim, climate, pos) → canonical biome id`
-
-Cheap boundary. Already implemented as `BiomeMapping.toCanonicalId` (54-entry alpha for OW; equivalent for Nether/End if extended). **Cross-version cost: medium** because biome IDs are intentionally not stable across MC versions, so the canonical mapping must be re-derived per version. The contract metadata hash (CONTEXT.md: `Canonical Biome Registry`) is the enforcement point.
-
-### 4.3 Surface/material family (open) — `(biome, column, noise) → material family id`
-
-Open. Vanilla's `SurfaceSystem` is biome-tagged `MaterialRule` tree (top 3 blocks/column + badlands/iceberg extensions). A "material family id" boundary would need to be coarser than the per-block state. ADR 0015 §"Hierarchical Material Taxonomy" already names this. **Estimated cost: a small fixed mapping per dimension per MC version**; the mapping is data, not code.
-
-### 4.4 Generic placement intent (open) — `(biome, feature_intent, surface) → {position, count, modifier-chain}`
-
-Open. This is the ticket's "feature-instance descriptor" idea. The audit shows the upstream `PlacedFeature.placeWithContext` loop is generic and could be re-expressed as `(intent_id, profile_version, surface_context) → {pos[]}` if a *uniform* description of intent existed. Vanilla does not provide that abstraction (each `Feature` impl is bespoke). The cheapest way to test this boundary is to **port a single feature family** (say, vanilla trees) and observe whether the port reduces the per-version delta for that family. This is bounded, cheap, and either confirms or refutes the abstraction.
-
-### 4.5 Deterministic terrain scaffold + sparse learned residual (open) — `(seed, dim, pos) → {coarse_geometry, fine_residual}`
-
-Open. This is the **Scaffold Preference / Residual Default** (CONTEXT.md) applied to the partition. The End vertical slice already does this: L4/L3 deterministic scaffold + L1 learned residual for chorus (ADR 0013, 0014). Extending to Overworld/Nether requires the partition to commit to a stable scaffold shape. **Estimated cost: medium** for OW (large vanilla biome count), **low** for End (already done) and **low-medium** for Nether (closed volume, fewer features).
-
-### 4.6 Per-Level post-ingest semantic targets (sealed) — `(level, post_voxy_mip(scaffold))`
-
-Cheap. ADR 0015 fixes this as the default correctness target. The oracle will, when implemented per #233, produce the post-ingest Voxy representation for any `(seed, dim, pos)`. **Per-version cost: zero** if the mip rule and Mapper layout are stable in Voxy (see §5 below for evidence).
-
-### 4.7 Verdict: which boundaries to test in what order
-
-The cheapest experiment is **§4.6 (already committed by ADR 0015) → §4.1 (already ported as `VanillaNoiseRouterSampler`) → §4.2 (already canonicalized as `BiomeMapping`) → §4.4 (bounded port of a single feature family) → §4.3 (next, coarser) → §4.5 (last, as a full OW port)**. Each step either confirms the boundary or refutes it with measured evidence.
+| ID | Boundary | Shape | Status | Cross-MC-version expectation | Notes |
+|---|---|---|---|---|---|
+| 4.1 | Climate / scaffold | `Seed + Climate.Sampler → {block_pos → climate 6-tuple}` | **Sealed** | Minimal port per version (interface stable since 1.18) | Already ported as `VanillaNoiseRouterSampler` (480-float quart); cost is upstream `BlendedNoise` octave table + `NoiseGeneratorSettings` per-dimension change, addressed by `RandomState` wiring. |
+| 4.2 | Biome / profile identity | `(dim, climate, pos) → canonical biome id` | **Sealed** | Medium cost (biome IDs are intentionally not stable across MC versions) | Already implemented as `BiomeMapping.toCanonicalId` (54-entry alpha for OW; equivalent for Nether/End if extended); contract metadata hash (CONTEXT.md: `Canonical Biome Registry`) is the enforcement point. |
+| 4.3 | Surface/material family | `(biome, column, noise) → material family id` | **Open** | Small fixed mapping per dimension per MC version (data) | Vanilla's `SurfaceSystem` is a biome-tagged `MaterialRule` tree; ADR 0015 §"Hierarchical Material Taxonomy" names this; mapping is data, not code. |
+| 4.4 | Generic placement intent | `(biome, feature_intent, surface) → {position, count, modifier-chain}` | **Open** | Cost bounded by which `Feature` family is ported; not universal | The audit shows `PlacedFeature.placeWithContext` is generic, but vanilla does not provide a "feature-instance descriptor" abstraction (each `Feature` is bespoke); bounded port of a single family (e.g. vanilla trees) is the cheapest test. |
+| 4.5 | Deterministic scaffold + sparse learned residual | `(seed, dim, pos) → {coarse_geometry, fine_residual}` | **Open** | Medium OW / low End / low-medium Nether | Scaffold Preference / Residual Default (CONTEXT.md) applied to the partition; End vertical slice already does this for chorus (ADR 0013, 0014); extending to OW/Nether requires the partition to commit to a stable scaffold shape. |
+| 4.6 | Per-Level post-ingest semantic target | `(level, post_voxy_mip(scaffold))` | **Sealed** | Zero cost if Mipper rule and Mapper layout are stable in Voxy (see §5) | ADR 0015 fixes this as the default correctness target; the oracle will produce the post-ingest Voxy representation for any `(seed, dim, pos)` per #233. |
+| 4.7 | Verdict (order to test) | — | **Sealed** | n/a | §4.6 (committed by ADR 0015) → §4.1 (already ported) → §4.2 (already canonicalized) → §4.4 (bounded port of a single feature family) → §4.3 (next, coarser) → §4.5 (last, as a full OW port). Each step either confirms or refutes the boundary with measured evidence. |
 
 ---
 
@@ -480,6 +466,8 @@ What is **not** yet available (per the ticket's "if not, state exactly what #233
 
 ### 7.2 The cheapest experiment that does NOT need #233
 
+The ticket asks for "at least one cheap quantitative residual/oracle experiment if the existing harness makes it possible without building new infrastructure." This section records the **experiment design** whose execution is a follow-up (a #85 partition input or #234 feature-generation-skill input, not a #235 deliverable). The existing infrastructure makes execution plausible without building anything new; the design is committed here so that whichever follow-up owns it does not need to re-derive the shape.
+
 For a **single, fixed 1.21.11 corpus + pinned Voxy 0.2.11-alpha**, with the existing pregen+voxy-import pipeline:
 
 1. Choose one Overworld biome (e.g. `plains`).
@@ -487,9 +475,9 @@ For a **single, fixed 1.21.11 corpus + pinned Voxy 0.2.11-alpha**, with the exis
 3. Run the vanilla feature with one of the 16 `PlacementModifier` chains (e.g. `InSquarePlacement` + `HeightmapPlacement` + `BiomeFilter` + `CountPlacement`).
 4. Capture the (deterministic) set of `BlockPos` per placement in a small JSON fixture.
 5. Mip the result through the Voxy mip rule (5 lines of Python using `voxy_format`).
-6. Compare the mip output against an empty-region mip: this is a **single-biomium spike silhouette** measured in voxels, not pixels.
+6. Compare the mip output against an empty-region mip: this is a **single-biome spike silhouette** measured in voxels, not pixels.
 
-This measures the **residual of mip-onto-empty for a single feature type**. Cost: ~200 lines of Python, no new Java, no new training, no model. The result is a single number per `(biome, feature_config, modifier_chain)` that is the cheapest possible empirical "how much does this feature survive at L4?" — which is exactly the §6.3 / Example C question the partition needs to answer.
+This measures the **residual of mip-onto-empty for a single feature type**. Cost: ~200 lines of Python, no new Java, no new training, no model. The result is a single number per `(biome, feature_config, modifier_chain)` that is the cheapest possible empirical "how much does this feature survive at L4?" — which is exactly the §6.3 / Example C question the partition needs to answer. Execution is **out of scope for #235**; the §9 follow-ups and §4.4 (bounded port of a single feature family) are the consumers.
 
 ### 7.3 What the partition can do with this number
 
