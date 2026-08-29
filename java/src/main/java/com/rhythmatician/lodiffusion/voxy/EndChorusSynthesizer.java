@@ -17,9 +17,9 @@ import net.minecraft.util.math.BlockPos;
  * as residual cost). L2/L1/L0 include chorus via deterministic per-column
  * hash (%20, 3-6 height, branch) as a procedural approximation without requiring a loaded chunk. Not vanilla {@code ChorusPlantFeature} placement; no vanilla parity established. Honest omission L4/L3=0 is residual cost; single-voxel edge cases may differ due to centre-sample vs any-solid and branch stochasticity. See #220 for disposition.
  *
- * <p>Voxy parity: bottom-up is vanilla chunk (16x384x16 blocks with chorus)
+ * <p>Voxy Mipper semantics: bottom-up is vanilla chunk (16x384x16 blocks with chorus)
  * -> Voxy ingest (VoxelizedSection 16^3 -> 32^3 WorldSection via {@code Mipper}
- * opacity-biased rule). Top-down reproduces the same Mipper result:
+ * opacity-biased rule). Top-down matches the same Mipper selection given the same block field:
  * opaque end_stone (opacity 15) wins over chorus/air (opacity 0) with corner
  * priority I111=7..I000=0 as in {@code external/voxy/src/main/java/me/cortex/voxy/common/world/other/Mipper.java}.
  * L1 is single mip (2^3), L2 is double mip (4^3) via two successive Mipper
@@ -82,7 +82,7 @@ public final class EndChorusSynthesizer {
     }
 
     /**
-     * Production factory wrapping {@link WorldNoiseAccess} for real End islands.
+     * World-bound experimental factory wrapping {@link WorldNoiseAccess} for real End islands. Until #233 provides the independent oracle, not for production L1/L2 overlay.
      * Surface is derived from finalDensity top solid; biome via biome sampler.
      * Falls back to air where density indicates void.
      */

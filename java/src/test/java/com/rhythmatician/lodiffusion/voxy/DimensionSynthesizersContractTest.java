@@ -46,9 +46,13 @@ class DimensionSynthesizersContractTest {
         RegistryKey<World> end = key("the_end");
         WorldNoiseAccess access = Mockito.mock(WorldNoiseAccess.class);
         var telemetry = new ExactL1SamplingTelemetry();
-        DimensionSynthesizer synth = DimensionSynthesizers.forDimension(end, access, telemetry, 42L, true);
+        DimensionSynthesizer synth = new EndDimensionSynthesizer(access, telemetry, 42L, true);
         assertInstanceOf(EndDimensionSynthesizer.class, synth);
         assertTrue(((EndDimensionSynthesizer) synth).isChorusOverlayEnabled());
+        // Generic factory always returns disabled
+        RegistryKey<World> end2 = key("the_end");
+        DimensionSynthesizer generic = DimensionSynthesizers.forDimension(end2, access, telemetry, 42L);
+        assertFalse(((EndDimensionSynthesizer) generic).isChorusOverlayEnabled());
     }
 
     @Test

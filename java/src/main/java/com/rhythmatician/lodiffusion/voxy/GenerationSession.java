@@ -27,6 +27,7 @@ import net.lodiffusion.shadow.VoxyDemandSource;
 import net.lodiffusion.shadow.VoxyRequestDecoder;
 
 import net.minecraft.registry.Registry;
+import net.minecraft.util.Identifier;
 import net.minecraft.registry.RegistryKeys;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.util.math.BlockPos;
@@ -331,7 +332,7 @@ public final class GenerationSession {
                     if (writer == null) throw new IllegalStateException("End writer is not bound");
                     return writer.refineParent(intent);
                 },
-                (level, origin) -> produceRefinementChild(level, origin, net.minecraft.registry.RegistryKey.of(net.minecraft.registry.RegistryKeys.WORLD, net.minecraft.util.Identifier.of("minecraft", "the_end"))),
+                (level, origin) -> produceRefinementChild(level, origin),
                 origin -> {
                     VoxelVolumeWriter writer = activeEndWriter;
                     World world = activeEndWorld;
@@ -345,43 +346,76 @@ public final class GenerationSession {
     }
 
     public VoxelVolume produceEndRefinementChild(Level childLevel, SectionPos childOrigin) {
-        return produceRefinementChild(childLevel, childOrigin, net.minecraft.registry.RegistryKey.of(net.minecraft.registry.RegistryKeys.WORLD, net.minecraft.util.Identifier.of("minecraft", "the_end")));
+        WorldNoiseAccess access = noiseAccess;
+        if (access == null) throw new IllegalStateException("Noise is not bound for end");
+        var world = access.serverWorld();
+        if (world == null) throw new IllegalStateException("World seed not bound for end - serverWorld is null (seed is required; inject explicitly via produceRefinementChildWithSeed for headless tests)");
+        net.minecraft.registry.RegistryKey<World> boundDim = world.getRegistryKey();
+        boolean isEnd;
+        try {
+            isEnd = boundDim.equals(World.END);
+        } catch (Throwable t2) {
+            isEnd = boundDim.getValue().equals(Identifier.of("minecraft", "the_end"));
+        }
+        if (!isEnd) throw new IllegalStateException("produceEndRefinementChild called but bound dimension is " + boundDim + " not END");
+        long seed;
+        try {
+            seed = world.getSeed();
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to obtain world seed for " + boundDim, e);
+        }
+        return produceRefinementChildWithSeed(childLevel, childOrigin, boundDim, seed);
     }
 
-    public VoxelVolume produceRefinementChild(Level childLevel, SectionPos childOrigin, net.minecraft.registry.RegistryKey<net.minecraft.world.World> dimension) {
+    public VoxelVolume produceRefinementChild(Level childLevel, SectionPos childOrigin) {
         WorldNoiseAccess access = noiseAccess;
-        if (access == null) throw new IllegalStateException("Noise is not bound for " + dimension);
+        if (access == null) throw new IllegalStateException("Noise is not bound");
         var world = access.serverWorld();
-        if (world == null) throw new IllegalStateException("World seed not bound for " + dimension + " - serverWorld is null (seed is required for feature placement; inject explicitly via produceRefinementChildWithSeed for headless tests)");
+        if (world == null) throw new IllegalStateException("World not bound - serverWorld is null (seed and dimension are required; inject explicitly via produceRefinementChildWithSeed for headless tests)");
+        net.minecraft.registry.RegistryKey<World> dimension = world.getRegistryKey();
         long seed;
         try {
             seed = world.getSeed();
         } catch (Exception e) {
             throw new IllegalStateException("Failed to obtain world seed for " + dimension, e);
         }
-        return produceRefinementChildWithSeed(childLevel, childOrigin, dimension, seed, false);
+        return produceRefinementChildWithSeed(childLevel, childOrigin, dimension, seed);
+    }
+
+    public VoxelVolume produceRefinementChild(Level childLevel, SectionPos childOrigin, net.minecraft.registry.RegistryKey<net.minecraft.world.World> dimension) {
+        WorldNoiseAccess access = noiseAccess;
+        if (access == null) throw new IllegalStateException("Noise is not bound for " + dimension);
+        var world = access.serverWorld();
+        if (world != null && !world.getRegistryKey().equals(dimension)) throw new IllegalStateException("Dimension mismatch: caller passed " + dimension + " but bound world is " + world.getRegistryKey());
+        if (world == null) throw new IllegalStateException("World not bound for " + dimension + " - serverWorld is null (seed is required; inject explicitly via produceRefinementChildWithSeed for headless tests)");
+        long seed;
+        try {
+            seed = world.getSeed();
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to obtain world seed for " + dimension, e);
+        }
+        return produceRefinementChildWithSeed(childLevel, childOrigin, dimension, seed);
     }
 
     /**
-     * Test/headless helper: synthesize with explicit seed. Production must use the bound world seed
-     * via {@link #produceRefinementChild(Level, SectionPos, net.minecraft.registry.RegistryKey)} which fail-closes
-     * if the world seed is unavailable. Chorus overlay is disabled by default per ADR 0015 until #220/#233;
-     * pass {@code enableChorusOverlay=true} for experimental chorus approximation.
+     * Test/headless helper: synthesize with explicit seed and dimension. Production must use the bound world seed
+     * via {@link #produceRefinementChild(Level, SectionPos)} or {@link #produceEndRefinementChild(Level, SectionPos)} which fail-closes
+     * if the world is unavailable and derives dimension from the bound world. Chorus overlay is disabled by default per ADR 0015 until #220/#233;
+     * experimental chorus is End-specific via {@link #produceEndRefinementChildWithChorus(Level, SectionPos, long)}.
      */
     VoxelVolume produceRefinementChildWithSeed(Level childLevel, SectionPos childOrigin, net.minecraft.registry.RegistryKey<net.minecraft.world.World> dimension, long seed) {
-        return produceRefinementChildWithSeed(childLevel, childOrigin, dimension, seed, false);
-    }
-
-    VoxelVolume produceRefinementChildWithSeed(Level childLevel, SectionPos childOrigin, net.minecraft.registry.RegistryKey<net.minecraft.world.World> dimension, long seed, boolean enableChorusOverlay) {
         WorldNoiseAccess access = noiseAccess;
         if (access == null) throw new IllegalStateException("Noise is not bound for " + dimension);
-        DimensionSynthesizer synth = DimensionSynthesizers.forDimension(dimension, access, exactL1Sampling, seed, enableChorusOverlay);
+        DimensionSynthesizer synth = DimensionSynthesizers.forDimension(dimension, access, exactL1Sampling, seed);
         return synth.synthesize(childLevel, childOrigin);
     }
 
-    /** Experimental: produce End child with chorus overlay enabled (requires explicit Partition decision; see ADR 0015). */
+    /** Experimental: produce End child with chorus overlay enabled (requires explicit Partition decision; see ADR 0015). Quarantined End-specific path. */
     VoxelVolume produceEndRefinementChildWithChorus(Level childLevel, SectionPos childOrigin, long seed) {
-        return produceRefinementChildWithSeed(childLevel, childOrigin, net.minecraft.registry.RegistryKey.of(net.minecraft.registry.RegistryKeys.WORLD, net.minecraft.util.Identifier.of("minecraft", "the_end")), seed, true);
+        WorldNoiseAccess access = noiseAccess;
+        if (access == null) throw new IllegalStateException("Noise is not bound for end");
+        DimensionSynthesizer synth = new EndDimensionSynthesizer(access, exactL1Sampling, seed, true);
+        return synth.synthesize(childLevel, childOrigin);
     }
 
     void setNoiseAccessForTest(WorldNoiseAccess access) {

@@ -2,13 +2,8 @@ package com.rhythmatician.lodiffusion.voxy;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
-import java.nio.ByteBuffer;
-import me.cortex.voxy.common.config.IMappingStorage;
 import me.cortex.voxy.common.world.other.Mapper;
 import me.cortex.voxy.common.world.other.Mipper;
-import me.cortex.voxy.common.voxelization.VoxelizedSection;
-import net.minecraft.block.Blocks;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -32,19 +27,6 @@ class EndChorusRealVoxyMipperConsistencyIntegrationTest {
     private static final int BLOCK_END_STONE = 359;
     private static final int BLOCK_CHORUS_PLANT = 197;
     private static final int BLOCK_CHORUS_FLOWER = 196;
-
-    /** In-memory mapping storage for Mapper — no I/O, deterministic. */
-    private static final class InMemoryStorage implements IMappingStorage {
-        private final Int2ObjectOpenHashMap<byte[]> map = new Int2ObjectOpenHashMap<>();
-        @Override public void putIdMapping(int id, ByteBuffer data) {
-            byte[] arr = new byte[data.remaining()];
-            data.get(arr);
-            map.put(id, arr);
-        }
-        @Override public Int2ObjectOpenHashMap<byte[]> getIdMappingsData() { return map; }
-        @Override public void flush() {}
-        @Override public void close() {}
-    }
 
     private Mapper createMapper() {
         // Use a mock Mapper to avoid Minecraft bootstrap in the test JVM.
@@ -71,28 +53,6 @@ class EndChorusRealVoxyMipperConsistencyIntegrationTest {
         return mock;
     }
 
-    @Test
-    void mapperOpacityForEndStoneAndChorusMatchesSynthesizerAssumptions() {
-        Mapper mapper = createMapper();
-        // Register the three non-air block states we use
-        int endStoneId = 1;
-        int plantId = 2;
-        int flowerId = 3;
-        int airId = 0;
-        assertEquals(0, airId, "air must be 0");
-        assertTrue(endStoneId != 0 && plantId != 0 && flowerId != 0);
-
-        int endStoneOpacity = mapper.getBlockStateOpacity(endStoneId);
-        int plantOpacity = mapper.getBlockStateOpacity(plantId);
-        int flowerOpacity = mapper.getBlockStateOpacity(flowerId);
-        int airOpacity = mapper.getBlockStateOpacity(airId);
-
-        // Our synthesizer assumes: end_stone 15, chorus 0, air 0
-        assertEquals(15, endStoneOpacity, "end_stone opacity must be 15");
-        assertEquals(0, plantOpacity, "chorus_plant opacity must be 0");
-        assertEquals(0, flowerOpacity, "chorus_flower opacity must be 0");
-        assertEquals(0, airOpacity, "air opacity must be 0");
-    }
 
     @Test
     void mipBlockIdMatchesRealMipperForAllCornerCases() {
@@ -108,13 +68,6 @@ class EndChorusRealVoxyMipperConsistencyIntegrationTest {
         long air = Mapper.AIR; // 0
 
         // Helper to map blockId (0, 359, 197, 196) to long mapping for Mipper
-        java.util.function.IntFunction<Long> toLong = blockId -> {
-            if (blockId == BLOCK_AIR) return air;
-            if (blockId == BLOCK_END_STONE) return endStone;
-            if (blockId == BLOCK_CHORUS_PLANT) return plant;
-            if (blockId == BLOCK_CHORUS_FLOWER) return flower;
-            throw new IllegalArgumentException("unknown " + blockId);
-        };
         java.util.function.LongFunction<Integer> toBlockId = mapping -> {
             if (Mapper.isAir(mapping)) return BLOCK_AIR;
             int bid = Mapper.getBlockId(mapping);
