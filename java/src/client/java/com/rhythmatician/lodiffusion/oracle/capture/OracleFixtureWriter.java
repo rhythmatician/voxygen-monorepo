@@ -87,6 +87,16 @@ public final class OracleFixtureWriter {
             perLevel.add(lvl.name(), o);
         }
         root.add("perLevelWorldSectionOrigins", perLevel);
+        // Diagnostic: preserve actual End biome mapping/name table (since canonical 54 is overworld-only, End biomes become 255)
+        // For now, record that End biomes are mapped to 255 but real names are available via Mapper.getBiomeEntries; full per-voxel diagnostic can be added after first real capture
+        JsonObject diagnosticBiomes = new JsonObject();
+        diagnosticBiomes.addProperty("note", "canonical 54 is overworld-only; End biomes (end_highlands, end_midlands, end_barrens, small_end_islands, the_end) map to 255 UNKNOWN but real names are preserved via Mapper.getBiomeEntries diagnostic");
+        diagnosticBiomes.addProperty("canonicalBiomeCount", 54);
+        diagnosticBiomes.addProperty("unknownId", 255);
+        JsonArray endBiomes = new JsonArray();
+        for (String eb : new String[]{"minecraft:end_highlands","minecraft:end_midlands","minecraft:end_barrens","minecraft:small_end_islands","minecraft:the_end"}) endBiomes.add(eb);
+        diagnosticBiomes.add("endBiomes", endBiomes);
+        root.add("diagnosticBiomeMapping", diagnosticBiomes);
         int[] rect = br.chunkRectWithHalo(c.halo().combinedHaloBlocks());
         JsonObject haloRect = new JsonObject();
         haloRect.addProperty("minChunkX", rect[0]);
@@ -162,7 +172,7 @@ public final class OracleFixtureWriter {
         // Self-describing v3: validate stored geometry matches expected tracer contract but also preserve file's own blockRegion/perLevel for determinism proof
         String actualCaptureStage = root.has("actualCaptureStage") ? root.get("actualCaptureStage").getAsString() : root.get("authoritativeGenerationStage").getAsString();
         OracleContract contract = com.rhythmatician.lodiffusion.oracle.EndChorusTracerContract.contract();
-        // Verify v3 geometry present
+        // Fail closed on geometry mismatch - immutable oracle provenance must not silently load stale fixture
         if (root.has("blockRegion")) {
             JsonObject brJson = root.getAsJsonObject("blockRegion");
             int bx = brJson.get("originBlockX").getAsInt();
@@ -170,19 +180,19 @@ public final class OracleFixtureWriter {
             int bz = brJson.get("originBlockZ").getAsInt();
             var fileBr = contract.blockRegionOrDerived();
             if (bx != fileBr.originBlockX() || by != fileBr.originBlockY() || bz != fileBr.originBlockZ()) {
-                LOGGER.warn("[OracleFixtureWriter] File blockRegion [{},{},{}] vs tracer {} mismatch", bx, by, bz, fileBr);
+                throw new IllegalStateException("Fixture blockRegion ["+bx+","+by+","+bz+"] != tracer " + fileBr + " at " + path + " - fail closed for immutable provenance");
             }
-            // Validate L4 rect matches expected 94..129 x -2..33 for 1536,64,0
             if (root.has("l4HaloCompleteChunkRect")) {
                 JsonObject l4 = root.getAsJsonObject("l4HaloCompleteChunkRect");
                 int minX = l4.get("minChunkX").getAsInt();
                 int maxX = l4.get("maxChunkX").getAsInt();
-                if ((maxX - minX + 1) * (l4.get("maxChunkZ").getAsInt() - l4.get("minChunkZ").getAsInt() + 1) != 1296) {
-                    LOGGER.warn("[OracleFixtureWriter] L4 chunkRect not 1296 as expected for full coverage: {}", l4);
+                int cnt = (maxX - minX + 1) * (l4.get("maxChunkZ").getAsInt() - l4.get("minChunkZ").getAsInt() + 1);
+                if (cnt != 1296) {
+                    throw new IllegalStateException("Fixture L4 chunkRect not 1296 as required for full coverage: " + l4 + " at " + path);
                 }
             }
         } else {
-            LOGGER.warn("[OracleFixtureWriter] File missing v3 blockRegion - not self-describing");
+            throw new IllegalStateException("Fixture missing v3 blockRegion - not self-describing at " + path);
         }
         if (!contract.provenanceId().equals(provenanceId)) {
             LOGGER.warn("[OracleFixtureWriter] Provenance mismatch: file {} vs tracer {}", provenanceId, contract.provenanceId());

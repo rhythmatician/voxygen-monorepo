@@ -145,12 +145,12 @@ public class IngestAllCommand {
             return 0;
         }
 
-        // 2. Sort by distance from center (closest first — matches Voxy spiral)
-        chunks.sort(Comparator.comparingLong(pos -> {
+        // 2. Deterministic total ordering: squared distance -> X -> Z
+        chunks.sort(Comparator.comparingLong((ChunkPos pos) -> {
             long dx = (long) pos.x - center.x;
             long dz = (long) pos.z - center.z;
             return dx * dx + dz * dz;
-        }));
+        }).thenComparingInt(pos -> pos.x).thenComparingInt(pos -> pos.z));
 
         // 3. Initialise state
         queue = new ArrayDeque<>(chunks);
@@ -203,14 +203,14 @@ public class IngestAllCommand {
                 chunks.add(new ChunkPos(x, z));
             }
         }
-        // Sort by distance to center of bounds (matches Voxy spiral)
+        // Deterministic total ordering: squared distance to center -> X -> Z (explicit, not Morton)
         int centerX = (minX + maxX) / 2;
         int centerZ = (minZ + maxZ) / 2;
-        chunks.sort(Comparator.comparingLong(pos -> {
+        chunks.sort(Comparator.comparingLong((ChunkPos pos) -> {
             long dx = (long) pos.x - centerX;
             long dz = (long) pos.z - centerZ;
             return dx * dx + dz * dz;
-        }));
+        }).thenComparingInt(pos -> pos.x).thenComparingInt(pos -> pos.z));
         queue = new ArrayDeque<>(chunks);
         activeLevel = level;
         activeSource = source;
