@@ -22,13 +22,18 @@ import java.util.List;
  * the client-side Voxy ingestion path is guaranteed to produce results
  * identical to normal gameplay — absolute parity.
  */
-public record IngestPayload(ChunkPos pos, int minY, List<SectionData> sections)
+public record IngestPayload(ChunkPos pos, int minY, List<SectionData> sections, String batchId, int batchTotal)
         implements CustomPacketPayload {
 
     public static final Identifier ID = Identifier.parse("dataharvester:ingest_chunk");
     public static final Type<IngestPayload> TYPE = new Type<>(ID);
     public static final StreamCodec<RegistryFriendlyByteBuf, IngestPayload> CODEC =
             CustomPacketPayload.codec(IngestPayload::write, IngestPayload::new);
+
+    // Legacy constructor for older code (no batch)
+    public IngestPayload(ChunkPos pos, int minY, List<SectionData> sections) {
+        this(pos, minY, sections, "", 0);
+    }
 
     /** Per-section data: serialised PalettedContainers + optional light. */
     public record SectionData(int y, byte[] states, byte[] biomes,
@@ -56,7 +61,8 @@ public record IngestPayload(ChunkPos pos, int minY, List<SectionData> sections)
     public IngestPayload(RegistryFriendlyByteBuf buf) {
         this(buf.readChunkPos(), buf.readInt(),
                 buf.readCollection(ArrayList::new,
-                        b -> SectionData.read((RegistryFriendlyByteBuf) b)));
+                        b -> SectionData.read((RegistryFriendlyByteBuf) b)),
+                buf.readUtf(), buf.readInt());
     }
 
     /** Serialise to network. */
@@ -65,6 +71,8 @@ public record IngestPayload(ChunkPos pos, int minY, List<SectionData> sections)
         buf.writeInt(minY);
         buf.writeCollection(sections,
                 (b, s) -> s.write((RegistryFriendlyByteBuf) b));
+        buf.writeUtf(batchId != null ? batchId : "");
+        buf.writeInt(batchTotal);
     }
 
     @Override

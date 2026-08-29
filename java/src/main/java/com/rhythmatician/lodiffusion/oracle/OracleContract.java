@@ -6,9 +6,7 @@ import java.util.Objects;
 /**
  * Executable/versioned contract for the vanilla->Voxy oracle harness, tracer: End chorus.
  *
- * <p>v2: halo is decomposed into feature reach / generation halo / voxy mip halo;
- * partition disposition and claim/dependency roles are orthogonal and L4..L0 remain UNRESOLVED
- * until real oracle evidence exists.
+ * <p>v3: block-space tracer (outer-island END_HIGHLANDS) + decomposed halo + per-Level WorldSection origins derived independently via floorDiv(blockOrigin, 32<<L).
  *
  * <p>All fields are required and validated before candidate correctness tests run.
  * See ADR 0015 (post-ingest Voxy mip parity is the default target).
@@ -32,6 +30,7 @@ public record OracleContract(
         List<String> inspectedVoxyReferences,
         long seed,
         RegionSpec region,
+        BlockRegionSpec blockRegion,
         HaloSpec halo,
         String authoritativeGenerationStage,
         String fixtureFormatVersion,
@@ -40,13 +39,76 @@ public record OracleContract(
         ClaimDependencyRoles roles,
         BenchmarkPolicy benchmarkPolicy
 ) {
-    public static final String CURRENT_SCHEMA_VERSION = "voxygen.oracle.contract.v2";
-    public static final String CURRENT_FIXTURE_FORMAT_VERSION = "voxygen.oracle.fixture.v2";
+    // Legacy 18-arg constructor for tests that still pass region+halo without explicit blockRegion (derives blockRegion from region)
+    public OracleContract(
+            String schemaVersion,
+            String responsibilityId,
+            String dimension,
+            String frozenWorldgenProfileId,
+            String minecraftVersion,
+            String minecraftSourceRevision,
+            String minecraftJarSha256,
+            String voxyVersion,
+            String voxyCommit,
+            String voxyArtifactSha256,
+            String canonicalBlockRegistryVersion,
+            String canonicalBlockRegistrySha256,
+            String canonicalBiomeRegistryVersion,
+            String canonicalBiomeRegistrySha256,
+            java.util.List<String> a,
+            java.util.List<String> b,
+            long seed,
+            RegionSpec region,
+            HaloSpec halo,
+            String authoritativeGenerationStage,
+            String fixtureFormatVersion,
+            String provenanceId,
+            PerLevelPartitionDecisions perLevelDecisions,
+            ClaimDependencyRoles roles,
+            BenchmarkPolicy benchmarkPolicy) {
+        this(schemaVersion, responsibilityId, dimension, frozenWorldgenProfileId,
+             minecraftVersion, minecraftSourceRevision, minecraftJarSha256,
+             voxyVersion, voxyCommit, voxyArtifactSha256,
+             canonicalBlockRegistryVersion, canonicalBlockRegistrySha256,
+             canonicalBiomeRegistryVersion, canonicalBiomeRegistrySha256,
+             a, b, seed, region, region != null ? BlockRegionSpec.fromSectionSpec(region) : null, halo,
+             authoritativeGenerationStage, fixtureFormatVersion, provenanceId,
+             perLevelDecisions, roles, benchmarkPolicy);
+    }
+
+    public static final String CURRENT_SCHEMA_VERSION = "voxygen.oracle.contract.v3";
+    public static final String CURRENT_FIXTURE_FORMAT_VERSION = "voxygen.oracle.fixture.v3";
 
     // Legacy accessor for tests that still use oracleFixtureId name
     public String oracleFixtureId() { return provenanceId(); }
 
     public record RegionSpec(int originSectionX, int originSectionY, int originSectionZ, int extentSections) {}
+    /** Block-space tracer region: origin in blocks + extent in blocks (typically 32 for L0 tracer). Per-Level WorldSection origins are derived independently via floorDiv. */
+    public record BlockRegionSpec(int originBlockX, int originBlockY, int originBlockZ, int extentBlocks) {
+        public static BlockRegionSpec fromSectionSpec(RegionSpec s) {
+            return new BlockRegionSpec(s.originSectionX()*16, s.originSectionY()*16, s.originSectionZ()*16, s.extentSections()*16);
+        }
+        public SectionPosOrigin perLevelWorldSectionOrigin(int level) {
+            int wsBlockSize = 32 * (1 << level);
+            int wsX = Math.floorDiv(originBlockX, wsBlockSize);
+            int wsY = Math.floorDiv(originBlockY, wsBlockSize);
+            int wsZ = Math.floorDiv(originBlockZ, wsBlockSize);
+            return new SectionPosOrigin(wsX, wsY, wsZ, level, wsBlockSize);
+        }
+        /** Chunk rectangle (inclusive) covering blockRegion + combinedHaloBlocks, for ingest. */
+        public int[] chunkRectWithHalo(int combinedHaloBlocks) {
+            int minBx = originBlockX - combinedHaloBlocks;
+            int minBz = originBlockZ - combinedHaloBlocks;
+            int maxBx = originBlockX + extentBlocks -1 + combinedHaloBlocks;
+            int maxBz = originBlockZ + extentBlocks -1 + combinedHaloBlocks;
+            int minCx = Math.floorDiv(minBx, 16);
+            int minCz = Math.floorDiv(minBz, 16);
+            int maxCx = Math.floorDiv(maxBx, 16);
+            int maxCz = Math.floorDiv(maxBz, 16);
+            return new int[]{minCx, minCz, maxCx, maxCz};
+        }
+    }
+    public record SectionPosOrigin(int wsX, int wsY, int wsZ, int level, int blockSize) {}
     public record HaloSpec(
             int featureReachBlocks,
             String featureReachEvidence,
@@ -84,6 +146,9 @@ public record OracleContract(
 
     public record BenchmarkPolicy(int warmupIterations, int measurementIterations, String repetitionPolicy) {}
 
+    public BlockRegionSpec blockRegionOrDerived() { return blockRegion != null ? blockRegion : (region!=null ? BlockRegionSpec.fromSectionSpec(region) : null); }
+    public SectionPosOrigin perLevelOrigin(int level) { return blockRegionOrDerived().perLevelWorldSectionOrigin(level); }
+    public int[] chunkRectWithHalo() { return blockRegionOrDerived().chunkRectWithHalo(halo.combinedHaloBlocks()); }
     public void validate() { OracleContractValidator.validate(this); }
     public static Builder builder() { return new Builder(); }
 
@@ -106,6 +171,7 @@ public record OracleContract(
         private List<String> inspectedVoxyReferences;
         private Long seed;
         private RegionSpec region;
+        private BlockRegionSpec blockRegion;
         private HaloSpec halo;
         private String authoritativeGenerationStage;
         private String fixtureFormatVersion = CURRENT_FIXTURE_FORMAT_VERSION;
@@ -131,7 +197,8 @@ public record OracleContract(
         public Builder inspectedMinecraftReferences(List<String> v) { this.inspectedMinecraftReferences = v; return this; }
         public Builder inspectedVoxyReferences(List<String> v) { this.inspectedVoxyReferences = v; return this; }
         public Builder seed(long v) { this.seed = v; return this; }
-        public Builder region(RegionSpec v) { this.region = v; return this; }
+        public Builder region(RegionSpec v) { this.region = v; if (this.blockRegion==null && v!=null) this.blockRegion = BlockRegionSpec.fromSectionSpec(v); return this; }
+        public Builder blockRegion(BlockRegionSpec v) { this.blockRegion = v; return this; }
         public Builder halo(HaloSpec v) { this.halo = v; return this; }
         public Builder authoritativeGenerationStage(String v) { this.authoritativeGenerationStage = v; return this; }
         public Builder fixtureFormatVersion(String v) { this.fixtureFormatVersion = v; return this; }
@@ -179,6 +246,14 @@ public record OracleContract(
 
         public OracleContract build() {
             if (this.roles == null) this.roles = new ClaimDependencyRoles("","", "");
+            if (region==null && blockRegion!=null) {
+                int sx = Math.floorDiv(blockRegion.originBlockX(), 16);
+                int sy = Math.floorDiv(blockRegion.originBlockY(), 16);
+                int sz = Math.floorDiv(blockRegion.originBlockZ(), 16);
+                int ext = Math.max(1, (blockRegion.extentBlocks()+15)/16);
+                region = new RegionSpec(sx, sy, sz, ext);
+            }
+            if (blockRegion==null && region!=null) blockRegion = BlockRegionSpec.fromSectionSpec(region);
             OracleContract c = new OracleContract(
                 schemaVersion, responsibilityId, dimension, frozenWorldgenProfileId,
                 minecraftVersion, minecraftSourceRevision, minecraftJarSha256,
@@ -186,7 +261,7 @@ public record OracleContract(
                 canonicalBlockRegistryVersion, canonicalBlockRegistrySha256,
                 canonicalBiomeRegistryVersion, canonicalBiomeRegistrySha256,
                 inspectedMinecraftReferences, inspectedVoxyReferences,
-                seed == null ? 0L : seed, region, halo, authoritativeGenerationStage,
+                seed == null ? 0L : seed, region, blockRegion, halo, authoritativeGenerationStage,
                 fixtureFormatVersion, provenanceId, perLevelDecisions, roles, benchmarkPolicy
             );
             c.validate();

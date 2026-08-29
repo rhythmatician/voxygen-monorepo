@@ -16,17 +16,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * File-polling trigger for deterministic oracle regeneration without RCON packet plumbing.
- *
- * <p>Python orchestrator writes {@code config/oracle_capture_request.json} (or any path) containing
- * {@code {"provenanceId":"...","actualCaptureStage":"FULL"}}; on each client tick this handler
- * checks for the file, runs {@link WorldSectionOracleCapture#capture}, writes
- * {@code java/oracle-fixtures/<provenanceId>.json} via {@link OracleFixtureWriter}, replays
- * CandidateVerifier against the real fixture (including one localized mutation that must fail),
- * writes {@code config/oracle_capture_done.json} with sha and per-Level chorus counts, and
- * deletes the request file. Python polls for done file and exits nonzero on incomplete.
- *
- * <p>Voxy packed longs / YZX never leak — fixture holds only canonical VoxelVolume.
+ * File-polling trigger for deterministic oracle regeneration.
+ * Expects {"provenanceId":"...","actualCaptureStage":"FULL" or "FEATURES", "blockRegion":{...}}.
+ * Derives per-Level WorldSections independently and enforces L0 chorus>0 only.
  */
 public final class OracleFileTrigger {
     private static final Logger LOGGER = LoggerFactory.getLogger(OracleFileTrigger.class);
@@ -56,70 +48,83 @@ public final class OracleFileTrigger {
     private static void handleRequest() throws Exception {
         String req = Files.readString(REQUEST_PATH);
         LOGGER.info("[OracleFileTrigger] Capture request: {}", req);
-        // For tracer, contract is fixed; we could parse provenance/actualStage from JSON but for now use tracer contract.
         OracleContract contract = EndChorusTracerContract.contract();
-        // Allow orchestrator to override stage to FULL if it generated FULL chunks offline (record actual stage)
-        if (req.contains("\"actualCaptureStage\"") && req.contains("FULL")) {
-            // Build a contract copy with FULL stage but same provenance id? The provenanceId must change if stage changes.
-            // For offline oracle we record FULL was the actual capture stage but keep provenance as tracer's FEATURES id for now
-            // and log that synthesis used FULL — per instruction, record that FULL was actual capture stage.
-            LOGGER.info("[OracleFileTrigger] Request requested FULL capture stage — will capture at current stage {} (FEATURES is authoritative for chorus)", contract.authoritativeGenerationStage());
+        String actualStage = "FULL";
+        try {
+            com.google.gson.JsonObject jo = new com.google.gson.Gson().fromJson(req, com.google.gson.JsonObject.class);
+            if (jo.has("actualCaptureStage")) actualStage = jo.get("actualCaptureStage").getAsString();
+            else if (jo.has("actualStage")) actualStage = jo.get("actualStage").getAsString();
+        } catch (Exception ignored) {}
+        LOGGER.info("[OracleFileTrigger] actualCaptureStage={} authoritative={}", actualStage, contract.authoritativeGenerationStage());
+        WorldSectionOracleCapture.setActualCaptureStage(actualStage);
+        OracleFixture fixture;
+        try {
+            fixture = WorldSectionOracleCapture.capture(contract);
+        } finally {
+            WorldSectionOracleCapture.clearActualCaptureStage();
         }
-
-        OracleFixture fixture = WorldSectionOracleCapture.capture(contract);
         Path out = OracleFixtureWriter.defaultFixturePath(contract);
         OracleFixtureWriter.write(fixture, out);
 
-        // Replay CandidateVerifier — correct candidate (fixture's own volumes) must pass; localized mutation must fail
         SectionPos origin = fixture.origin();
+        var blockRegion = contract.blockRegionOrDerived();
         StringBuilder report = new StringBuilder();
-        report.append("provenance=").append(fixture.provenanceId()).append(" sha=").append(fixture.contentSha256()).append("\n");
-
+        report.append("provenance=").append(fixture.provenanceId()).append(" sha=").append(fixture.contentSha256()).append(" actual=").append(fixture.actualCaptureStage()).append(" authoritative=").append(contract.authoritativeGenerationStage()).append("\n");
+        report.append("blockRegion=").append(blockRegion).append(" chunkRect=").append(java.util.Arrays.toString(blockRegion.chunkRectWithHalo(contract.halo().combinedHaloBlocks()))).append("\n");
+        for (Level lvl : Level.values()) {
+            var per = blockRegion.perLevelWorldSectionOrigin(lvl.value());
+            report.append(lvl).append(" WS[").append(per.wsX()).append(",").append(per.wsY()).append(",").append(per.wsZ()).append("] blockSize=").append(per.blockSize()).append(" ");
+        }
+        report.append("\n");
+        boolean hasChorusAtL0 = false;
         for (Level lvl : Level.values()) {
             VoxelVolume correct = fixture.volume(lvl);
             var r = CandidateVerifier.verify(lvl, origin, correct, fixture);
             if (!r.passed()) throw new IllegalStateException("Correct candidate failed at " + lvl + ": " + r.detail());
-            // Localized mutation: flip one non-air voxel if exists, else flip air to end_stone
             VoxelVolume mutated = mutateOneVoxel(correct);
             var rm = CandidateVerifier.verify(lvl, origin, mutated, fixture);
             if (rm.passed()) throw new IllegalStateException("Mutated candidate should fail at " + lvl);
             int chorusCount = countChorus(correct);
-            report.append(lvl).append(": chorus=").append(chorusCount).append(" nonAir=").append(correct.countNonAir()).append(" mutatedFails=").append(!rm.passed()).append("\n");
+            if (lvl == Level.L0 && chorusCount > 0) hasChorusAtL0 = true;
+            var per = blockRegion.perLevelWorldSectionOrigin(lvl.value());
+            report.append(lvl).append(": chorus=").append(chorusCount).append(" nonAir=").append(correct.countNonAir()).append(" ws=[").append(per.wsX()).append(",").append(per.wsY()).append(",").append(per.wsZ()).append("] mutatedFails=").append(!rm.passed()).append("\n");
             LOGGER.info("[OracleFileTrigger] {} chorus={} mutated fails as expected: {}", lvl, chorusCount, rm.detail());
         }
-
-        // Write done file with report
+        if (!hasChorusAtL0) {
+            String msg = "L0 has zero chorus for blockRegion " + blockRegion + " — anchor does not contain real chorus_plant/flower at seed 42; re-pin via outer-island chunk inspection";
+            LOGGER.warn("[OracleFileTrigger] {}", msg);
+            report.append("ERROR: ").append(msg).append("\n");
+            writeDoneError(msg + " | report:\n" + report);
+            Files.deleteIfExists(REQUEST_PATH);
+            return;
+        }
         String doneJson = "{\n  \"provenanceId\": \"" + fixture.provenanceId() + "\",\n"
                 + "  \"contentSha256\": \"" + fixture.contentSha256() + "\",\n"
                 + "  \"fixturePath\": \"" + out.toString().replace("\"", "\\\"") + "\",\n"
-                + "  \"report\": \"" + report.toString().replace("\n", "\\n").replace("\"", "\\\"") + "\",\n"
-                + "  \"actualCaptureStage\": \"" + contract.authoritativeGenerationStage() + "\"\n"
+                + "  \"actualCaptureStage\": \"" + fixture.actualCaptureStage() + "\",\n"
+                + "  \"authoritativeGenerationStage\": \"" + contract.authoritativeGenerationStage() + "\",\n"
+                + "  \"report\": \"" + report.toString().replace("\n", "\\n").replace("\"", "\\\"") + "\"\n"
                 + "}\n";
         Files.createDirectories(DONE_PATH.getParent());
         Files.writeString(DONE_PATH, doneJson);
         LOGGER.info("[OracleFileTrigger] Done file written: {} report:\n{}", DONE_PATH.toAbsolutePath(), report);
-
-        // Delete request so we don't retrigger
         Files.deleteIfExists(REQUEST_PATH);
-        // Also log to client chat if possible
         try {
             var mc = MinecraftClient.getInstance();
             if (mc != null && mc.player != null) {
-                mc.player.sendMessage(net.minecraft.text.Text.literal("[Oracle] Fixture captured: " + fixture.provenanceId() + " sha=" + fixture.contentSha256().substring(0, 12) + "..."), false);
+                mc.player.sendMessage(net.minecraft.text.Text.literal("[Oracle] Fixture captured: " + fixture.provenanceId() + " sha=" + fixture.contentSha256().substring(0, 12) + " actual=" + fixture.actualCaptureStage()), false);
             }
         } catch (Exception ignored) {}
     }
 
     private static VoxelVolume mutateOneVoxel(VoxelVolume src) {
         var b = VoxelVolume.builder(src.extent());
-        // Copy all
         for (int y = 0; y < src.extent(); y++) for (int z = 0; z < src.extent(); z++) for (int x = 0; x < src.extent(); x++) {
             int block = src.blockId(x, y, z);
             int biome = src.biomeId(x, y, z);
             if (block != 0) b.setBlock(x, y, z, block);
             if (biome != 255) b.setBiome(x, y, z, biome);
         }
-        // Find first non-air to flip to air, else flip 0,0,0 to end_stone (359)
         for (int y = 0; y < src.extent(); y++) for (int z = 0; z < src.extent(); z++) for (int x = 0; x < src.extent(); x++) {
             if (src.blockId(x, y, z) != 0) {
                 b.setBlock(x, y, z, 0);

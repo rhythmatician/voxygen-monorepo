@@ -20,12 +20,10 @@ class DisabledChorusBenchmarkTest {
     void benchmarkExistingDisabledCandidate() {
         OracleContract c = EndChorusTracerContract.contract();
         OracleFixture f = SyntheticEndChorusFixtureFactory.generateSyntheticTracerFixture(c);
-        SectionPos origin = f.origin();
-
-        // Candidate is disabled in production; we measure the experimental path explicitly
+        SectionPos baseOrigin = f.origin();
         EndChorusSynthesizer synth = EndChorusSynthesizer.forTesting(42L);
-
         for (Level level : new Level[]{Level.L1, Level.L2, Level.L0}) {
+            SectionPos origin = alignedForLevel(baseOrigin, level);
             BenchmarkReceipt receipt = BenchmarkReceipt.measure(
                     level,
                     32 << level.value(),
@@ -34,18 +32,13 @@ class DisabledChorusBenchmarkTest {
                     c.benchmarkPolicy().warmupIterations(),
                     c.benchmarkPolicy().measurementIterations(),
                     c.benchmarkPolicy().repetitionPolicy());
-
             assertTrue(receipt.wallNanos() >= 0);
             assertEquals(level, receipt.level());
             assertEquals(c.provenanceId(), receipt.fixtureId());
-            // Log receipt for evidence; not an assertion on threshold
             System.out.printf("BENCHMARK level=%s region=%d seed=%d wallMs=%.2f warmup=%d iters=%d policy=%s%n",
                     receipt.level(), receipt.regionBlocks(), receipt.seed(), receipt.wallMillis(),
                     receipt.warmupIterations(), receipt.measurementIterations(), receipt.repetitionPolicy());
-
-            // Verify candidate can be measured without becoming oracle authority: measure completes and candidate is not used as expected
             VoxelVolume candidate = synth.synthesize(level, origin);
-            // Candidate vs fixture may or may not match (current %20 approximation is not claimed accurate) -- we only assert verifier runs
             var r = CandidateVerifier.verify(level, origin, candidate, f);
             assertNotNull(r);
         }
@@ -64,16 +57,19 @@ class DisabledChorusBenchmarkTest {
         assertEquals(r1.warmupIterations(), r2.warmupIterations());
     }
 
+    private static SectionPos alignedForLevel(SectionPos base, Level level) {
+        int s = level.regionSections();
+        int ax = Math.floorDiv(base.x(), s) * s;
+        int ay = Math.floorDiv(base.y(), s) * s;
+        int az = Math.floorDiv(base.z(), s) * s;
+        return new SectionPos(ax, ay, az);
+    }
+
     @Test
     void runtimeChorusRemainsDisabledByDefault() {
-        // Guard: production synthesizer factory must remain disabled per ADR 0015 until #220/#233 resolved
         com.rhythmatician.lodiffusion.voxy.DimensionSynthesizers synthFactory = null;
-        // Use contract to prove disabled disposition at coarse levels
         OracleContract c = EndChorusTracerContract.contract();
         assertEquals("UNRESOLVED", c.perLevelDecisions().l4().disposition());
         assertEquals("UNRESOLVED", c.perLevelDecisions().l3().disposition());
     }
 }
-
-
-

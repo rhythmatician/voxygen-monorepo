@@ -47,6 +47,11 @@ public class IngestClientHandler {
     private static MethodHandle rawIngestMethod;
     private static MethodHandle worldIdOfMethod;
     private static int sectionsIngested;
+    // Batch tracking for oracle ingest barrier
+    private static String currentBatchId = "";
+    private static int expectedChunksForBatch = 0;
+    private static java.util.Set<net.minecraft.world.level.ChunkPos> receivedChunksForBatch = new java.util.HashSet<>();
+    private static int completedSectionsForBatch = 0;
 
     /**
      * Register the client-side payload handler.
@@ -82,6 +87,20 @@ public class IngestClientHandler {
         if (!bridgeInitialized) initVoxyBridge();
         if (rawIngestMethod == null) return; // Voxy not available
 
+        // Track batch for ack barrier
+        String batchId = payload.batchId();
+        int batchTotal = payload.batchTotal();
+        if (batchId != null && !batchId.isEmpty()) {
+            if (!batchId.equals(currentBatchId)) {
+                currentBatchId = batchId;
+                expectedChunksForBatch = batchTotal;
+                receivedChunksForBatch.clear();
+                completedSectionsForBatch = 0;
+                LOGGER.info("[DataHarvester] Starting batch {} expecting {} chunks", batchId, batchTotal);
+            }
+            receivedChunksForBatch.add(payload.pos());
+        }
+
         for (IngestPayload.SectionData sd : payload.sections()) {
             io.netty.buffer.ByteBuf statesRaw =
                     io.netty.buffer.Unpooled.wrappedBuffer(sd.states());
@@ -114,9 +133,10 @@ public class IngestClientHandler {
                         payload.pos().x, sd.y(), payload.pos().z, bl, sl);
 
                 sectionsIngested++;
+                completedSectionsForBatch++;
                 if (sectionsIngested % 5000 == 0) {
-                    LOGGER.info("[DataHarvester] Client: {} sections ingested into Voxy",
-                            sectionsIngested);
+                    LOGGER.info("[DataHarvester] Client: {} sections ingested into Voxy (batch {} {}/{})",
+                            sectionsIngested, currentBatchId, receivedChunksForBatch.size(), expectedChunksForBatch);
                 }
 
             } catch (Exception e) {
@@ -126,6 +146,28 @@ public class IngestClientHandler {
                 statesRaw.release();
                 biomesRaw.release();
             }
+        }
+        // Batch ack barrier: after all sections for this payload, check if batch complete
+        if (batchId != null && !batchId.isEmpty() && expectedChunksForBatch > 0) {
+            if (receivedChunksForBatch.size() >= expectedChunksForBatch) {
+                LOGGER.info("[DataHarvester] Batch {} complete: {}/{} chunks, {} sections - writing ack", batchId, receivedChunksForBatch.size(), expectedChunksForBatch, completedSectionsForBatch);
+                writeIngestAck(batchId, expectedChunksForBatch, receivedChunksForBatch.size(), completedSectionsForBatch);
+                // Reset for next batch but keep ack file for python poll
+                // Do not clear immediately; let python consume and then next batch will reset
+            }
+        }
+    }
+
+    private static void writeIngestAck(String batchId, int expected, int received, int sections) {
+        try {
+            java.nio.file.Path ackPath = java.nio.file.Path.of("config", "oracle_ingest_ack.json");
+            java.nio.file.Files.createDirectories(ackPath.getParent());
+            String json = String.format("{\"batchId\":\"%s\",\"expectedChunks\":%d,\"receivedChunks\":%d,\"completedSections\":%d,\"timestamp\":%d}",
+                    batchId, expected, received, sections, System.currentTimeMillis());
+            java.nio.file.Files.writeString(ackPath, json);
+            LOGGER.info("[DataHarvester] Wrote ingest ack {}", ackPath.toAbsolutePath());
+        } catch (Exception e) {
+            LOGGER.error("[DataHarvester] Failed to write ingest ack", e);
         }
     }
 

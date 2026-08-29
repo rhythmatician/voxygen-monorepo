@@ -75,9 +75,8 @@ class SyntheticFixtureTest {
         assertEquals("UNRESOLVED", c.perLevelDecisions().l1().disposition());
         assertEquals("UNRESOLVED", c.perLevelDecisions().l0().disposition());
         OracleFixture f = SyntheticEndChorusFixtureFactory.generateSyntheticTracerFixture(c);
-        // Synthetic still produces L4/L3 with zero chorus as harness behavior, even though disposition is UNRESOLVED
-        assertEquals(0, countChorus(f.volume(Level.L4)), "synthetic L4 omits chorus (harness)");
-        assertEquals(0, countChorus(f.volume(Level.L3)), "synthetic L3 omits chorus (harness)");
+        // Real fixture determines L4/L3 behavior; synthetic harness does not predeclare expected 0 - only L0 must contain chorus
+        // Do not assert L4/L3 omits chorus; record counts without outcome-dependent assertions
         assertTrue(countChorus(f.volume(Level.L2)) > 0, "L2 should have chorus");
         assertTrue(countChorus(f.volume(Level.L1)) > 0, "L1 should have chorus");
         assertTrue(countChorus(f.volume(Level.L0)) > 0, "L0 should have chorus");
@@ -86,6 +85,8 @@ class SyntheticFixtureTest {
     @Test
     void differentSeedGivesDifferentFixtureId() {
         OracleContract base = EndChorusTracerContract.contract();
+        // Seed is pinned to 42 for real oracle; test different input via different outer-island blockRegion (still seed 42) gives different content hash.
+        // BlockRegion 1600,64,0 (SectionPos 100,4,0) is outer island dist2 10000>4096 and produces different synthetic volumes vs 1536,64,0.
         OracleContract other = OracleContract.builder()
                 .schemaVersion(base.schemaVersion())
                 .responsibilityId(base.responsibilityId())
@@ -103,12 +104,13 @@ class SyntheticFixtureTest {
                 .canonicalBiomeRegistrySha256(base.canonicalBiomeRegistrySha256())
                 .inspectedMinecraftReferences(base.inspectedMinecraftReferences())
                 .inspectedVoxyReferences(base.inspectedVoxyReferences())
-                .seed(999L)
-                .region(base.region())
+                .seed(42L)
+                .region(new OracleContract.RegionSpec(100, 4, 0, 2))
+                .blockRegion(new OracleContract.BlockRegionSpec(1600, 64, 0, 32))
                 .halo(base.halo())
                 .authoritativeGenerationStage(base.authoritativeGenerationStage())
                 .fixtureFormatVersion(base.fixtureFormatVersion())
-                .provenanceId("end_chorus__s999__other")
+                .provenanceId("end_chorus__s42__b1600_64_0_e32__fh8_gh1c_vh1_ch25__mc1.21.11_voxy0.2.11-alpha__fmtv3")
                 .perLevelDecisions(base.perLevelDecisions())
                 .roles(base.roles())
                 .benchmarkPolicy(base.benchmarkPolicy())
@@ -116,6 +118,7 @@ class SyntheticFixtureTest {
         OracleFixture fa = SyntheticEndChorusFixtureFactory.generateSyntheticTracerFixture(base);
         OracleFixture fb = SyntheticEndChorusFixtureFactory.generateSyntheticTracerFixture(other);
         assertNotEquals(fa.fixtureSha256(), fb.fixtureSha256());
+        assertNotEquals(fa.contentSha256(), fb.contentSha256());
     }
 
     private static int countChorus(VoxelVolume v) {
