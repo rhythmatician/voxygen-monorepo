@@ -27,6 +27,7 @@ repositories {
 		}
 		filter {
 			includeModule('maven.modrinth', 'fxxUqruK')
+			includeModule('maven.modrinth', 'AANobbMI')
 		}
 	}
 	mavenCentral()
@@ -104,6 +105,7 @@ dependencies {
 
 	// Fabric API. This is technically optional, but you probably want it anyway.
 	modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
+	modImplementation 'maven.modrinth:AANobbMI:ZPWbiWXz' // sodium 0.8.6 for voxy runtime
 	
 	// (Distant Horizons dependency removed — now targeting Voxy)
 
