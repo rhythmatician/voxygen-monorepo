@@ -3,7 +3,7 @@
 > **Status:** wayfinder:research -- version-bound upstream research -- do not silently edit to describe a different upstream version.
 >
 > doc-type: external-reference
-> source-revision: Minecraft 26.1-snapshot-11 (CFR 0.152 decompiled corpus `external/minecraft-src/`, jar SHA-256 `556C0FA70D367A2D0EC2DF5C9796C77EABE164BF08E0C581FC9CE17FA7436822`, no git SHA) + Voxy 0.2.11-alpha (`337b919d` on `dev`, jar SHA-256 `63d1747017041b659ef620f589006d079d3574e3124dbdb165f9998533a7920c`) + Voxy current `dev` head `02dfb1b7` (2026-08-29) + Fabric API 0.143.11 + Voxy 11-branch cross-version evidence (`origin/master..origin/dev` 2024-07-26 .. 2026-08-29)
+> source-revision: Minecraft 26.1-snapshot-11 (CFR 0.152 decompiled corpus `external/minecraft-src/`, jar SHA-256 `556C0FA70D367A2D0EC2DF5C9796C77EABE164BF08E0C581FC9CE17FA7436822`, no git SHA) + Minecraft 1.20.4 (server SHA-1 `8dd1a28015f51b1803213892b50b7b4fc76e594d`, official mappings, CFR 0.152, 3,767 files) + Minecraft 1.21.5 (server SHA-1 `e6ec2f64e6080b9b5d9b471b291c33cc7f509733`, official mappings, CFR 0.152, 4,301 files) + Voxy 0.2.11-alpha (`337b919d` on `dev`, jar SHA-256 `63d1747017041b659ef620f589006d079d3574e3124dbdb165f9998533a7920c`) + Voxy current `dev` head `02dfb1b7` (2026-08-29) + Fabric API 0.143.11 + Voxy 11-branch cross-version evidence (`origin/master..origin/dev` 2024-07-26 .. 2026-08-29)
 >
 > **Wayfinder map:** #22 · ticket #235 (this research) · informs #85 (`worldgen-partition`) and #234 (future feature-generation skill) · referenced by #233 (oracle contract) once available
 >
@@ -14,9 +14,9 @@
 > - [`port-vanilla-batch-subtree-sharing.md`](port-vanilla-batch-subtree-sharing.md) -- Layer-2 tile/cache-key math
 > - [`../reference/upstream/VOXY-FORMAT.md`](../reference/upstream/VOXY-FORMAT.md) -- pinned Voxy on-disk format
 >
-> **Current research pass:** 2026-08-28 (cross-Minecraft-version responsibility diff remains open — see §1.2)
+> **Current research pass:** 2026-08-29 (cross-Minecraft-version responsibility diff **completed** over the sampled 1.20.4 → 1.21.5 → 1.21.11 span — see §1.2, §3.5)
 >
-> **Scope:** Documents the **feature-pipeline stability** audit (Minecraft 1.21.11 single-version corpus) and the **Voxy version-compatibility** audit (verified over the `337b919d` → `02dfb1b7` window; broader Voxy history surveyed by file presence only, not semantically diffed -- see §5.3/§5.6). The **cross-Minecraft-version responsibility diff is a required #235 deliverable that is not yet complete**: the project currently vendors a single Minecraft decompiled corpus, and the comparison corpora #235 requires have not been procured (§1.2, §9.1).
+> **Scope:** Documents the **feature-pipeline stability** audit (Minecraft 1.21.11 single-version corpus), the **cross-Minecraft-version semantic responsibility diff** (sampled 1.20.4 / 1.21.5 / 1.21.11 corpora; §3.5), and the **Voxy version-compatibility** audit (verified over the `337b919d` → `02dfb1b7` window; broader Voxy history surveyed by file presence only, not semantically diffed -- see §5.3/§5.6). The cross-MC diff is **bounded**: it covers the generic placement machinery, the `Feature` base class, the feature registry, and a representative (not exhaustive) set of bespoke feature families. The residual measurement (E1/E2) remains open and independent (§7).
 >
 > **Invalidation rule:** A newer Minecraft upstream version requires re-verification against its own decompiled corpus. A newer Voxy upstream version requires re-running §3 (Voxy compatibility matrix) and bumping `source-revision`. Do not silently edit this file to describe a different upstream version -- create a separately versioned artifact.
 
@@ -24,7 +24,7 @@
 
 ## 0. TL;DR -- the three takeaways for #85
 
-1. **The feature-pipeline machinery is small, stable-shaped, and a strong port candidate.** The placement/configured/placed/predicate stack is 16 `PlacementModifier` types, 38 `FeatureConfiguration` record types, ~50 `Feature` implementations, and 10 + 11 datapack registries (~200 KB of vanilla data). None of those core abstractions (`PlacedFeature.placeWithContext` stream-flatMap, `PlacementModifier.getPositions(PlacementContext, RandomSource, BlockPos) → Stream<BlockPos>`, `ConfiguredFeature.place(WorldGenLevel, ChunkGenerator, RandomSource, BlockPos)`) have changed semantically in the 1.21.11 corpus. Treat this surface as **small, generic, and a plausible port boundary within 1.21.11**. Cross-Minecraft-version stability is the open question this research has **not** answered -- no second MC corpus was diffed (§1.2) -- so "port candidate" here means "candidate for the pinned 1.21.11 corpus", not "port once across MC versions". Whether to port is #85's decision.
+1. **The feature-pipeline machinery is small, stable-shaped, and a strong port candidate.** The placement/configured/placed/predicate stack is 16 `PlacementModifier` types, 38 `FeatureConfiguration` record types, ~50 `Feature` implementations, and 10 + 11 datapack registries (~200 KB of vanilla data). None of those core abstractions (`PlacedFeature.placeWithContext` stream-flatMap, `PlacementModifier.getPositions(PlacementContext, RandomSource, BlockPos) → Stream<BlockPos>`, `ConfiguredFeature.place(WorldGenLevel, ChunkGenerator, RandomSource, BlockPos)`) have changed semantically in the 1.21.11 corpus. Treat this surface as **small, generic, and a plausible port boundary within 1.21.11**. The sampled cross-version diff (§3.5) **verifies the execution contract survived the 1.20.4 → 1.21.11 churn** with only API/mechanical changes -- so the machinery is a strong exact-port candidate across the sampled span. Whether to port is #85's decision.
 2. **The feature content is overwhelmingly data/configuration and belongs in a normalized profile.** The datapack registry bodies (`OreFeatures` 11.1 KB, `VegetationFeatures` 35.9 KB, `TreeFeatures` 31.9 KB, `CaveFeatures` 18.5 KB, `VegetationPlacements` 37.8 KB, `OrePlacements` 17.6 KB, `TreePlacements` 16.6 KB, `OverworldBiomes` 49.6 KB) describe what to place, where, and how often. A new MC version is *expected* to change these bodies (new biomes, new features, new rarity curves) rather than the engine -- an expectation from published Mojang release behavior, **not verified against a second local corpus** (§1.2). The most defensible cost-reduction is to express the bodies as **versioned data fixtures** behind a single execution engine, not to reimplement per-version.
 3. **Voxy `VoxelVolumeWriter` is correct as the adapter seam.** Across the audit window 2026-08-10 (audited `337b919d`) → 2026-08-29 (current `origin/dev` `02dfb1b7`), the only changes to `me.cortex.voxy.common.world.*` are a 6-line refactor of `SaveLoadSystem3`, a 19-line refactor of `WorldUpdater` (rename `airCount`→`nonAirCount`, add JMH-visible helper), and a 6-line `Mapper.isNotAirInt` micro-opt. **Zero changes** to `WorldSection`, `WorldEngine`, `Mipper`, `VoxelizedSection`, `WorldConversionFactory`, `SectionStorage`, `ActiveSectionTracker` -- i.e. the data-model and target-semantic surface are stable. VoxelVolumeWriter (which sits above `VoxyCompat`/`WorldEngine`) absorbs the small backend drift; no Voxygen code or model retraining is required for the audit-window delta.
 
@@ -44,29 +44,52 @@ The same `0.2.11-alpha` → `0.2.x` window does not introduce a new `nonEmptyChi
 | Voxy version branches | `origin/master` (2024-07-26), `inverted_nether` (2025-05-29), `mc_1215` (2025-06-18), `mc_1217_mesh3` (2025-09-15), `mc_1217` (2025-10-04), `mc12110` (2026-02-04), `revz` (2026-04-15), `12111` (2026-05-25), `2622` (2026-07-04), `2612` (2026-07-21), `dev` (2026-08-29) | all reachable from `origin`; verified via `git for-each-ref` | Used for §3.3 cross-version table. |
 | Fabric API | `external/fabric-api` | `gradle.properties` `version=0.143.11 minecraft_version=26.1-snapshot-11`; mainline `dev/yarn` | Lifecycle-only per `docs/external/l1-availability-contract.md`. |
 
-### 1.2 Honest scope note: cross-Minecraft-version diff is not in this research
+### 1.2 Cross-Minecraft-version diff: sampled span (1.20.4 → 1.21.5 → 1.21.11), bounded scope
 
-The ticket #235 research-program §1 ("Build a cross-version responsibility diff") and §6 ("Bound the ML role") require a Minecraft version span. The project currently vendors **only Minecraft 1.21.11** -- no 1.20.x, 1.21.5, 1.21.7, or 1.21.10 corpus is present. The ticket itself anticipates this: *"If local source for a needed version is absent, obtain/reproduce it through the normal version-pinned source process and record exact version/mapping/source identity."* We have **not** yet performed that source procurement. It is a **remaining open deliverable of #235 itself** -- not a follow-up ticket and not out of scope. The §2 responsibility matrix is therefore a **1.21.11 single-version audit with explicit cross-version-bounded candidate sets**; the cross-version semantic diff is the next #235 work item.
+The ticket #235 research-program §1 ("Build a cross-version responsibility diff") and §6 ("Bound the ML role") require a Minecraft version span. This pass **completes a bounded version** of that deliverable: two comparison corpora were procured, remapped with official mappings, and decompiled with the same toolchain as the pinned 1.21.11 corpus (§1.4). The diff is a **semantic-responsibility diff** (generic placement machinery, configuration schemas, registry/profile content, representative bespoke feature families), not a class-name diff.
 
-What we can do with the available evidence:
+**Sampled span and what it covers:**
 
-- **Within-MC-version**: 1.21.11 corpus internals (every class, every line, every field).
-- **Within-Voxy-version**: full git history 2024-07-26 .. 2026-08-29 with 11 branches.
-- **Cross-MC vs cross-Voxy**: relative stability claims need at least one prior MC corpus, which is missing.
+- **1.20.4 → 1.21.5** (near pair, ~4 months): the generic placement machinery, `Feature` base class, and the sampled bespoke families are **semantically identical** after normalization (only the `Codec`→`MapCodec` type migration and two registry additions `fallen_tree`/`end_platform` differ).
+- **1.21.5 → 1.21.11** (far pair, ~9 months): the generic placement machinery remains semantically stable; the `Feature` base class gains `markForPostProcessing` and loses three inline helpers (`isStone`/`isDirt`/`isGrassOrDirt`); the registry renames `ice_spike`→`spike` and `forest_rock`→`block_blob`; the sampled bespoke families split between semantically stable (dripstone cluster, geode, basalt columns) and semantically changed (chorus plant, block blob).
 
-The §2 responsibility matrix marks each axis with a `cross-MC-version evidence: none-local | one-local | multi-local` flag, and §4 marks each boundary's cross-version expectation. The ticket's winner rule is evaluated in §10 **against completed evidence only**; the cross-MC diff and the residual measurement remain open.
+**What the span does NOT cover** (bounded-scope caveats):
+
+- **Not exhaustive**: the bespoke sweep sampled 5 families (chorus plant, dripstone cluster, geode, basalt columns, block blob) plus the previously-diffed spike/tree/fallen-tree families. ~45 other `Feature` impls were not diffed.
+- **Not the latest version**: the newest Mojang release at the time of writing is 26.2 (Jun 2026, new year-based versioning scheme). The sampled span ends at 1.21.11 (Dec 2025). The 1.21.11 → 26.x transition is **not** covered and would require a new corpus.
+- **Not a noise/biome diff**: §2.1-2.3 (climate, biome placement, terrain fill) still carry `none-local` flags — those responsibilities were not diffed across versions in this pass.
+
+The §2 responsibility matrix marks each axis with a `cross-MC-version evidence: none-local | one-local | multi-local` flag; §3.5 records the diff results; §10 evaluates the winner rule against the completed evidence. The residual measurement (E1/E2) remains open and independent.
 
 ### 1.3 What this research does and does not claim
 
 - **Does**: give a source-grounded audit of the 1.21.11 feature pipeline's stability-shape, identify what the Voxy adapter seam absorbs vs what would force model retraining, and bound the ML role in concrete candidate slices.
-- **Does not**: pick the final partition (that's #85's HITL decision), train any model, generalize across MC versions (missing evidence -- see §1.2), or replace any ADR.
+- **Does**: report a **bounded cross-MC semantic diff** over the sampled 1.20.4 → 1.21.5 → 1.21.11 span (§3.5), with claims worded as "semantically stable across the sampled span", never "stable across Minecraft versions" in the unbounded sense.
+- **Does not**: pick the final partition (that's #85's HITL decision), train any model, generalize across MC versions beyond the sampled span, or replace any ADR.
 - **Cited concrete examples in §6** are all drawn from the 1.21.11 corpus and the Voxy audit window. They are reproducible by an agent with `rtk read` access to `external/minecraft-src/src/...` and `git -C external/voxy show <ref>:...`.
+
+### 1.4 Comparison-corpus provenance
+
+Both comparison corpora were procured through the same pipeline as the pinned 1.21.11 corpus and are stored outside the repository tree (not vendored):
+
+| Version | Server jar SHA-1 (piston-meta verified) | Mappings | Decompiler | Decompiled size | Location |
+|---|---|---|---|---|---|
+| 1.20.4 | `8dd1a28015f51b1803213892b50b7b4fc76e594d` | official `client.txt` SHA-256 `ad03c803…641e5f` | CFR 0.152 | 3,767 java files | `reference-code/_jars/1.20.4-src/` (outside repo) |
+| 1.21.5 | `e6ec2f64e6080b9b5d9b471b291c33cc7f509733` | official `client.txt` SHA-256 `3907657a…4a206e5` | CFR 0.152 | 4,301 java files | `reference-code/_jars/1.21.5-src/` (outside repo) |
+| 1.21.11 / 26.1-snapshot-11 | jar SHA-256 `556C0FA7…36822` (see §1.1) | official | CFR 0.152 | 6,871 java files | `external/minecraft-src/` (vendored, pinned) |
+
+Pipeline: piston-meta manifest → SHA-1 verify → server.jar download → bundler extraction (`--installServer`) → SpecialSource 1.11.4-shaded remap with official mappings → CFR 0.152 decompile.
+
+**Normalization caveat (important for reproducing §3.5):** the 1.20.4 and 1.21.5 CFR output uses `$$N` synthetic variable names while the 1.21.11 output has clean names. Every cross-version line comparison in §3.5 therefore normalizes `$$N` → a placeholder and erases declared local-variable names on both sides before diffing. **Raw line-diff counts between these corpora are meaningless without this normalization** -- e.g. `DripstoneClusterFeature.java` shows a 98-line raw diff between 1.21.5 and 1.21.11 that is entirely `$$N` naming noise and is semantically empty after normalization.
 
 ---
 
-## 2. Cross-version responsibility matrix (1.21.11 only; with explicit missing-evidence flags)
+## 2. Cross-version responsibility matrix (1.21.11 baseline; sampled-span evidence where diffed)
 
-Each row is a Partition Responsibility (CONTEXT.md) classified against the seven evidence axes the ticket requests. `MC-1.21.11` cells describe the 1.21.11 corpus; `MC-1.21.11 ↔ ?` cells are bounded candidate sets because we lack older/newer MC corpora.
+Each row is a Partition Responsibility (CONTEXT.md) classified against the seven evidence axes the ticket requests. `MC-1.21.11` cells describe the 1.21.11 corpus. The `cross-MC-version evidence` column distinguishes:
+
+- **`sampled-span verified`** -- the responsibility was semantically diffed across 1.20.4 / 1.21.5 / 1.21.11 (§3.5); claims are bounded to that span.
+- **`none-local`** -- the responsibility was **not** diffed across versions in this pass; the cell records the 1.21.11-only observation plus the published-history expectation, which remains unverified locally.
 
 The companion DAG document already exhaustively tables per-stage inputs/outputs/dimensionality/cost/determinism. This table only adds the **stability evidence** the ticket asks for, per responsibility.
 
@@ -115,8 +138,8 @@ The feature pipeline is large enough to deserve its own section, not a single ro
 
 ### 2.5 What we can NOT responsibly claim without more MC corpora
 
-- "X is stable across MC versions" -- would require at least one additional decompiled corpus (1.20.4 or 1.21.5 say). The published Mojang history strongly suggests the climate/router interface has been stable since 1.18 (the Caves & Cliffs rewrite), and that biomes/datapacks are the volatile surface; but **this is not** verified in the local evidence.
-- "New MC version requires N months of porting" -- depends on what changed; we cannot estimate without the diff.
+- "X is stable across MC versions" (unbounded) -- the sampled span (§3.5) verifies this **only** for the feature-pipeline machinery and the sampled bespoke families, and only across 1.20.4 → 1.21.11. Climate/biome/terrain-fill responsibilities (§2.1-2.3) remain `none-local`; the 1.21.11 → 26.x transition is not covered.
+- "New MC version requires N months of porting" -- depends on what changed; the sampled span shows the *shape* of the answer (machinery stable, content churns) but not a calibrated cost.
 
 The cheapest next experiment is recorded in §7.
 
@@ -186,19 +209,19 @@ SurfaceWaterDepthFilter.java      2.0K
 
 ### 3.3 Stability table -- generic machinery vs data/configuration vs feature-family logic vs biome-specific content
 
-The ticket's deliverable #2 names four categories. They are separated below:
+The ticket's deliverable #2 names four categories. They are separated below. The last column distinguishes **verified over the sampled 1.20.4 → 1.21.5 → 1.21.11 span** (§3.5) from **expectation only** (not diffed).
 
-| Category | Layer | # items | Total size | Stays in code or data? | Cross-MC-version expectation |
+| Category | Layer | # items | Total size | Stays in code or data? | Cross-MC-version evidence |
 |---|---|---|---|---|---|
-| **Generic placement machinery** (code) | `PlacementModifier` impls | 16 | ~50 KB | **Shared-code candidate** | The set is stable; new modifiers (e.g. `EnvironmentScanPlacement`) appear occasionally; rare mutation of existing modifiers. Strong expectation, unverified locally. |
-| **Generic placement machinery** (code) | `PlacedFeature.placeWithContext` loop + `PlacementContext` + `PlacedFeature.placeWithBiomeCheck` | 3 | ~3 KB | **Shared-code candidate** | The shape is dimension- and family-agnostic; survives version churn. |
-| **Generic data shape** (code) | `FeatureConfiguration` records | 38 | ~85 KB | **Shared-code candidate** | New MC = new `*Configuration` records for new features; existing ones almost never change shape. Strong expectation, unverified. |
-| **Generic data shape** (code) | `ConfiguredFeature` + `Feature` base classes (registry + dispatch) | 2 | ~24 KB | **Shared-code candidate** | Stable interface; per-version delta is in the registry contents, not the class shape. |
-| **Feature-family logic** (code, bespoke) | `Feature` impls | ~50 | ~250 KB | **Code, port per family, each bespoke** | New MC = a few new `Feature` impls; existing ones occasionally gain new fields. Strong expectation, unverified. |
-| **Data/configuration** (data, dimension-agnostic) | Feature registries (`features/*.java`) | 10 | ~124 KB | **Data adapter** (extract to JSON/datapack adapter) | New MC = register more entries, mostly additive. |
-| **Data/configuration** (data, dimension-agnostic) | Placement registries (`placement/*.java`) | 11 | ~117 KB | **Data adapter** (extract to JSON/datapack adapter) | New MC = register more entries, mostly additive. |
-| **Biome-specific content** (data, dimension-specific) | Biome registries (`biome/*.java`) | 4 | ~75 KB | **Data adapter** (extract to JSON/datapack adapter) | New MC = new biomes; existing biome IDs are **not** stable across versions (canonical mapping required). |
-| **Biome-specific content** (data, biome-keyed) | `BiomeDefaultFeatures` biome→feature wiring | 1 | 33 KB | **Data adapter** (keyed by biome ID) | New MC = new biome→feature lists; this is the most volatile single file. |
+| **Generic placement machinery** (code) | `PlacementModifier` impls | 16 | ~50 KB | **Shared-code candidate** | **Verified over sampled span**: set size constant (16→16→16), one modifier substitution, `getPositions` contract unchanged; only API renames. |
+| **Generic placement machinery** (code) | `PlacedFeature.placeWithContext` loop + `PlacementContext` + `PlacedFeature.placeWithBiomeCheck` | 3 | ~3 KB | **Shared-code candidate** | **Verified over sampled span**: execution contract unchanged; two `PlacementContext` method renames are API/mechanical. |
+| **Generic data shape** (code) | `FeatureConfiguration` records | 38 | ~85 KB | **Shared-code candidate** | **Partially verified over sampled span**: 4 of 6 sampled configs identical; `TreeConfiguration` and block-blob config changed (schema migrations, not behavior rewrites). Remaining ~32 configs are expectation only. |
+| **Generic data shape** (code) | `ConfiguredFeature` + `Feature` base classes (registry + dispatch) | 2 | ~24 KB | **Shared-code candidate** | **Verified over sampled span**: execution contract stable; base class evolves by helper inlining + additive hooks. |
+| **Feature-family logic** (code, bespoke) | `Feature` impls | ~50 | ~250 KB | **Code, port per family, each bespoke** | **Partially verified over sampled span** (7 families): 3 semantically changed, 4 stable/rename-only. Remaining ~43 families are expectation only. |
+| **Data/configuration** (data, dimension-agnostic) | Feature registries (`features/*.java`) | 10 | ~124 KB | **Data adapter** (extract to JSON/datapack adapter) | **Verified over sampled span (registry keys)**: additive + renames (`ice_spike`→`spike`, `forest_rock`→`block_blob`); keys are not stable identifiers. |
+| **Data/configuration** (data, dimension-agnostic) | Placement registries (`placement/*.java`) | 11 | ~117 KB | **Data adapter** (extract to JSON/datapack adapter) | Expectation only (not diffed). |
+| **Biome-specific content** (data, dimension-specific) | Biome registries (`biome/*.java`) | 4 | ~75 KB | **Data adapter** (extract to JSON/datapack adapter) | Expectation only (not diffed); biome IDs are **not** stable across versions (canonical mapping required). |
+| **Biome-specific content** (data, biome-keyed) | `BiomeDefaultFeatures` biome→feature wiring | 1 | 33 KB | **Data adapter** (keyed by biome ID) | Expectation only (not diffed); measured growth 89→93→96 methods / 385→408→425 code lines across the sampled span (presence-count only, not semantically diffed). |
 
 ### 3.4 Answering the §1 questions concretely
 
@@ -228,18 +251,72 @@ Per ADR 0015, the oracle target is post-ingest Voxy mip. The mip rule is opacity
 
 This is a partition decision (`#85`), not a research conclusion. The research observation is: the mip rule is what filters "bespoke but invisible" from "bespoke and silhouette-bearing"; without measuring against the oracle, no Voxygen decision here is grounded.
 
+### 3.5 Cross-Minecraft-version semantic diff (sampled 1.20.4 → 1.21.5 → 1.21.11)
+
+This section records the bounded cross-version diff required by research-program §1. Method: both comparison corpora were normalized per §1.4 (decompiler `$$N` placeholders erased, declared local-variable names erased on both sides), then diffed line-by-line. **Semantic stability** means the normalized diff is empty or the only deltas are API/mechanical (type migrations, identifier renames, method-name changes) with no worldgen-behavior change. **API/mechanical churn** is explicitly not counted as semantic change.
+
+#### 3.5.1 Generic placement machinery
+
+| Component | 1.20.4 → 1.21.5 (near) | 1.21.5 → 1.21.11 (far) | Verdict |
+|---|---|---|---|
+| `PlacementModifier.java` | byte-identical | byte-identical | **Semantically stable across sampled span** |
+| Placement modifier set | 16 types | 16 types; one swap (`CarvingMaskPlacement` → `FixedPlacement`) | **Semantically stable**; set membership is additive/substitutive, the `getPositions` contract is unchanged |
+| `PlacementContext` | 9 methods | 9 methods; two renames (`getCarvingMask(ChunkPos, Carving)` → `getCarvingMask(ChunkPos)`, `getMinBuildHeight()` → `getMinY()`) | **Semantically stable**; renames are API/mechanical |
+| `PlacedFeature.placeWithContext` | structurally identical | structurally identical; 1.21.11 adds a `SharedConstants.DEBUG_FEATURE_COUNT` branch (debug-only) | **Semantically stable**; the stream-flatMap execution contract is unchanged |
+
+#### 3.5.2 `Feature` base class and registry
+
+| Component | 1.20.4 → 1.21.5 (near) | 1.21.5 → 1.21.11 (far) | Verdict |
+|---|---|---|---|
+| `Feature.java` (base class) | zero semantic change after normalization (only `Codec`→`MapCodec` type migration; 2 registry additions excluded) | +2 lines (`markForPostProcessing`), −6 lines (`isStone`/`isDirt`/`isGrassOrDirt` helpers inlined away) | **Execution contract stable**; the base class can evolve (helper inlining, post-processing hook) without redesigning the feature execution contract |
+| Feature registry | 61 → 63 entries (`fallen_tree`, `end_platform` added) | 63 → 63 entries; renames `ice_spike`→`spike`, `forest_rock`→`block_blob` | **Additive + renames**; no removals, no semantic mutation of existing entries |
+
+The registry renames are worth noting for profile design: `ice_spike`→`spike` in 1.21.11 is **not** the End spike -- the old `SpikeFeature` (End obsidian spike, registry `end_spike`) was renamed to `EndSpikeFeature` with config `SpikeConfiguration` → `EndSpikeConfiguration`, and the freed name `SpikeFeature`/`spike` was given to the former `IceSpikeFeature` (now config-driven `SpikeConfiguration(state, canPlaceOn, canReplace)` instead of hard-coded `PACKED_ICE`). Registry keys are **not** stable identifiers across versions -- another argument for canonicalizing at the profile seam (§4.2).
+
+#### 3.5.3 Configuration schemas
+
+| Component | 1.20.4 → 1.21.5 (near) | 1.21.5 → 1.21.11 (far) | Verdict |
+|---|---|---|---|
+| `TreeConfiguration` | byte-identical | `dirt_provider`/`force_dirt` fields → `below_trunk_provider` (default `PLACE_BELOW_OVERWORLD_TRUNKS`) | **Schema change** -- the dirt-under-trunk behavior moved from a boolean flag + provider pair to a single provider field. This is the concrete example of why the **configuration/profile layer is versioned even when the execution machinery is shared** |
+| `DripstoneClusterConfiguration`, `GeodeConfiguration`, `LargeDripstoneConfiguration`, `PointedDripstoneConfiguration` | identical | identical | **Semantically stable across sampled span** |
+| `BlockStateConfiguration` (block blob) | present | replaced by `BlockBlobConfiguration` (adds `canPlaceOn` predicate) | **Schema change** -- new config record for an existing feature |
+
+#### 3.5.4 Bespoke feature families (representative sweep)
+
+| Family | 1.20.4 → 1.21.5 (near) | 1.21.5 → 1.21.11 (far) | Verdict |
+|---|---|---|---|
+| `ChorusPlantFeature` (End) | identical | ground check `Blocks.END_STONE` → `BlockTags.SUPPORTS_CHORUS_PLANT` | **Semantic change** -- broadens eligible surface from one block to a tag; growth algorithm unchanged |
+| `DripstoneClusterFeature` (cave) | identical | identical after normalization (98-line raw diff is pure `$$N` naming noise) | **Semantically stable across sampled span** |
+| `GeodeFeature` (cave) | identical | identical after normalization | **Semantically stable across sampled span** |
+| `BasaltColumnsFeature` (Nether) | identical | only `getMinBuildHeight()`→`getMinY()`, `getMaxBuildHeight()`→`getMaxY()` API renames | **Semantically stable across sampled span** |
+| `BlockBlobFeature` (Overworld) | identical | config `BlockStateConfiguration` → `BlockBlobConfiguration`; inline `isDirt`/`isStone` ground check → `canPlaceOn().test()` predicate | **Semantic change** (config-driven) -- same placement algorithm, ground eligibility now data |
+| `SpikeFeature`/`EndSpikeFeature` (End) | near-identical (`RandomSource.create` → `createThreadLocalInstance`; config moved to `configurations/` package) | renamed `SpikeFeature` → `EndSpikeFeature`; config renamed `SpikeConfiguration` → `EndSpikeConfiguration`; crystal/obsidian logic unchanged | **Rename + API churn, semantically stable** |
+| `TreeFeature`/`TrunkPlacer` | identical | `setDirtAt` → `placeBelowTrunkBlock`; `LevelSimulatedReader` → `WorldGenLevel` signatures | **API churn, semantically stable**; the behavior change lives in `TreeConfiguration` (§3.5.3) |
+
+#### 3.5.5 The pattern
+
+Across the sampled span, the observed churn distributes as:
+
+1. **Generic placement execution model** (`PlacementModifier` set, `PlacementContext`, `PlacedFeature.placeWithContext`): **survives the churn**. Only API renames and one modifier-set substitution; no semantic change.
+2. **`Feature` base class execution contract**: **survives the churn**. Helper inlining and a debug/post-processing hook are additive/evolutionary, not redesigns.
+3. **Configuration schemas**: **mostly stable, occasionally versioned**. 4 of 6 sampled configs are identical across the span; `TreeConfiguration` and block-blob changed. When they change, the change is a schema migration (field rename/regroup, predicate extraction), not a behavior rewrite.
+4. **Bespoke feature families**: **the volatile boundary**. 3 of 7 sampled families have a semantic change (chorus ground tag, block-blob predicate, tree dirt-provider regrouping); the rest are stable or rename-only. Changes are localized (ground-eligibility, config wiring) rather than algorithmic.
+5. **Registry/profile content**: **churns by design** (additions, renames, key instability -- §3.5.2).
+
+This is the central #235 result: **the shared machinery is a strong exact-port candidate, and bespoke family implementations/configs are the version-specific boundary** -- but per-family port/approximate/learn/omit disposition remains #85's decision based on mip visibility and cost, not a blanket "learn it".
+
 ---
 
 ## 4. Normalized version-boundary candidates (per ticket §4)
 
 The ticket asks whether a useful normalized boundary is **cheaper to maintain than direct version-specific code**. The candidates below are framed as experiments, not decisions. For each, the test is the same: does expressing the responsibility at this boundary reduce the per-version port cost relative to direct per-version code?
 
-| ID | Boundary | Shape | Status | Cross-MC-version expectation | Notes |
+| ID | Boundary | Shape | Status | Cross-MC-version evidence | Notes |
 |---|---|---|---|---|---|
-| 4.1 | Climate / scaffold | `Seed + Climate.Sampler → {block_pos → climate 6-tuple}` | **Implemented** (ADR 0013 seals the End sampler-direct approach; OW/Nether extension is not sealed) | Minimal port per version (interface expected stable since 1.18; `none-local` -- unverified against a second corpus) | Already ported as `VanillaNoiseRouterSampler` (480-float quart); cost is upstream `BlendedNoise` octave table + `NoiseGeneratorSettings` per-dimension change, addressed by `RandomState` wiring. |
+| 4.1 | Climate / scaffold | `Seed + Climate.Sampler → {block_pos → climate 6-tuple}` | **Implemented** (ADR 0013 seals the End sampler-direct approach; OW/Nether extension is not sealed) | `none-local` -- not diffed in this pass; interface expected stable since 1.18 (published history, unverified locally) | Already ported as `VanillaNoiseRouterSampler` (480-float quart); cost is upstream `BlendedNoise` octave table + `NoiseGeneratorSettings` per-dimension change, addressed by `RandomState` wiring. |
 | 4.2 | Biome / profile identity | `(dim, climate, pos) → canonical biome id` | **Implemented** (project contract: `Canonical Biome Registry` in CONTEXT.md; not an ADR-sealed boundary) | Medium cost (biome IDs are intentionally not stable across MC versions) | Already implemented as `BiomeMapping.toCanonicalId` (54-entry alpha for OW; equivalent for Nether/End if extended); contract metadata hash is the enforcement point. |
 | 4.3 | Surface/material family | `(biome, column, noise) → material family id` | **Open** | Small fixed mapping per dimension per MC version (data) | Vanilla's `SurfaceSystem` is a biome-tagged `MaterialRule` tree; ADR 0015 §"Hierarchical Material Taxonomy" names this; mapping is data, not code. |
-| 4.4 | Generic placement intent | `(biome, feature_intent, surface) → {position, count, modifier-chain}` | **Open** | Cost bounded by which `Feature` family is ported; not universal | The audit shows `PlacedFeature.placeWithContext` is generic, but vanilla does not provide a "feature-instance descriptor" abstraction (each `Feature` is bespoke); bounded port of a single family (e.g. vanilla trees) is the cheapest test. |
+| 4.4 | Generic placement intent | `(biome, feature_intent, surface) → {position, count, modifier-chain}` | **Open** | **Verified over sampled span for the machinery half**: `PlacedFeature.placeWithContext` + `PlacementModifier` contract semantically stable across 1.20.4 → 1.21.11 (§3.5.1); the per-family half is the volatile boundary (§3.5.4) | The audit shows `PlacedFeature.placeWithContext` is generic, but vanilla does not provide a "feature-instance descriptor" abstraction (each `Feature` is bespoke); bounded port of a single family (e.g. vanilla trees) is the cheapest test. |
 | 4.5 | Deterministic scaffold + sparse learned residual | `(seed, dim, pos) → {coarse_geometry, fine_residual}` | **Open** | Medium OW / low End / low-medium Nether | Scaffold Preference / Residual Default (CONTEXT.md) applied to the partition; End vertical slice already demonstrates the deterministic-scaffold half for base End terrain; no learned feature residual has yet been demonstrated. Extending to OW/Nether requires the partition to commit to a stable scaffold shape. |
 | 4.6 | Per-Level post-ingest semantic target | `(level, post_voxy_mip(scaffold))` | **Sealed** | Zero cost if Mipper rule and Mapper layout are stable in Voxy (see §5) | ADR 0015 fixes this as the default correctness target; the oracle will produce the post-ingest Voxy representation for any `(seed, dim, pos)` per #233. |
 | 4.7 | Verdict (order to test) | -- | **Test order** (not a boundary; no seal implied) | n/a | §4.6 (committed by ADR 0015) → §4.1 (already ported) → §4.2 (already canonicalized) → §4.4 (bounded port of a single feature family) → §4.3 (next, coarser) → §4.5 (last, as a full OW port). Each step either confirms or refutes the boundary with measured evidence. |
@@ -529,7 +606,7 @@ If any of these breaks, the recompute cost is the per-version port listed above 
 
 ### 9.1 Uncertainties not resolvable from current evidence
 
-1. **Cross-Minecraft-version noise/biome/feature stability** -- only one MC corpus local. Fix (a **required #235 deliverable**, not a follow-up ticket): obtain one or more deliberately selected Minecraft comparison corpora via the existing `external/` provisioning path -- chosen to cross a meaningful biome/feature/worldgen change so stable machinery can be distinguished from release-specific behavior -- then re-run §§2-4 as a **semantic-responsibility diff** (generic placement machinery, configuration schemas, registry/profile content, representative bespoke feature families), not a class-name diff. Note: a server jar for another version existing in the repository tree is **not** a version-pinned decompiled comparison corpus; the corpus must be procured and pinned with the same provenance shape as §1.1.
+1. **Cross-Minecraft-version noise/biome/feature stability** -- **partially resolved (2026-08-29)**: comparison corpora for 1.20.4 and 1.21.5 were procured and the feature-pipeline semantic diff was run over the sampled span (§1.4, §3.5). **Still open**: the climate/biome/terrain-fill responsibilities (§2.1-2.3) were not diffed; the 1.21.11 → 26.x transition (new year-based versioning scheme, latest release 26.2) is not covered; the bespoke sweep sampled 7 of ~50 families. Cheapest fix for the remaining gap: procure a 26.1 corpus and re-run §3.5 against it; extend the §2.1-2.3 diff to `NoiseRouterData`/`OverworldBiomes`.
 2. **Whether Voxy's Mipper rule has been stable across the full 2-year Voxy history** -- only the 19-day audit window is verified here. Cheapest fix: `git -C external/voxy log -p -- src/main/java/me/cortex/voxy/common/world/other/Mipper.java` across `origin/master..origin/dev`; classify each commit as mip-rule-change vs unrelated edit.
 3. **Whether ADR 0015's "post-ingest Voxy parity" holds for an L2 (8-block voxel) mip of an end-island End biome** -- the existing End vertical slice covers base End terrain only (placed features are honestly omitted, §7.3); L2/L1/L0 across more End biomes is unmeasured. Cheapest fix: extend `EndDimensionSynthesizer` L2/L1 walk to additional End biomes and measure against the existing flight-template End regions.
 4. **The cost of porting the 16 `PlacementModifier` impls** -- the audit shows the size (~50 KB) and the abstract shape, but no measurement of Voxygen-on-Java vs vanilla-Java runtime for the same placed-feature chain. Cheapest fix: a single `PlacedFeatureBenchmark` test that runs one `BiomeFilter + CountPlacement + InSquarePlacement` chain in `external/minecraft-src` against the Voxygen port and compares `t/chain`.
@@ -567,15 +644,15 @@ The audit:
 - ✗ **Not yet measured -- ML output space**: §6.3/§7 *expect* the ML output space to be dramatically smaller than full block prediction for any single bespoke feature family (a column-block mask for `EndSpikeFeature` is ~5% of the bits a full `VoxelVolume` would carry), but §7.2's probe has not been executed and the authoritative residual requires #233's oracle. This criterion is **unchecked** until a number exists.
 - ✓ §5.2: L4/L3 runtime (post-ingest Voxy mip target) is unchanged across the **audited** Voxy window (`337b919d` → `02dfb1b7`), so existing L4/L3 generation remains compatible over that interval. Broader Voxy-history stability is unverified (§5.3, §9.1 item 2).
 - ✓ §8: version-support recommendation has bounded regeneration / adapter / retraining classifications per change type (with the §8.1 invariants explicitly marked verified-window-only where applicable).
-- ✗ **Not yet satisfied -- research-program §1**: the cross-Minecraft-version responsibility diff has **not** been produced (only one MC corpus is vendored; no comparison corpus procured). Every cross-MC-version stability claim in this document is therefore bounded to `none-local` evidence, and the winner-rule verdict below is provisional until that diff lands.
+- ✓ **Cross-Minecraft responsibility diff (research-program §1)**: across sampled 1.20.4, 1.21.5, and 1.21.11 corpora, the generic `PlacedFeature` / `PlacementModifier` / `ConfiguredFeature` execution contract remained semantically stable despite mechanical API migrations (§3.5.1-3.5.2). Most observed semantic churn occurred in registry/profile content, configuration schemas, and individual bespoke feature families (§3.5.3-3.5.5). Claims are bounded to the sampled span; climate/biome/terrain-fill responsibilities and the 1.21.11 → 26.x transition remain undiffed (§9.1 item 1).
 
 The research also records:
 
 - A **do-not-port** finding: the 10 feature registries + 11 placement registries + 4 biome registries are data and should be a profile, not code (§3.3).
-- A **do-not-learn** finding: the 16 `PlacementModifier` machinery is stable and cheap on 1.21.11 evidence — learning it is unjustified; whether to port it is #85's call (§3.2).
+- A **do-not-learn** finding: the 16 `PlacementModifier` machinery is stable and cheap on 1.21.11 plus sampled-span evidence — learning it is unjustified; whether to port it is #85's call (§3.2, §3.5.1).
 - A **decision-deferred** finding: the 50 `Feature` impls are bespoke and each is a separate empirical question for #85; no blanket port/learn/omit decision is made here.
 
-The hybrid hypothesis is supported for **most** responsibilities **on 1.21.11-only evidence** and is **not** forced: §6.3 records that `EndSpikeFeature` could be cheap enough to port, and the End vertical slice proves "deterministic approximation" works for base End terrain (features are honestly omitted, not approximated — §7.3). This verdict is **provisional** pending the cross-MC-version diff (research-program §1) and the residual measurement (§7.2 E2 / #233). The partition (#85) can choose, with measured evidence, between deterministic approximation and learned residual per family.
+The hybrid hypothesis is supported for **most** responsibilities **on 1.21.11-only plus sampled-span evidence** and is **not** forced: §6.3 records that `EndSpikeFeature` could be cheap enough to port, and the End vertical slice proves "deterministic approximation" works for base End terrain (features are honestly omitted, not approximated — §7.3). The sampled-span diff (§3.5) strengthens the machinery-port half of the hypothesis (execution contract survived the churn) without forcing any per-family disposition. This verdict remains **provisional** pending the residual measurement (§7.2 E1/E2 / #233). The partition (#85) can choose, with measured evidence, between deterministic approximation and learned residual per family.
 
 ---
 
@@ -602,6 +679,12 @@ The hybrid hypothesis is supported for **most** responsibilities **on 1.21.11-on
 - `data/worldgen/features/*.java` (10 files: AquaticFeatures, CaveFeatures, EndFeatures, FeatureUtils, MiscOverworldFeatures, NetherFeatures, OreFeatures, PileFeatures, TreeFeatures, VegetationFeatures)
 - `data/worldgen/placement/*.java` (11 files: AquaticPlacements, CavePlacements, EndPlacements, MiscOverworldPlacements, NetherPlacements, OrePlacements, PlacementUtils, TreePlacements, VegetationPlacements, VillagePlacements)
 - `data/worldgen/biome/*.java` (4 files: BiomeData, EndBiomes, NetherBiomes, OverworldBiomes)
+
+**Minecraft comparison corpora** (outside the repository tree, `reference-code/_jars/`):
+
+- `1.20.4-src/` (3,767 java files) -- server SHA-1 `8dd1a28015f51b1803213892b50b7b4fc76e594d`, official mappings, SpecialSource 1.11.4 remap, CFR 0.152
+- `1.21.5-src/` (4,301 java files) -- server SHA-1 `e6ec2f64e6080b9b5d9b471b291c33cc7f509733`, official mappings, SpecialSource 1.11.4 remap, CFR 0.152
+- Diff method: `$$N` placeholder + declared-local-variable-name erasure on both sides, then line diff (§1.4 normalization caveat)
 
 **Voxy** (`external/voxy` git refs):
 
