@@ -1,15 +1,7 @@
 """
 Deterministic process-level oracle regeneration for End chorus tracer.
 
-Preferred completion path (no MinecraftServer-in-JUnit):
-1. Create/reset disposable oracle world with seed 42, dimension the_end, generate_structures=false
-2. Generate target outer-island region + halo (halo-complete chunk rect via blockRegion+halo, exact bounds mode)
-3. Feed real chunks through DataHarvester /ingestall oracle -> IngestClientHandler -> VoxelIngestService.rawIngest
-   (-> WorldConversionFactory.convert -> Mipper -> Mapper -> WorldUpdater.insertUpdate)
-4. After ingest, capture post-insert Voxy WorldEngine L0..L4 WorldSections for blockRegion (per-Level origins via floorDiv)
-5. Decode packed voxels via real Mapper -> canonical 1104/54+255 -> semantic VoxelVolume (explicit per-Level)
-6. Serialize OracleFixture v3 with true contentSha256 + blockRegion/perLevelOrigins/chunkRect + separate actualCaptureStage
-7. Exit nonzero on incomplete capture
+Hardened pre-capture: L4 footprint ingest (36x36=1296 chunks), true Voxy RETURN barrier, oracle sends all sections, missing->fatal, v3 self-describing, isolated port 25567, fail-closed.
 """
 
 from __future__ import annotations
@@ -42,8 +34,8 @@ ORACLE_ROLE = {
     "name": "oracle_end_chorus",
     "seed": 42,
     "level_name": "oracle_end_chorus",
-    "server_port": 25565,
-    "rcon_port": 25575,
+    "server_port": 25567,
+    "rcon_port": 25577,
     "rcon_password": "voxeltree",
     "halo": {
         "featureReachBlocks": 8,
@@ -81,6 +73,25 @@ def _chunk_rect_with_halo(blockRegion, haloBlocks):
     maxCz = math.floor(maxBz/16)
     return (minCx, minCz, maxCx, maxCz)
 
+def _l4_chunk_rect_with_halo(blockRegion, haloBlocks):
+    """Derive ingest coverage from union of per-Level WorldSection footprints, i.e. L4. For anchor 1536,64,0: L4 ws [3,0,0] 512 blocks => chunks 96..127 x 0..31 plus halo 25 => 94..129 x -2..33 = 1296 chunks."""
+    import math
+    # L4 WorldSection containing the tracer blockRegion origin
+    wsBlockSize = 32 * (1 << 4)  # 512
+    wsX = math.floor(blockRegion["originBlockX"] / wsBlockSize)
+    wsY = math.floor(blockRegion["originBlockY"] / wsBlockSize)
+    wsZ = math.floor(blockRegion["originBlockZ"] / wsBlockSize)
+    # L4 block range
+    minBx_l4 = wsX * wsBlockSize - haloBlocks
+    minBz_l4 = wsZ * wsBlockSize - haloBlocks
+    maxBx_l4 = wsX * wsBlockSize + wsBlockSize -1 + haloBlocks
+    maxBz_l4 = wsZ * wsBlockSize + wsBlockSize -1 + haloBlocks
+    minCx = math.floor(minBx_l4/16)
+    minCz = math.floor(minBz_l4/16)
+    maxCx = math.floor(maxBx_l4/16)
+    maxCz = math.floor(maxBz_l4/16)
+    return (minCx, minCz, maxCx, maxCz)
+
 def _patch_server_properties_for_oracle() -> None:
     from voxel_tree.gui.server_manager import _patch_server_properties  # type: ignore
     patches = {
@@ -93,18 +104,50 @@ def _patch_server_properties_for_oracle() -> None:
         "generate-structures": "false",
     }
     _patch_server_properties(patches)
-    print(f"[oracle] Patched server.properties for role {ORACLE_ROLE['name']}: seed={ORACLE_ROLE['seed']} level={ORACLE_ROLE['level_name']} structures=false blockRegion={ORACLE_ROLE['blockRegion']} chunkRect={_chunk_rect_with_halo(ORACLE_ROLE['blockRegion'], ORACLE_ROLE['halo']['combinedHaloBlocks'])}")
+    rect = _l4_chunk_rect_with_halo(ORACLE_ROLE["blockRegion"], ORACLE_ROLE["halo"]["combinedHaloBlocks"])
+    print(f"[oracle] Patched server.properties for role {ORACLE_ROLE['name']}: seed={ORACLE_ROLE['seed']} level={ORACLE_ROLE['level_name']} structures=false blockRegion={ORACLE_ROLE['blockRegion']} L4 chunkRect={rect} ({(rect[2]-rect[0]+1)*(rect[3]-rect[1]+1)} chunks)")
 
 def _reset_disposable_world() -> None:
+    # Check if server is running first - if so, require stop before delete
+    # If server is running, the world files are locked and properties aren't what created active world
+    try:
+        from voxel_tree.utils.rcon import RconClient  # type: ignore
+        host = "localhost"
+        port = ORACLE_ROLE["rcon_port"]
+        password = ORACLE_ROLE["rcon_password"]
+        with RconClient(host, port, password, timeout=1) as rc:
+            rc.command("list")
+        print(f"[oracle] Server is running on {host}:{port} - sending /stop before world reset", file=sys.stderr)
+        try:
+            with RconClient(host, port, password, timeout=3) as rc:
+                rc.command("stop")
+        except Exception:
+            pass
+        # Wait for RCON to go down
+        for _ in range(15):
+            time.sleep(2)
+            try:
+                with RconClient(host, port, password, timeout=1) as rc2:
+                    rc2.command("list")
+            except Exception:
+                break
+        print("[oracle] Server stopped")
+    except Exception:
+        pass  # server not running, safe to delete
     world_dir = RUNTIME_DIR / ORACLE_ROLE["level_name"]
     if world_dir.exists():
         print(f"[oracle] Removing disposable world {world_dir}")
         shutil.rmtree(world_dir)
-    voxy_dir = Path.home() / ".local" / "share" / "voxy" / f"localhost_{ORACLE_ROLE['server_port']}"
-    alt_voxy = REPO_ROOT / ".voxy" / f"localhost_{ORACLE_ROLE['server_port']}"
-    for p in [voxy_dir, alt_voxy]:
-        if p.exists():
-            print(f"[oracle] Note: Voxy data at {p} exists — clearing for deterministic capture may be needed (manual)")
+    # Isolated Voxy storage for oracle port must be cleared - Voxy world identity is dimension+biome/world seed, so repeat seed-42 runs share same storage
+    for cand in [
+        Path.home() / ".local" / "share" / "voxy" / f"localhost_{ORACLE_ROLE['server_port']}",
+        REPO_ROOT / ".voxy" / f"localhost_{ORACLE_ROLE['server_port']}",
+        Path.home() / ".local" / "share" / "voxy" / f"localhost_{ORACLE_ROLE['server_port']}" / "oracle_end_chorus",
+        RUNTIME_DIR / ".voxy" / f"localhost_{ORACLE_ROLE['server_port']}",
+    ]:
+        if cand.exists():
+            print(f"[oracle] Clearing Voxy storage {cand}")
+            shutil.rmtree(cand, ignore_errors=True)
     FIXTURE_PATH.parent.mkdir(parents=True, exist_ok=True)
     for p in [REQUEST_PATH, DONE_PATH, INGEST_ACK_PATH]:
         if p.exists():
@@ -130,6 +173,42 @@ def _wait_for_rcon(timeout: int = 120) -> bool:
     print(f"[oracle] RCON not ready after {timeout}s at {host}:{port}", file=sys.stderr)
     return False
 
+def _cheap_chorus_scan() -> None:
+    """Cheap server-only scan around proposed anchor before paying for 1296-chunk Voxy run. Verifies outer-island contains real chorus via server block checks."""
+    try:
+        from voxel_tree.utils.rcon import RconClient
+    except ImportError:
+        from utils.rcon import RconClient  # type: ignore
+    host = "localhost"
+    port = ORACLE_ROLE["rcon_port"]
+    password = ORACLE_ROLE["rcon_password"]
+    br = ORACLE_ROLE["blockRegion"]
+    # Scan a few highland columns for chorus_plant/flower using /execute if block - deterministic cheap check
+    found = False
+    with RconClient(host, port, password, timeout=10) as rc:
+        for dx in [0, 8, 16, 24]:
+            for dz in [0, 8, 16, 24]:
+                for dy in range(64, 100):
+                    x = br["originBlockX"] + dx
+                    y = dy
+                    z = br["originBlockZ"] + dz
+                    resp = rc.command(f"execute in minecraft:the_end positioned {x} {y} {z} if block ~ ~ ~ minecraft:chorus_plant run say found")
+                    if "found" in resp.lower():
+                        print(f"[oracle] Cheap scan: found chorus_plant at {x} {y} {z}")
+                        found = True
+                        break
+                    resp2 = rc.command(f"execute in minecraft:the_end positioned {x} {y} {z} if block ~ ~ ~ minecraft:chorus_flower run say found")
+                    if "found" in resp2.lower():
+                        print(f"[oracle] Cheap scan: found chorus_flower at {x} {y} {z}")
+                        found = True
+                        break
+                if found:
+                    break
+            if found:
+                break
+    if not found:
+        print(f"[oracle] Cheap scan: no chorus_plant/flower found in 4x4x36 scan around {br} - anchor may not contain chorus, proceed but capture will enforce L0 chorus>0", file=sys.stderr)
+
 def _run_ingest_via_rcon(radius_chunks: int | None = None) -> None:
     try:
         from voxel_tree.utils.rcon import RconClient
@@ -140,26 +219,19 @@ def _run_ingest_via_rcon(radius_chunks: int | None = None) -> None:
     password = ORACLE_ROLE["rcon_password"]
     br = ORACLE_ROLE["blockRegion"]
     halo = ORACLE_ROLE["halo"]["combinedHaloBlocks"]
-    minCx, minCz, maxCx, maxCz = _chunk_rect_with_halo(br, halo)
-    print(f"[oracle] Exact oracle bounds [{minCx},{minCz} -> {maxCx},{maxCz}] halo {halo} for blockRegion {br}")
-    # Batch ID and expected count for client ack barrier
-    import uuid, math
+    # Derive from L4 footprint, not tracer ROI - ensures L2-L4 WorldSections fully populated
+    minCx, minCz, maxCx, maxCz = _l4_chunk_rect_with_halo(br, halo)
+    print(f"[oracle] Exact L4 oracle bounds [{minCx},{minCz} -> {maxCx},{maxCz}] halo {halo} for blockRegion {br} => {(maxCx-minCx+1)*(maxCz-minCz+1)} chunks")
+    import uuid
     batch_id = str(uuid.uuid4())[:8]
     expected_chunks = (maxCx - minCx + 1) * (maxCz - minCz + 1)
-    # Write batch info for client to pick up via request file later
     with RconClient(host, port, password, timeout=10) as rc:
-        # Ensure ingest runs in the_end dimension; do not depend on RCON source position
         resp = rc.command(f"execute in minecraft:the_end run ingestall oracle {minCx} {minCz} {maxCx} {maxCz} {batch_id} {expected_chunks}")
         print(f"[oracle] /ingestall oracle {minCx} {minCz} {maxCx} {maxCz} {batch_id} {expected_chunks}: {resp}")
         if "Unknown" in resp or "Incorrect" in resp or "No such" in resp:
-            # Fallback to legacy bounds without batch
-            resp2 = rc.command(f"execute in minecraft:the_end run ingestall oracle {minCx} {minCz} {maxCx} {maxCz}")
-            print(f"[oracle] fallback /ingestall oracle {minCx} {minCz} {maxCx} {maxCz}: {resp2}")
-            if "Unknown" in resp2 or "Incorrect" in resp2:
-                fallback_radius = max(maxCx - minCx, maxCz - minCz) // 2 + 1
-                resp3 = rc.command(f"ingestall {fallback_radius}")
-                print(f"[oracle] fallback /ingestall {fallback_radius}: {resp3}")
-        for _ in range(90):
+            print(f"[oracle] ERROR: /ingestall oracle command not installed - ensure DataHarvester JAR built from python/tools/data-harvester is installed", file=sys.stderr)
+            sys.exit(1)
+        for _ in range(180):
             time.sleep(2)
             status = rc.command("ingestall status")
             print(f"[oracle] ingest status: {status}")
@@ -167,28 +239,29 @@ def _run_ingest_via_rcon(radius_chunks: int | None = None) -> None:
                 break
         else:
             print(f"[oracle] ingest did not report complete within timeout", file=sys.stderr)
-    # Real client completion barrier: wait for client ack file with matching batchId and expected count
-    # IngestClientHandler writes config/oracle_ingest_ack.json after all rawIngest calls for the batch
-    deadline = time.time() + 60
+            sys.exit(1)
+    # Real client completion barrier: wait for client ack file with matching batchId - must be true Voxy RETURN barrier (WorldUpdater.insertUpdate RETURN count), not just rawIngest enqueue
+    deadline = time.time() + 120
     while time.time() < deadline:
         if INGEST_ACK_PATH.exists():
             try:
                 ack = json.loads(INGEST_ACK_PATH.read_text())
-                if ack.get("batchId") == batch_id and ack.get("expectedChunks") == expected_chunks and ack.get("completedSections", 0) >= 0:
-                    print(f"[oracle] Client ack received for batch {batch_id}: {ack}")
-                    # Keep ack for capture trigger to verify
-                    break
+                if ack.get("batchId") == batch_id and ack.get("expectedChunks") == expected_chunks:
+                    if ack.get("receivedChunks", 0) >= expected_chunks and ack.get("completedSections", 0) >= expected_chunks * 2:  # at least some sections
+                        print(f"[oracle] Client ack received for batch {batch_id}: {ack}")
+                        return
+                    print(f"[oracle] Ack incomplete {ack} waiting...", file=sys.stderr)
             except Exception as e:
                 print(f"[oracle] ack read failed: {e}")
         time.sleep(1)
-    else:
-        print(f"[oracle] Warning: no client ack for batch {batch_id} within 60s - proceeding to capture but WorldEngine may still be flushing", file=sys.stderr)
+    print(f"[oracle] ERROR: no client ack for batch {batch_id} within 120s - WorldEngine may not have flushed, fixture would be partial. Ensure client is running with Voxy + DataHarvester and insertUpdate RETURN barrier is active.", file=sys.stderr)
+    sys.exit(1)
 
 def _trigger_capture() -> None:
     REQUEST_PATH.parent.mkdir(parents=True, exist_ok=True)
     br = ORACLE_ROLE["blockRegion"]
-    rect = _chunk_rect_with_halo(br, ORACLE_ROLE["halo"]["combinedHaloBlocks"])
-    import math, uuid
+    rect = _l4_chunk_rect_with_halo(br, ORACLE_ROLE["halo"]["combinedHaloBlocks"])
+    import math
     per = {}
     for L in range(5):
         wsBlockSize = 32*(1<<L)
@@ -206,11 +279,12 @@ def _trigger_capture() -> None:
         "perLevelWorldSectionOrigins": per,
         "halo": ORACLE_ROLE["halo"],
         "seed": ORACLE_ROLE["seed"],
+        "generationOrder": "Morton sorted by distance to center of L4 rect, then server tick order",
     }
     REQUEST_PATH.write_text(json.dumps(req, indent=2))
     print(f"[oracle] Wrote capture request {REQUEST_PATH}: {json.dumps(req, indent=2)}")
 
-def _wait_for_done(timeout: int = 180) -> dict:
+def _wait_for_done(timeout: int = 300) -> dict:
     deadline = time.time() + timeout
     while time.time() < deadline:
         if DONE_PATH.exists():
@@ -249,17 +323,17 @@ def _verify_fixture(path: Path = FIXTURE_PATH) -> None:
     if chorus==0:
         print(f"[oracle] ERROR: L0 has zero chorus — selected blockRegion {data.get('blockRegion')} does not contain real chorus; anchor must be re-pinned via outer-island chunk inspection", file=sys.stderr)
         sys.exit(1)
-    # Do not assert L4/L3 expected 0; record all Level counts without outcome-dependent assertions
 
 def main(argv: list[str] | None = None) -> None:
     import argparse
-    p = argparse.ArgumentParser(description="Deterministic End chorus oracle regeneration via DataHarvester pipeline (block-space outer island, exact bounds, batch ack)")
+    p = argparse.ArgumentParser(description="Deterministic End chorus oracle regeneration via DataHarvester pipeline (L4 coverage, RETURN barrier, fail-closed)")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--capture-stage", choices=["FEATURES","FULL"], default="FULL", help="Actual capture stage (FULL is acceptable offline; FEATURES is authoritative)")
     p.add_argument("--radius-chunks", type=int, default=None)
     p.add_argument("--check", action="store_true", help="Verify existing fixture without regenerating")
-    p.add_argument("--reset-world", action="store_true", help="Delete disposable world before capture")
+    p.add_argument("--reset-world", action="store_true", help="Delete disposable world + Voxy storage before capture (stops server first)")
     p.add_argument("--ingest-only", action="store_true", help="Only run ingest, skip capture trigger (for debugging)")
+    p.add_argument("--cheap-scan", action="store_true", help="Run cheap server-only chorus scan around anchor before ingest")
     args = p.parse_args(argv)
 
     if args.check:
@@ -272,21 +346,24 @@ def main(argv: list[str] | None = None) -> None:
     _patch_server_properties_for_oracle()
 
     if not _wait_for_rcon(timeout=5):
-        print("[oracle] Server not running — start it via: python -m voxel_tree --server start --role oracle_end_chorus", file=sys.stderr)
+        print("[oracle] Server not running — start it via: python -m voxel_tree --server start --role oracle_end_chorus (isolated port 25567)", file=sys.stderr)
         if SERVERS_YAML.exists():
             text = SERVERS_YAML.read_text()
             if "oracle_end_chorus" not in text:
-                print(f"[oracle] servers.yaml missing oracle_end_chorus role — add:\\n  oracle_end_chorus:\\n    seed: 42\\n    level_name: oracle_end_chorus", file=sys.stderr)
+                print(f"[oracle] servers.yaml missing oracle_end_chorus role", file=sys.stderr)
         sys.exit(1)
+
+    if args.cheap_scan:
+        _cheap_chorus_scan()
 
     _run_ingest_via_rcon(radius_chunks=args.radius_chunks)
     if args.ingest_only:
         print("[oracle] Ingest complete (ingest-only)")
         return
     _trigger_capture()
-    data = _wait_for_done(timeout=180)
+    data = _wait_for_done(timeout=300)
     _verify_fixture()
-    print("[oracle] SUCCESS: real fixed-seed End chunks ingested through Voxy and post-ingest WorldSections captured (blockRegion + per-Level origins independent, batch ack barrier)")
+    print("[oracle] SUCCESS: real fixed-seed End chunks ingested through Voxy RETURN barrier and post-insert WorldSections captured (L4 36x36=1296 chunks, per-Level origins independent, batch ack barrier)")
     print(data.get("report",""))
 
 if __name__ == "__main__":

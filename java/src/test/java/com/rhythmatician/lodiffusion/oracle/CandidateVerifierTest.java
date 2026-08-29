@@ -14,8 +14,9 @@ class CandidateVerifierTest {
     void correctCandidatePassesAllLevels() {
         OracleContract c = EndChorusTracerContract.contract();
         OracleFixture f = SyntheticEndChorusFixtureFactory.generateSyntheticTracerFixture(c);
-        SectionPos origin = f.origin();
         for (Level l : Level.values()) {
+            var per = c.blockRegionOrDerived().perLevelWorldSectionOrigin(l.value());
+            SectionPos origin = new SectionPos(per.wsX() * l.regionSections(), per.wsY() * l.regionSections(), per.wsZ() * l.regionSections());
             VoxelVolume candidate = f.volume(l);
             var r = CandidateVerifier.verify(l, origin, candidate, f);
             assertTrue(r.passed(), "correct candidate must pass at " + l + ": " + r.detail());
@@ -26,12 +27,11 @@ class CandidateVerifierTest {
     void verifierSupportsEachLevelIndependently() {
         OracleContract c = EndChorusTracerContract.contract();
         OracleFixture f = SyntheticEndChorusFixtureFactory.generateSyntheticTracerFixture(c);
-        SectionPos origin = f.origin();
+        var perL2 = c.blockRegionOrDerived().perLevelWorldSectionOrigin(Level.L2.value());
+        SectionPos originL2 = new SectionPos(perL2.wsX() * Level.L2.regionSections(), perL2.wsY() * Level.L2.regionSections(), perL2.wsZ() * Level.L2.regionSections());
         // Verify each level independently - mismatched level data should fail
         VoxelVolume l1Vol = f.volume(Level.L1);
-        var r = CandidateVerifier.verify(Level.L2, origin, l1Vol, f);
-        // L1 and L2 volumes are different scales, so using L1 data at L2 should usually mismatch
-        // But if by chance they match (unlikely with chorus), at least verify the API accepts any level
+        var r = CandidateVerifier.verify(Level.L2, originL2, l1Vol, f);
         assertNotNull(r);
     }
 
@@ -39,10 +39,10 @@ class CandidateVerifierTest {
     void verifierDoesNotUseCandidateProductionCodeForExpected() {
         OracleContract c = EndChorusTracerContract.contract();
         OracleFixture f = SyntheticEndChorusFixtureFactory.generateSyntheticTracerFixture(c);
-        SectionPos origin = f.origin();
         Level level = Level.L1;
+        var per = c.blockRegionOrDerived().perLevelWorldSectionOrigin(level.value());
+        SectionPos origin = new SectionPos(per.wsX() * level.regionSections(), per.wsY() * level.regionSections(), per.wsZ() * level.regionSections());
         VoxelVolume expected = f.volume(level);
-        // Candidate produced via a completely independent path (here we just copy fixture, but verifier never calls EndChorusSynthesizer)
         VoxelVolume candidate = expected.copy();
         var r = CandidateVerifier.verify(level, origin, candidate, f);
         assertTrue(r.passed());

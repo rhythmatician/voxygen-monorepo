@@ -95,23 +95,23 @@ public class IngestAllCommand {
                         .then(Commands.argument("minZ", IntegerArgumentType.integer(-30000000, 30000000))
                         .then(Commands.argument("maxX", IntegerArgumentType.integer(-30000000, 30000000))
                         .then(Commands.argument("maxZ", IntegerArgumentType.integer(-30000000, 30000000))
-                        .executes(ctx -> startIngestBounds(ctx.getSource(),
-                                IntegerArgumentType.getInteger(ctx, "minX"),
-                                IntegerArgumentType.getInteger(ctx, "minZ"),
-                                IntegerArgumentType.getInteger(ctx, "maxX"),
-                                IntegerArgumentType.getInteger(ctx, "maxZ"))))
-                        .then(Commands.argument("batchId", net.minecraft.commands.arguments.StringArgumentType.string())
+                        .then(Commands.argument("batchId", com.mojang.brigadier.arguments.StringArgumentType.string())
                         .then(Commands.argument("batchTotal", IntegerArgumentType.integer(1, 1000000))
                         .executes(ctx -> startIngestBounds(ctx.getSource(),
                                 IntegerArgumentType.getInteger(ctx, "minX"),
                                 IntegerArgumentType.getInteger(ctx, "minZ"),
                                 IntegerArgumentType.getInteger(ctx, "maxX"),
                                 IntegerArgumentType.getInteger(ctx, "maxZ"),
-                                net.minecraft.commands.arguments.StringArgumentType.getString(ctx, "batchId"),
-                                IntegerArgumentType.getInteger(ctx, "batchTotal"))))))))
+                                com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "batchId"),
+                                IntegerArgumentType.getInteger(ctx, "batchTotal"))))
+                        .executes(ctx -> startIngestBounds(ctx.getSource(),
+                                IntegerArgumentType.getInteger(ctx, "minX"),
+                                IntegerArgumentType.getInteger(ctx, "minZ"),
+                                IntegerArgumentType.getInteger(ctx, "maxX"),
+                                IntegerArgumentType.getInteger(ctx, "maxZ")))))))
                 .then(Commands.argument("radius", IntegerArgumentType.integer(1, 4096))
                         .executes(ctx -> startIngest(ctx.getSource(),
-                                IntegerArgumentType.getInteger(ctx, "radius")))));
+                                IntegerArgumentType.getInteger(ctx, "radius")))))));
     }
 
     // ==================== command handlers ====================
@@ -337,13 +337,15 @@ public class IngestAllCommand {
      * @return the payload, or {@code null} if the chunk has no non-air sections
      */
     private static IngestPayload serializeChunk(LevelChunk chunk, String batchId, int batchTotal) {
+        boolean oracleMode = batchId != null && !batchId.isEmpty();
         int minY = chunk.getMinSectionY();
         List<IngestPayload.SectionData> sections = new ArrayList<>();
         var lightEngine = chunk.getLevel().getLightEngine();
 
         for (int i = 0; i < chunk.getSections().length; i++) {
             LevelChunkSection section = chunk.getSections()[i];
-            if (section == null || section.hasOnlyAir()) continue;
+            if (section == null) continue;
+            if (!oracleMode && section.hasOnlyAir()) continue;
 
             // Serialise PalettedContainer<BlockState> and biomes to byte[]
             io.netty.buffer.ByteBuf statesRaw = io.netty.buffer.Unpooled.buffer();
@@ -381,8 +383,14 @@ public class IngestAllCommand {
                     sl != null ? sl.getData().clone() : null));
         }
 
-        return sections.isEmpty() ? null
-                : new IngestPayload(chunk.getPos(), minY, sections, batchId, batchTotal);
+        if (sections.isEmpty()) {
+            if (oracleMode) {
+                LOGGER.debug("[DataHarvester] Oracle chunk {} has no non-air sections but sending for completeness", chunk.getPos());
+                return new IngestPayload(chunk.getPos(), minY, sections, batchId, batchTotal);
+            }
+            return null;
+        }
+        return new IngestPayload(chunk.getPos(), minY, sections, batchId, batchTotal);
     }
 
     // ==================== region file scanning ====================

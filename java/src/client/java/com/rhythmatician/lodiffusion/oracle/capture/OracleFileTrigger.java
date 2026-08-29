@@ -66,7 +66,6 @@ public final class OracleFileTrigger {
         Path out = OracleFixtureWriter.defaultFixturePath(contract);
         OracleFixtureWriter.write(fixture, out);
 
-        SectionPos origin = fixture.origin();
         var blockRegion = contract.blockRegionOrDerived();
         StringBuilder report = new StringBuilder();
         report.append("provenance=").append(fixture.provenanceId()).append(" sha=").append(fixture.contentSha256()).append(" actual=").append(fixture.actualCaptureStage()).append(" authoritative=").append(contract.authoritativeGenerationStage()).append("\n");
@@ -78,6 +77,8 @@ public final class OracleFileTrigger {
         report.append("\n");
         boolean hasChorusAtL0 = false;
         for (Level lvl : Level.values()) {
+            var perCheck = blockRegion.perLevelWorldSectionOrigin(lvl.value());
+            SectionPos origin = new SectionPos(perCheck.wsX() * lvl.regionSections(), perCheck.wsY() * lvl.regionSections(), perCheck.wsZ() * lvl.regionSections());
             VoxelVolume correct = fixture.volume(lvl);
             var r = CandidateVerifier.verify(lvl, origin, correct, fixture);
             if (!r.passed()) throw new IllegalStateException("Correct candidate failed at " + lvl + ": " + r.detail());

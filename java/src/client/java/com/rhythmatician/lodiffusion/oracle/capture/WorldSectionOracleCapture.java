@@ -127,10 +127,9 @@ public final class WorldSectionOracleCapture {
 
         Object ws = acquireWorldSectionIfExists(worldEngine, L, wsX, wsY, wsZ);
         if (ws == null) {
-            // No WorldSection yet — treat as all-air volume (honest omission) but log.
-            // For L4/L3, this is expected if no chorus survived mipping; for L0 it would be a capture failure.
-            LOGGER.warn("[OracleCapture] L{} WorldSection {}@[{},{},{}] missing (all-air or not yet inserted) — returning empty volume", L, lvl, wsX, wsY, wsZ);
-            return VoxelVolume.builder(WS_SIZE).build();
+            String msg = String.format("[OracleCapture] FATAL: L%s WorldSection %s@[%d,%d,%d] missing — ingest bounds too small or WorldEngine not yet flushed. Origin %s L=%d blockOrigin (%d,%d,%d) wsBlockSize %d. L4 footprint must be ingested (94..129 x -2..33) via DataHarvester L4 36x36=1296 chunks and insertUpdate RETURN barrier must complete.", L, lvl, wsX, wsY, wsZ, origin, L, worldBlockOriginX, worldBlockOriginY, worldBlockOriginZ, wsBlockSize);
+            LOGGER.error(msg);
+            throw new IllegalStateException(msg);
         }
 
         try {
@@ -174,6 +173,10 @@ public final class WorldSectionOracleCapture {
                             canonicalBiome = CanonicalRegistries.BIOME_UNKNOWN;
                         } else {
                             canonicalBiome = BiomeMapping.toCanonicalId(biomeName);
+                            if (canonicalBiome == CanonicalRegistries.BIOME_UNKNOWN && biomeName.startsWith("minecraft:")) {
+                                // End biomes are not in overworld canonical 54, preserve as diagnostic trace but keep 255 for verifier (which leaves biome parity unclaimed)
+                                LOGGER.debug("[OracleCapture] Diagnostic End biome {} -> 255 (unknown) at voxyBiomeId {}", biomeName, voxyBiomeId);
+                            }
                         }
                     }
                     if (canonicalBlock != CanonicalRegistries.BLOCK_AIR || canonicalBiome != CanonicalRegistries.BIOME_UNKNOWN) {
@@ -188,26 +191,26 @@ public final class WorldSectionOracleCapture {
 
     private static int voxyBlockIdToCanonical(int voxyBlockId, Object mapper, Map<String, Integer> canonicalNameToId) {
         try {
-            // Mapper.getBlockStateFromBlockId(int) -> BlockState
             var m = mapper.getClass().getMethod("getBlockStateFromBlockId", int.class);
             Object state = m.invoke(mapper, voxyBlockId);
-            if (state == null) return CanonicalRegistries.BLOCK_AIR;
-            // BlockState.getBlock() -> Block -> Registries.BLOCK.getId(Block) -> Identifier
+            if (state == null) throw new IllegalStateException("Mapper returned null BlockState for voxyId " + voxyBlockId);
             var getBlock = state.getClass().getMethod("getBlock");
             Object block = getBlock.invoke(state);
             var reg = Registries.BLOCK;
             var id = reg.getId((Block) block);
-            if (id == null) return CanonicalRegistries.BLOCK_AIR;
-            String name = id.toString(); // "minecraft:chorus_plant" etc
+            if (id == null) throw new IllegalStateException("Registries.BLOCK.getId returned null for voxyId " + voxyBlockId);
+            String name = id.toString();
             Integer canon = canonicalNameToId.get(name);
             if (canon != null) return canon;
-            // Fallback: try block's default state name may differ from state with properties; still use block id
-            // Unknown blocks map to air for oracle honesty (or could map to nearest known)
-            LOGGER.debug("[OracleCapture] Unknown canonical for block {} voxyId={} -> air", name, voxyBlockId);
-            return CanonicalRegistries.BLOCK_AIR;
+            String msg = String.format("[OracleCapture] FATAL: Unknown canonical for non-air block %s voxyId=%d - registry mismatch (canonical 1104), aborting fixture", name, voxyBlockId);
+            LOGGER.error(msg);
+            throw new IllegalStateException(msg);
+        } catch (IllegalStateException e) {
+            throw e;
         } catch (Exception e) {
-            LOGGER.warn("[OracleCapture] Block decode failed for voxyId={}: {}", voxyBlockId, e.toString());
-            return CanonicalRegistries.BLOCK_AIR;
+            String msg = String.format("[OracleCapture] FATAL: Block decode failed for voxyId=%d: %s", voxyBlockId, e.toString());
+            LOGGER.error(msg);
+            throw new IllegalStateException(msg, e);
         }
     }
 

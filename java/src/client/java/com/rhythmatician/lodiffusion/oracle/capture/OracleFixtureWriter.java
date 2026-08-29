@@ -67,6 +67,48 @@ public final class OracleFixtureWriter {
         region.addProperty("originSectionZ", c.region().originSectionZ());
         region.addProperty("extentSections", c.region().extentSections());
         root.add("region", region);
+        // v3 self-describing geometry: blockRegion + per-Level WorldSection origins + L4 halo-complete chunk rect
+        var br = c.blockRegionOrDerived();
+        JsonObject blockRegion = new JsonObject();
+        blockRegion.addProperty("originBlockX", br.originBlockX());
+        blockRegion.addProperty("originBlockY", br.originBlockY());
+        blockRegion.addProperty("originBlockZ", br.originBlockZ());
+        blockRegion.addProperty("extentBlocks", br.extentBlocks());
+        root.add("blockRegion", blockRegion);
+        JsonObject perLevel = new JsonObject();
+        for (com.rhythmatician.lodiffusion.voxy.Level lvl : com.rhythmatician.lodiffusion.voxy.Level.values()) {
+            var per = br.perLevelWorldSectionOrigin(lvl.value());
+            JsonObject o = new JsonObject();
+            o.addProperty("wsX", per.wsX());
+            o.addProperty("wsY", per.wsY());
+            o.addProperty("wsZ", per.wsZ());
+            o.addProperty("blockSize", per.blockSize());
+            o.addProperty("level", lvl.name());
+            perLevel.add(lvl.name(), o);
+        }
+        root.add("perLevelWorldSectionOrigins", perLevel);
+        int[] rect = br.chunkRectWithHalo(c.halo().combinedHaloBlocks());
+        JsonObject haloRect = new JsonObject();
+        haloRect.addProperty("minChunkX", rect[0]);
+        haloRect.addProperty("minChunkZ", rect[1]);
+        haloRect.addProperty("maxChunkX", rect[2]);
+        haloRect.addProperty("maxChunkZ", rect[3]);
+        // Also compute L4 footprint rect for oracle coverage verification (36x36 for 1536,64,0)
+        var l4per = br.perLevelWorldSectionOrigin(4);
+        int wsBlockSizeL4 = 32 * (1 << 4);
+        int minBxL4 = l4per.wsX() * wsBlockSizeL4 - c.halo().combinedHaloBlocks();
+        int minBzL4 = l4per.wsZ() * wsBlockSizeL4 - c.halo().combinedHaloBlocks();
+        int maxBxL4 = l4per.wsX() * wsBlockSizeL4 + wsBlockSizeL4 -1 + c.halo().combinedHaloBlocks();
+        int maxBzL4 = l4per.wsZ() * wsBlockSizeL4 + wsBlockSizeL4 -1 + c.halo().combinedHaloBlocks();
+        JsonObject l4Rect = new JsonObject();
+        l4Rect.addProperty("minChunkX", Math.floorDiv(minBxL4, 16));
+        l4Rect.addProperty("minChunkZ", Math.floorDiv(minBzL4, 16));
+        l4Rect.addProperty("maxChunkX", Math.floorDiv(maxBxL4, 16));
+        l4Rect.addProperty("maxChunkZ", Math.floorDiv(maxBzL4, 16));
+        l4Rect.addProperty("derivedFrom", "L4 WorldSection [" + l4per.wsX() + "," + l4per.wsY() + "," + l4per.wsZ() + "] 512 blocks + halo 25 => 36x36=1296 chunks");
+        root.add("haloCompleteChunkRect", haloRect);
+        root.add("l4HaloCompleteChunkRect", l4Rect);
+        root.addProperty("generationOrder", "Morton sorted by distance to center of L4 rect, then server tick order");
         JsonObject halo = new JsonObject();
         halo.addProperty("featureReachBlocks", c.halo().featureReachBlocks());
         halo.addProperty("featureReachEvidence", c.halo().featureReachEvidence());
@@ -117,11 +159,31 @@ public final class OracleFixtureWriter {
         String provenanceId = root.get("provenanceId").getAsString();
         String contentSha256 = root.get("contentSha256").getAsString();
         long createdAt = root.has("createdAtEpochMs") ? root.get("createdAtEpochMs").getAsLong() : System.currentTimeMillis();
-        // Reconstruct contract from stored header — for now delegate to EndChorusTracerContract.contract()
-        // and verify provenance matches; full generic contract deserialization can be added later.
-        // We do not recompute contract from JSON; we load the canonical tracer contract and check id.
+        // Self-describing v3: validate stored geometry matches expected tracer contract but also preserve file's own blockRegion/perLevel for determinism proof
         String actualCaptureStage = root.has("actualCaptureStage") ? root.get("actualCaptureStage").getAsString() : root.get("authoritativeGenerationStage").getAsString();
         OracleContract contract = com.rhythmatician.lodiffusion.oracle.EndChorusTracerContract.contract();
+        // Verify v3 geometry present
+        if (root.has("blockRegion")) {
+            JsonObject brJson = root.getAsJsonObject("blockRegion");
+            int bx = brJson.get("originBlockX").getAsInt();
+            int by = brJson.get("originBlockY").getAsInt();
+            int bz = brJson.get("originBlockZ").getAsInt();
+            var fileBr = contract.blockRegionOrDerived();
+            if (bx != fileBr.originBlockX() || by != fileBr.originBlockY() || bz != fileBr.originBlockZ()) {
+                LOGGER.warn("[OracleFixtureWriter] File blockRegion [{},{},{}] vs tracer {} mismatch", bx, by, bz, fileBr);
+            }
+            // Validate L4 rect matches expected 94..129 x -2..33 for 1536,64,0
+            if (root.has("l4HaloCompleteChunkRect")) {
+                JsonObject l4 = root.getAsJsonObject("l4HaloCompleteChunkRect");
+                int minX = l4.get("minChunkX").getAsInt();
+                int maxX = l4.get("maxChunkX").getAsInt();
+                if ((maxX - minX + 1) * (l4.get("maxChunkZ").getAsInt() - l4.get("minChunkZ").getAsInt() + 1) != 1296) {
+                    LOGGER.warn("[OracleFixtureWriter] L4 chunkRect not 1296 as expected for full coverage: {}", l4);
+                }
+            }
+        } else {
+            LOGGER.warn("[OracleFixtureWriter] File missing v3 blockRegion - not self-describing");
+        }
         if (!contract.provenanceId().equals(provenanceId)) {
             LOGGER.warn("[OracleFixtureWriter] Provenance mismatch: file {} vs tracer {}", provenanceId, contract.provenanceId());
             // For tracer, we require exact provenance; fail fast rather than silently loading stale fixture
