@@ -132,11 +132,14 @@ class WorldNoiseAccessExactSamplingSourceGuardTest {
 
     @Test
     void onlyL2ToL1UsesTheExactProducer() throws Exception {
-        String source = Files.readString(findSource("GenerationSession.java"));
-
-        assertTrue(source.contains("childLevel == Level.L1"));
-        assertTrue(source.contains("exactL1.produceExactL1(childOrigin)"));
-        assertTrue(source.contains("candidate.produceRegion(childLevel, childOrigin)"));
+        // Guard moved to EndDimensionSynthesizer per ADR 0014 dimension-partitioned seam
+        String source = Files.readString(findSource("EndDimensionSynthesizer.java"));
+        assertTrue(source.contains("level == Level.L1"));
+        assertTrue(source.contains("produceExactL1"));
+        assertTrue(source.contains("produceRegion"));
+        // GenerationSession must delegate via DimensionSynthesizers, not branch on Level directly
+        String sessionSource = Files.readString(findSource("GenerationSession.java"));
+        assertTrue(sessionSource.contains("DimensionSynthesizers.forDimension"));
     }
 
     private static Set<Integer> values(List<ChunkColumn> requested, boolean x) {

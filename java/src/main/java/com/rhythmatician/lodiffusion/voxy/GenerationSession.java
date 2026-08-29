@@ -351,12 +351,37 @@ public final class GenerationSession {
     public VoxelVolume produceRefinementChild(Level childLevel, SectionPos childOrigin, net.minecraft.registry.RegistryKey<net.minecraft.world.World> dimension) {
         WorldNoiseAccess access = noiseAccess;
         if (access == null) throw new IllegalStateException("Noise is not bound for " + dimension);
-        long seed = 0L;
+        var world = access.serverWorld();
+        if (world == null) throw new IllegalStateException("World seed not bound for " + dimension + " - serverWorld is null (seed is required for feature placement; inject explicitly via produceRefinementChildWithSeed for headless tests)");
+        long seed;
         try {
-            if (access.serverWorld() != null) seed = access.serverWorld().getSeed();
-        } catch (Exception ignored) {}
-        DimensionSynthesizer synth = DimensionSynthesizers.forDimension(dimension, access, exactL1Sampling, seed);
+            seed = world.getSeed();
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to obtain world seed for " + dimension, e);
+        }
+        return produceRefinementChildWithSeed(childLevel, childOrigin, dimension, seed, false);
+    }
+
+    /**
+     * Test/headless helper: synthesize with explicit seed. Production must use the bound world seed
+     * via {@link #produceRefinementChild(Level, SectionPos, net.minecraft.registry.RegistryKey)} which fail-closes
+     * if the world seed is unavailable. Chorus overlay is disabled by default per ADR 0015 until #220/#233;
+     * pass {@code enableChorusOverlay=true} for experimental chorus approximation.
+     */
+    VoxelVolume produceRefinementChildWithSeed(Level childLevel, SectionPos childOrigin, net.minecraft.registry.RegistryKey<net.minecraft.world.World> dimension, long seed) {
+        return produceRefinementChildWithSeed(childLevel, childOrigin, dimension, seed, false);
+    }
+
+    VoxelVolume produceRefinementChildWithSeed(Level childLevel, SectionPos childOrigin, net.minecraft.registry.RegistryKey<net.minecraft.world.World> dimension, long seed, boolean enableChorusOverlay) {
+        WorldNoiseAccess access = noiseAccess;
+        if (access == null) throw new IllegalStateException("Noise is not bound for " + dimension);
+        DimensionSynthesizer synth = DimensionSynthesizers.forDimension(dimension, access, exactL1Sampling, seed, enableChorusOverlay);
         return synth.synthesize(childLevel, childOrigin);
+    }
+
+    /** Experimental: produce End child with chorus overlay enabled (requires explicit Partition decision; see ADR 0015). */
+    VoxelVolume produceEndRefinementChildWithChorus(Level childLevel, SectionPos childOrigin, long seed) {
+        return produceRefinementChildWithSeed(childLevel, childOrigin, net.minecraft.registry.RegistryKey.of(net.minecraft.registry.RegistryKeys.WORLD, net.minecraft.util.Identifier.of("minecraft", "the_end")), seed, true);
     }
 
     void setNoiseAccessForTest(WorldNoiseAccess access) {

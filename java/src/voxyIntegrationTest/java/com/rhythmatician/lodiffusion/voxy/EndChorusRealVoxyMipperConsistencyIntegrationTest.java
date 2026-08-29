@@ -12,18 +12,20 @@ import net.minecraft.block.Blocks;
 import org.junit.jupiter.api.Test;
 
 /**
- * Live Voxy integration: validates that our {@code EndChorusSynthesizer.mipBlockId}
- * reproduces the exact Voxy {@code Mipper} pyramid (opacity-biased, corner-priority)
- * for End chorus vs end_stone, and that the full L1/L2 top-down volumes equal the
- * bottom-up {@code VoxelizedSection -> WorldSection} mip via the real {@code Mapper}
- * and {@code Mipper}.
+ * Real Voxy Mipper consistency for End chorus.
  *
- * <p>This is the voxyIntegrationTest counterpart to the headless
- * {@code EndChorusTopDownParityTest} / {@code EndChorusRealEngineParityTest}:
- * it runs against the pinned real Voxy artifact (0.2.11-alpha) and therefore
- * proves A->C without B against the live Voxy pyramid, not just our reimplementation.
+ * <p>Validates that our {@code EndChorusSynthesizer.mipBlockId} reproduces the exact Voxy
+ * {@code Mipper} selection (opacity-biased, corner-priority) for controlled End chorus vs
+ * end_stone mappings via the pinned real Voxy artifact (0.2.11-alpha) {@code Mipper.mip}.
+ *
+ * <p>Given these controlled packed voxels/opacities, our local helper selects the same child
+ * as Voxy 0.2.11-alpha. It does NOT claim Minecraft chorus placement parity or vanilla-to-Voxy
+ * post-ingest parity (ADR 0015); bottom-up block field here is synthetic {@code synth.blockIdAt()}
+ * and {@code Mapper} is a Mockito mock whose opacity values are exactly the synthesizer assumptions
+ * (end_stone 15, chorus/air 0). Real vanilla+Voxy parity requires independent vanilla chunk + Voxy
+ * ingest fixtures (see Issue #233).
  */
-class EndChorusMipperParityIntegrationTest {
+class EndChorusRealVoxyMipperConsistencyIntegrationTest {
 
     // Block IDs as used by EndChorusSynthesizer (canonical)
     private static final int BLOCK_AIR = CanonicalRegistries.BLOCK_AIR;

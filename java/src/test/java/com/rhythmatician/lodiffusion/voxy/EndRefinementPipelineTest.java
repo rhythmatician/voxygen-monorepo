@@ -2,6 +2,7 @@ package com.rhythmatician.lodiffusion.voxy;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
@@ -62,12 +63,39 @@ class EndRefinementPipelineTest {
         GenerationSession session = new GenerationSession();
         session.setNoiseAccessForTest(noise);
 
-        VoxelVolume l1 = session.produceEndRefinementChild(Level.L1, new SectionPos(0, 0, 0));
-        assertTrue(l1.countNonAir() >= 16, "L1 with chorus overlay must have at least 16 base voxels");
+        // Production path: chorus disabled by default per ADR 0015 until #220/#233 - uses explicit seed injection for headless test
+        VoxelVolume l1 = session.produceRefinementChildWithSeed(Level.L1, new SectionPos(0, 0, 0), net.minecraft.registry.RegistryKey.of(net.minecraft.registry.RegistryKeys.WORLD, net.minecraft.util.Identifier.of("minecraft", "the_end")), 0x5EED5EEDL);
+        assertTrue(l1.countNonAir() >= 16, "L1 base must have at least 16 voxels");
         Mockito.verify(noise, Mockito.times(16)).sampleExactEndBaseTerrainChunk(
                 Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt(),
                 Mockito.any(), Mockito.any());
-        // L1 now also samples finalDensity for chorus surface (end_highlands gate + island top)
+
+        // Verify fail-closed: produceEndRefinementChild without bound world seed must throw
+        WorldNoiseAccess noWorldNoise = Mockito.mock(WorldNoiseAccess.class);
+        Mockito.when(noWorldNoise.sampleFinalDensity(Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt())).thenReturn(1.0);
+        GenerationSession failSession = new GenerationSession();
+        failSession.setNoiseAccessForTest(noWorldNoise);
+        assertThrows(IllegalStateException.class, () -> failSession.produceEndRefinementChild(Level.L1, new SectionPos(0, 0, 0)));
+
+        // Experimental chorus overlay: requires explicit enable (ADR 0015) - verifies surface sampling
+        Mockito.reset(noise);
+        Mockito.when(noise.sampleFinalDensity(Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt()))
+                .thenReturn(1.0);
+        Mockito.doAnswer(invocation -> {
+            int chunkX = invocation.getArgument(0);
+            int chunkZ = invocation.getArgument(1);
+            int minY = invocation.getArgument(2);
+            ExactEndL1Candidate.SolidBlockConsumer consumer = invocation.getArgument(4);
+            consumer.accept(chunkX << 4, minY, chunkZ << 4, true);
+            return null;
+        }).when(noise).sampleExactEndBaseTerrainChunk(
+                Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt(),
+                Mockito.any(), Mockito.any());
+        VoxelVolume l1WithChorus = session.produceEndRefinementChildWithChorus(Level.L1, new SectionPos(0, 0, 0), 0x5EED5EEDL);
+        assertTrue(l1WithChorus.countNonAir() >= 16, "L1 with chorus overlay must have at least 16 base voxels");
+        Mockito.verify(noise, Mockito.times(16)).sampleExactEndBaseTerrainChunk(
+                Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt(),
+                Mockito.any(), Mockito.any());
         Mockito.verify(noise, Mockito.atLeastOnce()).sampleFinalDensity(
                 Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt());
 
@@ -84,8 +112,8 @@ class EndRefinementPipelineTest {
         }).when(noise).sampleExactEndBaseTerrainChunk(
                 Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt(),
                 Mockito.any(), Mockito.any());
-        // Re-bind reset mock (session holds same reference, so reset is visible)
-        VoxelVolume l2 = session.produceEndRefinementChild(Level.L2, new SectionPos(0, 0, 0));
+        // Experimental L2 with chorus (disabled by default, enabled explicitly here)
+        VoxelVolume l2 = session.produceRefinementChildWithSeed(Level.L2, new SectionPos(0, 0, 0), net.minecraft.registry.RegistryKey.of(net.minecraft.registry.RegistryKeys.WORLD, net.minecraft.util.Identifier.of("minecraft", "the_end")), 0x5EED5EEDL, true);
         assertTrue(l2.countNonAir() > 0);
         Mockito.verify(noise, Mockito.atLeastOnce()).sampleFinalDensity(
                 Mockito.anyInt(), Mockito.anyInt(), Mockito.anyInt());
@@ -107,7 +135,7 @@ class EndRefinementPipelineTest {
 
         ParentRefinementIntent intent = new ParentRefinementIntent(
                 new SectionPos(0, 0, 0), Level.L2, 1 << 3,
-                session::produceEndRefinementChild);
+                (level, origin) -> session.produceRefinementChildWithSeed(level, origin, net.minecraft.registry.RegistryKey.of(net.minecraft.registry.RegistryKeys.WORLD, net.minecraft.util.Identifier.of("minecraft", "the_end")), 0x5EED5EEDL));
         writer.materializeChildren = true;
         writer.refineParent(intent);
 
