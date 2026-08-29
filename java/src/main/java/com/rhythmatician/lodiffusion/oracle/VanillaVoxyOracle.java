@@ -73,7 +73,7 @@ public final class VanillaVoxyOracle {
                     int cz = baseZ + z * voxelBlocks + voxelBlocks/2;
                     int cy = baseY + y * voxelBlocks + voxelBlocks/2;
                     long h = hash(seed, cx, cz);
-                    int surf = 64 + (int)(Math.abs(h) % 16); // 64..79
+                    int surf = baseY + 16 + (int)(Math.abs(h) % 8); // volume-relative 16..23 offset, ensures island inside volume for tracer
                     int blockId;
                     if (cy < 0 || cy >= 128) blockId = CanonicalRegistries.BLOCK_AIR;
                     else if (cy < surf) blockId = 359; // end_stone canonical
@@ -103,7 +103,7 @@ public final class VanillaVoxyOracle {
             // Use seed salt to keep deterministic
             long eh = hash(seed ^ 0x9E3779B97F4A7C15L, baseX + edgeX * voxelBlocks, baseZ + mid * voxelBlocks);
             // Ensure this column is chorus-active regardless of hash
-            int surf = 64 + (int)(Math.abs(eh) % 16);
+            int surf = baseY + 16 + (int)(Math.abs(eh) % 8);
             // Ensure surface > baseY+mid*voxelBlocks so plant is visible in volume
             // If surface would be below volume, bump it
             int cyBase = baseY + mid * voxelBlocks + voxelBlocks/2;
@@ -137,3 +137,5 @@ public final class VanillaVoxyOracle {
         } catch (Exception e) { throw new RuntimeException(e); }
     }
 }
+
+
