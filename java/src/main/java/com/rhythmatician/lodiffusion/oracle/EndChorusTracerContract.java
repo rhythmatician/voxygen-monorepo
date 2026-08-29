@@ -50,11 +50,11 @@ public final class EndChorusTracerContract {
                         "me.cortex.voxy.common.world.WorldEngine:60#getWorldSectionId lvl<<60 y&0xFF<<52 z<<28 x<<4"
                 ))
                 .seed(42L)
-                .region(new OracleContract.RegionSpec(0, 4, 0, 2))
+                .region(new OracleContract.RegionSpec(0, 0, 0, 2))
                 .halo(new OracleContract.HaloSpec(24, "ChorusPlantFeature maxHorizontalSpread 8 + ChunkPyramid FEATURES writeRadius 1 chunk (16) = 24 blocks", "ChorusFlowerBlock.java:200 + ChunkPyramid.java:18"))
                 .authoritativeGenerationStage("FEATURES")
                 .fixtureFormatVersion(OracleContract.CURRENT_FIXTURE_FORMAT_VERSION)
-                .oracleFixtureId("end_chorus__s42__r0_4_0_e2__h24__mc1.21.11_voxy0.2.11-alpha__fmtv1")
+                .oracleFixtureId("end_chorus__s42__r0_0_0_e2__h24__mc1.21.11_voxy0.2.11-alpha__fmtv1")
                 .perLevelDisposition(new OracleContract.PerLevelDisposition(
                         "omit",
                         "omit",
@@ -68,3 +68,4 @@ public final class EndChorusTracerContract {
                 .build();
     }
 }
+
