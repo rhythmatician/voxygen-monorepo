@@ -19,11 +19,17 @@ import java.util.Objects;
  * never from hard-coded local indices. Fail-closed on misalignment or partial cells.
  *
  * <p>Representation: 32³ block-space boolean mask (half-open tracer region). A coarse voxel
- * expands over its (1<<L)³ footprint. Feature semantics: ANY_CHORUS = chorus_plant OR
+ * expands over its entire (1<<L)³ physical footprint inside the mask. Counts such as
+ * {@code oraclePositives}, {@code FN}, and {@code 12288} are therefore
+ * <b>expanded coarse-representation occupancy cells</b> (representation-footprint cells),
+ * not literal vanilla chorus block counts. L4/L3 etc. appear large because one coarse voxel
+ * contributes 4096/512 expanded cells. Feature semantics: ANY_CHORUS = chorus_plant OR
  * chorus_flower, isolated from base terrain (end_stone/air). Expected values come ONLY from
  * REAL_CAPTURE fixture; candidate masks are never used as expected.
  *
  * <p>This is a world-space occupancy Measurement Tracer, not final screen-space Pop.
+ * IoU/disagreement comparisons remain valid in this expanded representation; they must not be
+ * read as physical vegetation-mass claims.
  */
 public final class ChorusCommonRoiEvaluator {
 

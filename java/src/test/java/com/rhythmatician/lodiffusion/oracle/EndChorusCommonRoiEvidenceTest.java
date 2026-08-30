@@ -371,7 +371,8 @@ class EndChorusCommonRoiEvidenceTest {
         for (Level l : Level.values()) {
             assertNotNull(receipt.perLevel().get(l), "perLevel evidence must contain " + l);
             assertEquals(l, receipt.perLevel().get(l).level());
-            assertEquals(receipt.contentSha256(), receipt.perLevel().get(l).deterministicRuntime().fixtureId().equals(receipt.provenanceId()) ? receipt.contentSha256() : receipt.contentSha256(), "runtime fixtureId must match receipt at " + l);
+            assertEquals(receipt.provenanceId(), receipt.perLevel().get(l).deterministicRuntime().fixtureId(), "runtime fixtureId must match receipt provenance at " + l);
+            assertEquals(receipt.captureProtocolSha256(), receipt.perLevel().get(l).deterministicRuntime().captureProtocolSha256(), "runtime captureProtocolSha256 must match receipt at " + l);
         }
     }
 
@@ -440,12 +441,12 @@ class EndChorusCommonRoiEvidenceTest {
 
         // Print machine-readable evidence table
         System.out.println("=== #220 Common-ROI Chorus Evidence (REAL_CAPTURE a5fea400 / capture b08526b4) ===");
-        System.out.println("Block ROI half-open: X[1600,1632) Y[64,96) Z[128,160) 32³");
+        System.out.println("Block ROI half-open: X[1600,1632) Y[64,96) Z[128,160) 32³ — counts are expanded coarse-representation footprint cells (e.g., L4 12288 = 3 voxels × 16³), not literal vanilla chorus blocks");
         System.out.println("Voxy 0.2.11-alpha 337b919 seed 42 captureStage FULL");
-        System.out.printf("%-6s %-10s %-8s %-8s %-8s %-8s %-8s %-8s%n", "Level", "oracleCh", "omitFN", "detTP", "detFP", "detFN", "detIoU", "wallMs");
+        System.out.printf("%-6s %-12s %-8s %-8s %-8s %-8s %-8s %-8s%n", "Level", "expOracle", "omitFN", "detTP", "detFP", "detFN", "detIoU", "wallMs");
         for (Level l : new Level[]{Level.L4, Level.L3, Level.L2, Level.L1, Level.L0}) {
             var ev = receipt.perLevel().get(l);
-            System.out.printf("%-6s %-10d %-8d %-8d %-8d %-8d %-8.3f %-8.3f%n",
+            System.out.printf("%-6s %-12d %-8d %-8d %-8d %-8d %-8.3f %-8.3f%n",
                     l.name(), ev.oraclePositives(), ev.omitMetrics().fn(), ev.deterministicMetrics().tp(), ev.deterministicMetrics().fp(), ev.deterministicMetrics().fn(), ev.deterministicMetrics().iou(), ev.deterministicRuntime().wallMillis());
         }
         System.out.println("--- Transitions (oracle vs oracle, candidate vs next oracle) ---");
@@ -454,17 +455,17 @@ class EndChorusCommonRoiEvidenceTest {
             System.out.printf("%s oracleVsOracle disagreements=%d iou=%.3f | omit->next disagreements=%d | det->next disagreements=%d iou=%.3f%n",
                     key, tr.oracleVsOracle().disagreements(), tr.oracleVsOracle().iou(), tr.omitToNext().disagreements(), tr.deterministicToNext().disagreements(), tr.deterministicToNext().iou());
         }
-        System.out.println("--- Per-Level OMIT residual (intentional FN) ---");
+        System.out.println("--- Per-Level OMIT residual (intentional FN, expanded representation footprint) ---");
         for (Level l : Level.values()) {
             var ev = receipt.perLevel().get(l);
-            System.out.printf("%s: oraclePositives=%d (plant %d flower %d) omit FN=%d tn=%d%n",
+            System.out.printf("%s: expandedOracleCells=%d (plantFootprint %d flowerFootprint %d) omit footprint FN=%d tn=%d%n",
                     l.name(), ev.oraclePositives(), ev.oraclePlantFlower().plant(), ev.oraclePlantFlower().flower(), ev.omitMetrics().fn(), ev.omitMetrics().tn());
         }
         System.out.println("--- Deterministic detailed ---");
         for (Level l : Level.values()) {
             var ev = receipt.perLevel().get(l);
             var m = ev.deterministicMetrics();
-            System.out.printf("%s: TP=%d FP=%d FN=%d TN=%d P=%.3f R=%.3f IoU=%.3f disagreements=%d plant/flower diag oracle %d/%d det %d/%d%n",
+            System.out.printf("%s: TP=%d FP=%d FN=%d TN=%d P=%.3f R=%.3f IoU=%.3f disagreements=%d plant/flower footprint diag oracle %d/%d det %d/%d%n",
                     l.name(), m.tp(), m.fp(), m.fn(), m.tn(), m.precision(), m.recall(), m.iou(), m.disagreements(),
                     ev.oraclePlantFlower().plant(), ev.oraclePlantFlower().flower(), ev.deterministicPlantFlower().plant(), ev.deterministicPlantFlower().flower());
         }
@@ -492,8 +493,8 @@ class EndChorusCommonRoiEvidenceTest {
         String oL1 = receipt.perLevel().get(Level.L1).oraclePositives()>0?"yes":"no";
         String oL0 = receipt.perLevel().get(Level.L0).oraclePositives()>0?"yes":"no";
         System.out.printf("| Oracle says chorus exists  | %-8s | %-8s | %-8s | %-8s | %-8s |%n", oL4, oL3, oL2, oL1, oL0);
-        System.out.printf("| OMIT pop cost (FN)        | %-8d | %-8d | %-8d | %-8d | %-8d |%n", receipt.perLevel().get(Level.L4).omitMetrics().fn(), receipt.perLevel().get(Level.L3).omitMetrics().fn(), receipt.perLevel().get(Level.L2).omitMetrics().fn(), receipt.perLevel().get(Level.L1).omitMetrics().fn(), receipt.perLevel().get(Level.L0).omitMetrics().fn());
-        System.out.printf("| OMIT disagreements (FP+FN)| %-8d | %-8d | %-8d | %-8d | %-8d |%n", receipt.perLevel().get(Level.L4).omitMetrics().disagreements(), receipt.perLevel().get(Level.L3).omitMetrics().disagreements(), receipt.perLevel().get(Level.L2).omitMetrics().disagreements(), receipt.perLevel().get(Level.L1).omitMetrics().disagreements(), receipt.perLevel().get(Level.L0).omitMetrics().disagreements());
+        System.out.printf("| OMIT footprint FN (expanded) | %-8d | %-8d | %-8d | %-8d | %-8d |%n", receipt.perLevel().get(Level.L4).omitMetrics().fn(), receipt.perLevel().get(Level.L3).omitMetrics().fn(), receipt.perLevel().get(Level.L2).omitMetrics().fn(), receipt.perLevel().get(Level.L1).omitMetrics().fn(), receipt.perLevel().get(Level.L0).omitMetrics().fn());
+        System.out.printf("| OMIT disag (expanded FP+FN)  | %-8d | %-8d | %-8d | %-8d | %-8d |%n", receipt.perLevel().get(Level.L4).omitMetrics().disagreements(), receipt.perLevel().get(Level.L3).omitMetrics().disagreements(), receipt.perLevel().get(Level.L2).omitMetrics().disagreements(), receipt.perLevel().get(Level.L1).omitMetrics().disagreements(), receipt.perLevel().get(Level.L0).omitMetrics().disagreements());
         System.out.printf("| deterministic TP/FP/FN    | %d/%d/%d | %d/%d/%d | %d/%d/%d | %d/%d/%d | %d/%d/%d |%n",
                 receipt.perLevel().get(Level.L4).deterministicMetrics().tp(), receipt.perLevel().get(Level.L4).deterministicMetrics().fp(), receipt.perLevel().get(Level.L4).deterministicMetrics().fn(),
                 receipt.perLevel().get(Level.L3).deterministicMetrics().tp(), receipt.perLevel().get(Level.L3).deterministicMetrics().fp(), receipt.perLevel().get(Level.L3).deterministicMetrics().fn(),
