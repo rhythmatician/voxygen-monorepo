@@ -1,6 +1,8 @@
 {
   "provenanceId": "end_chorus__s42__b1600_64_128_e32__fh8_gh1c_vh1_ch25__mc1.21.11_voxy0.2.11-alpha__fmtv3",
   "contentSha256": "a5fea400048bb5965602c06e8c7f4fc3e841f842a7347f8e206b964ccee9de33",
+  "protocolSha256": "853d410aa3e199d656807f9f6c52d0f20bc6c1aae20ac5109d69fb79295547fc",
+  "evidenceKind": "REAL_CAPTURE",
   "createdAtEpochMs": 1788065889969,
   "schemaVersion": "voxygen.oracle.contract.v3",
   "fixtureFormatVersion": "voxygen.oracle.fixture.v3",
@@ -92,7 +94,100 @@
     "maxChunkZ": 33,
     "derivedFrom": "L4 WorldSection [3,0,0] 512 blocks + halo 25 \u003d\u003e 36x36\u003d1296 chunks"
   },
-  "generationOrder": "Morton sorted by distance to center of L4 rect, then server tick order",
+  "generationOrder": "squared distance to center -\u003e X -\u003e Z (explicit, not Morton), then server tick order",
+  "inspectedMinecraftReferences": [
+    "net.minecraft.world.level.levelgen.feature.ChorusPlantFeature:27-35#place()-\u003eChorusFlowerBlock.generatePlant",
+    "net.minecraft.world.level.block.ChorusFlowerBlock:178-210#generatePlant()-\u003egrowTreeRecursive(maxHorizontalSpread\u003d8, depth\u003c4, stems\u003drandom.nextInt(4)+1)",
+    "net.minecraft.world.level.block.ChorusFlowerBlock:106-148#canSurvive/allNeighborsEmpty",
+    "net.minecraft.world.level.biome.TheEndBiomeSource:48-79#getNoiseBiome(thresholds 0.25/-0.0625/-0.21875, chunkRadius 64)",
+    "net.minecraft.world.level.chunk.status.ChunkStatus:28#FEATURES(7) authoritative for chorus",
+    "net.minecraft.world.level.chunk.status.ChunkPyramid:18#GENERATION_PYRAMID FEATURES writeRadius\u003d1 requires CARVERS@1 STRUCTURE_STARTS@8",
+    "net.minecraft.world.level.levelgen.NoiseGeneratorSettings:70#END NoiseSettings(0,128,2,1) cell 8x4 aquifersEnabled\u003dfalse",
+    "net.minecraft.world.level.levelgen.GenerationStep:11#VEGETAL_DECORATION chorus in END_HIGHLANDS",
+    "net.minecraft.data.worldgen.biome.EndBiomes:24-46#END_HIGHLANDS chorus placement",
+    "net.minecraft.data.worldgen.placement.EndPlacements:22#CHORUS_PLANT CountPlacement 0-4 InSquare HEIGHTMAP BiomeFilter",
+    "net.minecraft.world.level.levelgen.WorldgenRandom:22#setDecorationSeed(long worldSeed, int blockX, int blockZ) -\u003e seeds legacy Random for decoration",
+    "net.minecraft.world.level.chunk.ChunkGenerator:342#applyBiomeDecoration(ServerLevel, ChunkAccess, StructureManager) -\u003e iterates PlacedFeature at VEGETAL_DECORATION; FEATURES output may depend on chunk generation order (neighbor reads/writes shared borders) - must record request order squared distance to center -\u003e X -\u003e Z (explicit, not Morton) and prove determinism via 2x clean-world contentSha recomparison",
+    "net.minecraft.world.level.levelgen.placement.PlacedFeature:42-61#placeWithContext -\u003e PlacementContext + decoration seed via WorldgenRandom#setDecorationSeed",
+    "net.minecraft.world.level.levelgen.RandomState:122#getOrCreateRandomFactory(HolderGetter\u003cPlacedFeature\u003e) -\u003e PositionalRandomFactory (alternative path, verify vs WorldgenRandom)"
+  ],
+  "inspectedVoxyReferences": [
+    "me.cortex.voxy.common.voxelization.WorldConversionFactory:130-220#convert(PalettedContainer-\u003eMapper.composeMappingId)",
+    "me.cortex.voxy.common.voxelization.VoxelizedSection:1-60#long[4681] pyramid offsets 0/4096/4608/4672/4680",
+    "me.cortex.voxy.common.world.other.Mipper:9-55#mip(opacity\u003c\u003c4|cornerPriority I111\u003d7..I000\u003d0, air averages light)",
+    "me.cortex.voxy.common.world.other.Mapper:1-120#per-world sequential block/biome IDs via putIdMapping/getIdMappingsData key (type\u003c\u003c30)|id bits 63..56 light 55..47 biome 46..27 blockId",
+    "me.cortex.voxy.common.world.WorldUpdater:14-90#insertUpdate(WorldEngine acquire lvl x\u003e\u003e(lvl+1) -\u003e insertSectionLvlIntoWorld -\u003e nonEmptyChildren)",
+    "me.cortex.voxy.common.world.WorldSection:1-40#32^3 voxels long[32768] YZX (y\u003c\u003c10)|(z\u003c\u003c5)|x nonEmptyChildren octant mask",
+    "me.cortex.voxy.common.world.WorldEngine:60#getWorldSectionId lvl\u003c\u003c60 y\u00260xFF\u003c\u003c52 z\u003c\u003c28 x\u003c\u003c4",
+    "me.cortex.voxy.common.world.WorldEngine:110#acquireIfExists(lvl,x,y,z) -\u003e WorldSection + ActiveSectionTracker:1024/2048 MRU"
+  ],
+  "perLevelDecisions": {
+    "L0": {
+      "disposition": "UNRESOLVED",
+      "candidates": [
+        "OMIT",
+        "DETERMINISTIC",
+        "LEARNED_RESIDUAL",
+        "LEARNED_FULL",
+        "EXACT_PORT"
+      ],
+      "rationale": "L0 chorus is UNRESOLVED until real capture; closest to vanilla FEATURES"
+    },
+    "L1": {
+      "disposition": "UNRESOLVED",
+      "candidates": [
+        "OMIT",
+        "DETERMINISTIC",
+        "LEARNED_RESIDUAL",
+        "LEARNED_FULL",
+        "EXACT_PORT"
+      ],
+      "rationale": "L1 chorus is UNRESOLVED until real capture"
+    },
+    "L2": {
+      "disposition": "UNRESOLVED",
+      "candidates": [
+        "OMIT",
+        "DETERMINISTIC",
+        "LEARNED_RESIDUAL",
+        "LEARNED_FULL",
+        "EXACT_PORT"
+      ],
+      "rationale": "L2 chorus is UNRESOLVED until real capture; honest omission vs learned vs deterministic not decided"
+    },
+    "L3": {
+      "disposition": "UNRESOLVED",
+      "candidates": [
+        "OMIT",
+        "DETERMINISTIC",
+        "LEARNED_RESIDUAL",
+        "LEARNED_FULL",
+        "EXACT_PORT"
+      ],
+      "rationale": "L3 chorus visibility requires real oracle evidence; coarse mip may suppress"
+    },
+    "L4": {
+      "disposition": "UNRESOLVED",
+      "candidates": [
+        "OMIT",
+        "DETERMINISTIC",
+        "LEARNED_RESIDUAL",
+        "LEARNED_FULL",
+        "EXACT_PORT"
+      ],
+      "rationale": "L4 chorus visibility requires real oracle evidence; coarse mip may suppress thin features via opacity"
+    }
+  },
+  "roles": {
+    "claimRole": "end_chorus claim at L0 is not yet decided; all Levels are UNRESOLVED per partition",
+    "dependencyRole": "end_chorus dependency at coarse Levels not yet decided",
+    "rationale": "L4..L0 partition decisions remain UNRESOLVED until real vanilla-\u003eVoxy fixture provides evidence; claim/dependency orthogonal to disposition"
+  },
+  "benchmarkPolicy": {
+    "warmupIterations": 5,
+    "measurementIterations": 20,
+    "repetitionPolicy": "median of 20 after 5 warmup, wall ms per volume"
+  },
   "halo": {
     "featureReachBlocks": 8,
     "featureReachEvidence": "Chorus max horizontal spread 8 blocks from origin (maxHorizontalSpread parameter in generatePlant)",

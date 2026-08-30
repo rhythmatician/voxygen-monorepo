@@ -39,7 +39,7 @@ class DisabledChorusBenchmarkTest {
                     receipt.level(), receipt.regionBlocks(), receipt.seed(), receipt.wallMillis(),
                     receipt.warmupIterations(), receipt.measurementIterations(), receipt.repetitionPolicy());
             VoxelVolume candidate = synth.synthesize(level, origin);
-            var r = CandidateVerifier.verify(level, origin, candidate, f);
+            var r = CandidateVerifier.verifyLenient(level, origin, candidate, f);
             assertNotNull(r);
         }
     }

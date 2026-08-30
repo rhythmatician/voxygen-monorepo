@@ -39,7 +39,7 @@ public final class EndChorusTracerContract {
                         // which seeds a legacy WorldgenRandom (not Xoroshiro) per chunk for PlacedFeature placement.
                         // Fabric 1.21.11 pinned source: ChunkGenerator.java 310-360 inspection shows decoration loop via PlacedFeature.placeWithContext using WorldgenRandom.
                         "net.minecraft.world.level.levelgen.WorldgenRandom:22#setDecorationSeed(long worldSeed, int blockX, int blockZ) -> seeds legacy Random for decoration",
-                        "net.minecraft.world.level.chunk.ChunkGenerator:342#applyBiomeDecoration(ServerLevel, ChunkAccess, StructureManager) -> iterates PlacedFeature at VEGETAL_DECORATION; FEATURES output may depend on chunk generation order (neighbor reads/writes shared borders) - must record request order Morton sorted and prove determinism via 2x clean-world contentSha recomparison",
+                        "net.minecraft.world.level.chunk.ChunkGenerator:342#applyBiomeDecoration(ServerLevel, ChunkAccess, StructureManager) -> iterates PlacedFeature at VEGETAL_DECORATION; FEATURES output may depend on chunk generation order (neighbor reads/writes shared borders) - must record request order squared distance to center -> X -> Z (explicit, not Morton) and prove determinism via 2x clean-world contentSha recomparison",
                         "net.minecraft.world.level.levelgen.placement.PlacedFeature:42-61#placeWithContext -> PlacementContext + decoration seed via WorldgenRandom#setDecorationSeed",
                         "net.minecraft.world.level.levelgen.RandomState:122#getOrCreateRandomFactory(HolderGetter<PlacedFeature>) -> PositionalRandomFactory (alternative path, verify vs WorldgenRandom)"
                 ))
@@ -61,6 +61,7 @@ public final class EndChorusTracerContract {
                         1, "FEATURES reads CARVERS@1 and STRUCTURE_STARTS@8, writes 1 chunk; need +1 chunk halo to make placement well-defined at boundary", "ChunkPyramid.java:18 ChunkStatus.java:28",
                         1, "Voxy 2x2x2 Mipper group crossing WorldSection boundary needs 1 block halo", "Mipper.java:9-55 + WorldSection.java YZX",
                         25))
+                .generationOrder(OracleContract.EXPECTED_GENERATION_ORDER)
                 .authoritativeGenerationStage("FEATURES")
                 .fixtureFormatVersion(OracleContract.CURRENT_FIXTURE_FORMAT_VERSION)
                 .provenanceId("end_chorus__s42__b1600_64_128_e32__fh8_gh1c_vh1_ch25__mc1.21.11_voxy0.2.11-alpha__fmtv3")

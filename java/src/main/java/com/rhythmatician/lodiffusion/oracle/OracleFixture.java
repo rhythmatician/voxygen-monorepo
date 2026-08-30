@@ -26,18 +26,31 @@ import java.util.Objects;
  * Legacy {@code fixtureSha256} delegates to {@code contentSha256} for backward compat.
  */
 public final class OracleFixture {
+    /** Evidence origin — distinguishes real vanilla→Voxy capture from in-memory synthetic test data. */
+    public enum EvidenceKind { REAL_CAPTURE, SYNTHETIC_TEST }
+
     private final OracleContract contract;
     private final Map<Level, VoxelVolume> volumes;
     private final String provenanceId;
     private final String contentSha256;
+    private final String protocolSha256;
+    private final EvidenceKind evidenceKind;
     private final long createdAtEpochMs;
     private final String actualCaptureStage;
 
     public OracleFixture(OracleContract contract, Map<Level, VoxelVolume> volumes, String contentSha256, long createdAtEpochMs) {
-        this(contract, volumes, contentSha256, createdAtEpochMs, contract.authoritativeGenerationStage());
+        this(contract, volumes, contentSha256, createdAtEpochMs, contract.authoritativeGenerationStage(), EvidenceKind.REAL_CAPTURE);
     }
 
     public OracleFixture(OracleContract contract, Map<Level, VoxelVolume> volumes, String contentSha256, long createdAtEpochMs, String actualCaptureStage) {
+        this(contract, volumes, contentSha256, createdAtEpochMs, actualCaptureStage, EvidenceKind.REAL_CAPTURE);
+    }
+
+    public OracleFixture(OracleContract contract, Map<Level, VoxelVolume> volumes, String contentSha256, long createdAtEpochMs, String actualCaptureStage, EvidenceKind evidenceKind) {
+        this(contract, volumes, contentSha256, createdAtEpochMs, actualCaptureStage, evidenceKind, contract.protocolSha256());
+    }
+
+    public OracleFixture(OracleContract contract, Map<Level, VoxelVolume> volumes, String contentSha256, long createdAtEpochMs, String actualCaptureStage, EvidenceKind evidenceKind, String protocolSha256) {
         Objects.requireNonNull(contract, "contract");
         Objects.requireNonNull(volumes, "volumes");
         if (volumes.isEmpty()) throw new IllegalArgumentException("volumes must be non-empty");
@@ -47,10 +60,18 @@ public final class OracleFixture {
             if (e.getValue().extent() != 32) throw new IllegalArgumentException("volume extent must be 32 for " + e.getKey());
         }
         if (contentSha256 == null || contentSha256.isBlank()) throw new IllegalArgumentException("contentSha256 required");
+        if (evidenceKind == null) throw new IllegalArgumentException("evidenceKind required");
+        if (protocolSha256 == null || protocolSha256.isBlank()) throw new IllegalArgumentException("protocolSha256 required");
+        String expectedProtocolSha = contract.protocolSha256();
+        if (!expectedProtocolSha.equalsIgnoreCase(protocolSha256)) {
+            throw new IllegalArgumentException("protocolSha256 mismatch: contract " + expectedProtocolSha + " was " + protocolSha256 + " — fixture provenance out of sync with contract");
+        }
         this.contract = contract;
         this.volumes = Collections.unmodifiableMap(new EnumMap<>(volumes));
         this.provenanceId = contract.provenanceId();
         this.contentSha256 = contentSha256;
+        this.protocolSha256 = protocolSha256.toLowerCase();
+        this.evidenceKind = evidenceKind;
         this.createdAtEpochMs = createdAtEpochMs;
         this.actualCaptureStage = actualCaptureStage != null ? actualCaptureStage : contract.authoritativeGenerationStage();
         contract.validate();
@@ -91,6 +112,9 @@ public final class OracleFixture {
     public Map<Level, VoxelVolume> volumesView() { return volumes; }
     public String provenanceId() { return provenanceId; }
     public String contentSha256() { return contentSha256; }
+    public String protocolSha256() { return protocolSha256; }
+    public EvidenceKind evidenceKind() { return evidenceKind; }
+    public boolean isRealCapture() { return evidenceKind == EvidenceKind.REAL_CAPTURE; }
     // Legacy accessor
     public String fixtureSha256() { return contentSha256; }
     public long createdAtEpochMs() { return createdAtEpochMs; }

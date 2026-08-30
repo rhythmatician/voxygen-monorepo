@@ -53,7 +53,7 @@ public final class SyntheticEndChorusFixtureFactory {
             else vols.put(lvl, syntheticVolume(lvl, perOrigin, seed, true));
         }
         String sha = OracleFixture.computeContentSha256(vols);
-        return new OracleFixture(contract, vols, sha, System.currentTimeMillis());
+        return new OracleFixture(contract, vols, sha, System.currentTimeMillis(), contract.authoritativeGenerationStage(), OracleFixture.EvidenceKind.SYNTHETIC_TEST);
     }
 
     static VoxelVolume syntheticVolume(Level level, SectionPos origin, long seed, boolean includeChorus) {

@@ -57,6 +57,10 @@ class RealFixtureGuardrailTest {
         assertEquals(EndChorusTracerContract.contract().provenanceId(), f.provenanceId());
         // Content SHA must match recomputed — proves not synthetic
         assertEquals(OracleFixture.computeContentSha256(f.volumesView()), f.contentSha256());
+        // Full provenance binding: protocolSha, generationOrder, evidenceKind
+        assertEquals(EndChorusTracerContract.contract().protocolSha256(), f.protocolSha256(), "protocolSha must match current tracer contract");
+        assertEquals(OracleContract.EXPECTED_GENERATION_ORDER, f.contract().generationOrder(), "generationOrder must be squared distance -> X -> Z");
+        assertEquals(OracleFixture.EvidenceKind.REAL_CAPTURE, f.evidenceKind(), "real fixture must be REAL_CAPTURE");
     }
 
     @Test
@@ -88,6 +92,55 @@ class RealFixtureGuardrailTest {
     }
 
     @Test
+    void corruptProtocolShaFailsFast(@TempDir Path tmp) throws Exception {
+        Path real = realFixturePath();
+        String json = Files.readString(real);
+        // Corrupt protocolSha256 (change one hex digit)
+        String goodSha = EndChorusTracerContract.contract().protocolSha256();
+        String badSha = "0" + goodSha.substring(1);
+        assertNotEquals(goodSha, badSha);
+        String corrupted = json.replace(goodSha, badSha);
+        Path copy = tmp.resolve("corrupt-protocol.json");
+        Files.writeString(copy, corrupted);
+        var ex = assertThrows(IllegalStateException.class, () -> OracleFixtureWriter.read(copy));
+        assertTrue(ex.getMessage().toLowerCase().contains("protocolsha") || ex.getMessage().toLowerCase().contains("protocol"),
+                "corrupt protocolSha must be detected, was: " + ex.getMessage());
+    }
+
+    @Test
+    void corruptGenerationOrderFailsFast(@TempDir Path tmp) throws Exception {
+        Path real = realFixturePath();
+        String json = Files.readString(real);
+        String badOrder = "Morton sorted by distance to center of L4 rect, then server tick order";
+        // Robustly corrupt via JSON object (avoids GSON html-escaping of '>' as \\u003e)
+        com.google.gson.JsonObject root = com.google.gson.JsonParser.parseString(json).getAsJsonObject();
+        assertTrue(root.has("generationOrder"), "fixture must have generationOrder");
+        root.addProperty("generationOrder", badOrder);
+        String corrupted = new com.google.gson.GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create().toJson(root);
+        assertNotEquals(json, corrupted, "must have replaced generationOrder");
+        Path copy = tmp.resolve("corrupt-order.json");
+        Files.writeString(copy, corrupted);
+        var ex = assertThrows(IllegalStateException.class, () -> OracleFixtureWriter.read(copy));
+        assertTrue(ex.getMessage().toLowerCase().contains("generationorder") || ex.getMessage().toLowerCase().contains("generation"),
+                "corrupt generationOrder must be detected, was: " + ex.getMessage());
+    }
+
+    @Test
+    void tamperedVoxyArtifactShaFailsViaProtocolSha(@TempDir Path tmp) throws Exception {
+        Path real = realFixturePath();
+        OracleContract c = EndChorusTracerContract.contract();
+        String json = Files.readString(real);
+        // Change voxyArtifactSha256 but keep old protocolSha — must fail via protocolSha mismatch (tamper detection)
+        String corrupted = json.replace(c.voxyArtifactSha256(), "0000000000000000000000000000000000000000000000000000000000000000");
+        assertNotEquals(json, corrupted);
+        Path copy = tmp.resolve("tampered-voxy.json");
+        Files.writeString(copy, corrupted);
+        var ex = assertThrows(IllegalStateException.class, () -> OracleFixtureWriter.read(copy));
+        assertTrue(ex.getMessage().toLowerCase().contains("protocolsha") || ex.getMessage().toLowerCase().contains("protocol"),
+                "tampered voxyArtifactSha must be detected via protocolSha, was: " + ex.getMessage());
+    }
+
+    @Test
     void missingFileFailsFast() {
         Path missing = Paths.get("oracle-fixtures", "does_not_exist__s0__b0_0_0_e32__fmtv3.json");
         assertThrows(Exception.class, () -> OracleFixtureWriter.read(missing));
@@ -106,15 +159,26 @@ class RealFixtureGuardrailTest {
                 "synthetic SHA must differ from real double-pristine SHA — otherwise synthetic could masquerade as real");
         assertNotEquals(real.contentSha256(), "0000000000000000000000000000000000000000000000000000000000000000");
 
+        // Typed evidence: real is REAL_CAPTURE, synthetic is SYNTHETIC_TEST — same provenanceId and protocolSha but different evidenceKind
+        assertEquals(OracleFixture.EvidenceKind.REAL_CAPTURE, real.evidenceKind(), "real fixture must be REAL_CAPTURE");
+        assertEquals(OracleFixture.EvidenceKind.SYNTHETIC_TEST, synthetic.evidenceKind(), "synthetic must be SYNTHETIC_TEST");
+        assertEquals(real.protocolSha256(), synthetic.protocolSha256(), "same contract => same protocolSha, but evidenceKind distinguishes");
         // Parity-without-provenance: a test that asserts synthetic==real must fail at ALL Levels.
-        // Here we prove verifier distinguishes them: real volume vs synthetic volume at same Level/origin must mismatch.
+        // Here we prove verifier distinguishes them in two ways:
+        // 1) Strict parity verification must reject synthetic evidenceKind (typed guard)
+        // 2) Even leniently, the voxel content mismatches at every Level
         for (Level lvl : Level.values()) {
             var per = c.blockRegionOrDerived().perLevelWorldSectionOrigin(lvl.value());
             SectionPos origin = new SectionPos(per.wsX() * lvl.regionSections(), per.wsY() * lvl.regionSections(), per.wsZ() * lvl.regionSections());
             VoxelVolume realVol = real.volume(lvl);
-            var r = CandidateVerifier.verify(lvl, origin, realVol, synthetic);
+            // Strict parity must throw for SYNTHETIC_TEST — synthetic cannot satisfy ADR 0015
+            var ex = assertThrows(IllegalArgumentException.class, () -> CandidateVerifier.verify(lvl, origin, realVol, synthetic),
+                    "Real vs synthetic must be rejected at " + lvl + " due to SYNTHETIC_TEST evidenceKind");
+            assertTrue(ex.getMessage().contains("REAL_CAPTURE") || ex.getMessage().contains("SYNTHETIC_TEST"), "exception must mention evidenceKind, was: " + ex.getMessage());
+            // Leniently, content still mismatches at every Level (proves deterministic hash != vanilla)
+            var r = CandidateVerifier.verifyLenient(lvl, origin, realVol, synthetic);
             assertTrue(r.failed(),
-                    "Real vs synthetic must fail at " + lvl + " — synthetic not parity, was: " + r.detail()
+                    "Real vs synthetic must fail even leniently at " + lvl + " — synthetic not parity, was: " + r.detail()
                             + " (real chorus " + countChorus(realVol) + " vs synthetic " + countChorus(synthetic.volume(lvl)) + ")");
         }
     }

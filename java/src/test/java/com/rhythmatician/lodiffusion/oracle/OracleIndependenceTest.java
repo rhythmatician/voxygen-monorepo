@@ -41,7 +41,7 @@ class OracleIndependenceTest {
         SectionPos origin = new SectionPos(per.wsX() * level.regionSections(), per.wsY() * level.regionSections(), per.wsZ() * level.regionSections());
         // Correct candidate passes
         VoxelVolume correct = f.volume(level);
-        assertTrue(CandidateVerifier.verify(level, origin, correct, f).passed());
+        assertTrue(CandidateVerifier.verifyLenient(level, origin, correct, f).passed());
         // Any independent corruption must fail, proving expected comes from fixture, not candidate
         VoxelVolume.Builder b = VoxelVolume.builder(32);
         for (int y = 0; y < 32; y++) for (int z = 0; z < 32; z++) for (int x = 0; x < 32; x++) {
@@ -49,7 +49,7 @@ class OracleIndependenceTest {
             if (id == 197) b.setBlock(x, y, z, 359);
             else if (id != 0) b.setBlock(x, y, z, id);
         }
-        assertTrue(CandidateVerifier.verify(level, origin, b.build(), f).failed());
+        assertTrue(CandidateVerifier.verifyLenient(level, origin, b.build(), f).failed());
     }
 
     @Test
@@ -60,7 +60,7 @@ class OracleIndependenceTest {
         var per = c.blockRegionOrDerived().perLevelWorldSectionOrigin(lvl.value());
         SectionPos origin = new SectionPos(per.wsX() * lvl.regionSections(), per.wsY() * lvl.regionSections(), per.wsZ() * lvl.regionSections());
         VoxelVolume naive = naiveCentreSampleWithoutMip(lvl, origin, c.seed());
-        var r = CandidateVerifier.verify(lvl, origin, naive, f);
+        var r = CandidateVerifier.verifyLenient(lvl, origin, naive, f);
         // Not asserting pass/fail deterministically for naive (depends on seed), just that verifier executed and is not vacuous
         assertNotNull(r);
         assertTrue(r.mismatchedVoxels() >= 0);

@@ -70,11 +70,17 @@ public final class OracleContractValidator {
         if (c.schemaVersion().contains(".v3") && !c.provenanceId().contains("b"+br.originBlockX()+"_"+br.originBlockY()+"_"+br.originBlockZ())) {
             throw new IllegalArgumentException("v3 provenance must encode blockRegion b"+br.originBlockX()+"_"+br.originBlockY()+"_"+br.originBlockZ()+", was "+c.provenanceId());
         }
+        requireNonBlank(c.generationOrder(), "generationOrder");
+        if (!OracleContract.EXPECTED_GENERATION_ORDER.equals(c.generationOrder())) {
+            throw new IllegalArgumentException("generationOrder must be '" + OracleContract.EXPECTED_GENERATION_ORDER + "' (squared distance -> X -> Z, explicit not Morton), was '" + c.generationOrder() + "'");
+        }
         var pd = Objects.requireNonNull(c.perLevelDecisions(), "perLevelDecisions");
+        var allowedDispositions = java.util.Set.of("UNRESOLVED", "OMIT", "DETERMINISTIC", "LEARNED_RESIDUAL", "LEARNED_FULL", "EXACT_PORT");
         for (var d : new OracleContract.PartitionDecision[]{pd.l4(), pd.l3(), pd.l2(), pd.l1(), pd.l0()}) {
             if (d==null) throw new IllegalArgumentException("perLevelDecisions contains null");
-            if (!"UNRESOLVED".equals(d.disposition())) throw new IllegalArgumentException("L4..L0 must be UNRESOLVED until real oracle, was "+d.disposition());
-            if (d.candidates()==null || d.candidates().size()<5) throw new IllegalArgumentException("candidates must list at least 5 dispositions");
+            if (!allowedDispositions.contains(d.disposition())) throw new IllegalArgumentException("per-Level disposition must be one of " + allowedDispositions + ", was "+d.disposition());
+            if (d.candidates()==null || d.candidates().size()<5) throw new IllegalArgumentException("candidates must list at least 5 dispositions for " + d.disposition());
+            if (d.rationale()==null || d.rationale().isBlank()) throw new IllegalArgumentException("rationale is required for disposition " + d.disposition());
         }
         var roles = Objects.requireNonNull(c.roles(), "roles");
         requireNonBlank(roles.claimRole(), "claimRole");

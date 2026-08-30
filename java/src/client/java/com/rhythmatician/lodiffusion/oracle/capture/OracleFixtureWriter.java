@@ -29,7 +29,7 @@ import org.slf4j.LoggerFactory;
  */
 public final class OracleFixtureWriter {
     private static final Logger LOGGER = LoggerFactory.getLogger(OracleFixtureWriter.class);
-    private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
+    private static final Gson GSON = new GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create();
 
     private OracleFixtureWriter() {}
 
@@ -41,9 +41,11 @@ public final class OracleFixtureWriter {
         Files.createDirectories(path.getParent());
         JsonObject root = new JsonObject();
         OracleContract c = fixture.contract();
-        // Provenance header — mirrors EndChorusTracerContract fields
+        // Provenance header — mirrors EndChorusTracerContract fields; protocolSha binds full provenance integrity
         root.addProperty("provenanceId", fixture.provenanceId());
         root.addProperty("contentSha256", fixture.contentSha256());
+        root.addProperty("protocolSha256", fixture.protocolSha256());
+        root.addProperty("evidenceKind", fixture.evidenceKind().name());
         root.addProperty("createdAtEpochMs", fixture.createdAtEpochMs());
         root.addProperty("schemaVersion", c.schemaVersion());
         root.addProperty("fixtureFormatVersion", c.fixtureFormatVersion());
@@ -118,7 +120,44 @@ public final class OracleFixtureWriter {
         l4Rect.addProperty("derivedFrom", "L4 WorldSection [" + l4per.wsX() + "," + l4per.wsY() + "," + l4per.wsZ() + "] 512 blocks + halo 25 => 36x36=1296 chunks");
         root.add("haloCompleteChunkRect", haloRect);
         root.add("l4HaloCompleteChunkRect", l4Rect);
-        root.addProperty("generationOrder", "Morton sorted by distance to center of L4 rect, then server tick order");
+        root.addProperty("generationOrder", "squared distance to center -> X -> Z (explicit, not Morton), then server tick order");
+        // Full provenance binding: inspected source refs, per-Level dispositions, roles, benchmark policy
+        JsonArray mcRefs = new JsonArray();
+        for (String s : c.inspectedMinecraftReferences()) mcRefs.add(s);
+        root.add("inspectedMinecraftReferences", mcRefs);
+        JsonArray vxRefs = new JsonArray();
+        for (String s : c.inspectedVoxyReferences()) vxRefs.add(s);
+        root.add("inspectedVoxyReferences", vxRefs);
+        JsonObject perLevelDecisions = new JsonObject();
+        for (var lvl : com.rhythmatician.lodiffusion.voxy.Level.values()) {
+            var pd = switch (lvl) {
+                case L4 -> c.perLevelDecisions().l4();
+                case L3 -> c.perLevelDecisions().l3();
+                case L2 -> c.perLevelDecisions().l2();
+                case L1 -> c.perLevelDecisions().l1();
+                case L0 -> c.perLevelDecisions().l0();
+            };
+            JsonObject o = new JsonObject();
+            o.addProperty("disposition", pd.disposition());
+            JsonArray cands = new JsonArray();
+            for (String cand : pd.candidates()) cands.add(cand);
+            o.add("candidates", cands);
+            o.addProperty("rationale", pd.rationale());
+            perLevelDecisions.add(lvl.name(), o);
+        }
+        root.add("perLevelDecisions", perLevelDecisions);
+        JsonObject roles = new JsonObject();
+        roles.addProperty("claimRole", c.roles().claimRole());
+        roles.addProperty("dependencyRole", c.roles().dependencyRole());
+        roles.addProperty("rationale", c.roles().rationale());
+        root.add("roles", roles);
+        if (c.benchmarkPolicy() != null) {
+            JsonObject bp = new JsonObject();
+            bp.addProperty("warmupIterations", c.benchmarkPolicy().warmupIterations());
+            bp.addProperty("measurementIterations", c.benchmarkPolicy().measurementIterations());
+            bp.addProperty("repetitionPolicy", c.benchmarkPolicy().repetitionPolicy());
+            root.add("benchmarkPolicy", bp);
+        }
         JsonObject halo = new JsonObject();
         halo.addProperty("featureReachBlocks", c.halo().featureReachBlocks());
         halo.addProperty("featureReachEvidence", c.halo().featureReachEvidence());
@@ -171,7 +210,32 @@ public final class OracleFixtureWriter {
         long createdAt = root.has("createdAtEpochMs") ? root.get("createdAtEpochMs").getAsLong() : System.currentTimeMillis();
         // Self-describing v3: validate stored geometry matches expected tracer contract but also preserve file's own blockRegion/perLevel for determinism proof
         String actualCaptureStage = root.has("actualCaptureStage") ? root.get("actualCaptureStage").getAsString() : root.get("authoritativeGenerationStage").getAsString();
+        String storedProtocolSha = root.has("protocolSha256") ? root.get("protocolSha256").getAsString() : null;
+        String storedEvidenceKind = root.has("evidenceKind") ? root.get("evidenceKind").getAsString() : null;
+        String storedGenerationOrder = root.has("generationOrder") ? root.get("generationOrder").getAsString() : null;
         OracleContract contract = com.rhythmatician.lodiffusion.oracle.EndChorusTracerContract.contract();
+        // Full provenance integrity: generationOrder, protocolSha, evidenceKind must be present and correct
+        if (storedGenerationOrder == null) throw new IllegalStateException("Fixture missing generationOrder at " + path);
+        if (!OracleContract.EXPECTED_GENERATION_ORDER.equals(storedGenerationOrder)) {
+            throw new IllegalStateException("Fixture generationOrder '" + storedGenerationOrder + "' != expected '" + OracleContract.EXPECTED_GENERATION_ORDER + "' at " + path + " — generation order is acceptance-bearing");
+        }
+        if (storedProtocolSha == null) throw new IllegalStateException("Fixture missing protocolSha256 at " + path + " — fixture not integrity-bound");
+        String currentProtocolSha = contract.protocolSha256();
+        if (!storedProtocolSha.equalsIgnoreCase(currentProtocolSha)) {
+            throw new IllegalStateException("Fixture protocolSha256 " + storedProtocolSha + " != current tracer " + currentProtocolSha + " at " + path + " — provenance out of sync (voxy commit, jar sha, registry, halo evidence, source refs, disposition etc.)");
+        }
+        // Also verify stored protocolSha matches recomputed from stored provenance header (tamper detection)
+        try {
+            String recomputedFromStored = reconstructProtocolShaFromJson(root);
+            if (!storedProtocolSha.equalsIgnoreCase(recomputedFromStored)) {
+                throw new IllegalStateException("Fixture protocolSha256 " + storedProtocolSha + " != recomputed from stored provenance " + recomputedFromStored + " at " + path + " — file header tampered");
+            }
+        } catch (IllegalStateException e) { throw e; } catch (Exception e) {
+            throw new IllegalStateException("Failed to recompute protocolSha from stored header at " + path + ": " + e.getMessage(), e);
+        }
+        if (storedEvidenceKind == null) throw new IllegalStateException("Fixture missing evidenceKind at " + path);
+        OracleFixture.EvidenceKind evidenceKind;
+        try { evidenceKind = OracleFixture.EvidenceKind.valueOf(storedEvidenceKind); } catch (Exception e) { throw new IllegalStateException("Invalid evidenceKind '" + storedEvidenceKind + "' at " + path); }
         // Fail closed on geometry mismatch - immutable oracle provenance must not silently load stale fixture
         if (root.has("blockRegion")) {
             JsonObject brJson = root.getAsJsonObject("blockRegion");
@@ -226,6 +290,85 @@ public final class OracleFixtureWriter {
         if (!computed.equalsIgnoreCase(contentSha256)) {
             throw new IllegalStateException("Fixture contentSha mismatch at " + path + ": file " + contentSha256 + " computed " + computed);
         }
-        return new OracleFixture(contract, map, contentSha256, createdAt, actualCaptureStage);
+        return new OracleFixture(contract, map, contentSha256, createdAt, actualCaptureStage, evidenceKind, storedProtocolSha);
+    }
+
+    private static String reconstructProtocolShaFromJson(JsonObject root) {
+        try {
+            var builder = com.rhythmatician.lodiffusion.oracle.OracleContract.builder()
+                    .schemaVersion(root.get("schemaVersion").getAsString())
+                    .responsibilityId(root.get("responsibilityId").getAsString())
+                    .dimension(root.get("dimension").getAsString())
+                    .frozenWorldgenProfileId(root.get("frozenWorldgenProfileId").getAsString())
+                    .minecraftVersion(root.get("minecraftVersion").getAsString())
+                    .minecraftSourceRevision(root.get("minecraftSourceRevision").getAsString())
+                    .minecraftJarSha256(root.get("minecraftJarSha256").getAsString())
+                    .voxyVersion(root.get("voxyVersion").getAsString())
+                    .voxyCommit(root.get("voxyCommit").getAsString())
+                    .voxyArtifactSha256(root.get("voxyArtifactSha256").getAsString())
+                    .canonicalBlockRegistryVersion(root.get("canonicalBlockRegistryVersion").getAsString())
+                    .canonicalBlockRegistrySha256(root.get("canonicalBlockRegistrySha256").getAsString())
+                    .canonicalBiomeRegistryVersion(root.get("canonicalBiomeRegistryVersion").getAsString())
+                    .canonicalBiomeRegistrySha256(root.get("canonicalBiomeRegistrySha256").getAsString())
+                    .seed(root.get("seed").getAsLong())
+                    .authoritativeGenerationStage(root.get("authoritativeGenerationStage").getAsString())
+                    .fixtureFormatVersion(root.get("fixtureFormatVersion").getAsString())
+                    .provenanceId(root.get("provenanceId").getAsString())
+                    .generationOrder(root.get("generationOrder").getAsString());
+            if (root.has("region")) {
+                var r = root.getAsJsonObject("region");
+                builder.region(new com.rhythmatician.lodiffusion.oracle.OracleContract.RegionSpec(
+                        r.get("originSectionX").getAsInt(), r.get("originSectionY").getAsInt(), r.get("originSectionZ").getAsInt(), r.get("extentSections").getAsInt()));
+            }
+            if (root.has("blockRegion")) {
+                var br = root.getAsJsonObject("blockRegion");
+                builder.blockRegion(new com.rhythmatician.lodiffusion.oracle.OracleContract.BlockRegionSpec(
+                        br.get("originBlockX").getAsInt(), br.get("originBlockY").getAsInt(), br.get("originBlockZ").getAsInt(), br.get("extentBlocks").getAsInt()));
+            }
+            if (root.has("halo")) {
+                var h = root.getAsJsonObject("halo");
+                builder.halo(new com.rhythmatician.lodiffusion.oracle.OracleContract.HaloSpec(
+                        h.get("featureReachBlocks").getAsInt(), h.get("featureReachEvidence").getAsString(), h.get("featureReachSource").getAsString(),
+                        h.get("minecraftGenerationHaloChunks").getAsInt(), h.get("minecraftGenerationHaloEvidence").getAsString(), h.get("minecraftGenerationHaloSource").getAsString(),
+                        h.get("voxyMipHaloBlocks").getAsInt(), h.get("voxyMipHaloEvidence").getAsString(), h.get("voxyMipHaloSource").getAsString(),
+                        h.get("combinedHaloBlocks").getAsInt()));
+            }
+            if (root.has("inspectedMinecraftReferences")) {
+                var arr = root.getAsJsonArray("inspectedMinecraftReferences");
+                var list = new java.util.ArrayList<String>();
+                for (var e : arr) list.add(e.getAsString());
+                builder.inspectedMinecraftReferences(list);
+            }
+            if (root.has("inspectedVoxyReferences")) {
+                var arr = root.getAsJsonArray("inspectedVoxyReferences");
+                var list = new java.util.ArrayList<String>();
+                for (var e : arr) list.add(e.getAsString());
+                builder.inspectedVoxyReferences(list);
+            }
+            if (root.has("perLevelDecisions")) {
+                var pld = root.getAsJsonObject("perLevelDecisions");
+                var map = new java.util.HashMap<com.rhythmatician.lodiffusion.voxy.Level, com.rhythmatician.lodiffusion.oracle.OracleContract.PartitionDecision>();
+                for (var lvl : com.rhythmatician.lodiffusion.voxy.Level.values()) {
+                    if (!pld.has(lvl.name())) continue;
+                    var o = pld.getAsJsonObject(lvl.name());
+                    var cands = new java.util.ArrayList<String>();
+                    for (var ce : o.getAsJsonArray("candidates")) cands.add(ce.getAsString());
+                    var pd = new com.rhythmatician.lodiffusion.oracle.OracleContract.PartitionDecision(o.get("disposition").getAsString(), cands, o.get("rationale").getAsString());
+                    map.put(lvl, pd);
+                }
+                builder.perLevelDecisions(new com.rhythmatician.lodiffusion.oracle.OracleContract.PerLevelPartitionDecisions(
+                        map.get(com.rhythmatician.lodiffusion.voxy.Level.L4), map.get(com.rhythmatician.lodiffusion.voxy.Level.L3), map.get(com.rhythmatician.lodiffusion.voxy.Level.L2), map.get(com.rhythmatician.lodiffusion.voxy.Level.L1), map.get(com.rhythmatician.lodiffusion.voxy.Level.L0)));
+            }
+            if (root.has("roles")) {
+                var r = root.getAsJsonObject("roles");
+                builder.roles(new com.rhythmatician.lodiffusion.oracle.OracleContract.ClaimDependencyRoles(r.get("claimRole").getAsString(), r.get("dependencyRole").getAsString(), r.get("rationale").getAsString()));
+            }
+            if (root.has("benchmarkPolicy")) {
+                var bp = root.getAsJsonObject("benchmarkPolicy");
+                builder.benchmarkPolicy(new com.rhythmatician.lodiffusion.oracle.OracleContract.BenchmarkPolicy(bp.get("warmupIterations").getAsInt(), bp.get("measurementIterations").getAsInt(), bp.get("repetitionPolicy").getAsString()));
+            }
+            var reconstructed = builder.build();
+            return reconstructed.protocolSha256();
+        } catch (Exception e) { throw new IllegalStateException("reconstruct failed: " + e.getMessage(), e); }
     }
 }
