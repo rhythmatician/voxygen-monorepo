@@ -13,15 +13,19 @@ import org.junit.jupiter.api.Test;
 /**
  * Boundary proof against the REAL double-pristine fixture.
  *
- * <p>Distinguishes "fixture had sufficient halo (1296 rect, 25 blocks)" which
- * is proven by ingest_ack, from "we observed a real feature crossing a
- * chunk/WorldSection boundary" which requires inspecting voxel positions.
+ * <p>What is proven here: protocol coverage (L4 36×36=1296 chunk rect derived
+ * from 512-block WorldSection + halo 25) and successful ingest
+ * (1296/1296 chunks, 20736/20736 sections, ingest_ack success:true) and
+ * edge-adjacent chorus within the 32³ WorldSection volumes. What is
+ * NOT proven: that the 25-block halo was "required" for this ROI
+ * (would need differential experiment with/without halo) nor that a real
+ * feature crossing a chunk/WorldSection boundary has been exercised
+ * (would need a plant with voxels on both sides of an internal boundary
+ * or a dedicated boundary fixture).
  *
- * <p>This test loads the real fixture and checks for chorus that is
- * adjacent to or straddles a chunk or WorldSection boundary within the
- * 32^3 volume. If no natural boundary-crossing chorus exists in this
- * particular region, the test documents that and still passes on halo
- * sufficiency, but logs the need for a dedicated boundary fixture.
+ * <p>This test records protocol coverage + ingest + edge-adjacent chorus and
+ * leaves "real cross-boundary feature exercised" unsatisfied until a
+ * dedicated boundary fixture or differential experiment demonstrates it.
  */
 class RealFixtureBoundaryProofTest {
 
@@ -52,11 +56,10 @@ class RealFixtureBoundaryProofTest {
         assertEquals(1, c.halo().voxyMipHaloBlocks());
         int[] rect = c.blockRegionOrDerived().chunkRectWithHalo(25);
         int count = (rect[2] - rect[0] + 1) * (rect[3] - rect[1] + 1);
-        // For L0 we prove 6x6=36 for small region, but for L4-derived the ingest was 36x36=1296
-        // The fixture's l4HaloCompleteChunkRect is the authoritative 1296
-        // Here we at least prove halo math is consistent
         assertTrue(count > 0);
-        System.out.printf("HALO rect=%d,%d -> %d,%d count=%d (L0 small) l4Rect=36x36=1296 proven by ingest_ack%n",
+        // Protocol coverage: L4 WorldSection 512 blocks + halo 25 => 562×562 blocks => 36×36 chunks = 1296
+        // The 1296 is proven by the successful ingest_ack (1296/1296, 20736/20736), not by edge occupancy alone.
+        System.out.printf("HALO protocol coverage: rect=%d,%d -> %d,%d count=%d (L0 small) l4Rect=36x36=1296 proven by ingest_ack 1296/1296%n",
                 rect[0], rect[1], rect[2], rect[3], count);
     }
 
@@ -109,20 +112,28 @@ class RealFixtureBoundaryProofTest {
             System.out.printf("BOUNDARY %s total=%d volEdge=%d%n", lvl, countChorus(v), ve);
         }
 
-        // Assertions: halo sufficiency is already proven, but we also document
-        // whether this particular region naturally contains a boundary-adjacent feature.
-        // The real fixture DOES have edge chorus (checked via python before: L0 205 total, some at edges)
-        // We assert at least one of these is >0 to prove we observed a real boundary case.
-        // If this fails, it means this region's chorus is interior-only and we need a dedicated boundary fixture.
+        // Assertions: what IS proven vs what is NOT.
+        // Proven: protocol coverage (36x36 rect, 25-block halo) + successful ingest (1296/1296) + edge-adjacent chorus.
+        // Not proven: that the 25-block halo was required for this ROI (needs differential experiment) nor that a
+        // real feature crossing a chunk/WorldSection boundary has been exercised (needs plant with voxels on both
+        // sides of an internal boundary — crossX15/16 or crossZ15/16 > 0). That remains UNSATISFIED.
         assertTrue(totalL0 > 0, "L0 must have chorus (proven: 205)");
-        // At least one level should have volume-edge chorus — real Voxy WorldSection boundary.
-        // For L0, worldSection is 32 blocks, so volume edge IS WorldSection edge.
-        // For L1, voxel 2 blocks, volume covers 2 WorldSections in each axis? Actually per-Level origins are independent,
-        // but the 32^3 at L1 covers 64 blocks, which spans 2 L0 WorldSections.
-        // The test is intentionally lenient: we require at least chunkEdge >0 OR volumeEdge >0
+        // Edge-adjacent chorus IS proven in this ROI (61-72 at volEdge, 76 at chunkEdge for L0).
+        // This demonstrates the ingest captured features near WorldSection edges, but does NOT prove a single
+        // plant straddles an internal chunk boundary — that requires crossX15/16 > 0, which is 0 here and
+        // is intentionally left unsatisfied until a dedicated boundary fixture or differential experiment.
         assertTrue(chunkEdgeChorus > 0 || volumeEdgeChorus > 0,
-                "Real fixture should have at least one chorus voxel near chunk or volume edge; halo proven but boundary crossing not observed in this ROI — consider dedicated boundary fixture. "
-                        + "L0 total=" + totalL0 + " chunkEdge=" + chunkEdgeChorus + " volEdge=" + volumeEdgeChorus);
+                "Real fixture should have at least one chorus voxel near chunk or volume edge (proven: edge-adjacent). "
+                        + "This proves protocol coverage + ingest + edge-adjacent chorus, NOT that halo was required "
+                        + "nor that a cross-boundary feature was exercised. L0 total=" + totalL0
+                        + " chunkEdge=" + chunkEdgeChorus + " volEdge=" + volumeEdgeChorus
+                        + " crossX15/16=" + crossChunkAdj + " crossZ15/16=" + crossChunkZAdj
+                        + " — real cross-boundary feature remains UNSATISFIED.");
+        // Document explicitly that cross-boundary is unsatisfied — do not assert it, just log.
+        if (crossChunkAdj == 0 && crossChunkZAdj == 0) {
+            System.out.println("BOUNDARY: real cross-boundary feature (straddling x=15/16 or z=15/16) UNSATISFIED in this ROI — "
+                    + "dedicated boundary fixture or differential experiment required for #220 high-fidelity path.");
+        }
     }
 
     private static int countChorus(VoxelVolume v) {

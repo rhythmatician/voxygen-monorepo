@@ -106,24 +106,16 @@ class RealFixtureGuardrailTest {
                 "synthetic SHA must differ from real double-pristine SHA — otherwise synthetic could masquerade as real");
         assertNotEquals(real.contentSha256(), "0000000000000000000000000000000000000000000000000000000000000000");
 
-        // Parity-without-provenance: a test that asserts synthetic==real must fail.
-        // Here we prove verifier distinguishes them: real volume vs synthetic volume at same Level/origin must mismatch
-        for (Level lvl : new Level[]{Level.L0, Level.L1}) {
+        // Parity-without-provenance: a test that asserts synthetic==real must fail at ALL Levels.
+        // Here we prove verifier distinguishes them: real volume vs synthetic volume at same Level/origin must mismatch.
+        for (Level lvl : Level.values()) {
             var per = c.blockRegionOrDerived().perLevelWorldSectionOrigin(lvl.value());
             SectionPos origin = new SectionPos(per.wsX() * lvl.regionSections(), per.wsY() * lvl.regionSections(), per.wsZ() * lvl.regionSections());
             VoxelVolume realVol = real.volume(lvl);
-            // If we mistakenly use synthetic as expected, real candidate would fail against synthetic fixture
             var r = CandidateVerifier.verify(lvl, origin, realVol, synthetic);
-            // Real vs synthetic must NOT be exact match (otherwise synthetic would be parity)
-            // We don't assert which direction, just that they are not trivially equal
-            // For L0, real has 205 chorus vs synthetic has different distribution; for L4 real 134 vs synthetic 0
-            if (lvl == Level.L4) {
-                assertTrue(r.failed(), "L4 real (134) vs synthetic (0) must fail — proves synthetic not parity");
-            } else {
-                // For L0 we expect mismatch too, but don't hard-fail if by chance they match (unlikely)
-                // Instead we assert the SHAs differ, which already proves non-parity
-                assertNotEquals(real.contentSha256(), synthetic.contentSha256());
-            }
+            assertTrue(r.failed(),
+                    "Real vs synthetic must fail at " + lvl + " — synthetic not parity, was: " + r.detail()
+                            + " (real chorus " + countChorus(realVol) + " vs synthetic " + countChorus(synthetic.volume(lvl)) + ")");
         }
     }
 
@@ -134,5 +126,14 @@ class RealFixtureGuardrailTest {
         assertEquals("minecraft:the_end", f.contract().dimension());
         assertEquals(25, f.contract().halo().combinedHaloBlocks());
         assertEquals("FEATURES", f.contract().authoritativeGenerationStage());
+    }
+
+    private static int countChorus(VoxelVolume v) {
+        int c = 0;
+        for (int y = 0; y < 32; y++) for (int z = 0; z < 32; z++) for (int x = 0; x < 32; x++) {
+            int id = v.blockId(x, y, z);
+            if (id == 196 || id == 197) c++;
+        }
+        return c;
     }
 }
