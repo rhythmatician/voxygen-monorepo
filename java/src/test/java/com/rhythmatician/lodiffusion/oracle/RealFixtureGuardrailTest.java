@@ -57,10 +57,13 @@ class RealFixtureGuardrailTest {
         assertEquals(EndChorusTracerContract.contract().provenanceId(), f.provenanceId());
         // Content SHA must match recomputed — proves not synthetic
         assertEquals(OracleFixture.computeContentSha256(f.volumesView()), f.contentSha256());
-        // Full provenance binding: protocolSha, generationOrder, evidenceKind
-        assertEquals(EndChorusTracerContract.contract().protocolSha256(), f.protocolSha256(), "protocolSha must match current tracer contract");
+        // Immutable capture protocol + evidence integrity binding
+        assertEquals(EndChorusTracerContract.contract().captureProtocolSha256(), f.captureProtocolSha256(), "captureProtocolSha must match current tracer contract (immutable)");
+        assertEquals(EndChorusTracerContract.contract().protocolSha256(), f.protocolSha256(), "full protocolSha (legacy) must also match");
+        assertEquals(OracleFixture.computeEvidenceIntegritySha256(f.captureProtocolSha256(), f.contentSha256(), f.actualCaptureStage(), f.evidenceKind()), f.evidenceIntegritySha256(), "evidenceIntegrity must bind captureProtocol+content+stage+kind");
         assertEquals(OracleContract.EXPECTED_GENERATION_ORDER, f.contract().generationOrder(), "generationOrder must be squared distance -> X -> Z");
         assertEquals(OracleFixture.EvidenceKind.REAL_CAPTURE, f.evidenceKind(), "real fixture must be REAL_CAPTURE");
+        assertEquals("FULL", f.actualCaptureStage(), "actualCaptureStage must be FULL for this fixture");
     }
 
     @Test
@@ -75,8 +78,8 @@ class RealFixtureGuardrailTest {
         assertNotEquals(json, corrupted, "must have replaced SHA");
         Files.writeString(copy, corrupted);
         var ex = assertThrows(IllegalStateException.class, () -> OracleFixtureWriter.read(copy));
-        assertTrue(ex.getMessage().contains("contentSha mismatch") || ex.getMessage().contains("contentSha"),
-                "corrupt SHA must be detected, was: " + ex.getMessage());
+        assertTrue(ex.getMessage().toLowerCase().contains("contentsha") || ex.getMessage().toLowerCase().contains("evidenceintegrity") || ex.getMessage().toLowerCase().contains("evidence"),
+                "corrupt SHA must be detected via contentSha or evidenceIntegrity, was: " + ex.getMessage());
     }
 
     @Test
@@ -95,16 +98,60 @@ class RealFixtureGuardrailTest {
     void corruptProtocolShaFailsFast(@TempDir Path tmp) throws Exception {
         Path real = realFixturePath();
         String json = Files.readString(real);
-        // Corrupt protocolSha256 (change one hex digit)
-        String goodSha = EndChorusTracerContract.contract().protocolSha256();
+        // Corrupt captureProtocolSha256 (immutable) — also corrupts legacy protocolSha for backwards compat
+        String goodSha = EndChorusTracerContract.contract().captureProtocolSha256();
         String badSha = "0" + goodSha.substring(1);
         assertNotEquals(goodSha, badSha);
         String corrupted = json.replace(goodSha, badSha);
         Path copy = tmp.resolve("corrupt-protocol.json");
         Files.writeString(copy, corrupted);
         var ex = assertThrows(IllegalStateException.class, () -> OracleFixtureWriter.read(copy));
-        assertTrue(ex.getMessage().toLowerCase().contains("protocolsha") || ex.getMessage().toLowerCase().contains("protocol"),
-                "corrupt protocolSha must be detected, was: " + ex.getMessage());
+        assertTrue(ex.getMessage().toLowerCase().contains("captureprotocol") || ex.getMessage().toLowerCase().contains("protocol"),
+                "corrupt captureProtocolSha must be detected, was: " + ex.getMessage());
+    }
+
+    @Test
+    void corruptEvidenceIntegrityFailsFast(@TempDir Path tmp) throws Exception {
+        Path real = realFixturePath();
+        String json = Files.readString(real);
+        com.google.gson.JsonObject root = com.google.gson.JsonParser.parseString(json).getAsJsonObject();
+        String good = root.get("evidenceIntegritySha256").getAsString();
+        String bad = "0" + good.substring(1);
+        root.addProperty("evidenceIntegritySha256", bad);
+        String corrupted = new com.google.gson.GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create().toJson(root);
+        Path copy = tmp.resolve("corrupt-integrity.json");
+        Files.writeString(copy, corrupted);
+        var ex = assertThrows(IllegalStateException.class, () -> OracleFixtureWriter.read(copy));
+        assertTrue(ex.getMessage().toLowerCase().contains("evidenceintegrity") || ex.getMessage().toLowerCase().contains("evidence"),
+                "corrupt evidenceIntegrity must be detected, was: " + ex.getMessage());
+    }
+
+    @Test
+    void corruptActualCaptureStageFailsFast(@TempDir Path tmp) throws Exception {
+        Path real = realFixturePath();
+        String json = Files.readString(real);
+        com.google.gson.JsonObject root = com.google.gson.JsonParser.parseString(json).getAsJsonObject();
+        root.addProperty("actualCaptureStage", "FEATURES");
+        String corrupted = new com.google.gson.GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create().toJson(root);
+        Path copy = tmp.resolve("corrupt-stage.json");
+        Files.writeString(copy, corrupted);
+        var ex = assertThrows(IllegalStateException.class, () -> OracleFixtureWriter.read(copy));
+        assertTrue(ex.getMessage().toLowerCase().contains("evidenceintegrity") || ex.getMessage().toLowerCase().contains("actualcapturestage") || ex.getMessage().toLowerCase().contains("evidence"),
+                "corrupt actualCaptureStage must fail evidence integrity, was: " + ex.getMessage());
+    }
+
+    @Test
+    void corruptEvidenceKindFailsFast(@TempDir Path tmp) throws Exception {
+        Path real = realFixturePath();
+        String json = Files.readString(real);
+        com.google.gson.JsonObject root = com.google.gson.JsonParser.parseString(json).getAsJsonObject();
+        root.addProperty("evidenceKind", "SYNTHETIC_TEST");
+        String corrupted = new com.google.gson.GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create().toJson(root);
+        Path copy = tmp.resolve("corrupt-kind.json");
+        Files.writeString(copy, corrupted);
+        var ex = assertThrows(IllegalStateException.class, () -> OracleFixtureWriter.read(copy));
+        assertTrue(ex.getMessage().toLowerCase().contains("evidenceintegrity") || ex.getMessage().toLowerCase().contains("evidencekind") || ex.getMessage().toLowerCase().contains("evidence"),
+                "corrupt evidenceKind must fail evidence integrity, was: " + ex.getMessage());
     }
 
     @Test
@@ -130,14 +177,14 @@ class RealFixtureGuardrailTest {
         Path real = realFixturePath();
         OracleContract c = EndChorusTracerContract.contract();
         String json = Files.readString(real);
-        // Change voxyArtifactSha256 but keep old protocolSha — must fail via protocolSha mismatch (tamper detection)
+        // Change voxyArtifactSha256 but keep old captureProtocolSha — must fail via captureProtocolSha mismatch (tamper detection, immutable)
         String corrupted = json.replace(c.voxyArtifactSha256(), "0000000000000000000000000000000000000000000000000000000000000000");
         assertNotEquals(json, corrupted);
         Path copy = tmp.resolve("tampered-voxy.json");
         Files.writeString(copy, corrupted);
         var ex = assertThrows(IllegalStateException.class, () -> OracleFixtureWriter.read(copy));
-        assertTrue(ex.getMessage().toLowerCase().contains("protocolsha") || ex.getMessage().toLowerCase().contains("protocol"),
-                "tampered voxyArtifactSha must be detected via protocolSha, was: " + ex.getMessage());
+        assertTrue(ex.getMessage().toLowerCase().contains("captureprotocol") || ex.getMessage().toLowerCase().contains("protocol"),
+                "tampered voxyArtifactSha must be detected via captureProtocolSha, was: " + ex.getMessage());
     }
 
     @Test
@@ -159,10 +206,11 @@ class RealFixtureGuardrailTest {
                 "synthetic SHA must differ from real double-pristine SHA — otherwise synthetic could masquerade as real");
         assertNotEquals(real.contentSha256(), "0000000000000000000000000000000000000000000000000000000000000000");
 
-        // Typed evidence: real is REAL_CAPTURE, synthetic is SYNTHETIC_TEST — same provenanceId and protocolSha but different evidenceKind
+        // Typed evidence: real is REAL_CAPTURE, synthetic is SYNTHETIC_TEST — same provenanceId and captureProtocolSha but different evidenceKind/content
         assertEquals(OracleFixture.EvidenceKind.REAL_CAPTURE, real.evidenceKind(), "real fixture must be REAL_CAPTURE");
         assertEquals(OracleFixture.EvidenceKind.SYNTHETIC_TEST, synthetic.evidenceKind(), "synthetic must be SYNTHETIC_TEST");
-        assertEquals(real.protocolSha256(), synthetic.protocolSha256(), "same contract => same protocolSha, but evidenceKind distinguishes");
+        assertEquals(real.captureProtocolSha256(), synthetic.captureProtocolSha256(), "same contract => same captureProtocolSha, but evidenceKind/content distinguishes");
+        assertNotEquals(real.evidenceIntegritySha256(), synthetic.evidenceIntegritySha256(), "evidenceIntegrity must differ (content/kind)");
         // Parity-without-provenance: a test that asserts synthetic==real must fail at ALL Levels.
         // Here we prove verifier distinguishes them in two ways:
         // 1) Strict parity verification must reject synthetic evidenceKind (typed guard)
