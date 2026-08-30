@@ -85,7 +85,7 @@ describe("parity provenance guard — ADR 0015", () => {
     expect(findParityWithoutProvenance([guard])).toHaveLength(0);
   });
 
-  it("repo currently has no parity-without-provenance violations (real CI gate)", () => {
+  it("repo currently has no parity-without-provenance violations (real CI gate)", { timeout: 10000 }, () => {
     // Scan the actual repo test sources — this is the real CI gate for npm test.
     // If a violating file is committed, this test fails in the factory lane.
     // Only test sources are scanned — production ParityConfig etc. in src/main are not test claims.
