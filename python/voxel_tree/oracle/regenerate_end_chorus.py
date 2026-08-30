@@ -582,6 +582,65 @@ def _start_oracle_client_via_gradlew() -> bool:
     import subprocess
     import os as _os2
 
+    # Pre-launch cleanup: stale client may hold lock on processedMods/dataharvester jar
+    # causing Fabric remap FileSystemException. Try to terminate tracked client and
+    # clean stale lock without killing the oracle server (which is also java.exe).
+    try:
+        if _ORACLE_CLIENT_PROC is not None and _ORACLE_CLIENT_PROC.poll() is None:
+            print(f"[oracle] Terminating stale tracked client pid={_ORACLE_CLIENT_PROC.pid}")
+            _ORACLE_CLIENT_PROC.terminate()
+            time.sleep(3)
+    except Exception:
+        pass
+    # Clean stale processedMods lock that survives killed process; if old untracked
+    # client still holds it, deletion will fail and we will wait longer for it to exit.
+    try:
+        _pm = java_dir / "run" / ".fabric" / "processedMods"
+        if _pm.exists():
+            for _p in _pm.glob("dataharvester*.jar"):
+                try:
+                    _p.unlink()
+                    print(f"[oracle] Cleaned stale lock {_p}")
+                except Exception as e:
+                    print(f"[oracle] Stale lock still held {_p}: {e}", file=sys.stderr)
+                    # Try selective kill of old runClient via jps if available
+                    try:
+                        import subprocess as _sub2
+
+                        _jps = _pl3.Path(
+                            r"C:\Program Files\Eclipse Adoptium\jdk-25.0.4.101-hotspot\bin\jps.exe"
+                        )
+                        if not _jps.exists():
+                            _jps = _pl3.Path(
+                                r"C:\Program Files\Eclipse Adoptium\jdk-21.0.7.6-hotspot\bin\jps.exe"
+                            )
+                        if _jps.exists():
+                            _out = _sub2.run(
+                                [str(_jps), "-l"], capture_output=True, text=True, timeout=5
+                            )
+                            for _line in _out.stdout.splitlines():
+                                # jps output: "<pid> <mainClass>" ; runClient main is org.gradle.launcher.GradleMain or KnotClient?
+                                if "runClient" in _line or "GradleMain" in _line:
+                                    _pid = _line.split()[0]
+                                    print(f"[oracle] Killing stale Gradle client pid={_pid}")
+                                    _sub2.run(
+                                        ["taskkill", "/F", "/PID", _pid],
+                                        stdout=subprocess.DEVNULL,
+                                        stderr=subprocess.DEVNULL,
+                                        timeout=5,
+                                    )
+                            time.sleep(2)
+                            # retry delete
+                            try:
+                                _p.unlink()
+                                print(f"[oracle] Cleaned stale lock after kill {_p}")
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
     _jdk25_c = _pl3.Path(r"C:\Program Files\Eclipse Adoptium\jdk-25.0.4.101-hotspot")
     _env2 = dict(_os2.environ)
     if _jdk25_c.exists():
@@ -997,7 +1056,22 @@ def _wait_for_done(timeout: int = 300) -> dict:
     deadline = time.time() + timeout
     while time.time() < deadline:
         if DONE_PATH.exists():
-            data = json.loads(DONE_PATH.read_text())
+            try:
+                text = DONE_PATH.read_text(encoding="utf-8")
+                # Guard against partial write (client may still be flushing truncated JSON)
+                if not text.strip().endswith("}"):
+                    time.sleep(1)
+                    continue
+                data = json.loads(text)
+            except json.JSONDecodeError as e:
+                # Partial write race - wait and retry
+                print(f"[oracle] waiting for complete done file (json error: {e})", file=sys.stderr)
+                time.sleep(1)
+                continue
+            except Exception as e:
+                print(f"[oracle] done read failed: {e}", file=sys.stderr)
+                time.sleep(1)
+                continue
             if "error" in data:
                 print(f"[oracle] Capture failed: {data['error']}", file=sys.stderr)
                 sys.exit(1)

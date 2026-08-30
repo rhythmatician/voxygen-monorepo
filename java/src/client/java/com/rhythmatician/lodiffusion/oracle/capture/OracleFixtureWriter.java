@@ -34,7 +34,7 @@ public final class OracleFixtureWriter {
     private OracleFixtureWriter() {}
 
     public static Path defaultFixturePath(OracleContract contract) {
-        return Path.of("java", "oracle-fixtures", contract.provenanceId() + ".json");
+        return Path.of("../oracle-fixtures", contract.provenanceId() + ".json");
     }
 
     public static void write(OracleFixture fixture, Path path) throws IOException {
