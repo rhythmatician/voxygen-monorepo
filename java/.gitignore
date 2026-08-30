@@ -134,6 +134,7 @@ wandb/
 !fabric.mod.json
 !*.mixins.json
 !lodiffusion.defaults.json
+!oracle-fixtures/*.json
 *.pkl
 *.pickle
 *.npz
