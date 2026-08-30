@@ -1,5 +1,9 @@
 # AGENTS.md
 
+## Exploration
+
+Use /graphify before grep. Check any project root for graphify_out before beginning exploration of that project.
+
 ## Coding
 
 Use YAGNI and DRY principles.
