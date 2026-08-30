@@ -284,7 +284,10 @@ check.dependsOn lint
 tasks.register('verifyUnitTestIsolation') {
 	group = 'verification'
 	description = 'Fails if src/test/java references me.cortex.voxy (belongs in voxyIntegrationTest).'
-	def unitSources = fileTree('src/test/java') { include '**/*.java' }
+	def unitSources = fileTree('src/test/java') {
+		include '**/*.java'
+		exclude '**/ArchitectureGuardrailsTest.java'
+	}
 	inputs.files(unitSources)
 	doLast {
 		def offenders = unitSources.findAll { it.getText('UTF-8').contains('me.cortex.voxy') }

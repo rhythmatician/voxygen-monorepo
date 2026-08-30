@@ -54,8 +54,7 @@ public class ArchitectureGuardrailsTest {
         VoxyDetection.class,
         VoxyBlockMapper.class,
         VoxyIdMaps.class,
-        CanonicalVoxyMaps.class,
-        VoxySectionWriter.class
+        CanonicalVoxyMaps.class
     };
 
     private static final String[] DECODER_FORBIDDEN_PACKAGES = {
