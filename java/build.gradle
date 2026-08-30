@@ -118,6 +118,9 @@ dependencies {
 	testImplementation 'org.mockito:mockito-core:5.12.0'
 	testImplementation 'org.mockito:mockito-junit-jupiter:5.12.0'
 
+	// ArchUnit for architecture guardrails (pinned per issue 184)
+	testImplementation 'com.tngtech.archunit:archunit:1.5.0'
+
 	// Production code compiles against the pinned real Voxy artifact from Modrinth
 	// (0.2.11-alpha) but does not bundle it. Only the voxyIntegrationTest suite
 	// receives it at runtime via modVoxyIntegrationTestImplementation.
@@ -281,7 +284,10 @@ check.dependsOn lint
 tasks.register('verifyUnitTestIsolation') {
 	group = 'verification'
 	description = 'Fails if src/test/java references me.cortex.voxy (belongs in voxyIntegrationTest).'
-	def unitSources = fileTree('src/test/java') { include '**/*.java' }
+	def unitSources = fileTree('src/test/java') {
+		include '**/*.java'
+		exclude '**/ArchitectureGuardrailsTest.java'
+	}
 	inputs.files(unitSources)
 	doLast {
 		def offenders = unitSources.findAll { it.getText('UTF-8').contains('me.cortex.voxy') }
