@@ -25,6 +25,9 @@ const REAL_CAPTURE_MARKERS = [
   "OracleFixtureWriter.read",
   "VanillaVoxyOracle",
   "protocolSha256",
+  "captureProtocolSha256",
+  "evidenceIntegritySha256",
+  "evidenceIntegrity",
 ] as const;
 const SYNTHETIC_TAINT_MARKERS = [
   "SYNTHETIC_TEST",

@@ -48,7 +48,10 @@ class ParityProvenanceGuardTest {
             "REAL_CAPTURE",
             "OracleFixtureWriter.read",
             "VanillaVoxyOracle",
-            "protocolSha256"
+            "protocolSha256",
+            "captureProtocolSha256",
+            "evidenceIntegritySha256",
+            "evidenceIntegrity"
     );
     private static final List<String> SYNTHETIC_TAINT_MARKERS = List.of(
             "SYNTHETIC_TEST",
