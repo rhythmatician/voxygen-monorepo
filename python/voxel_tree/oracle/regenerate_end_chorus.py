@@ -619,10 +619,17 @@ def _start_oracle_client_via_gradlew() -> bool:
                                 [str(_jps), "-l"], capture_output=True, text=True, timeout=5
                             )
                             for _line in _out.stdout.splitlines():
-                                # jps output: "<pid> <mainClass>" ; runClient main is org.gradle.launcher.GradleMain or KnotClient?
-                                if "runClient" in _line or "GradleMain" in _line:
+                                # jps main for client is devlaunchinjector.Main (KnotClient), for gradle is GradleMain/GradleDaemon
+                                # Server is C:...fabric-server...jar - must NOT kill
+                                if (
+                                    "devlaunchinjector" in _line
+                                    or "GradleMain" in _line
+                                    or "GradleDaemon" in _line
+                                ) and "fabric-server" not in _line:
                                     _pid = _line.split()[0]
-                                    print(f"[oracle] Killing stale Gradle client pid={_pid}")
+                                    print(
+                                        f"[oracle] Killing stale client/gradle pid={_pid} ({_line})"
+                                    )
                                     _sub2.run(
                                         ["taskkill", "/F", "/PID", _pid],
                                         stdout=subprocess.DEVNULL,
