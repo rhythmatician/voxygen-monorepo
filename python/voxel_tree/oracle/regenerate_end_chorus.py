@@ -129,6 +129,15 @@ def _patch_server_properties_for_oracle() -> None:
         for k, v in remaining.items():
             new_lines.append(f"{k}={v}")
         _sp.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+    # Write oracle mode marker for DataHarvester SERVER_STARTED freeze invariant (Path.of("config/oracle_mode.json") in mod)
+    try:
+        marker_path = RUNTIME_DIR / "config" / "oracle_mode.json"
+        marker_path.parent.mkdir(parents=True, exist_ok=True)
+        import json as _jm
+        _jm.dump({"level_name": ORACLE_ROLE["level_name"], "oracle_end_chorus": True, "seed": ORACLE_ROLE["seed"]}, marker_path.open("w", encoding="utf-8"), indent=2)
+        print(f"[oracle] Wrote oracle_mode marker {marker_path}")
+    except Exception as e:
+        print(f"[oracle] Failed to write oracle_mode marker: {e}", file=sys.stderr)
     rect = _l4_chunk_rect_with_halo(ORACLE_ROLE["blockRegion"], ORACLE_ROLE["halo"]["combinedHaloBlocks"])
     print(f"[oracle] Patched server.properties for role {ORACLE_ROLE['name']}: seed={ORACLE_ROLE['seed']} level={ORACLE_ROLE['level_name']} structures=false blockRegion={ORACLE_ROLE['blockRegion']} L4 chunkRect={rect} ({(rect[2]-rect[0]+1)*(rect[3]-rect[1]+1)} chunks)")
 
@@ -177,6 +186,14 @@ def _reset_disposable_world() -> None:
     for p in [REQUEST_PATH, DONE_PATH, INGEST_ACK_PATH]:
         if p.exists():
             p.unlink()
+    # Clean old oracle receipts/markers so next server start writes fresh receipt
+    for rp in [RUNTIME_DIR / "config" / "oracle_startup_receipt.json", RUNTIME_DIR / "oracle_startup_receipt.json", Path("config/oracle_startup_receipt.json"), Path("oracle_startup_receipt.json"), RUNTIME_DIR / "config" / "oracle_mode.json"]:
+        try:
+            if rp.exists():
+                rp.unlink()
+                print(f"[oracle] Cleaned old {rp}")
+        except Exception:
+            pass
 
 
 def _start_oracle_server_via_manager() -> bool:
@@ -253,11 +270,59 @@ def _wait_for_rcon(timeout: int = 120) -> bool:
             with RconClient(host, port, password, timeout=2) as rc:
                 rc.command("list")
             print(f"[oracle] RCON ready at {host}:{port}")
+            # Verify startup receipt fail-closed (freeze before first tick)
+            try:
+                _verify_oracle_startup_receipt(timeout=30)
+            except SystemExit:
+                raise
+            except Exception as e:
+                print(f"[oracle] receipt verification exception: {e}", file=sys.stderr)
+                import sys as _sys3
+                _sys3.exit(1)
             return True
         except Exception:
             time.sleep(2)
     print(f"[oracle] RCON not ready after {timeout}s at {host}:{port}", file=sys.stderr)
     return False
+
+def _verify_oracle_startup_receipt(timeout: int = 30) -> None:
+    """Fail-closed check that SERVER_STARTED freeze invariant was applied before first tick."""
+    import json as _j
+    deadline = time.time() + timeout
+    receipt_path = RUNTIME_DIR / "config" / "oracle_startup_receipt.json"
+    alt_path = RUNTIME_DIR / "oracle_startup_receipt.json"
+    last_err = None
+    while time.time() < deadline:
+        for rp in (receipt_path, alt_path, Path("config/oracle_startup_receipt.json"), Path("oracle_startup_receipt.json")):
+            if rp.exists():
+                try:
+                    data = _j.loads(rp.read_text(encoding="utf-8"))
+                    frozen = data.get("simulationFrozenBeforeFirstTick")
+                    rts = data.get("randomTickSpeed")
+                    tick = data.get("tickCountAtFreeze")
+                    print(f"[oracle] Startup receipt at {rp}: {data}")
+                    if frozen is not True:
+                        last_err = f"simulationFrozenBeforeFirstTick != true ({frozen})"
+                    elif rts != 0:
+                        last_err = f"randomTickSpeed != 0 ({rts})"
+                    elif tick is None or tick != 0:
+                        if tick != 0:
+                            print(f"[oracle] WARN: tickCountAtFreeze={tick} (expected 0) - continuing if frozen and rts ok", file=sys.stderr)
+                    if last_err:
+                        print(f"[oracle] ERROR: Oracle invariant receipt invalid: {last_err} data={data}", file=sys.stderr)
+                        import sys as _sys
+                        _sys.exit(1)
+                    print(f"[oracle] Oracle startup invariant VERIFIED: frozen before first tick, randomTickSpeed=0, tickCount={tick}")
+                    return
+                except SystemExit:
+                    raise
+                except Exception as e:
+                    last_err = str(e)
+                    print(f"[oracle] receipt read failed {rp}: {e}", file=sys.stderr)
+        time.sleep(1)
+    print(f"[oracle] ERROR: No valid oracle startup receipt found at {receipt_path} within {timeout}s (fail-closed). Ensure DataHarvester jar with SERVER_STARTED freeze is installed. Last error: {last_err}", file=sys.stderr)
+    import sys as _sys2
+    _sys2.exit(1)
 
 def _cheap_chorus_scan() -> None:
     """Exact preflight chorus check: force-load chunks covering 32^3 tracer ROI, then destructively /fill replace count across entire ROI."""
@@ -365,6 +430,12 @@ def _run_ingest_via_rcon(radius_chunks: int | None = None) -> None:
     expected_chunks = (maxCx - minCx + 1) * (maxCz - minCz + 1)
     # Ensure client is in The End and away from target to avoid simultaneous client chunk loading interfering with oracle
     with RconClient(host, port, password, timeout=10) as rc:
+        # Put player in spectator to prevent fall damage / hunger / unwanted chunk ticks while AFK
+        try:
+            gm_resp = rc.command("gamemode spectator @a")
+            print(f"[oracle] Set spectator mode: {gm_resp}")
+        except Exception as e:
+            print(f"[oracle] gamemode spectator failed: {e}")
         tp_resp = rc.command("execute as @a in minecraft:the_end run tp @s 0 80 0")
         print(f"[oracle] Teleported client to central End island (0 80 0) away from target: {tp_resp}")
         import time as _t

@@ -21,6 +21,9 @@ dependencies {
 
     // SQLite JDBC — needed for direct-to-DB noise dumps
     include implementation("org.xerial:sqlite-jdbc:3.49.1.0")
+
+    // Voxy — compileOnly for OracleInsertUpdateTrackerMixin (WorldUpdater/VoxelizedSection); present in runtime/mods and Modrinth profile
+    compileOnly files("../fabric-server/runtime/mods/voxy-0.2.11-alpha.jar")
 }
 
 loom {
