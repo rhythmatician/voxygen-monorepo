@@ -75,7 +75,7 @@ public final class OracleContractValidator {
             throw new IllegalArgumentException("generationOrder must be '" + OracleContract.EXPECTED_GENERATION_ORDER + "' (squared distance -> X -> Z, explicit not Morton), was '" + c.generationOrder() + "'");
         }
         var pd = Objects.requireNonNull(c.perLevelDecisions(), "perLevelDecisions");
-        var allowedDispositions = java.util.Set.of("UNRESOLVED", "OMIT", "DETERMINISTIC", "LEARNED_RESIDUAL", "LEARNED_FULL", "EXACT_PORT");
+        var allowedDispositions = java.util.Set.of("UNRESOLVED", "OMIT", "REUSE_VANILLA", "DETERMINISTIC", "LEARNED_RESIDUAL", "LEARNED_FULL", "EXACT_PORT");
         for (var d : new OracleContract.PartitionDecision[]{pd.l4(), pd.l3(), pd.l2(), pd.l1(), pd.l0()}) {
             if (d==null) throw new IllegalArgumentException("perLevelDecisions contains null");
             if (!allowedDispositions.contains(d.disposition())) throw new IllegalArgumentException("per-Level disposition must be one of " + allowedDispositions + ", was "+d.disposition());
