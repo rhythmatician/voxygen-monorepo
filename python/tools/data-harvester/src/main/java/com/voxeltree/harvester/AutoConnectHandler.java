@@ -11,42 +11,24 @@ import org.slf4j.LoggerFactory;
 
 /**
  * Handles automatic connection and reconnection to the target server.
- *
- * <p>Registered as a {@link net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents}
- * handler. On each client tick it checks the current screen state and decides
- * whether to initiate or retry a server connection.
  */
 public class AutoConnectHandler {
 
     private static final Logger LOGGER = LoggerFactory.getLogger("dataharvester");
 
     private final HarvesterConfig config;
-
-    /** Have we initiated the first connection attempt? */
     private boolean firstConnectTriggered = false;
-
-    /** Tick counter for delayed connection (gives the title screen time to load). */
     private int titleScreenTickCount = 0;
-
-    /** Whether we are currently connected / connecting. */
     private boolean connecting = false;
-
-    /** Tick counter for reconnect delay after a disconnect. */
     private int reconnectTickCounter = 0;
-
-    /** Whether we have ever successfully connected at least once. */
     private boolean hasConnectedOnce = false;
 
     public AutoConnectHandler(HarvesterConfig config) {
         this.config = config;
     }
 
-    /**
-     * Called every client tick via the Fabric event bus.
-     */
     public void onClientTick(Minecraft client) {
         if (client.screen == null) {
-            // In-game (no screen overlay) — we're connected. Reset state.
             if (!hasConnectedOnce) {
                 hasConnectedOnce = true;
                 LOGGER.info("[DataHarvester] Successfully connected to {}!", config.serverAddress);
@@ -56,10 +38,9 @@ public class AutoConnectHandler {
             return;
         }
 
-        // ── First auto-connect from the title screen ──────────────────────
         if (!firstConnectTriggered && client.screen instanceof TitleScreen) {
             titleScreenTickCount++;
-            int delayTicks = config.autoConnectDelaySec * 20; // 20 ticks/sec
+            int delayTicks = config.autoConnectDelaySec * 20;
             if (titleScreenTickCount >= delayTicks) {
                 LOGGER.info("[DataHarvester] Title screen ready. Connecting to {}...",
                         config.serverAddress);
@@ -69,7 +50,6 @@ public class AutoConnectHandler {
             return;
         }
 
-        // ── Auto-reconnect on disconnect ──────────────────────────────────
         if (config.reconnectOnDisconnect
                 && firstConnectTriggered
                 && !connecting
@@ -81,8 +61,9 @@ public class AutoConnectHandler {
                 LOGGER.info("[DataHarvester] Disconnected. Reconnecting to {}...",
                         config.serverAddress);
                 reconnectTickCounter = 0;
-                // Return to title screen first, then connect
-                client.disconnect(null, false);
+                // FIX: Do not call client.disconnect() when already on DisconnectedScreen;
+                // it tries to return to in-game GUI and throws IllegalStateException.
+                // Directly start a new connection from the DisconnectedScreen.
                 connect(client);
             } else if (reconnectTickCounter == 1) {
                 LOGGER.info("[DataHarvester] Disconnected. Will reconnect in {}s.",
@@ -100,12 +81,12 @@ public class AutoConnectHandler {
                 ServerData.Type.OTHER
         );
         ConnectScreen.startConnecting(
-                new TitleScreen(),  // parent screen (returned to on cancel)
+                new TitleScreen(),
                 client,
                 address,
                 serverData,
-                false,              // isQuickPlay
-                null                // transferState
+                false,
+                null
         );
     }
 }
