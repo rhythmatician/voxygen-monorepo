@@ -376,6 +376,69 @@ class EndChorusCommonRoiEvidenceTest {
         }
     }
 
+    @Test
+    void benchmarkProvenanceIsEnforced() {
+        OracleFixture real = loadRealFixture();
+        OracleContract c = real.contract();
+        EndChorusSynthesizer synth = EndChorusSynthesizer.forTesting(c.seed());
+        Map<Level, VoxelVolume> detVols = new EnumMap<>(Level.class);
+        Map<Level, BenchmarkReceipt> goodRts = new EnumMap<>(Level.class);
+        for (Level l : Level.values()) {
+            var per = c.blockRegionOrDerived().perLevelWorldSectionOrigin(l.value());
+            SectionPos origin = new SectionPos(per.wsX() * l.regionSections(), per.wsY() * l.regionSections(), per.wsZ() * l.regionSections());
+            detVols.put(l, synth.synthesize(l, origin));
+            goodRts.put(l, BenchmarkReceipt.measure(l, 32 << l.value(), real, () -> synth.synthesize(l, origin), 1, 2, "test"));
+        }
+        // Good receipts must pass
+        assertDoesNotThrow(() -> ChorusCommonRoiEvaluator.evaluateAll(real, detVols, goodRts));
+
+        // Wrong Level
+        {
+            var bad = new EnumMap<>(goodRts);
+            BenchmarkReceipt r = goodRts.get(Level.L0);
+            // L0 receipt claims L1
+            bad.put(Level.L0, new BenchmarkReceipt(Level.L1, r.regionBlocks(), r.fixtureId(), r.captureProtocolSha256(), r.seed(), r.wallNanos(), r.warmupIterations(), r.measurementIterations(), r.repetitionPolicy(), r.timestampMs()));
+            assertThrows(IllegalArgumentException.class, () -> ChorusCommonRoiEvaluator.evaluateAll(real, detVols, bad), "wrong Level must fail");
+        }
+        // Wrong fixtureId
+        {
+            var bad = new EnumMap<>(goodRts);
+            BenchmarkReceipt r = goodRts.get(Level.L0);
+            bad.put(Level.L0, new BenchmarkReceipt(r.level(), r.regionBlocks(), "wrong_provenance", r.captureProtocolSha256(), r.seed(), r.wallNanos(), r.warmupIterations(), r.measurementIterations(), r.repetitionPolicy(), r.timestampMs()));
+            assertThrows(IllegalArgumentException.class, () -> ChorusCommonRoiEvaluator.evaluateAll(real, detVols, bad), "wrong fixtureId must fail");
+        }
+        // Null / wrong captureProtocolSha256
+        {
+            var bad = new EnumMap<>(goodRts);
+            BenchmarkReceipt r = goodRts.get(Level.L0);
+            bad.put(Level.L0, new BenchmarkReceipt(r.level(), r.regionBlocks(), r.fixtureId(), null, r.seed(), r.wallNanos(), r.warmupIterations(), r.measurementIterations(), r.repetitionPolicy(), r.timestampMs()));
+            assertThrows(IllegalArgumentException.class, () -> ChorusCommonRoiEvaluator.evaluateAll(real, detVols, bad), "null captureProtocol must fail");
+            var bad2 = new EnumMap<>(goodRts);
+            bad2.put(Level.L0, new BenchmarkReceipt(r.level(), r.regionBlocks(), r.fixtureId(), "0000000000000000000000000000000000000000000000000000000000000000", r.seed(), r.wallNanos(), r.warmupIterations(), r.measurementIterations(), r.repetitionPolicy(), r.timestampMs()));
+            assertThrows(IllegalArgumentException.class, () -> ChorusCommonRoiEvaluator.evaluateAll(real, detVols, bad2), "wrong captureProtocol must fail");
+        }
+        // Wrong seed
+        {
+            var bad = new EnumMap<>(goodRts);
+            BenchmarkReceipt r = goodRts.get(Level.L0);
+            bad.put(Level.L0, new BenchmarkReceipt(r.level(), r.regionBlocks(), r.fixtureId(), r.captureProtocolSha256(), 999L, r.wallNanos(), r.warmupIterations(), r.measurementIterations(), r.repetitionPolicy(), r.timestampMs()));
+            assertThrows(IllegalArgumentException.class, () -> ChorusCommonRoiEvaluator.evaluateAll(real, detVols, bad), "wrong seed must fail");
+        }
+        // Wrong regionBlocks
+        {
+            var bad = new EnumMap<>(goodRts);
+            BenchmarkReceipt r = goodRts.get(Level.L0);
+            bad.put(Level.L0, new BenchmarkReceipt(r.level(), 999, r.fixtureId(), r.captureProtocolSha256(), r.seed(), r.wallNanos(), r.warmupIterations(), r.measurementIterations(), r.repetitionPolicy(), r.timestampMs()));
+            assertThrows(IllegalArgumentException.class, () -> ChorusCommonRoiEvaluator.evaluateAll(real, detVols, bad), "wrong regionBlocks must fail");
+        }
+        // Missing receipt
+        {
+            var bad = new EnumMap<>(goodRts);
+            bad.remove(Level.L0);
+            assertThrows(IllegalArgumentException.class, () -> ChorusCommonRoiEvaluator.evaluateAll(real, detVols, bad), "missing receipt must fail");
+        }
+    }
+
     // ======================================================================
     // TDD 10: corruption of candidate mask changes/fails the evidence as expected
     // ======================================================================

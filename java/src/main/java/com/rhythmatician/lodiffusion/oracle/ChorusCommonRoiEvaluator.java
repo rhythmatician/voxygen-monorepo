@@ -351,6 +351,14 @@ public final class ChorusCommonRoiEvaluator {
             boolean[] detMask = toBlockMask(level, c, detVol);
             ChorusMetrics detMetrics = computeMetrics(oracleMask, detMask);
             BenchmarkReceipt rt = runtimes.get(level);
+            if (rt == null) throw new IllegalArgumentException("missing BenchmarkReceipt for " + level);
+            // Fail closed: bind runtime evidence to correctness evidence
+            if (rt.level() != level) throw new IllegalArgumentException("BenchmarkReceipt level " + rt.level() + " != evaluated Level " + level);
+            if (!Objects.equals(rt.fixtureId(), fixture.provenanceId())) throw new IllegalArgumentException("BenchmarkReceipt fixtureId " + rt.fixtureId() + " != fixture provenanceId " + fixture.provenanceId() + " at " + level);
+            if (rt.captureProtocolSha256() == null || !rt.captureProtocolSha256().equalsIgnoreCase(fixture.captureProtocolSha256())) throw new IllegalArgumentException("BenchmarkReceipt captureProtocolSha256 " + rt.captureProtocolSha256() + " != fixture captureProtocolSha256 " + fixture.captureProtocolSha256() + " at " + level + " — runtime not bound to oracle capture protocol");
+            if (rt.seed() != c.seed()) throw new IllegalArgumentException("BenchmarkReceipt seed " + rt.seed() + " != fixture seed " + c.seed() + " at " + level);
+            int expectedRegionBlocks = 32 << level.value();
+            if (rt.regionBlocks() != expectedRegionBlocks) throw new IllegalArgumentException("BenchmarkReceipt regionBlocks " + rt.regionBlocks() + " != expected " + expectedRegionBlocks + " for " + level);
             PlantFlowerCounts detPF = countPlantFlowerInMask(level, c, detVol);
 
             perLevel.put(level, new LevelEvidence(level, mapping, oraclePos, omitMetrics, detMetrics, rt, oraclePF, detPF));
