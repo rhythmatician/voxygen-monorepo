@@ -278,7 +278,7 @@ public record OracleContract(
     }
     public record PartitionDecision(String disposition, java.util.List<String> candidates, String rationale) {
         public static PartitionDecision unresolved(String rationale) {
-            return new PartitionDecision("UNRESOLVED", List.of("OMIT","DETERMINISTIC","LEARNED_RESIDUAL","LEARNED_FULL","EXACT_PORT"), rationale);
+            return new PartitionDecision("UNRESOLVED", List.of("OMIT","REUSE_VANILLA","DETERMINISTIC","LEARNED_RESIDUAL","LEARNED_FULL","EXACT_PORT"), rationale);
         }
     }
     public record PerLevelPartitionDecisions(
