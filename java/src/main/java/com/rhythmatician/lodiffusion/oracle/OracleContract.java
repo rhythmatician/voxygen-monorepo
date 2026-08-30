@@ -109,32 +109,6 @@ public record OracleContract(
         }
     }
     public record SectionPosOrigin(int wsX, int wsY, int wsZ, int level, int blockSize) {}
-    /** Block-space tracer region: origin in blocks + extent in blocks (typically 32 for L0 tracer). Per-Level WorldSection origins are derived independently via floorDiv. */
-    public record BlockRegionSpec(int originBlockX, int originBlockY, int originBlockZ, int extentBlocks) {
-        public static BlockRegionSpec fromSectionSpec(RegionSpec s) {
-            return new BlockRegionSpec(s.originSectionX()*16, s.originSectionY()*16, s.originSectionZ()*16, s.extentSections()*16);
-        }
-        public SectionPosOrigin perLevelWorldSectionOrigin(int level) {
-            int wsBlockSize = 32 * (1 << level);
-            int wsX = Math.floorDiv(originBlockX, wsBlockSize);
-            int wsY = Math.floorDiv(originBlockY, wsBlockSize);
-            int wsZ = Math.floorDiv(originBlockZ, wsBlockSize);
-            return new SectionPosOrigin(wsX, wsY, wsZ, level, wsBlockSize);
-        }
-        /** Chunk rectangle (inclusive) covering blockRegion + combinedHaloBlocks, for ingest. */
-        public int[] chunkRectWithHalo(int combinedHaloBlocks) {
-            int minBx = originBlockX - combinedHaloBlocks;
-            int minBz = originBlockZ - combinedHaloBlocks;
-            int maxBx = originBlockX + extentBlocks -1 + combinedHaloBlocks;
-            int maxBz = originBlockZ + extentBlocks -1 + combinedHaloBlocks;
-            int minCx = Math.floorDiv(minBx, 16);
-            int minCz = Math.floorDiv(minBz, 16);
-            int maxCx = Math.floorDiv(maxBx, 16);
-            int maxCz = Math.floorDiv(maxBz, 16);
-            return new int[]{minCx, minCz, maxCx, maxCz};
-        }
-    }
-    public record SectionPosOrigin(int wsX, int wsY, int wsZ, int level, int blockSize) {}
     public record HaloSpec(
             int featureReachBlocks,
             String featureReachEvidence,
@@ -172,9 +146,6 @@ public record OracleContract(
 
     public record BenchmarkPolicy(int warmupIterations, int measurementIterations, String repetitionPolicy) {}
 
-    public BlockRegionSpec blockRegionOrDerived() { return blockRegion != null ? blockRegion : (region!=null ? BlockRegionSpec.fromSectionSpec(region) : null); }
-    public SectionPosOrigin perLevelOrigin(int level) { return blockRegionOrDerived().perLevelWorldSectionOrigin(level); }
-    public int[] chunkRectWithHalo() { return blockRegionOrDerived().chunkRectWithHalo(halo.combinedHaloBlocks()); }
     public BlockRegionSpec blockRegionOrDerived() { return blockRegion != null ? blockRegion : (region!=null ? BlockRegionSpec.fromSectionSpec(region) : null); }
     public SectionPosOrigin perLevelOrigin(int level) { return blockRegionOrDerived().perLevelWorldSectionOrigin(level); }
     public int[] chunkRectWithHalo() { return blockRegionOrDerived().chunkRectWithHalo(halo.combinedHaloBlocks()); }
