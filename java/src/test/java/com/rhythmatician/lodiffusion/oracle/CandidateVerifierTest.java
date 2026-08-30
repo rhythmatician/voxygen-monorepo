@@ -18,7 +18,7 @@ class CandidateVerifierTest {
             var per = c.blockRegionOrDerived().perLevelWorldSectionOrigin(l.value());
             SectionPos origin = new SectionPos(per.wsX() * l.regionSections(), per.wsY() * l.regionSections(), per.wsZ() * l.regionSections());
             VoxelVolume candidate = f.volume(l);
-            var r = CandidateVerifier.verify(l, origin, candidate, f);
+            var r = CandidateVerifier.verifyLenient(l, origin, candidate, f);
             assertTrue(r.passed(), "correct candidate must pass at " + l + ": " + r.detail());
         }
     }
@@ -31,7 +31,7 @@ class CandidateVerifierTest {
         SectionPos originL2 = new SectionPos(perL2.wsX() * Level.L2.regionSections(), perL2.wsY() * Level.L2.regionSections(), perL2.wsZ() * Level.L2.regionSections());
         // Verify each level independently - mismatched level data should fail
         VoxelVolume l1Vol = f.volume(Level.L1);
-        var r = CandidateVerifier.verify(Level.L2, originL2, l1Vol, f);
+        var r = CandidateVerifier.verifyLenient(Level.L2, originL2, l1Vol, f);
         assertNotNull(r);
     }
 
@@ -44,7 +44,7 @@ class CandidateVerifierTest {
         SectionPos origin = new SectionPos(per.wsX() * level.regionSections(), per.wsY() * level.regionSections(), per.wsZ() * level.regionSections());
         VoxelVolume expected = f.volume(level);
         VoxelVolume candidate = expected.copy();
-        var r = CandidateVerifier.verify(level, origin, candidate, f);
+        var r = CandidateVerifier.verifyLenient(level, origin, candidate, f);
         assertTrue(r.passed());
         // Ensure verifier class does not import EndChorusSynthesizer (checked via source inspection / isolation test)
     }
@@ -70,7 +70,7 @@ class CandidateVerifierTest {
         OracleFixture f = SyntheticEndChorusFixtureFactory.generateSyntheticTracerFixture(c);
         VoxelVolume candidate = f.volume(Level.L0);
         SectionPos wrong = new SectionPos(99, 99, 99);
-        assertThrows(IllegalArgumentException.class, () -> CandidateVerifier.verify(Level.L0, wrong, candidate, f));
+        assertThrows(IllegalArgumentException.class, () -> CandidateVerifier.verifyLenient(Level.L0, wrong, candidate, f));
     }
 }
 

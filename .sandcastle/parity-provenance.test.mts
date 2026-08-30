@@ -14,9 +14,15 @@ describe("parity provenance guard — ADR 0015", () => {
   });
 
   it("recognizes provenance markers and voxyIntegrationTest boundary", () => {
-    expect(hasProvenance("import OracleFixture", "java/src/test/java/Foo.java")).toBe(true);
+    expect(hasProvenance("OracleFixtureWriter.read", "java/src/test/java/Foo.java")).toBe(true);
+    expect(hasProvenance("REAL_CAPTURE", "java/src/test/java/Foo.java")).toBe(true);
     expect(hasProvenance("VanillaVoxyOracle", "java/src/test/java/Foo.java")).toBe(true);
-    expect(hasProvenance("no marker", "java/src/voxyIntegrationTest/java/FooParityTest.java")).toBe(true);
+    expect(hasProvenance("import OracleFixture", "java/src/test/java/Foo.java")).toBe(false);
+    expect(hasProvenance("SYNTHETIC_TEST", "java/src/test/java/Foo.java")).toBe(false);
+    expect(hasProvenance("OracleFixture SYNTHETIC_TEST", "java/src/test/java/Foo.java")).toBe(false);
+    expect(hasProvenance("REAL_CAPTURE and SYNTHETIC_TEST", "java/src/test/java/Foo.java")).toBe(true);
+    expect(hasProvenance("no marker", "java/src/voxyIntegrationTest/java/FooParityTest.java")).toBe(false);
+    expect(hasProvenance("REAL_CAPTURE", "java/src/voxyIntegrationTest/java/FooParityTest.java")).toBe(true);
     expect(hasProvenance("no marker", "java/src/test/java/Foo.java")).toBe(false);
   });
 
@@ -30,21 +36,45 @@ describe("parity provenance guard — ADR 0015", () => {
         }
       `,
     };
+    const syntheticBogus = {
+      path: "java/src/test/java/com/rhythmatician/lodiffusion/SyntheticParityTest.java",
+      content: `
+        import com.rhythmatician.lodiffusion.oracle.OracleFixture;
+        import com.rhythmatician.lodiffusion.oracle.synthetic.SyntheticEndChorusFixtureFactory;
+        class SyntheticParityTest {
+          void fakeParity() {
+            var f = SyntheticEndChorusFixtureFactory.generateSyntheticTracerFixture(null);
+            var c = f.evidenceKind(); // SYNTHETIC_TEST
+          }
+        }
+      `,
+    };
     const good = {
       path: "java/src/test/java/com/rhythmatician/lodiffusion/GoodParityTest.java",
       content: `
         import com.rhythmatician.lodiffusion.oracle.OracleFixture;
-        class GoodParityTest { OracleFixture f; }
+        class GoodParityTest {
+          void realParity() {
+            var f = OracleFixtureWriter.read(null);
+            var k = OracleFixture.EvidenceKind.REAL_CAPTURE;
+          }
+        }
       `,
+    };
+    const integrationBare = {
+      path: "java/src/voxyIntegrationTest/java/com/rhythmatician/lodiffusion/BareIntegrationParityTest.java",
+      content: `class BareIntegrationParityTest {}`,
     };
     const integration = {
       path: "java/src/voxyIntegrationTest/java/com/rhythmatician/lodiffusion/IntegrationParityTest.java",
-      content: `class IntegrationParityTest {}`,
+      content: `class IntegrationParityTest { REAL_CAPTURE }`,
     };
     expect(findParityWithoutProvenance([bogus])).toHaveLength(1);
+    expect(findParityWithoutProvenance([syntheticBogus])).toHaveLength(1);
     expect(findParityWithoutProvenance([good])).toHaveLength(0);
+    expect(findParityWithoutProvenance([integrationBare])).toHaveLength(1);
     expect(findParityWithoutProvenance([integration])).toHaveLength(0);
-    expect(findParityWithoutProvenance([bogus, good, integration]).map((v) => v.filename)).toEqual(["BogusParityTest.java"]);
+    expect(findParityWithoutProvenance([bogus, syntheticBogus, good, integrationBare, integration]).map((v) => v.filename)).toEqual(["BogusParityTest.java", "SyntheticParityTest.java", "BareIntegrationParityTest.java"]);
   });
 
   it("exempts the guard itself", () => {

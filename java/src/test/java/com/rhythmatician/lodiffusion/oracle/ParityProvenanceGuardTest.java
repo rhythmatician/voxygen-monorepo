@@ -42,13 +42,17 @@ class ParityProvenanceGuardTest {
     // is included only as a catch-all for equivalent naming, but we still require a parity-like token.
     private static final Set<String> PARITY_SUBSTRINGS = Set.of("parity", "roundtrip", "round_trip", "vanillaconvergence", "vanilla_convergence");
 
-    private static final List<String> PROVENANCE_MARKERS = List.of(
-            "OracleFixtureWriter",
+    // Real capture must be evidenced by typed fixture kind or real-oracle loader — mere mention of OracleFixture is not sufficient
+    // because SyntheticEndChorusFixtureFactory returns the same OracleFixture type with SYNTHETIC_TEST kind.
+    private static final List<String> REAL_CAPTURE_MARKERS = List.of(
+            "REAL_CAPTURE",
+            "OracleFixtureWriter.read",
             "VanillaVoxyOracle",
-            "OracleFixture",
-            "EndChorusTracerContract",
-            "OracleContract",
-            "RealFixture"
+            "protocolSha256"
+    );
+    private static final List<String> SYNTHETIC_TAINT_MARKERS = List.of(
+            "SYNTHETIC_TEST",
+            "SyntheticEndChorusFixtureFactory"
     );
 
     // Legitimate parity-infrastructure tests that validate config/reporting logic,
@@ -79,10 +83,12 @@ class ParityProvenanceGuardTest {
     }
 
     private static boolean hasProvenance(String content, String path) {
-        if (path.contains("voxyIntegrationTest")) return true;
-        for (String m : PROVENANCE_MARKERS) {
-            if (content.contains(m)) return true;
-        }
+        boolean hasSyntheticTaint = SYNTHETIC_TAINT_MARKERS.stream().anyMatch(content::contains);
+        boolean hasRealCapture = REAL_CAPTURE_MARKERS.stream().anyMatch(content::contains);
+        // Being in voxyIntegrationTest alone is not sufficient per review — must also evidence REAL_CAPTURE
+        if (hasSyntheticTaint && !hasRealCapture) return false;
+        if (hasRealCapture) return true;
+        // No real capture marker — even voxyIntegrationTest is not sufficient alone
         return false;
     }
 
@@ -99,7 +105,7 @@ class ParityProvenanceGuardTest {
             String pathStr = p.toString().replace('\\', '/');
             if (!hasProvenance(content, pathStr)) {
                 violations.add(p + " claims parity/roundTrip/vanillaConvergence (filename: " + filename
-                        + ") but lacks independent-oracle provenance (needs OracleFixture/VanillaVoxyOracle/EndChorusTracerContract or voxyIntegrationTest boundary)");
+                        + ") but lacks REAL_CAPTURE provenance (needs EvidenceKind.REAL_CAPTURE or OracleFixtureWriter.read with protocolSha256, or VanillaVoxyOracle; synthetic SYNTHETIC_TEST is not sufficient, and voxyIntegrationTest alone is not sufficient)");
             }
         }
         return violations;
@@ -162,12 +168,12 @@ class ParityProvenanceGuardTest {
         List<Path> candidates = collectCandidateFiles(repoRoot);
         List<String> violations = findViolations(candidates);
         if (!violations.isEmpty()) {
-            fail("Parity/roundTrip/vanillaConvergence tests without independent-oracle provenance found (ADR 0015):\n"
+            fail("Parity/roundTrip/vanillaConvergence tests without REAL_CAPTURE provenance found (ADR 0015):\n"
                     + String.join("\n", violations)
-                    + "\n\nAny test/class claiming Parity, RoundTrip, VanillaConvergence, or equivalent must carry "
-                    + "machine-checkable independent-oracle provenance (OracleFixture/VanillaVoxyOracle/EndChorusTracerContract) "
-                    + "or live in src/voxyIntegrationTest (live Voxy boundary). "
-                    + "Synthetic fixtures (SYNTHETIC ONLY) do NOT satisfy parity provenance.");
+                    + "\n\nAny test/class claiming Parity, RoundTrip, VanillaConvergence, or equivalent must evidence REAL_CAPTURE "
+                    + "(EvidenceKind.REAL_CAPTURE, OracleFixtureWriter.read with protocolSha256, or VanillaVoxyOracle). "
+                    + "Synthetic fixtures (SYNTHETIC_TEST / SyntheticEndChorusFixtureFactory) do NOT satisfy parity provenance, "
+                    + "and voxyIntegrationTest location alone is not sufficient per review.");
         }
     }
 
@@ -199,11 +205,11 @@ class ParityProvenanceGuardTest {
         String goodContent = """
                 package com.example;
                 import com.rhythmatician.lodiffusion.oracle.OracleFixture;
-                import com.rhythmatician.lodiffusion.oracle.EndChorusTracerContract;
                 class GoodParityTest {
                     @Test
                     void realParity() {
-                        OracleFixture f = null;
+                        OracleFixture.EvidenceKind k = OracleFixture.EvidenceKind.REAL_CAPTURE;
+                        var f = OracleFixtureWriter.read(java.nio.file.Paths.get("java/oracle-fixtures/fixture.json"));
                     }
                 }
                 """;
@@ -211,12 +217,18 @@ class ParityProvenanceGuardTest {
         List<String> goodViolations = findViolations(List.of(withProvenance));
         assertTrue(goodViolations.isEmpty(), "Parity test with OracleFixture provenance must not be flagged, was: " + goodViolations);
 
-        // voxyIntegrationTest boundary is also sufficient
+        // voxyIntegrationTest alone is NOT sufficient per review — must also evidence REAL_CAPTURE
+        Path inIntegrationBare = tmp.resolve("voxyIntegrationTest").resolve("BareIntegrationParityTest.java");
+        Files.createDirectories(inIntegrationBare.getParent());
+        Files.writeString(inIntegrationBare, content);
+        List<String> bareViolations = findViolations(List.of(inIntegrationBare));
+        assertEquals(1, bareViolations.size(), "Bare voxyIntegrationTest without REAL_CAPTURE must still be flagged, was: " + bareViolations);
+        // voxyIntegrationTest WITH real capture marker is sufficient
         Path inIntegration = tmp.resolve("voxyIntegrationTest").resolve("IntegrationParityTest.java");
         Files.createDirectories(inIntegration.getParent());
-        Files.writeString(inIntegration, content);
+        Files.writeString(inIntegration, goodContent);
         List<String> integrationViolations = findViolations(List.of(inIntegration));
         assertTrue(integrationViolations.isEmpty(),
-                "Parity test in voxyIntegrationTest boundary must not be flagged, was: " + integrationViolations);
+                "Parity test in voxyIntegrationTest WITH REAL_CAPTURE must not be flagged, was: " + integrationViolations);
     }
 }

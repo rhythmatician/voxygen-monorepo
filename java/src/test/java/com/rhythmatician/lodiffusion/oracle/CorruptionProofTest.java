@@ -35,7 +35,7 @@ class CorruptionProofTest {
             }
         }
         VoxelVolume corrupted = shifted.build();
-        var r = CandidateVerifier.verify(level, origin, corrupted, f);
+        var r = CandidateVerifier.verifyLenient(level, origin, corrupted, f);
         assertTrue(r.failed(), "spatially shifted chorus must fail, but passed with detail: " + r.detail());
         assertTrue(r.mismatchedVoxels() > 0);
     }
@@ -59,7 +59,7 @@ class CorruptionProofTest {
             }
         }
         VoxelVolume corrupted = erased.build();
-        var r = CandidateVerifier.verify(level, origin, corrupted, f);
+        var r = CandidateVerifier.verifyLenient(level, origin, corrupted, f);
         assertTrue(r.failed(), "erased chorus must fail");
     }
 
@@ -84,7 +84,7 @@ class CorruptionProofTest {
             }
         }
         assertTrue(substituted, "fixture must contain chorus_plant to test substitution");
-        var r = CandidateVerifier.verify(level, origin, b.build(), f);
+        var r = CandidateVerifier.verifyLenient(level, origin, b.build(), f);
         assertTrue(r.failed(), "wrong material must fail");
     }
 
@@ -111,7 +111,7 @@ class CorruptionProofTest {
             b.setBlock(edgeX, mid, mid, 0); // erase edge
             b.setBlock(edgeX - 1, mid, mid, edgeId); // inward
         }
-        var r = CandidateVerifier.verify(level, origin, b.build(), f);
+        var r = CandidateVerifier.verifyLenient(level, origin, b.build(), f);
         assertTrue(r.failed(), "edge-crossing perturbation must fail; detail: " + r.detail());
     }
 
@@ -123,7 +123,7 @@ class CorruptionProofTest {
         var per = c.blockRegionOrDerived().perLevelWorldSectionOrigin(level.value());
         SectionPos origin = new SectionPos(per.wsX() * level.regionSections(), per.wsY() * level.regionSections(), per.wsZ() * level.regionSections());
         VoxelVolume nonsense = VoxelVolume.uniform(32, 1, 255);
-        var r = CandidateVerifier.verify(level, origin, nonsense, f);
+        var r = CandidateVerifier.verifyLenient(level, origin, nonsense, f);
         assertTrue(r.failed());
     }
 }

@@ -18,13 +18,17 @@ export const PARITY_SUBSTRINGS = [
   "vanilla_convergence",
 ] as const;
 
-const PROVENANCE_MARKERS = [
-  "OracleFixtureWriter",
+// Real capture must be evidenced by typed fixture kind or real-oracle loader — mere OracleFixture is not sufficient
+// because SyntheticEndChorusFixtureFactory returns the same type with SYNTHETIC_TEST kind.
+const REAL_CAPTURE_MARKERS = [
+  "REAL_CAPTURE",
+  "OracleFixtureWriter.read",
   "VanillaVoxyOracle",
-  "OracleFixture",
-  "EndChorusTracerContract",
-  "OracleContract",
-  "RealFixture",
+  "protocolSha256",
+] as const;
+const SYNTHETIC_TAINT_MARKERS = [
+  "SYNTHETIC_TEST",
+  "SyntheticEndChorusFixtureFactory",
 ] as const;
 
 const GUARD_EXEMPT = new Set([
@@ -52,11 +56,11 @@ export function isParityClaimingFilename(filename: string): boolean {
 }
 
 export function hasProvenance(content: string, path: string): boolean {
-  const normalized = path.replaceAll("\\", "/");
-  if (normalized.includes("voxyIntegrationTest")) return true;
-  for (const m of PROVENANCE_MARKERS) {
-    if (content.includes(m)) return true;
-  }
+  const hasSyntheticTaint = SYNTHETIC_TAINT_MARKERS.some((m) => content.includes(m));
+  const hasRealCapture = REAL_CAPTURE_MARKERS.some((m) => content.includes(m));
+  if (hasSyntheticTaint && !hasRealCapture) return false;
+  if (hasRealCapture) return true;
+  // voxyIntegrationTest alone is not sufficient per review — must also evidence REAL_CAPTURE
   return false;
 }
 
@@ -83,8 +87,8 @@ export function findParityWithoutProvenance(
       path,
       filename,
       message:
-        `${path} claims parity/roundTrip/vanillaConvergence (filename: ${filename}) but lacks ` +
-        `independent-oracle provenance (needs OracleFixture/VanillaVoxyOracle/EndChorusTracerContract or voxyIntegrationTest boundary)`,
+        `${path} claims parity/roundTrip/vanillaConvergence (filename: ${filename}) but lacks REAL_CAPTURE provenance ` +
+        `(needs EvidenceKind.REAL_CAPTURE or OracleFixtureWriter.read with protocolSha256, or VanillaVoxyOracle; synthetic SYNTHETIC_TEST is not sufficient, and voxyIntegrationTest alone is not sufficient)`,
     });
   }
   return violations;

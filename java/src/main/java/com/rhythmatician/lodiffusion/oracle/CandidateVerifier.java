@@ -27,12 +27,28 @@ public final class CandidateVerifier {
 
     /**
      * Verify candidate volume against fixture at level. Contract is validated first.
+     * Requires {@code REAL_CAPTURE} evidence — synthetic fixtures cannot satisfy parity (ADR 0015).
      */
     public static VerificationResult verify(Level level, SectionPos origin, VoxelVolume candidate, OracleFixture fixture) {
+        return verifyInternal(level, origin, candidate, fixture, true);
+    }
+
+    /**
+     * Lenient verification for harness/structural tests that exercise verifier wiring
+     * with synthetic fixtures. Not for parity claims.
+     */
+    public static VerificationResult verifyLenient(Level level, SectionPos origin, VoxelVolume candidate, OracleFixture fixture) {
+        return verifyInternal(level, origin, candidate, fixture, false);
+    }
+
+    private static VerificationResult verifyInternal(Level level, SectionPos origin, VoxelVolume candidate, OracleFixture fixture, boolean requireRealCapture) {
         Objects.requireNonNull(level, "level");
         Objects.requireNonNull(origin, "origin");
         Objects.requireNonNull(candidate, "candidate");
         Objects.requireNonNull(fixture, "fixture");
+        if (requireRealCapture && fixture.evidenceKind() != OracleFixture.EvidenceKind.REAL_CAPTURE) {
+            throw new IllegalArgumentException("CandidateVerifier parity verification requires REAL_CAPTURE evidence, was " + fixture.evidenceKind() + " — synthetic test fixtures (SYNTHETIC_TEST) cannot satisfy ADR 0015 independent-oracle parity");
+        }
         fixture.contract().validate();
         // Derive exact expected SectionPos for this Level from WorldSectionOrigin × level.regionSections() (per review)
         var br = fixture.contract().blockRegionOrDerived();

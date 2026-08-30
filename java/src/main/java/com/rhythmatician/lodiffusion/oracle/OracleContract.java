@@ -1,5 +1,8 @@
 package com.rhythmatician.lodiffusion.oracle;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
 
@@ -37,7 +40,8 @@ public record OracleContract(
         String provenanceId,
         PerLevelPartitionDecisions perLevelDecisions,
         ClaimDependencyRoles roles,
-        BenchmarkPolicy benchmarkPolicy
+        BenchmarkPolicy benchmarkPolicy,
+        String generationOrder
 ) {
     // Legacy 18-arg constructor for tests that still pass region+halo without explicit blockRegion (derives blockRegion from region)
     public OracleContract(
@@ -73,14 +77,95 @@ public record OracleContract(
              canonicalBiomeRegistryVersion, canonicalBiomeRegistrySha256,
              a, b, seed, region, region != null ? BlockRegionSpec.fromSectionSpec(region) : null, halo,
              authoritativeGenerationStage, fixtureFormatVersion, provenanceId,
-             perLevelDecisions, roles, benchmarkPolicy);
+             perLevelDecisions, roles, benchmarkPolicy, EXPECTED_GENERATION_ORDER);
     }
 
     public static final String CURRENT_SCHEMA_VERSION = "voxygen.oracle.contract.v3";
     public static final String CURRENT_FIXTURE_FORMAT_VERSION = "voxygen.oracle.fixture.v3";
+    public static final String EXPECTED_GENERATION_ORDER = "squared distance to center -> X -> Z (explicit, not Morton), then server tick order";
 
     // Legacy accessor for tests that still use oracleFixtureId name
     public String oracleFixtureId() { return provenanceId(); }
+
+    /** Deterministic SHA-256 over all acceptance-bearing provenance fields (excludes content/volumes/timestamps). */
+    public String protocolSha256() { return computeProtocolSha256(this); }
+
+    public static String computeProtocolSha256(OracleContract c) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            StringBuilder sb = new StringBuilder(4096);
+            // Stable order, pipe-delimited; lists are sorted for determinism.
+            sb.append(c.schemaVersion()).append('|');
+            sb.append(c.responsibilityId()).append('|');
+            sb.append(c.dimension()).append('|');
+            sb.append(c.frozenWorldgenProfileId()).append('|');
+            sb.append(c.minecraftVersion()).append('|');
+            sb.append(c.minecraftSourceRevision()).append('|');
+            sb.append(c.minecraftJarSha256()).append('|');
+            sb.append(c.voxyVersion()).append('|');
+            sb.append(c.voxyCommit()).append('|');
+            sb.append(c.voxyArtifactSha256()).append('|');
+            sb.append(c.canonicalBlockRegistryVersion()).append('|');
+            sb.append(c.canonicalBlockRegistrySha256()).append('|');
+            sb.append(c.canonicalBiomeRegistryVersion()).append('|');
+            sb.append(c.canonicalBiomeRegistrySha256()).append('|');
+            // Sorted references to ensure deterministic hash regardless of input order
+            var mcRefs = c.inspectedMinecraftReferences() == null ? List.<String>of() : c.inspectedMinecraftReferences().stream().sorted().toList();
+            var vxRefs = c.inspectedVoxyReferences() == null ? List.<String>of() : c.inspectedVoxyReferences().stream().sorted().toList();
+            sb.append(String.join("\n", mcRefs)).append('|');
+            sb.append(String.join("\n", vxRefs)).append('|');
+            sb.append(c.seed()).append('|');
+            if (c.region() != null) {
+                sb.append(c.region().originSectionX()).append(',').append(c.region().originSectionY()).append(',').append(c.region().originSectionZ()).append(',').append(c.region().extentSections()).append('|');
+            } else sb.append('|');
+            var br = c.blockRegionOrDerived();
+            if (br != null) {
+                sb.append(br.originBlockX()).append(',').append(br.originBlockY()).append(',').append(br.originBlockZ()).append(',').append(br.extentBlocks()).append('|');
+                // per-Level WorldSection origins are derived but include them explicitly for provenance binding
+                for (int lvl = 4; lvl >= 0; lvl--) {
+                    var per = br.perLevelWorldSectionOrigin(lvl);
+                    sb.append(per.wsX()).append(',').append(per.wsY()).append(',').append(per.wsZ()).append(',').append(per.level()).append(',').append(per.blockSize()).append(';');
+                }
+                sb.append('|');
+                int[] rect = br.chunkRectWithHalo(c.halo() != null ? c.halo().combinedHaloBlocks() : 25);
+                sb.append(rect[0]).append(',').append(rect[1]).append(',').append(rect[2]).append(',').append(rect[3]).append('|');
+                // L4 rect
+                var l4per = br.perLevelWorldSectionOrigin(4);
+                int ws = 32 * (1 << 4);
+                int minBxL4 = l4per.wsX() * ws - (c.halo() != null ? c.halo().combinedHaloBlocks() : 25);
+                int minBzL4 = l4per.wsZ() * ws - (c.halo() != null ? c.halo().combinedHaloBlocks() : 25);
+                int maxBxL4 = l4per.wsX() * ws + ws - 1 + (c.halo() != null ? c.halo().combinedHaloBlocks() : 25);
+                int maxBzL4 = l4per.wsZ() * ws + ws - 1 + (c.halo() != null ? c.halo().combinedHaloBlocks() : 25);
+                sb.append(Math.floorDiv(minBxL4, 16)).append(',').append(Math.floorDiv(minBzL4, 16)).append(',').append(Math.floorDiv(maxBxL4, 16)).append(',').append(Math.floorDiv(maxBzL4, 16)).append('|');
+            } else sb.append("|||");
+            var h = c.halo();
+            if (h != null) {
+                sb.append(h.featureReachBlocks()).append('|').append(h.featureReachEvidence()).append('|').append(h.featureReachSource()).append('|');
+                sb.append(h.minecraftGenerationHaloChunks()).append('|').append(h.minecraftGenerationHaloEvidence()).append('|').append(h.minecraftGenerationHaloSource()).append('|');
+                sb.append(h.voxyMipHaloBlocks()).append('|').append(h.voxyMipHaloEvidence()).append('|').append(h.voxyMipHaloSource()).append('|');
+                sb.append(h.combinedHaloBlocks()).append('|');
+            } else sb.append("||||||||||");
+            sb.append(c.generationOrder() != null ? c.generationOrder() : EXPECTED_GENERATION_ORDER).append('|');
+            sb.append(c.authoritativeGenerationStage()).append('|');
+            sb.append(c.fixtureFormatVersion()).append('|');
+            sb.append(c.provenanceId()).append('|');
+            var pd = c.perLevelDecisions();
+            if (pd != null) {
+                for (var d : new PartitionDecision[]{pd.l4(), pd.l3(), pd.l2(), pd.l1(), pd.l0()}) {
+                    if (d == null) sb.append("null|");
+                    else sb.append(d.disposition()).append('|').append(String.join(",", d.candidates())).append('|').append(d.rationale()).append('|');
+                }
+            } else sb.append("|||||");
+            var roles = c.roles();
+            if (roles != null) sb.append(roles.claimRole()).append('|').append(roles.dependencyRole()).append('|').append(roles.rationale()).append('|');
+            else sb.append("|||");
+            var bp = c.benchmarkPolicy();
+            if (bp != null) sb.append(bp.warmupIterations()).append('|').append(bp.measurementIterations()).append('|').append(bp.repetitionPolicy()).append('|');
+            else sb.append("|||");
+            byte[] digest = md.digest(sb.toString().getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(digest);
+        } catch (Exception e) { throw new RuntimeException(e); }
+    }
 
     public record RegionSpec(int originSectionX, int originSectionY, int originSectionZ, int extentSections) {}
     /** Block-space tracer region: origin in blocks + extent in blocks (typically 32 for L0 tracer). Per-Level WorldSection origins are derived independently via floorDiv. */
@@ -179,6 +264,7 @@ public record OracleContract(
         private PerLevelPartitionDecisions perLevelDecisions;
         private ClaimDependencyRoles roles;
         private BenchmarkPolicy benchmarkPolicy;
+        private String generationOrder = EXPECTED_GENERATION_ORDER;
 
         public Builder schemaVersion(String v) { this.schemaVersion = v; return this; }
         public Builder responsibilityId(String v) { this.responsibilityId = v; return this; }
@@ -204,6 +290,7 @@ public record OracleContract(
         public Builder fixtureFormatVersion(String v) { this.fixtureFormatVersion = v; return this; }
         public Builder provenanceId(String v) { this.provenanceId = v; return this; }
         public Builder oracleFixtureId(String v) { this.provenanceId = v; return this; }
+        public Builder generationOrder(String v) { this.generationOrder = v; return this; }
         public Builder perLevelDecisions(PerLevelPartitionDecisions v) { this.perLevelDecisions = v; return this; }
         public Builder perLevelDisposition(PerLevelPartitionDecisions v) { this.perLevelDecisions = v; return this; }
         // Legacy compatibility for old tests that pass PerLevelDisposition as strings
@@ -246,6 +333,7 @@ public record OracleContract(
 
         public OracleContract build() {
             if (this.roles == null) this.roles = new ClaimDependencyRoles("","", "");
+            if (this.generationOrder == null) this.generationOrder = EXPECTED_GENERATION_ORDER;
             if (region==null && blockRegion!=null) {
                 int sx = Math.floorDiv(blockRegion.originBlockX(), 16);
                 int sy = Math.floorDiv(blockRegion.originBlockY(), 16);
@@ -262,7 +350,7 @@ public record OracleContract(
                 canonicalBiomeRegistryVersion, canonicalBiomeRegistrySha256,
                 inspectedMinecraftReferences, inspectedVoxyReferences,
                 seed == null ? 0L : seed, region, blockRegion, halo, authoritativeGenerationStage,
-                fixtureFormatVersion, provenanceId, perLevelDecisions, roles, benchmarkPolicy
+                fixtureFormatVersion, provenanceId, perLevelDecisions, roles, benchmarkPolicy, generationOrder
             );
             c.validate();
             if (seed == null) throw new IllegalArgumentException("seed is required");
