@@ -64,7 +64,7 @@ public final class HeadlessNodeManagerProbe {
                 .findFirst();
         boolean inFlight = node.map(GpuNode::requestInFlight).orElse(false);
         if (!inFlight) {
-            com.rhythmatician.lodiffusion.voxy.VoxyNodeRequestRetry.recordRefusal(position);
+            com.rhythmatician.voxygen.backend.voxy.VoxyNodeRequestRetry.recordRefusal(position);
         }
     }
 
@@ -74,7 +74,7 @@ public final class HeadlessNodeManagerProbe {
         manager.processChildChange(position, grandchildMask);
         captureNodeChanges();
         // Mirror the retry mixin: re-issue refused requests whose mask became non-empty.
-        if (com.rhythmatician.lodiffusion.voxy.VoxyNodeRequestRetry.shouldRetry(position, grandchildMask)) {
+        if (com.rhythmatician.voxygen.backend.voxy.VoxyNodeRequestRetry.shouldRetry(position, grandchildMask)) {
             manager.processRequest(position);
             // A SUCCESSFUL makeLeafChildRequest does not invalidate the node,
             // so nothing lands in the change list; the observable effects are

@@ -3,15 +3,16 @@ package com.rhythmatician.lodiffusion.oracle;
 import static org.junit.jupiter.api.Assertions.*;
 
 import com.rhythmatician.lodiffusion.oracle.synthetic.SyntheticEndChorusFixtureFactory;
-import com.rhythmatician.lodiffusion.voxy.Level;
-import com.rhythmatician.lodiffusion.voxy.SectionPos;
-import com.rhythmatician.lodiffusion.voxy.VoxelVolume;
+import com.rhythmatician.voxygen.semantic.Level;
+import com.rhythmatician.voxygen.semantic.SectionPos;
+import com.rhythmatician.voxygen.semantic.VoxelVolume;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.stream.Collectors;
 import org.junit.jupiter.api.Test;
+import com.rhythmatician.voxygen.features.end.chorus.EndChorusSynthesizer;
 
 /**
  * Guards against PR #231 failure modes: expected = candidate(...), shared helper, constant agreement, vacuous assertions, mocked Mipper.

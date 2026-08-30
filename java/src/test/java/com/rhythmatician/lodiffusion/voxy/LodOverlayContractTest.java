@@ -9,6 +9,8 @@ import java.nio.file.Path;
 import java.util.List;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import com.rhythmatician.voxygen.generation.refinement.LodOverlayState;
+import com.rhythmatician.voxygen.backend.voxy.VoxyTraversalNodeIdShaderPatch;
 
 class LodOverlayContractTest {
     @AfterEach

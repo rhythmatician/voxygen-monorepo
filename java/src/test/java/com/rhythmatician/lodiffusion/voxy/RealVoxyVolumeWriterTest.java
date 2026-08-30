@@ -7,6 +7,22 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import com.rhythmatician.voxygen.generation.refinement.CompleteChildHandoff;
+import com.rhythmatician.voxygen.worldgen.heightmap.HeightmapFallbackGenerator;
+import com.rhythmatician.voxygen.backend.voxy.RealVoxyVolumeWriter;
+import com.rhythmatician.voxygen.inference.onnx.VoxelPredictionDecoder;
+import com.rhythmatician.voxygen.backend.voxy.VoxyCompat;
+import com.rhythmatician.voxygen.backend.voxy.VoxyTopologyOwnership;
+import com.rhythmatician.voxygen.semantic.Level;
+import com.rhythmatician.voxygen.semantic.SectionPos;
+import com.rhythmatician.voxygen.semantic.VoxelVolume;
+import com.rhythmatician.voxygen.semantic.CanonicalRegistries;
+import com.rhythmatician.voxygen.output.WriteOutcome;
+import com.rhythmatician.voxygen.output.VolumeUnavailableException;
+import com.rhythmatician.voxygen.semantic.WorldSectionCoord;
+import com.rhythmatician.voxygen.generation.refinement.ParentRefinementIntent;
+import com.rhythmatician.voxygen.generation.refinement.ParentRefinementResult;
+import com.rhythmatician.voxygen.generation.refinement.ChildMaterializationOutcome;
 
 /**
  * Deterministic unit tests for the production {@link RealVoxyVolumeWriter}.

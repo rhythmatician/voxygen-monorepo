@@ -2,11 +2,11 @@ package com.rhythmatician.lodiffusion.oracle.capture;
 
 import com.rhythmatician.lodiffusion.oracle.OracleContract;
 import com.rhythmatician.lodiffusion.oracle.OracleFixture;
-import com.rhythmatician.lodiffusion.voxy.BiomeMapping;
-import com.rhythmatician.lodiffusion.voxy.CanonicalRegistries;
-import com.rhythmatician.lodiffusion.voxy.Level;
-import com.rhythmatician.lodiffusion.voxy.SectionPos;
-import com.rhythmatician.lodiffusion.voxy.VoxelVolume;
+import com.rhythmatician.voxygen.semantic.biome.BiomeMapping;
+import com.rhythmatician.voxygen.semantic.CanonicalRegistries;
+import com.rhythmatician.voxygen.semantic.Level;
+import com.rhythmatician.voxygen.semantic.SectionPos;
+import com.rhythmatician.voxygen.semantic.VoxelVolume;
 import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.Map;
@@ -16,6 +16,7 @@ import net.minecraft.registry.Registries;
 import net.minecraft.block.Block;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import com.rhythmatician.voxygen.backend.voxy.VoxyEngine;
 
 /**
  * Captures post-ingest Voxy WorldSections at L0..L4 for the tracer region after
@@ -244,7 +245,7 @@ public final class WorldSectionOracleCapture {
 
     private static Object getWorldEngineReflectively(net.minecraft.world.World level) {
         try {
-            Class<?> ve = Class.forName("com.rhythmatician.lodiffusion.voxy.VoxyEngine");
+            Class<?> ve = Class.forName("com.rhythmatician.voxygen.backend.voxy.VoxyEngine");
             var meth = ve.getDeclaredMethod("getWorldEngine", net.minecraft.world.World.class);
             meth.setAccessible(true);
             return meth.invoke(null, level);
@@ -256,7 +257,7 @@ public final class WorldSectionOracleCapture {
 
     private static Object getMapperReflectively(Object worldEngine) {
         try {
-            Class<?> ve = Class.forName("com.rhythmatician.lodiffusion.voxy.VoxyEngine");
+            Class<?> ve = Class.forName("com.rhythmatician.voxygen.backend.voxy.VoxyEngine");
             var meth = ve.getDeclaredMethod("getMapper", Object.class);
             meth.setAccessible(true);
             return meth.invoke(null, worldEngine);
@@ -268,7 +269,7 @@ public final class WorldSectionOracleCapture {
 
     private static Object acquireWorldSectionIfExists(Object worldEngine, int lvl, int x, int y, int z) {
         try {
-            Class<?> ve = Class.forName("com.rhythmatician.lodiffusion.voxy.VoxyEngine");
+            Class<?> ve = Class.forName("com.rhythmatician.voxygen.backend.voxy.VoxyEngine");
             var meth = ve.getDeclaredMethod("acquireIfExists", Object.class, int.class, int.class, int.class, int.class);
             meth.setAccessible(true);
             return meth.invoke(null, worldEngine, lvl, x, y, z);

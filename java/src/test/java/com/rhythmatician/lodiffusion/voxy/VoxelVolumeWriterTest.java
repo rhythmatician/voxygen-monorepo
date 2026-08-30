@@ -8,6 +8,15 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import com.rhythmatician.voxygen.semantic.biome.BiomeMapping;
+import com.rhythmatician.voxygen.inference.onnx.VoxelPredictionDecoder;
+import com.rhythmatician.voxygen.semantic.Level;
+import com.rhythmatician.voxygen.semantic.SectionPos;
+import com.rhythmatician.voxygen.semantic.VoxelVolume;
+import com.rhythmatician.voxygen.semantic.CanonicalRegistries;
+import com.rhythmatician.voxygen.output.WriteOutcome;
+import com.rhythmatician.voxygen.output.VolumeUnavailableException;
+import com.rhythmatician.voxygen.output.InMemoryVolumeWriter;
 
 /**
  * Deterministic unit tests for the semantic writer contract and

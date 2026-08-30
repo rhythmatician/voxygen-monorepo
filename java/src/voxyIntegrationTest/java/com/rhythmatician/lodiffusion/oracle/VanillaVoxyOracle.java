@@ -1,9 +1,9 @@
 package com.rhythmatician.lodiffusion.oracle;
 
-import com.rhythmatician.lodiffusion.voxy.CanonicalRegistries;
-import com.rhythmatician.lodiffusion.voxy.Level;
-import com.rhythmatician.lodiffusion.voxy.SectionPos;
-import com.rhythmatician.lodiffusion.voxy.VoxelVolume;
+import com.rhythmatician.voxygen.semantic.CanonicalRegistries;
+import com.rhythmatician.voxygen.semantic.Level;
+import com.rhythmatician.voxygen.semantic.SectionPos;
+import com.rhythmatician.voxygen.semantic.VoxelVolume;
 import java.util.EnumMap;
 import java.util.Map;
 import java.util.Objects;

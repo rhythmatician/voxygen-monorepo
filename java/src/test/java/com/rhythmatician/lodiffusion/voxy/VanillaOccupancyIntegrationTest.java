@@ -8,6 +8,17 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
+import com.rhythmatician.voxygen.generation.refinement.DefaultEndRefinement;
+import com.rhythmatician.voxygen.generation.dimension.end.EndL4DeterministicCandidate;
+import com.rhythmatician.voxygen.generation.refinement.EndRefinement;
+import com.rhythmatician.voxygen.generation.scheduling.VanillaFrontierGuardPlanner;
+import com.rhythmatician.voxygen.generation.session.GenerationSession;
+import com.rhythmatician.voxygen.semantic.Level;
+import com.rhythmatician.voxygen.semantic.SectionPos;
+import com.rhythmatician.voxygen.semantic.VoxelVolume;
+import com.rhythmatician.voxygen.output.WriteOutcome;
+import com.rhythmatician.voxygen.generation.refinement.ParentRefinementIntent;
+import com.rhythmatician.voxygen.generation.refinement.ParentRefinementResult;
 
 class VanillaOccupancyIntegrationTest {
     private static final DefaultEndRefinement.Config CONFIG =

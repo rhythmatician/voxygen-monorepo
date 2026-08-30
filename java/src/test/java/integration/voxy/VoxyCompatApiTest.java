@@ -6,7 +6,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
-import com.rhythmatician.lodiffusion.voxy.VoxyCompat;
+import com.rhythmatician.voxygen.backend.voxy.VoxyCompat;
 
 /**
  * Integration tests for VoxyCompat raw API.

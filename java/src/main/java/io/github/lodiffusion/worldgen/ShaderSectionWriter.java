@@ -6,8 +6,8 @@ import java.nio.IntBuffer;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
-import com.rhythmatician.lodiffusion.voxy.TerrainPublicationRoute;
-import com.rhythmatician.lodiffusion.voxy.VoxyCompat;
+import com.rhythmatician.voxygen.generation.TerrainPublicationRoute;
+import com.rhythmatician.voxygen.backend.voxy.VoxyCompat;
 
 import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;

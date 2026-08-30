@@ -15,6 +15,7 @@ import org.jglrxavpok.hephaistos.nbt.NBTCompound;
 import org.jglrxavpok.hephaistos.nbt.NBTLongArray;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import com.rhythmatician.voxygen.semantic.Level;
 
 /**
  * Utility class for extracting chunk data from Minecraft world files.

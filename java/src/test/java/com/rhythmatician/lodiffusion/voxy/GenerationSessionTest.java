@@ -3,6 +3,13 @@ package com.rhythmatician.lodiffusion.voxy;
 import static org.junit.jupiter.api.Assertions.*;
 
 import org.junit.jupiter.api.Test;
+import com.rhythmatician.voxygen.generation.session.GenerationSession;
+import com.rhythmatician.voxygen.semantic.Level;
+import com.rhythmatician.voxygen.semantic.SectionPos;
+import com.rhythmatician.voxygen.semantic.VoxelVolume;
+import com.rhythmatician.voxygen.semantic.CanonicalRegistries;
+import com.rhythmatician.voxygen.output.WriteOutcome;
+import com.rhythmatician.voxygen.output.InMemoryVolumeWriter;
 
 /**
  * Composition tests for the per-world Generation Session and internal

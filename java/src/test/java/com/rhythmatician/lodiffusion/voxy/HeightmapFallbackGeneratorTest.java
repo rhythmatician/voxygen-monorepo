@@ -3,6 +3,7 @@ package com.rhythmatician.lodiffusion.voxy;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.DisplayName;
 import static org.junit.jupiter.api.Assertions.*;
+import com.rhythmatician.voxygen.worldgen.heightmap.HeightmapFallbackGenerator;
 
 /**
  * Unit tests for the heightmap fallback terrain generator.

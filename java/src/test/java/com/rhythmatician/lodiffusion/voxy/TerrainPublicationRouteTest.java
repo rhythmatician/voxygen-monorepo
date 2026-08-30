@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import io.github.lodiffusion.worldgen.ShaderSectionWriter;
 import net.minecraft.util.Identifier;
 import org.junit.jupiter.api.Test;
+import com.rhythmatician.voxygen.generation.TerrainPublicationRoute;
 
 class TerrainPublicationRouteTest {
     @Test

@@ -4,11 +4,11 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import com.rhythmatician.lodiffusion.oracle.ChorusCommonRoiEvaluator.*;
 import com.rhythmatician.lodiffusion.oracle.capture.OracleFixtureWriter;
-import com.rhythmatician.lodiffusion.voxy.CanonicalRegistries;
-import com.rhythmatician.lodiffusion.voxy.EndChorusSynthesizer;
-import com.rhythmatician.lodiffusion.voxy.Level;
-import com.rhythmatician.lodiffusion.voxy.SectionPos;
-import com.rhythmatician.lodiffusion.voxy.VoxelVolume;
+import com.rhythmatician.voxygen.semantic.CanonicalRegistries;
+import com.rhythmatician.voxygen.features.end.chorus.EndChorusSynthesizer;
+import com.rhythmatician.voxygen.semantic.Level;
+import com.rhythmatician.voxygen.semantic.SectionPos;
+import com.rhythmatician.voxygen.semantic.VoxelVolume;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;

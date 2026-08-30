@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import org.junit.jupiter.api.Test;
+import com.rhythmatician.voxygen.backend.voxy.VoxyWorldBinding;
 
 /**
  * Source-contract guards for the VoxyWorldBinding hot path. Behavioral

@@ -8,6 +8,13 @@ import net.minecraft.util.Identifier;
 import net.minecraft.world.World;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
+import com.rhythmatician.voxygen.generation.dimension.DimensionSynthesizer;
+import com.rhythmatician.voxygen.generation.dimension.DimensionSynthesizers;
+import com.rhythmatician.voxygen.generation.dimension.end.EndDimensionSynthesizer;
+import com.rhythmatician.voxygen.generation.dimension.end.ExactL1SamplingTelemetry;
+import com.rhythmatician.voxygen.worldgen.WorldNoiseAccess;
+import com.rhythmatician.voxygen.semantic.Level;
+import com.rhythmatician.voxygen.semantic.SectionPos;
 
 class DimensionSynthesizersContractTest {
 

@@ -4,6 +4,11 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
+import com.rhythmatician.voxygen.generation.dimension.end.EndL4DeterministicCandidate;
+import com.rhythmatician.voxygen.worldgen.WorldNoiseAccess;
+import com.rhythmatician.voxygen.semantic.Level;
+import com.rhythmatician.voxygen.semantic.SectionPos;
+import com.rhythmatician.voxygen.semantic.VoxelVolume;
 
 /**
  * Stage 2 behavior spec (ADR 0011): the model-free End scaffold produces

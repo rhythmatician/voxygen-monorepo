@@ -3,6 +3,10 @@ package com.rhythmatician.lodiffusion.voxy;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import org.junit.jupiter.api.Test;
+import com.rhythmatician.voxygen.generation.dimension.end.ExactEndL1Candidate;
+import com.rhythmatician.voxygen.generation.dimension.end.ExactL1SamplingTelemetry;
+import com.rhythmatician.voxygen.semantic.SectionPos;
+import com.rhythmatician.voxygen.semantic.VoxelVolume;
 
 class ExactL1SamplingTelemetryTest {
     @Test

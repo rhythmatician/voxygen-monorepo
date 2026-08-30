@@ -1,4 +1,5 @@
 package com.rhythmatician.lodiffusion.onnx;
+import com.rhythmatician.voxygen.worldgen.WorldNoiseAccess;
 
 /**
  * TODO: Data generation for biome_ids channel in sparse_octree training npz files.
@@ -38,7 +39,7 @@ package com.rhythmatician.lodiffusion.onnx;
  * - [ ] Remove this stub file once implementation is live
  *
  * @see com.rhythmatician.lodiffusion.gpu.BiomePaletteSSBO
- * @see com.rhythmatician.lodiffusion.voxy.WorldNoiseAccess#sampleNoise3DForSection
+ * @see com.rhythmatician.voxygen.worldgen.WorldNoiseAccess#sampleNoise3DForSection
  */
 public final class SparseOctreeBiomeDataGeneration {
     private SparseOctreeBiomeDataGeneration() {

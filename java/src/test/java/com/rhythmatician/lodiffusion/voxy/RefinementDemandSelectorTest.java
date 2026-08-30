@@ -4,6 +4,9 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import java.util.List;
 import org.junit.jupiter.api.Test;
+import com.rhythmatician.voxygen.generation.refinement.RefinementDemandSelector;
+import com.rhythmatician.voxygen.semantic.Level;
+import com.rhythmatician.voxygen.semantic.SectionPos;
 
 class RefinementDemandSelectorTest {
     /**

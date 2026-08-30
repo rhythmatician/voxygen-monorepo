@@ -3,6 +3,11 @@ package com.rhythmatician.lodiffusion.voxy;
 import static org.junit.jupiter.api.Assertions.*;
 
 import org.junit.jupiter.api.Test;
+import com.rhythmatician.voxygen.features.end.chorus.EndChorusSynthesizer;
+import com.rhythmatician.voxygen.semantic.Level;
+import com.rhythmatician.voxygen.semantic.SectionPos;
+import com.rhythmatician.voxygen.semantic.VoxelVolume;
+import com.rhythmatician.voxygen.semantic.CanonicalRegistries;
 
 /**
  * Synthetic mipper consistency for End chorus.

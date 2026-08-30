@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.junit.jupiter.api.Test;
+import com.rhythmatician.voxygen.generation.refinement.CompleteChildHandoff;
 
 /**
  * A complete handoff is a statement about <em>topology knowledge</em>, not

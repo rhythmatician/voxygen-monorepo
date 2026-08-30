@@ -5,6 +5,7 @@ import java.security.MessageDigest;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
+import com.rhythmatician.voxygen.semantic.Level;
 
 /**
  * Executable/versioned contract for the vanilla->Voxy oracle harness, tracer: End chorus.

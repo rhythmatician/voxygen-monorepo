@@ -1,6 +1,6 @@
 package com.rhythmatician.lodiffusion.world.noise;
 
-import com.rhythmatician.lodiffusion.voxy.BiomeMapping;
+import com.rhythmatician.voxygen.semantic.biome.BiomeMapping;
 
 import net.minecraft.registry.entry.RegistryEntry;
 import net.minecraft.world.biome.Biome;

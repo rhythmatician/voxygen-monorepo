@@ -7,6 +7,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import org.junit.jupiter.api.Test;
+import com.rhythmatician.voxygen.backend.voxy.RealVoxyVolumeWriter;
+import com.rhythmatician.voxygen.generation.refinement.ChildMaterializationOutcome;
 
 /**
  * Source-contract guards for the region-write buffer path. The tracer hot

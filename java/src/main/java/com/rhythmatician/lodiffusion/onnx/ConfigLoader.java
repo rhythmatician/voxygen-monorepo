@@ -17,7 +17,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.reflect.TypeToken;
-import com.rhythmatician.lodiffusion.voxy.CanonicalRegistries;
+import com.rhythmatician.voxygen.semantic.CanonicalRegistries;
 
 /**
  * Loads {@link ModelConfig} from a JSON sidecar produced alongside ONNX models.

@@ -17,7 +17,7 @@
   "environment": "*",
   "entrypoints": {
     "main": [
-      "com.rhythmatician.lodiffusion.HelloTerrainMod"
+      "com.rhythmatician.voxygen.HelloTerrainMod"
     ],
     "client": [
       "com.rhythmatician.lodiffusion.LodiffusionClient",

@@ -10,6 +10,7 @@ import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.render.RenderTickCounter;
 import net.minecraft.text.Text;
 import net.minecraft.util.Identifier;
+import com.rhythmatician.voxygen.generation.refinement.LodOverlayState;
 
 /** Installs the independent LOD overlay command and persistent legend. */
 @SuppressWarnings("null")

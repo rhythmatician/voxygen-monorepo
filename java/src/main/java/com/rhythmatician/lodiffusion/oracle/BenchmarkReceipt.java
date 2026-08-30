@@ -1,6 +1,6 @@
 package com.rhythmatician.lodiffusion.oracle;
 
-import com.rhythmatician.lodiffusion.voxy.Level;
+import com.rhythmatician.voxygen.semantic.Level;
 import java.util.Objects;
 
 /**

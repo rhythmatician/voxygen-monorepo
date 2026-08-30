@@ -3,9 +3,9 @@ package com.rhythmatician.lodiffusion.oracle;
 import static org.junit.jupiter.api.Assertions.*;
 
 import com.rhythmatician.lodiffusion.oracle.synthetic.SyntheticEndChorusFixtureFactory;
-import com.rhythmatician.lodiffusion.voxy.Level;
-import com.rhythmatician.lodiffusion.voxy.SectionPos;
-import com.rhythmatician.lodiffusion.voxy.VoxelVolume;
+import com.rhythmatician.voxygen.semantic.Level;
+import com.rhythmatician.voxygen.semantic.SectionPos;
+import com.rhythmatician.voxygen.semantic.VoxelVolume;
 import org.junit.jupiter.api.Test;
 
 class SyntheticFixtureTest {

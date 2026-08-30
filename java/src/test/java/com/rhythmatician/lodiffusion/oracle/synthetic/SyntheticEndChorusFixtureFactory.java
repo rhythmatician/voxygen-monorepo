@@ -2,11 +2,11 @@ package com.rhythmatician.lodiffusion.oracle.synthetic;
 
 import com.rhythmatician.lodiffusion.oracle.OracleContract;
 import com.rhythmatician.lodiffusion.oracle.OracleFixture;
-import com.rhythmatician.lodiffusion.voxy.CanonicalRegistries;
+import com.rhythmatician.voxygen.semantic.CanonicalRegistries;
 import com.rhythmatician.lodiffusion.oracle.synthetic.SyntheticEndChorusFixtureFactory;
-import com.rhythmatician.lodiffusion.voxy.Level;
-import com.rhythmatician.lodiffusion.voxy.SectionPos;
-import com.rhythmatician.lodiffusion.voxy.VoxelVolume;
+import com.rhythmatician.voxygen.semantic.Level;
+import com.rhythmatician.voxygen.semantic.SectionPos;
+import com.rhythmatician.voxygen.semantic.VoxelVolume;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.EnumMap;

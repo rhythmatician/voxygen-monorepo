@@ -2,7 +2,7 @@ package com.rhythmatician.lodiffusion.oracle;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import com.rhythmatician.lodiffusion.voxy.CanonicalRegistries;
+import com.rhythmatician.voxygen.semantic.CanonicalRegistries;
 import org.junit.jupiter.api.Test;
 
 /**

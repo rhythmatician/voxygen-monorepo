@@ -5,6 +5,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 import com.rhythmatician.lodiffusion.HelloTerrainMod;
+import com.rhythmatician.voxygen.semantic.Level;
 
 /**
  * Performance monitoring utilities for ONNX terrain generation.

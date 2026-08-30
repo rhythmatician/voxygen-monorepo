@@ -10,6 +10,10 @@ import net.minecraft.util.Identifier;
 import net.minecraft.world.World;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import com.rhythmatician.voxygen.generation.refinement.EndRefinement;
+import com.rhythmatician.voxygen.generation.scheduling.LodGenerationService;
+import com.rhythmatician.voxygen.generation.scheduling.VanillaFrontierGuardPlanner;
+import com.rhythmatician.voxygen.generation.session.GenerationSession;
 
 /**
  * Dimension-change-aware rebind tests for issue #151.

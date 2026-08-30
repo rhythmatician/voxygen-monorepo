@@ -1,6 +1,6 @@
 package com.rhythmatician.lodiffusion.gpu;
 
-import com.rhythmatician.lodiffusion.voxy.BiomeMapping;
+import com.rhythmatician.voxygen.semantic.biome.BiomeMapping;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
