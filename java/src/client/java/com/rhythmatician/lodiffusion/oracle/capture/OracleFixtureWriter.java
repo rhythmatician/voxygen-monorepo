@@ -45,7 +45,9 @@ public final class OracleFixtureWriter {
         root.addProperty("provenanceId", fixture.provenanceId());
         root.addProperty("contentSha256", fixture.contentSha256());
         root.addProperty("protocolSha256", fixture.protocolSha256());
+        root.addProperty("captureProtocolSha256", fixture.captureProtocolSha256());
         root.addProperty("evidenceKind", fixture.evidenceKind().name());
+        root.addProperty("evidenceIntegritySha256", fixture.evidenceIntegritySha256());
         root.addProperty("createdAtEpochMs", fixture.createdAtEpochMs());
         root.addProperty("schemaVersion", c.schemaVersion());
         root.addProperty("fixtureFormatVersion", c.fixtureFormatVersion());
@@ -208,34 +210,53 @@ public final class OracleFixtureWriter {
         String provenanceId = root.get("provenanceId").getAsString();
         String contentSha256 = root.get("contentSha256").getAsString();
         long createdAt = root.has("createdAtEpochMs") ? root.get("createdAtEpochMs").getAsLong() : System.currentTimeMillis();
-        // Self-describing v3: validate stored geometry matches expected tracer contract but also preserve file's own blockRegion/perLevel for determinism proof
         String actualCaptureStage = root.has("actualCaptureStage") ? root.get("actualCaptureStage").getAsString() : root.get("authoritativeGenerationStage").getAsString();
         String storedProtocolSha = root.has("protocolSha256") ? root.get("protocolSha256").getAsString() : null;
+        String storedCaptureProtocolSha = root.has("captureProtocolSha256") ? root.get("captureProtocolSha256").getAsString() : null;
+        String storedEvidenceIntegritySha = root.has("evidenceIntegritySha256") ? root.get("evidenceIntegritySha256").getAsString() : null;
         String storedEvidenceKind = root.has("evidenceKind") ? root.get("evidenceKind").getAsString() : null;
         String storedGenerationOrder = root.has("generationOrder") ? root.get("generationOrder").getAsString() : null;
         OracleContract contract = com.rhythmatician.lodiffusion.oracle.EndChorusTracerContract.contract();
-        // Full provenance integrity: generationOrder, protocolSha, evidenceKind must be present and correct
+        // Generation order is immutable capture protocol
         if (storedGenerationOrder == null) throw new IllegalStateException("Fixture missing generationOrder at " + path);
         if (!OracleContract.EXPECTED_GENERATION_ORDER.equals(storedGenerationOrder)) {
             throw new IllegalStateException("Fixture generationOrder '" + storedGenerationOrder + "' != expected '" + OracleContract.EXPECTED_GENERATION_ORDER + "' at " + path + " — generation order is acceptance-bearing");
         }
-        if (storedProtocolSha == null) throw new IllegalStateException("Fixture missing protocolSha256 at " + path + " — fixture not integrity-bound");
-        String currentProtocolSha = contract.protocolSha256();
-        if (!storedProtocolSha.equalsIgnoreCase(currentProtocolSha)) {
-            throw new IllegalStateException("Fixture protocolSha256 " + storedProtocolSha + " != current tracer " + currentProtocolSha + " at " + path + " — provenance out of sync (voxy commit, jar sha, registry, halo evidence, source refs, disposition etc.)");
+        // Capture protocol SHA is the immutable identity — excludes mutable partition/policy state
+        if (storedCaptureProtocolSha == null) throw new IllegalStateException("Fixture missing captureProtocolSha256 at " + path + " — fixture not integrity-bound (immutable capture protocol)");
+        String currentCaptureSha = contract.captureProtocolSha256();
+        if (!storedCaptureProtocolSha.equalsIgnoreCase(currentCaptureSha)) {
+            throw new IllegalStateException("Fixture captureProtocolSha256 " + storedCaptureProtocolSha + " != current tracer " + currentCaptureSha + " at " + path + " — immutable capture provenance out of sync (voxy commit, jar sha, registry, halo, generationOrder, seed, region, etc. — but NOT per-Level dispositions/roles/benchmark)");
         }
-        // Also verify stored protocolSha matches recomputed from stored provenance header (tamper detection)
+        // Verify stored captureProtocol matches recomputed from stored header (tamper detection, immutable)
         try {
-            String recomputedFromStored = reconstructProtocolShaFromJson(root);
-            if (!storedProtocolSha.equalsIgnoreCase(recomputedFromStored)) {
-                throw new IllegalStateException("Fixture protocolSha256 " + storedProtocolSha + " != recomputed from stored provenance " + recomputedFromStored + " at " + path + " — file header tampered");
+            String recomputedCapture = reconstructCaptureProtocolShaFromJson(root);
+            if (!storedCaptureProtocolSha.equalsIgnoreCase(recomputedCapture)) {
+                throw new IllegalStateException("Fixture captureProtocolSha256 " + storedCaptureProtocolSha + " != recomputed from stored provenance " + recomputedCapture + " at " + path + " — file header tampered (immutable capture)");
             }
         } catch (IllegalStateException e) { throw e; } catch (Exception e) {
-            throw new IllegalStateException("Failed to recompute protocolSha from stored header at " + path + ": " + e.getMessage(), e);
+            throw new IllegalStateException("Failed to recompute captureProtocolSha from stored header at " + path + ": " + e.getMessage(), e);
+        }
+        // Legacy full protocolSha is kept for reference but is NOT authoritative for capture validity (mutable). If present, verify but do not fail on mutable mismatch beyond warning.
+        if (storedProtocolSha != null) {
+            try {
+                String recomputedFull = reconstructProtocolShaFromJson(root);
+                if (!storedProtocolSha.equalsIgnoreCase(recomputedFull)) {
+                    throw new IllegalStateException("Fixture protocolSha256 " + storedProtocolSha + " != recomputed " + recomputedFull + " — file header tampered (full)");
+                }
+            } catch (IllegalStateException e) { throw e; } catch (Exception e) {
+                throw new IllegalStateException("Failed to recompute protocolSha at " + path + ": " + e.getMessage(), e);
+            }
         }
         if (storedEvidenceKind == null) throw new IllegalStateException("Fixture missing evidenceKind at " + path);
         OracleFixture.EvidenceKind evidenceKind;
         try { evidenceKind = OracleFixture.EvidenceKind.valueOf(storedEvidenceKind); } catch (Exception e) { throw new IllegalStateException("Invalid evidenceKind '" + storedEvidenceKind + "' at " + path); }
+        // Evidence integrity binding — tampering actualCaptureStage or evidenceKind must fail
+        if (storedEvidenceIntegritySha == null) throw new IllegalStateException("Fixture missing evidenceIntegritySha256 at " + path + " — evidence not integrity-bound");
+        String expectedIntegrity = OracleFixture.computeEvidenceIntegritySha256(storedCaptureProtocolSha, contentSha256, actualCaptureStage, evidenceKind);
+        if (!storedEvidenceIntegritySha.equalsIgnoreCase(expectedIntegrity)) {
+            throw new IllegalStateException("Fixture evidenceIntegritySha256 " + storedEvidenceIntegritySha + " != expected " + expectedIntegrity + " at " + path + " — evidence binding tampered (captureProtocol/content/stage/kind)");
+        }
         // Fail closed on geometry mismatch - immutable oracle provenance must not silently load stale fixture
         if (root.has("blockRegion")) {
             JsonObject brJson = root.getAsJsonObject("blockRegion");
@@ -290,7 +311,91 @@ public final class OracleFixtureWriter {
         if (!computed.equalsIgnoreCase(contentSha256)) {
             throw new IllegalStateException("Fixture contentSha mismatch at " + path + ": file " + contentSha256 + " computed " + computed);
         }
-        return new OracleFixture(contract, map, contentSha256, createdAt, actualCaptureStage, evidenceKind, storedProtocolSha);
+        // Reconstitute fixture with validated evidence binding — REAL_CAPTURE is unforgeable via public constructor
+        if (evidenceKind == OracleFixture.EvidenceKind.REAL_CAPTURE) {
+            return OracleFixture.reconstituteValidatedRealFixture(contract, map, contentSha256, createdAt, actualCaptureStage, evidenceKind, storedCaptureProtocolSha, storedEvidenceIntegritySha);
+        } else {
+            // SYNTHETIC_TEST via public synthetic path (must match captureProtocol and integrity)
+            return new OracleFixture(contract, map, contentSha256, createdAt, actualCaptureStage, evidenceKind, storedCaptureProtocolSha);
+        }
+    }
+
+    private static String reconstructCaptureProtocolShaFromJson(JsonObject root) {
+        try {
+            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+            StringBuilder sb = new StringBuilder(4096);
+            sb.append(root.get("schemaVersion").getAsString()).append('|');
+            sb.append(root.get("responsibilityId").getAsString()).append('|');
+            sb.append(root.get("dimension").getAsString()).append('|');
+            sb.append(root.get("frozenWorldgenProfileId").getAsString()).append('|');
+            sb.append(root.get("minecraftVersion").getAsString()).append('|');
+            sb.append(root.get("minecraftSourceRevision").getAsString()).append('|');
+            sb.append(root.get("minecraftJarSha256").getAsString()).append('|');
+            sb.append(root.get("voxyVersion").getAsString()).append('|');
+            sb.append(root.get("voxyCommit").getAsString()).append('|');
+            sb.append(root.get("voxyArtifactSha256").getAsString()).append('|');
+            sb.append(root.get("canonicalBlockRegistryVersion").getAsString()).append('|');
+            sb.append(root.get("canonicalBlockRegistrySha256").getAsString()).append('|');
+            sb.append(root.get("canonicalBiomeRegistryVersion").getAsString()).append('|');
+            sb.append(root.get("canonicalBiomeRegistrySha256").getAsString()).append('|');
+            var mcArr = root.has("inspectedMinecraftReferences") ? root.getAsJsonArray("inspectedMinecraftReferences") : new com.google.gson.JsonArray();
+            var vxArr = root.has("inspectedVoxyReferences") ? root.getAsJsonArray("inspectedVoxyReferences") : new com.google.gson.JsonArray();
+            java.util.List<String> mcRefs = new java.util.ArrayList<>();
+            for (var e : mcArr) mcRefs.add(e.getAsString());
+            java.util.List<String> vxRefs = new java.util.ArrayList<>();
+            for (var e : vxArr) vxRefs.add(e.getAsString());
+            mcRefs.sort(String::compareTo);
+            vxRefs.sort(String::compareTo);
+            sb.append(String.join("\n", mcRefs)).append('|');
+            sb.append(String.join("\n", vxRefs)).append('|');
+            sb.append(root.get("seed").getAsLong()).append('|');
+            if (root.has("region")) {
+                var r = root.getAsJsonObject("region");
+                sb.append(r.get("originSectionX").getAsInt()).append(',').append(r.get("originSectionY").getAsInt()).append(',').append(r.get("originSectionZ").getAsInt()).append(',').append(r.get("extentSections").getAsInt()).append('|');
+            } else sb.append('|');
+            // blockRegion + per-Level origins + rects
+            com.rhythmatician.lodiffusion.oracle.OracleContract.BlockRegionSpec br = null;
+            if (root.has("blockRegion")) {
+                var brJson = root.getAsJsonObject("blockRegion");
+                br = new com.rhythmatician.lodiffusion.oracle.OracleContract.BlockRegionSpec(
+                        brJson.get("originBlockX").getAsInt(), brJson.get("originBlockY").getAsInt(), brJson.get("originBlockZ").getAsInt(), brJson.get("extentBlocks").getAsInt());
+                sb.append(br.originBlockX()).append(',').append(br.originBlockY()).append(',').append(br.originBlockZ()).append(',').append(br.extentBlocks()).append('|');
+                for (int lvl = 4; lvl >= 0; lvl--) {
+                    var per = br.perLevelWorldSectionOrigin(lvl);
+                    sb.append(per.wsX()).append(',').append(per.wsY()).append(',').append(per.wsZ()).append(',').append(per.level()).append(',').append(per.blockSize()).append(';');
+                }
+                sb.append('|');
+                // halo needed for rects
+                int haloBlocks = 25;
+                if (root.has("halo")) {
+                    var h = root.getAsJsonObject("halo");
+                    haloBlocks = h.get("combinedHaloBlocks").getAsInt();
+                }
+                int[] rect = br.chunkRectWithHalo(haloBlocks);
+                sb.append(rect[0]).append(',').append(rect[1]).append(',').append(rect[2]).append(',').append(rect[3]).append('|');
+                var l4per = br.perLevelWorldSectionOrigin(4);
+                int ws = 32 * (1 << 4);
+                int minBxL4 = l4per.wsX() * ws - haloBlocks;
+                int minBzL4 = l4per.wsZ() * ws - haloBlocks;
+                int maxBxL4 = l4per.wsX() * ws + ws - 1 + haloBlocks;
+                int maxBzL4 = l4per.wsZ() * ws + ws - 1 + haloBlocks;
+                sb.append(Math.floorDiv(minBxL4, 16)).append(',').append(Math.floorDiv(minBzL4, 16)).append(',').append(Math.floorDiv(maxBxL4, 16)).append(',').append(Math.floorDiv(maxBzL4, 16)).append('|');
+            } else sb.append("|||");
+            if (root.has("halo")) {
+                var h = root.getAsJsonObject("halo");
+                sb.append(h.get("featureReachBlocks").getAsInt()).append('|').append(h.get("featureReachEvidence").getAsString()).append('|').append(h.get("featureReachSource").getAsString()).append('|');
+                sb.append(h.get("minecraftGenerationHaloChunks").getAsInt()).append('|').append(h.get("minecraftGenerationHaloEvidence").getAsString()).append('|').append(h.get("minecraftGenerationHaloSource").getAsString()).append('|');
+                sb.append(h.get("voxyMipHaloBlocks").getAsInt()).append('|').append(h.get("voxyMipHaloEvidence").getAsString()).append('|').append(h.get("voxyMipHaloSource").getAsString()).append('|');
+                sb.append(h.get("combinedHaloBlocks").getAsInt()).append('|');
+            } else sb.append("||||||||||");
+            sb.append(root.has("generationOrder") ? root.get("generationOrder").getAsString() : com.rhythmatician.lodiffusion.oracle.OracleContract.EXPECTED_GENERATION_ORDER).append('|');
+            sb.append(root.get("authoritativeGenerationStage").getAsString()).append('|');
+            sb.append(root.get("fixtureFormatVersion").getAsString()).append('|');
+            sb.append(root.get("provenanceId").getAsString()).append('|');
+            // Deliberately EXCLUDE mutable partition/policy state
+            byte[] digest = md.digest(sb.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            return java.util.HexFormat.of().formatHex(digest);
+        } catch (Exception e) { throw new IllegalStateException("reconstruct capture failed: " + e.getMessage(), e); }
     }
 
     private static String reconstructProtocolShaFromJson(JsonObject root) {

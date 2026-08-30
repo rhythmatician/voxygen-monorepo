@@ -101,7 +101,7 @@ public final class WorldSectionOracleCapture {
         // actualCaptureStage is supplied by caller (OracleFileTrigger) via ThreadLocal or via contract's authoritative; for direct calls use FULL if requested
         String actualStage = WorldSectionOracleCapture.ActualStageHolder.get();
         if (actualStage == null) actualStage = contract.authoritativeGenerationStage();
-        OracleFixture fixture = new OracleFixture(contract, volumes, sha, System.currentTimeMillis(), actualStage, OracleFixture.EvidenceKind.REAL_CAPTURE);
+        OracleFixture fixture = OracleFixture.createValidatedRealCaptureFixture(contract, volumes, sha, System.currentTimeMillis(), actualStage);
         LOGGER.info("[OracleCapture] Fixture provenance={} sha={} halo={} stage={} region={} volumes={}", fixture.provenanceId(), sha, contract.halo().combinedHaloBlocks(), stage, origin, volumes.size());
         return fixture;
     }

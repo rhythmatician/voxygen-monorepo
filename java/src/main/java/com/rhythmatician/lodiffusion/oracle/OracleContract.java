@@ -87,8 +87,73 @@ public record OracleContract(
     // Legacy accessor for tests that still use oracleFixtureId name
     public String oracleFixtureId() { return provenanceId(); }
 
-    /** Deterministic SHA-256 over all acceptance-bearing provenance fields (excludes content/volumes/timestamps). */
+    /** @deprecated Full protocol hash including mutable partition/policy — use captureProtocolSha256 for immutable capture identity. */
+    @Deprecated
     public String protocolSha256() { return computeProtocolSha256(this); }
+
+    /** Immutable capture protocol SHA — excludes mutable Worldgen Partition/policy state (per-Level dispositions, claim/dependency roles, benchmark warmup). Changing those via #220 must NOT invalidate existing real fixture. */
+    public String captureProtocolSha256() { return computeCaptureProtocolSha256(this); }
+
+    public static String computeCaptureProtocolSha256(OracleContract c) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            StringBuilder sb = new StringBuilder(4096);
+            sb.append(c.schemaVersion()).append('|');
+            sb.append(c.responsibilityId()).append('|');
+            sb.append(c.dimension()).append('|');
+            sb.append(c.frozenWorldgenProfileId()).append('|');
+            sb.append(c.minecraftVersion()).append('|');
+            sb.append(c.minecraftSourceRevision()).append('|');
+            sb.append(c.minecraftJarSha256()).append('|');
+            sb.append(c.voxyVersion()).append('|');
+            sb.append(c.voxyCommit()).append('|');
+            sb.append(c.voxyArtifactSha256()).append('|');
+            sb.append(c.canonicalBlockRegistryVersion()).append('|');
+            sb.append(c.canonicalBlockRegistrySha256()).append('|');
+            sb.append(c.canonicalBiomeRegistryVersion()).append('|');
+            sb.append(c.canonicalBiomeRegistrySha256()).append('|');
+            var mcRefs = c.inspectedMinecraftReferences() == null ? List.<String>of() : c.inspectedMinecraftReferences().stream().sorted().toList();
+            var vxRefs = c.inspectedVoxyReferences() == null ? List.<String>of() : c.inspectedVoxyReferences().stream().sorted().toList();
+            sb.append(String.join("\n", mcRefs)).append('|');
+            sb.append(String.join("\n", vxRefs)).append('|');
+            sb.append(c.seed()).append('|');
+            if (c.region() != null) {
+                sb.append(c.region().originSectionX()).append(',').append(c.region().originSectionY()).append(',').append(c.region().originSectionZ()).append(',').append(c.region().extentSections()).append('|');
+            } else sb.append('|');
+            var br = c.blockRegionOrDerived();
+            if (br != null) {
+                sb.append(br.originBlockX()).append(',').append(br.originBlockY()).append(',').append(br.originBlockZ()).append(',').append(br.extentBlocks()).append('|');
+                for (int lvl = 4; lvl >= 0; lvl--) {
+                    var per = br.perLevelWorldSectionOrigin(lvl);
+                    sb.append(per.wsX()).append(',').append(per.wsY()).append(',').append(per.wsZ()).append(',').append(per.level()).append(',').append(per.blockSize()).append(';');
+                }
+                sb.append('|');
+                int[] rect = br.chunkRectWithHalo(c.halo() != null ? c.halo().combinedHaloBlocks() : 25);
+                sb.append(rect[0]).append(',').append(rect[1]).append(',').append(rect[2]).append(',').append(rect[3]).append('|');
+                var l4per = br.perLevelWorldSectionOrigin(4);
+                int ws = 32 * (1 << 4);
+                int minBxL4 = l4per.wsX() * ws - (c.halo() != null ? c.halo().combinedHaloBlocks() : 25);
+                int minBzL4 = l4per.wsZ() * ws - (c.halo() != null ? c.halo().combinedHaloBlocks() : 25);
+                int maxBxL4 = l4per.wsX() * ws + ws - 1 + (c.halo() != null ? c.halo().combinedHaloBlocks() : 25);
+                int maxBzL4 = l4per.wsZ() * ws + ws - 1 + (c.halo() != null ? c.halo().combinedHaloBlocks() : 25);
+                sb.append(Math.floorDiv(minBxL4, 16)).append(',').append(Math.floorDiv(minBzL4, 16)).append(',').append(Math.floorDiv(maxBxL4, 16)).append(',').append(Math.floorDiv(maxBzL4, 16)).append('|');
+            } else sb.append("|||");
+            var h = c.halo();
+            if (h != null) {
+                sb.append(h.featureReachBlocks()).append('|').append(h.featureReachEvidence()).append('|').append(h.featureReachSource()).append('|');
+                sb.append(h.minecraftGenerationHaloChunks()).append('|').append(h.minecraftGenerationHaloEvidence()).append('|').append(h.minecraftGenerationHaloSource()).append('|');
+                sb.append(h.voxyMipHaloBlocks()).append('|').append(h.voxyMipHaloEvidence()).append('|').append(h.voxyMipHaloSource()).append('|');
+                sb.append(h.combinedHaloBlocks()).append('|');
+            } else sb.append("||||||||||");
+            sb.append(c.generationOrder() != null ? c.generationOrder() : EXPECTED_GENERATION_ORDER).append('|');
+            sb.append(c.authoritativeGenerationStage()).append('|');
+            sb.append(c.fixtureFormatVersion()).append('|');
+            sb.append(c.provenanceId()).append('|');
+            // Deliberately EXCLUDE mutable partition/policy state: perLevelDecisions, roles, benchmarkPolicy
+            byte[] digest = md.digest(sb.toString().getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(digest);
+        } catch (Exception e) { throw new RuntimeException(e); }
+    }
 
     public static String computeProtocolSha256(OracleContract c) {
         try {
