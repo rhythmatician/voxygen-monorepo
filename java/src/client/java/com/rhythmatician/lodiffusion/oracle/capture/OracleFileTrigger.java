@@ -99,13 +99,14 @@ public final class OracleFileTrigger {
             Files.deleteIfExists(REQUEST_PATH);
             return;
         }
-        String doneJson = "{\n  \"provenanceId\": \"" + fixture.provenanceId() + "\",\n"
-                + "  \"contentSha256\": \"" + fixture.contentSha256() + "\",\n"
-                + "  \"fixturePath\": \"" + out.toString().replace("\"", "\\\"") + "\",\n"
-                + "  \"actualCaptureStage\": \"" + fixture.actualCaptureStage() + "\",\n"
-                + "  \"authoritativeGenerationStage\": \"" + contract.authoritativeGenerationStage() + "\",\n"
-                + "  \"report\": \"" + report.toString().replace("\n", "\\n").replace("\"", "\\\"") + "\"\n"
-                + "}\n";
+        com.google.gson.JsonObject doneRoot = new com.google.gson.JsonObject();
+        doneRoot.addProperty("provenanceId", fixture.provenanceId());
+        doneRoot.addProperty("contentSha256", fixture.contentSha256());
+        doneRoot.addProperty("fixturePath", out.toString());
+        doneRoot.addProperty("actualCaptureStage", fixture.actualCaptureStage());
+        doneRoot.addProperty("authoritativeGenerationStage", contract.authoritativeGenerationStage());
+        doneRoot.addProperty("report", report.toString());
+        String doneJson = new com.google.gson.GsonBuilder().setPrettyPrinting().create().toJson(doneRoot);
         Files.createDirectories(DONE_PATH.getParent());
         Files.writeString(DONE_PATH, doneJson);
         LOGGER.info("[OracleFileTrigger] Done file written: {} report:\n{}", DONE_PATH.toAbsolutePath(), report);
