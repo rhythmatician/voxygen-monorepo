@@ -16,14 +16,63 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 
 def _find_repo_root() -> Path:
-    cur = Path(__file__).resolve()
-    for _ in range(6):
-        if (cur.parent / "python" / "servers.yaml").exists() or (
-            cur.parent / "servers.yaml"
-        ).exists():
-            return cur.parent
-        cur = cur.parent
+    # Use parents[3] directly for this file location (python/voxel_tree/oracle/...)
+    cur = Path(__file__).resolve().parents[3]
+    if (cur / "python" / "servers.yaml").exists() or (cur / "servers.yaml").exists():
+        return cur
+    cur2 = Path(__file__).resolve()
+    for _ in range(7):
+        if (cur2 / "python" / "servers.yaml").exists() or (cur2 / "servers.yaml").exists():
+            return cur2
+        cur2 = cur2.parent
     return Path(__file__).resolve().parents[3]
+
+
+def _rcon_has_players(lst: str | None) -> bool:
+    """Robust check for >0 players in RCON list output.
+
+    RCON 'list' returns 'There are X of a max of 20 players online: ...'.
+    Naive substring check for '0 players' fails because '20 players'
+    always contains '0 players' as substring. Use regex to parse the
+    actual online count.
+    """
+    if not lst:
+        return False
+    low = lst.lower()
+    if "players online" not in low:
+        return False
+    import re
+
+    m = re.search(r"there are (\d+) of a max", low)
+    if m:
+        try:
+            return int(m.group(1)) > 0
+        except ValueError:
+            pass
+    # Fallback: explicit 0 check without false positive from '20 players'
+    if "there are 0 of a max" in low:
+        return False
+    # If we can't parse, assume any non-zero listing with names after colon has players
+    if ":" in lst:
+        after = lst.split(":", 1)[1].strip()
+        if after:
+            return True
+    return False
+
+
+def _rcon_is_zero_players(lst: str | None) -> bool:
+    if not lst:
+        return True
+    low = lst.lower()
+    import re
+
+    m = re.search(r"there are (\d+) of a max", low)
+    if m:
+        try:
+            return int(m.group(1)) == 0
+        except ValueError:
+            pass
+    return "there are 0 of a max" in low or "0 players online" in low
 
 
 REPO_ROOT = _find_repo_root()
@@ -70,9 +119,9 @@ ORACLE_ROLE = {
     "captureStage": "FULL",
 }
 
-REQUEST_PATH = Path("config/oracle_capture_request.json")
-DONE_PATH = Path("config/oracle_capture_done.json")
-INGEST_ACK_PATH = Path("config/oracle_ingest_ack.json")
+REQUEST_PATH = REPO_ROOT / "java" / "run" / "config" / "oracle_capture_request.json"
+DONE_PATH = REPO_ROOT / "java" / "run" / "config" / "oracle_capture_done.json"
+INGEST_ACK_PATH = REPO_ROOT / "java" / "run" / "config" / "oracle_ingest_ack.json"
 FIXTURE_PATH = Path(
     "java/oracle-fixtures/end_chorus__s42__b1600_64_128_e32__fh8_gh1c_vh1_ch25__mc1.21.11_voxy0.2.11-alpha__fmtv3.json"
 )
@@ -302,16 +351,29 @@ def _start_oracle_server_via_manager() -> bool:
         if not _RUNTIME_DIR.exists():
             print(f"[oracle] Runtime dir not found at {_RUNTIME_DIR}", file=sys.stderr)
             return False
+        import pathlib as _pl2
         import subprocess
+        import os as _os
 
+        _jdk25 = _pl2.Path(r"C:\Program Files\Eclipse Adoptium\jdk-25.0.4.101-hotspot\bin\java.exe")
+        _java_cmd = str(_jdk25) if _jdk25.exists() else "java"
+        if (
+            "JAVA_HOME" in _os.environ
+            and _pl2.Path(_os.environ["JAVA_HOME"], "bin", "java.exe").exists()
+        ):
+            _java_cmd = str(_pl2.Path(_os.environ["JAVA_HOME"], "bin", "java.exe"))
+        _env = dict(_os.environ)
+        if _jdk25.exists():
+            _env["JAVA_HOME"] = r"C:\Program Files\Eclipse Adoptium\jdk-25.0.4.101-hotspot"
         print(
-            f"[oracle] Launching oracle server (nonblocking) java {' '.join(_JVM_FLAGS)} -jar {_JAR_PATH.name} --nogui cwd={_RUNTIME_DIR} respecting patched server.properties"
+            f"[oracle] Launching oracle server (nonblocking) {_java_cmd} {' '.join(_JVM_FLAGS)} -jar {_JAR_PATH.name} --nogui cwd={_RUNTIME_DIR} respecting patched server.properties"
         )
         proc = subprocess.Popen(
-            ["java", *_JVM_FLAGS, "-jar", str(_JAR_PATH), "--nogui"],
+            [_java_cmd, *_JVM_FLAGS, "-jar", str(_JAR_PATH), "--nogui"],
             cwd=str(_RUNTIME_DIR),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            env=_env,
         )
         print(f"[oracle] Started oracle server pid={proc.pid}, waiting for RCON...")
         return True
@@ -511,13 +573,20 @@ def _start_oracle_client_via_gradlew() -> bool:
             "localhost", ORACLE_ROLE["rcon_port"], ORACLE_ROLE["rcon_password"], timeout=2
         ) as rc:
             lst = rc.command("list")
-            if lst and "0 players" not in lst.lower() and "players online" in lst.lower():
+            if _rcon_has_players(lst):
                 print(f"[oracle] Client already connected: {lst}")
                 return True
     except Exception:
         pass
+    import pathlib as _pl3
     import subprocess
+    import os as _os2
 
+    _jdk25_c = _pl3.Path(r"C:\Program Files\Eclipse Adoptium\jdk-25.0.4.101-hotspot")
+    _env2 = dict(_os2.environ)
+    if _jdk25_c.exists():
+        _env2["JAVA_HOME"] = str(_jdk25_c)
+        _env2["PATH"] = str(_jdk25_c / "bin") + ";" + _env2.get("PATH", "")
     args = ["--no-daemon", "deployToRunMods", "runClient", "--console=plain"]
     print(f"[oracle] Launching AFK DataHarvester client: {gradlew} {' '.join(args)} cwd={java_dir}")
     try:
@@ -530,6 +599,7 @@ def _start_oracle_client_via_gradlew() -> bool:
             cwd=str(java_dir),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            env=_env2,
         )
         _ORACLE_CLIENT_PROC = proc
         print(
@@ -545,11 +615,7 @@ def _start_oracle_client_via_gradlew() -> bool:
                 ) as rc2:
                     lst2 = rc2.command("list")
                     print(f"[oracle] RCON list poll: {lst2}")
-                    if (
-                        lst2
-                        and "0 players" not in lst2.lower()
-                        and "players online" in lst2.lower()
-                    ):
+                    if _rcon_has_players(lst2):
                         print(f"[oracle] AFK client connected: {lst2}")
                         return True
             except Exception:
@@ -583,7 +649,7 @@ def _wait_for_client_via_rcon(timeout: int = 60) -> bool:
             ) as rc:
                 lst = rc.command("list")
                 print(f"[oracle] Waiting for client: {lst}")
-                if lst and "players online" in lst.lower() and "0 players" not in lst.lower():
+                if _rcon_has_players(lst):
                     return True
         except Exception:
             pass
@@ -816,7 +882,7 @@ def _run_ingest_via_rcon(radius_chunks: int | None = None) -> None:
             list_resp = rc.command("list")
             print(f"[oracle] Checking eligible player in End, list: {list_resp}")
             # We still require at least one player; if none, fail
-            if "0 players" in list_resp or "players online: 0" in list_resp.lower():
+            if _rcon_is_zero_players(list_resp):
                 print(
                     "[oracle] ERROR: No eligible player in The End for ingest - DataHarvester requires client in same dimension as activeLevel",
                     file=sys.stderr,
@@ -1108,8 +1174,7 @@ def main(argv: list[str] | None = None) -> None:
                     "localhost", ORACLE_ROLE["rcon_port"], ORACLE_ROLE["rcon_password"], timeout=2
                 ) as _rc:
                     lst = _rc.command("list")
-                    if "players online" in lst.lower():
-                        # At least one player online
+                    if _rcon_has_players(lst):
                         break
             except Exception:
                 pass
@@ -1173,7 +1238,7 @@ def main(argv: list[str] | None = None) -> None:
                     "localhost", ORACLE_ROLE["rcon_port"], ORACLE_ROLE["rcon_password"], timeout=2
                 ) as _rc2:
                     lst = _rc2.command("list")
-                    if "players online" in lst.lower() and "0 players" not in lst.lower():
+                    if _rcon_has_players(lst):
                         break
             except Exception:
                 pass
@@ -1262,7 +1327,7 @@ def main(argv: list[str] | None = None) -> None:
                     "localhost", ORACLE_ROLE["rcon_port"], ORACLE_ROLE["rcon_password"], timeout=2
                 ) as _rc3:
                     lst = _rc3.command("list")
-                    if "players online" in lst.lower() and "0 players" not in lst.lower():
+                    if _rcon_has_players(lst):
                         break
             except Exception:
                 pass
