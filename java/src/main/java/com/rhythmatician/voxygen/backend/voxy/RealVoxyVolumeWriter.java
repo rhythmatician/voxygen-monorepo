@@ -339,13 +339,11 @@ public final class RealVoxyVolumeWriter implements VoxelVolumeWriter {
     private static boolean checkExistsViaAcquire(
             Object worldEngine, int lvl, int wsX, int wsY, int wsZ) {
         try {
-            Object sec = VoxyEngine.acquireIfExists(worldEngine, lvl, wsX, wsY, wsZ);
-            if (sec != null) {
-                try {
-                    boolean full = VoxyEngine.isNonEmptyChildrenFull(sec);
-                    return full;
-                } finally {
-                    VoxyEngine.releaseSection(sec);
+            VoxyEngine.AcquiredSection acquired =
+                    VoxyEngine.AcquiredSection.acquireIfExists(worldEngine, lvl, wsX, wsY, wsZ);
+            if (acquired != null) {
+                try (acquired) {
+                    return VoxyEngine.isNonEmptyChildrenFull(acquired.get());
                 }
             }
             return false;
@@ -354,7 +352,7 @@ public final class RealVoxyVolumeWriter implements VoxelVolumeWriter {
         } catch (IllegalStateException | LinkageError e) {
             throw new VolumeUnavailableException("Voxy not available: " + e.getMessage(), e);
         } catch (Exception e) {
-            LOGGER.warn("checkExistsViaAcquire failed lvl={} ws=({},{},{}): {}", lvl, wsX, wsY, wsZ, e.toString());
+            LOGGER.warn("checkExistsViaAcquire failed lvl={} ws=({},{},{}): {}", lvl, wsX, wsY, wsZ, e.toString(), e);
             // Conservative: if we cannot verify, do not claim existence; caller will write.
             return false;
         }

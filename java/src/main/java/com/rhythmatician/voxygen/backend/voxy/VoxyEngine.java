@@ -71,6 +71,31 @@ public final class VoxyEngine {
     private static Field  savingServiceField;    // VoxyInstance.savingService → SectionSavingService
     private static Method getTaskCountMethod;    // SectionSavingService.getTaskCount() → int
 
+    // Acquired-section helper — same contract as VoxyWorldBinding.AcquiredSection
+    // but local to avoid circular dependency.
+    static final class AcquiredSection implements AutoCloseable {
+        private final Object section;
+
+        private AcquiredSection(Object section) {
+            this.section = section;
+        }
+
+        static AcquiredSection acquireIfExists(Object worldEngine, int lvl, int wsX, int wsY, int wsZ)
+                throws Exception {
+            Object s = acquireIfExistsMethod.invoke(worldEngine, lvl, wsX, wsY, wsZ);
+            return s == null ? null : new AcquiredSection(s);
+        }
+
+        Object get() {
+            return section;
+        }
+
+        @Override
+        public void close() throws Exception {
+            worldSectionReleaseMethod.invoke(section);
+        }
+    }
+
     private VoxyEngine() {}
 
     // ------------------------------------------------------------------ //
@@ -273,16 +298,17 @@ public final class VoxyEngine {
                                          int sectionX, int sectionY, int sectionZ) {
         ensureEngineBindings();
         try {
-            // acquireIfExists(lvl=0, x, y, z) returns null if no data present
-            Object section = acquireIfExistsMethod.invoke(
+            AcquiredSection acquired = AcquiredSection.acquireIfExists(
                     worldEngine, 0, sectionX, sectionY, sectionZ);
-            if (section != null) {
-                worldSectionReleaseMethod.invoke(section);
+            if (acquired != null) {
+                try (acquired) {
+                    // existence confirmed
+                }
                 return true;
             }
             return false;
         } catch (Exception e) {
-            LOGGER.warn("sectionExists check failed: " + e.getMessage());
+            LOGGER.warn("sectionExists check failed", e);
             return false;  // fail open — allow generation
         }
     }
