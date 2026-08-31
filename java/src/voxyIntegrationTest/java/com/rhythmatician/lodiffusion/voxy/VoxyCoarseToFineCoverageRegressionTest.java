@@ -1,5 +1,7 @@
 package com.rhythmatician.lodiffusion.voxy;
 
+import com.rhythmatician.voxygen.backend.voxy.VoxyTopologyOwnership;
+import com.rhythmatician.voxygen.backend.voxy.VoxyWorldBinding;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 

@@ -2,6 +2,12 @@ package com.rhythmatician.lodiffusion.voxy;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import com.rhythmatician.voxygen.features.end.chorus.EndChorusSynthesizer;
+import com.rhythmatician.voxygen.semantic.CanonicalRegistries;
+import com.rhythmatician.voxygen.semantic.Level;
+import com.rhythmatician.voxygen.semantic.SectionPos;
+import com.rhythmatician.voxygen.semantic.VoxelVolume;
+
 import me.cortex.voxy.common.world.other.Mapper;
 import me.cortex.voxy.common.world.other.Mipper;
 import org.junit.jupiter.api.Test;
