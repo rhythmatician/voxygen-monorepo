@@ -8,7 +8,6 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.world.World;
 import com.rhythmatician.voxygen.generation.TerrainPublicationRoute;
-import com.rhythmatician.voxygen.worldgen.WorldNoiseAccess;
 import com.rhythmatician.voxygen.generation.session.GenerationSession;
 
 /**
@@ -17,55 +16,11 @@ import com.rhythmatician.voxygen.generation.session.GenerationSession;
  * <p>Owns no candidate-specific resources; all per-world bindings
  * ({@code WorldNoiseAccess}, {@code NoiseRouterSamplerFactory},
  * {@code VoxyModelRunner}, caches, queues) live in the session.
- * This class retains only global singleton publication and a few static
- * helpers ({@link #isOutOfWorldY}, {@link #sectionKey}, {@link ColumnContext})
- * required by external callers ({@code ChunkScheduler}, {@code SectionTask},
- * tests).
+ * This class retains only global singleton publication and lifecycle
+ * delegation (start/stop/rebind/position/observations) around the session.
  */
 @SuppressWarnings("unused")
 public final class LodGenerationService {
-
-    /** How many sections of Y range to generate (from y=-64 upward). */
-    // Source of truth: GenerationSession.Y_SECTIONS
-    public static final int Y_SECTIONS = GenerationSession.Y_SECTIONS;
-    public static final int Y_BASE_SECTION = GenerationSession.Y_BASE_SECTION;
-
-    /** Minimum block Y in the Minecraft world (floor of bedrock). */
-    public static final int MIN_WORLD_BLOCK_Y = GenerationSession.MIN_WORLD_BLOCK_Y;
-    /** Maximum block Y in the Minecraft world (exclusive). */
-    public static final int MAX_WORLD_BLOCK_Y = GenerationSession.MAX_WORLD_BLOCK_Y;
-
-    /**
-     * Returns {@code true} if the entire world-section at the given level and
-     * Y coordinate falls outside the Minecraft world Y range.
-     */
-    public static boolean isOutOfWorldY(int level, int wsY) {
-        return GenerationSession.isOutOfWorldY(level, wsY);
-    }
-
-    /** Generation radius (in sections). */
-    // Mirrors GenerationSession.GENERATION_RADIUS — same config key
-    private static final int GENERATION_RADIUS = GenerationSession.GENERATION_RADIUS;
-
-    // Synthetic heightmap constants for test-visible fallback (mirrors GenerationSession)
-    // Mirrors GenerationSession.SEA_LEVEL — source of truth in session
-    private static final float SEA_LEVEL = GenerationSession.SEA_LEVEL;
-    private static final float HEIGHT_AMPLITUDE = GenerationSession.HEIGHT_AMPLITUDE;
-
-    /**
-     * Pre-sampled conditioning data for a single 16x16 column.
-     * Retained here for {@code ChunkScheduler.ColumnContextProvider} and {@code SectionTask}.
-     * Shape mirrors {@link GenerationSession.ColumnContext} — source of truth is the session;
-     * this public record is kept for external callers and is kept in sync via the shared
-     * field names and fallback heightmap logic. A future extraction to a shared
-     * {@code ColumnContext} type can replace both if the API stabilizes.
-     */
-    public record ColumnContext(
-        float[][] rawHm,
-        int[][] biomeIdx,
-        float[][] hp5,
-        float[][] oceanFloorHm
-    ) {}
 
     /**
      * Mod-wide singleton reference — set by {@code LodiffusionClient} during
@@ -91,20 +46,6 @@ public final class LodGenerationService {
     /** Durable per-world observations replayed into every newly bound End session. */
     private final java.util.Map<RegistryKey<World>, java.util.Set<Long>> observedVanillaChunks =
             new java.util.HashMap<>();
-
-    /**
-     * Pack section coordinates into a single long key for deduplication.
-     * Each axis uses 20 bits, supporting +/-524287 sections.
-     */
-    public static long sectionKey(int x, int y, int z) {
-        return GenerationSession.sectionKey(x, y, z);
-    }
-
-    // Synthetic fallback retained for L1AvailabilityContractTest reflection.
-    // Delegates to GenerationSession — source of truth for synthetic fallback
-    public float[][] buildHeightmap(int sectionX, int sectionZ) {
-        return GenerationSession.buildHeightmap(sectionX, sectionZ);
-    }
 
     /**
      * Begin loading the Voxy ONNX model set — delegates to the active session

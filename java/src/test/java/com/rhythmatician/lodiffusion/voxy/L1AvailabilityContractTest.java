@@ -7,7 +7,7 @@ import java.lang.reflect.Modifier;
 import org.junit.jupiter.api.Test;
 import com.rhythmatician.voxygen.semantic.biome.AnchorSampler;
 import com.rhythmatician.voxygen.worldgen.heightmap.HeightmapFallbackGenerator;
-import com.rhythmatician.voxygen.generation.scheduling.LodGenerationService;
+import com.rhythmatician.voxygen.generation.session.GenerationSession;
 import com.rhythmatician.voxygen.worldgen.WorldNoiseAccess;
 
 /**
@@ -18,7 +18,7 @@ import com.rhythmatician.voxygen.worldgen.WorldNoiseAccess;
  * <ul>
  *   <li>WorldNoiseAccess.tryCreate(null, …) is null-safe (dedicated-client / pre-world-bind →
  *       synthetic fallback).
- *   <li>When noiseAccess is null, consumers never NPE — LodGenerationService.buildColumnContext falls
+ *   <li>When noiseAccess is null, consumers never NPE — GenerationSession.buildColumnContext falls
  *       through synthetic path (no second sampling stack).
  *   <li>HeightmapFallbackGenerator is stateless and noise-free (no ChunkNoiseSampler / DensityFunction).
  *   <li>AnchorSampler.sampleFromNoise explicitly requires non-null (guard lives at service).
@@ -44,12 +44,12 @@ class L1AvailabilityContractTest {
 
     @Test
     void syntheticBuildHeightmap_deterministic_rangeClamped() throws Exception {
-        LodGenerationService svc = new LodGenerationService();
+        GenerationSession svc = new GenerationSession();
         // Reflection: buildHeightmap is private synthetic fallback with no public accessor.
         // Direct access would require widening production visibility; reflection keeps
         // the fallback contract testable without changing the service API.
         // TODO: consider @VisibleForTesting package-private if this invariant grows.
-        Method m = LodGenerationService.class.getDeclaredMethod("buildHeightmap", int.class, int.class);
+        Method m = GenerationSession.class.getDeclaredMethod("buildHeightmap", int.class, int.class);
         m.setAccessible(true);
 
         float[][] a = (float[][]) m.invoke(svc, 0, 0);
@@ -79,7 +79,7 @@ class L1AvailabilityContractTest {
     @Test
     void sampleFromNoise_nullNoiseAccess_throws() {
         // AnchorSampler.sampleFromNoise is intentionally non-null-safe; the L1 contract
-        // requires LodGenerationService.buildColumnContext to not call it when null.
+        // requires GenerationSession.buildColumnContext to not call it when null.
         assertThrows(
                 NullPointerException.class,
                 () -> AnchorSampler.sampleFromNoise(null, 0, 0),
@@ -88,7 +88,7 @@ class L1AvailabilityContractTest {
 
     @Test
     void syntheticBiome_fallback_isConstant_whenNoNoiseNoChunk() {
-        // The synthetic branch in LodGenerationService assigns int[16][16] filled with 1.
+        // The synthetic branch in GenerationSession assigns int[16][16] filled with 1.
         // This test pins that invariant without needing a loaded chunk/world.
         int[][] synthetic = new int[16][16];
         for (int[] row : synthetic) java.util.Arrays.fill(row, 1);

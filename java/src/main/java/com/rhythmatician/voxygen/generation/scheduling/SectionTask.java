@@ -1,5 +1,6 @@
 package com.rhythmatician.voxygen.generation.scheduling;
 
+import com.rhythmatician.voxygen.generation.session.GenerationSession;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -44,7 +45,7 @@ public final class SectionTask implements Comparable<SectionTask> {
     /** Chunk-section Z coordinate. */
     public final int sectionZ;
 
-    /** Packed key for deduplication: same encoding as LodGenerationService.sectionKey(). */
+    /** Packed key for deduplication: same encoding as GenerationSession.sectionKey(). */
     public final long key;
 
     /**
@@ -65,7 +66,7 @@ public final class SectionTask implements Comparable<SectionTask> {
      * Column conditioning data shared across all Y sections in the same column.
      * Set before enqueue, read by all stage workers.  Immutable record.
      */
-    volatile LodGenerationService.ColumnContext columnContext;
+    volatile GenerationSession.ColumnContext columnContext;
 
     /**
      * Binary solid-occupancy parent derived from the previous stage's argmax (class 0 = air).

@@ -1,7 +1,6 @@
 package com.rhythmatician.voxygen.backend.voxy;
 import com.rhythmatician.voxygen.semantic.VoxelVolume;
 import com.rhythmatician.voxygen.output.VoxelVolumeWriter;
-import com.rhythmatician.voxygen.generation.scheduling.LodGenerationService;
 
 /**
  * Thin facade over the Voxy compatibility layer.
@@ -26,7 +25,7 @@ import com.rhythmatician.voxygen.generation.scheduling.LodGenerationService;
  * {@link VoxelVolumeWriter}; new code must use that interface. This facade is retained
  * solely for backwards compatibility during migration ( {@code LoDiffusionClient},
  * {@code ShaderSectionWriter}, {@code WorldGenEventHandler}, and
- * {@code LodGenerationService} still call through here).
+ * generation lifecycle still calls through here).
  * It will be reduced to package-private / removed in a follow-up PR once all callers
  * are funneled through {@link RealVoxyVolumeWriter} / {@link VoxelVolumeWriter}.
  *
@@ -35,7 +34,7 @@ import com.rhythmatician.voxygen.generation.scheduling.LodGenerationService;
  * ({@code l0Index}, {@code composeVoxel}, {@code writeAtLevel}, etc.) leaks
  * storage details (YZX order, nativeRes clamp, CAS + markDirty) that the seam hides.
  * If you need a Voxy write from outside the package, obtain a {@link VoxelVolumeWriter}
- * via {@link RealVoxyVolumeWriter} construction (see {@code LodGenerationService}).
+ * via {@link RealVoxyVolumeWriter} construction (see {@code GenerationSession}).
  *
  * <p><b>Middle-Man justification (Fowler):</b> this class is pure delegation by design.
  * It is the <em>seam boundary</em> between the {@code voxy} deep module and the rest of
