@@ -2,6 +2,9 @@ package com.rhythmatician.lodiffusion.world.noise;
 
 import com.rhythmatician.lodiffusion.HelloTerrainMod;
 
+import net.minecraft.registry.RegistryKey;
+import net.minecraft.util.Identifier;
+import net.minecraft.world.World;
 import net.minecraft.world.gen.densityfunction.DensityFunction;
 import net.minecraft.world.gen.noise.NoiseConfig;
 import net.minecraft.world.gen.noise.NoiseRouter;
@@ -37,6 +40,7 @@ import net.minecraft.world.gen.noise.NoiseRouter;
 public final class VanillaNoiseRouterSampler implements NoiseRouterSampler {
 
     private final NoiseConfig noiseConfig;
+    private final RegistryKey<World> dimension;
 
     /**
      * Lazily resolved and cached density functions for the 15 router fields.
@@ -48,11 +52,34 @@ public final class VanillaNoiseRouterSampler implements NoiseRouterSampler {
      * @param noiseConfig the server's NoiseConfig (never null)
      */
     public VanillaNoiseRouterSampler(NoiseConfig noiseConfig) {
+        this(noiseConfig, null);
+    }
+
+    /**
+     * @param noiseConfig the server's NoiseConfig (never null)
+     * @param dimension   bound dimension; null means Overworld (legacy/test), non-Overworld fails closed
+     */
+    public VanillaNoiseRouterSampler(NoiseConfig noiseConfig, RegistryKey<World> dimension) {
         this.noiseConfig = noiseConfig;
+        this.dimension = dimension;
+    }
+
+    /**
+     * Test-only constructor that injects resolved functions directly without requiring
+     * a live {@link NoiseConfig}. Avoids mocking Minecraft registry classes in headless tests.
+     *
+     * @param functions pre-resolved 15 density functions (index matches {@link RouterField#ordinal()})
+     * @param dimension bound dimension; null means Overworld
+     */
+    VanillaNoiseRouterSampler(DensityFunction[] functions, RegistryKey<World> dimension, boolean direct) {
+        this.noiseConfig = null;
+        this.dimension = dimension;
+        this.resolvedFunctions = functions.clone();
     }
 
     @Override
     public SectionNoiseData sampleSection(int sectionX, int sectionY, int sectionZ) {
+        ensureSupportedDimension();
         DensityFunction[] dfs = getResolvedFunctions();
         float[] flat = new float[SectionNoiseData.FLAT_LENGTH];
 
@@ -82,6 +109,20 @@ public final class VanillaNoiseRouterSampler implements NoiseRouterSampler {
     @Override
     public String backendName() {
         return "vanilla_cpu";
+    }
+
+    // ── Overworld-only validation ───────────────────────────────────────
+
+    private void ensureSupportedDimension() {
+        if (dimension == null) return; // legacy/test path treated as Overworld
+        Identifier id = dimension.getValue();
+        if (!id.equals(Identifier.of("minecraft", "overworld"))) {
+            throw new UnsupportedOperationException(
+                    "SectionNoiseData Overworld-only lattice (4×2×4 → 480 floats, spacing 4/8/4) "
+                    + "not supported for dimension " + id
+                    + " — supported: " + SectionNoiseData.SUPPORTED_DIMENSION
+                    + ". Nether/End must not use the Overworld sampler; see NoiseRouterSamplerFactory.");
+        }
     }
 
     // ── internals ─────────────────────────────────────────────────────
