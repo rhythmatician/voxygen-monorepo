@@ -1060,17 +1060,20 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
   if (eligible.length > 0) {
     const iterationPlan = planIssuesForIteration(eligible, {
       requestedIssueNumber: ITERATION_CONTROL.requestedIssueNumber,
+      requestedIssueNumbers: ITERATION_CONTROL.requestedIssueNumbers,
     });
     if (iterationPlan.mode === "qualified") {
       plannedIssues = iterationPlan.plannedIssues;
-      console.log(`Qualification mode: explicitly selected issue #${plannedIssues[0]!.id} only.`);
+      const ids = plannedIssues.map((p) => `#${p.id}`).join(", ");
+      console.log(`Qualification mode: explicitly selected ${plannedIssues.length === 1 ? `issue ${ids} only.` : `issues ${ids} only.`}`);
     } else if (iterationPlan.mode === "qualify-unsupported") {
-      const requestedIssueNumber = ITERATION_CONTROL.requestedIssueNumber!;
-      const isResearchTarget = researchEligible.some((r) => String(r.number) === requestedIssueNumber);
+      const requested = ITERATION_CONTROL.requestedIssueNumbers ?? (ITERATION_CONTROL.requestedIssueNumber ? [ITERATION_CONTROL.requestedIssueNumber] : []);
+      const requestedStr = requested.join(", #");
+      const isResearchTarget = requested.some((id) => researchEligible.some((r) => String(r.number) === id));
       if (isResearchTarget) {
-        console.log(`Qualification mode requested issue #${requestedIssueNumber} is a research ticket — skipping implementation, dispatching research only`);
+        console.log(`Qualification mode requested issue #${requestedStr} is a research ticket — skipping implementation, dispatching research only`);
       } else {
-        console.log(`Qualification mode requested issue #${requestedIssueNumber}, but it is not eligible in either profile. Dispatching nothing.`);
+        console.log(`Qualification mode requested issue #${requestedStr}, but it is not eligible in either profile. Dispatching nothing.`);
       }
       plannedIssues = [];
     } else if (iterationPlan.mode === "single-eligible") {
@@ -1166,13 +1169,14 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
       }
     }
   } else {
-    const requestedForResearchOnly = ITERATION_CONTROL.requestedIssueNumber;
-    if (requestedForResearchOnly) {
-      const isResearchTarget = researchEligible.some((r) => String(r.number) === requestedForResearchOnly);
+    const requestedForResearchOnly = ITERATION_CONTROL.requestedIssueNumbers ?? (ITERATION_CONTROL.requestedIssueNumber ? [ITERATION_CONTROL.requestedIssueNumber] : []);
+    if (requestedForResearchOnly.length > 0) {
+      const isResearchTarget = requestedForResearchOnly.some((id) => researchEligible.some((r) => String(r.number) === id));
+      const ids = requestedForResearchOnly.map((id) => `#${id}`).join(", ");
       if (isResearchTarget) {
-        console.log(`Qualification mode: explicitly selected research issue #${requestedForResearchOnly} only.`);
+        console.log(`Qualification mode: explicitly selected research ${requestedForResearchOnly.length === 1 ? `issue ${ids} only.` : `issues ${ids} only.`}`);
       } else {
-        console.log(`Qualification mode requested issue #${requestedForResearchOnly}, but it is not eligible in either profile. Dispatching nothing.`);
+        console.log(`Qualification mode requested issue ${ids}, but it is not eligible in either profile. Dispatching nothing.`);
       }
     } else {
       console.log("No implement eligible — skipping planner, research only this iteration");
@@ -1276,7 +1280,7 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
     const researchPlanned: PlannedIssue[] = planResearchForIteration(
       researchEligible,
       eligible,
-      { requestedIssueNumber: ITERATION_CONTROL.requestedIssueNumber },
+      { requestedIssueNumber: ITERATION_CONTROL.requestedIssueNumber, requestedIssueNumbers: ITERATION_CONTROL.requestedIssueNumbers },
     );
     if (QUALIFICATION_LIFECYCLE.claimExternalState) {
       for (const p of researchPlanned) {

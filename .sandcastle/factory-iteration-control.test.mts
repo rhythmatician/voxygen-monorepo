@@ -46,7 +46,7 @@ describe("Qualification selector", () => {
       issue({ number: 152, title: "issue 152" }),
     ];
     const control = parseQualificationArgs(["node", "main.mts", "--issue", "152"]);
-    expect(control).toEqual({ kind: "qualify", issueNumber: "152" });
+    expect(control).toEqual({ kind: "qualify", issueNumber: "152", issueNumbers: ["152"] });
 
     const resolved = makeIterationControl(10, ["node", "main.mts", "--issue", "152"]);
     const selected = planQualificationIssue(eligible, resolved);
@@ -140,7 +140,7 @@ describe("Qualification selector", () => {
 
   it("accepts #151 issue syntax and normalizes to 151", () => {
     const control = parseQualificationArgs(["node", "main.mts", "--issue", "#151"]);
-    expect(control).toEqual({ kind: "qualify", issueNumber: "151" });
+    expect(control).toEqual({ kind: "qualify", issueNumber: "151", issueNumbers: ["151"] });
   });
 
   it("qualification lifecycle policy suppresses external claim/outcome/integration", () => {
@@ -151,6 +151,24 @@ describe("Qualification selector", () => {
       mutateOutcomeState: false,
       integrate: false,
     });
+  });
+
+  it("supports comma-separated and repeated --issue for parallel hard-limit", () => {
+    const eligible = [
+      issue({ number: 151, title: "issue 151" }),
+      issue({ number: 152, title: "issue 152" }),
+      issue({ number: 153, title: "issue 153" }),
+    ];
+    const control = parseQualificationArgs(["node", "main.mts", "--issue", "151,152", "--issue", "153"]);
+    expect(control).toEqual({ kind: "qualify", issueNumber: "151", issueNumbers: ["151", "152", "153"] });
+    const resolved = makeIterationControl(10, ["node", "main.mts", "--issue", "151,152"]);
+    expect(resolved.requestedIssueNumbers).toEqual(["151", "152"]);
+    expect(resolved.maxIterations).toBe(1);
+    const selected = planQualificationIssue(eligible, resolved);
+    expect(selected.plannedIssues.map((p) => p.id)).toEqual(["151", "152"]);
+    const researchPlanned = planQualificationIssue(eligible, makeIterationControl(10, ["node", "main.mts", "--issue", "152,151"]));
+    // order preserved as requested
+    expect(researchPlanned.plannedIssues.map((p) => p.id)).toEqual(["152", "151"]);
   });
 
   it("normal lifecycle policy retains all qualification side effects", () => {
