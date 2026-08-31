@@ -16,6 +16,11 @@ import java.util.concurrent.ConcurrentHashMap;
  * is never re-requested, so the position renders as void forever.</p>
  */
 public final class VoxyNodeRequestRetry {
+    private static final org.slf4j.Logger LOGGER =
+            org.slf4j.LoggerFactory.getLogger(VoxyNodeRequestRetry.class);
+
+    private static final int MAX_PENDING_SIZE = 4096;
+
     private static final Set<Long> REFUSED_POSITIONS = Collections.newSetFromMap(new ConcurrentHashMap<>());
 
     private VoxyNodeRequestRetry() { }
@@ -23,6 +28,11 @@ public final class VoxyNodeRequestRetry {
     /** Records that the expansion request for {@code position} was refused for an empty mask. */
     public static void recordRefusal(long position) {
         REFUSED_POSITIONS.add(position);
+        int size = REFUSED_POSITIONS.size();
+        if (size > MAX_PENDING_SIZE || (size % 1024 == 0 && size != 0)) {
+            LOGGER.warn("[VoxyRetry] pending refusals={}, max={}, latestPosition={}",
+                    size, MAX_PENDING_SIZE, Long.toHexString(position));
+        }
     }
 
     /**
@@ -43,11 +53,29 @@ public final class VoxyNodeRequestRetry {
         return false;
     }
 
-    public static void clearForTest() {
+    /**
+     * Production lifecycle clear: called when the owning NodeManager/session/world is torn down.
+     * Disconnect, world replacement, and dimension rebind must not carry refused positions
+     * into the next NodeManager/session (see #151 isolation precedent).
+     */
+    public static void clear() {
+        int pending = REFUSED_POSITIONS.size();
+        if (pending != 0) {
+            LOGGER.info("[VoxyRetry] clearing {} pending refused positions on lifecycle boundary", pending);
+        }
         REFUSED_POSITIONS.clear();
     }
 
-    public static int pendingCountForTest() {
+    /** Production telemetry: number of pending refused positions. */
+    public static int pendingCount() {
         return REFUSED_POSITIONS.size();
+    }
+
+    public static void clearForTest() {
+        clear();
+    }
+
+    public static int pendingCountForTest() {
+        return pendingCount();
     }
 }

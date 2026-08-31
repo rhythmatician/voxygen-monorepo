@@ -616,6 +616,9 @@ public final class GenerationSession {
             return;
         }
 
+        // Lifecycle-owned clear: a new session/world must not inherit refusals from the previous NodeManager/session.
+        com.rhythmatician.voxygen.backend.voxy.VoxyNodeRequestRetry.clear();
+
         stopRequested.set(false);
         positionReady.set(false);
         generatedSections.clear();
@@ -691,6 +694,8 @@ public final class GenerationSession {
             try { voxyModelRunner.close(); } catch (Exception ignored) {}
             voxyModelRunner = null;
         }
+        // Lifecycle-owned clear: teardown must not leak refused positions into the next session/world.
+        com.rhythmatician.voxygen.backend.voxy.VoxyNodeRequestRetry.clear();
         HelloTerrainMod.LOGGER.info("[LodGen] Service stopped");
     }
 

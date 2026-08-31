@@ -5,7 +5,8 @@
   "client": [
     "VoxyTopologyOwnershipMixin",
     "VoxyNodeRequestRetryMixin",
-    "VoxyNodeRequestRetryRecorder"
+    "VoxyNodeRequestRetryRecorder",
+    "VoxyNodeRequestRetryLifecycleMixin"
   ],
   "injectors": {
     "defaultRequire": 0
