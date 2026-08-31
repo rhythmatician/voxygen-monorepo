@@ -111,7 +111,8 @@ class EndRefinementModuleTest {
         assertEquals(EndRefinement.StepResult.Status.FAILED, module.advance(frame(30)).status());
         assertEquals(EndRefinement.StepResult.Status.IDLE, module.advance(frame(1000)).status());
         assertEquals(3, attempts.get());
-        assertTrue(module.snapshot().retryableChildren() > 0);
+        assertTrue(module.snapshot().exhaustedChildren() > 0);
+        assertEquals(0, module.snapshot().retryableChildren());
         assertEquals(0, module.snapshot().pendingChildren());
     }
 
