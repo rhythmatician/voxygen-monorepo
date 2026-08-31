@@ -1,7 +1,9 @@
 package com.rhythmatician.lodiffusion.oracle;
 
-import com.rhythmatician.lodiffusion.voxy.CanonicalRegistries;
+import com.rhythmatician.voxygen.semantic.CanonicalRegistries;
 import java.util.List;
+import com.rhythmatician.voxygen.semantic.Level;
+import com.rhythmatician.voxygen.semantic.SectionPos;
 
 public final class EndChorusTracerContract {
     private EndChorusTracerContract() {}

@@ -1,4 +1,6 @@
 package com.rhythmatician.lodiffusion.world.noise;
+import com.rhythmatician.voxygen.generation.scheduling.LodGenerationService;
+import com.rhythmatician.voxygen.worldgen.WorldNoiseAccess;
 
 /**
  * Bundles the three upstream provider interfaces into a single object that
@@ -12,7 +14,7 @@ package com.rhythmatician.lodiffusion.world.noise;
  * <p>All three providers are guaranteed to use the same backend (vanilla CPU,
  * GPU, or shadow-validating) for a given world lifecycle.  The bundle is
  * created once per world load by {@link UpstreamProviderFactory} and handed
- * to {@link com.rhythmatician.lodiffusion.voxy.LodGenerationService} and
+ * to {@link com.rhythmatician.voxygen.generation.scheduling.LodGenerationService} and
  * its dependents.
  *
  * @see NoiseRouterSampler

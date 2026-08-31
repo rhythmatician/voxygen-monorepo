@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import org.junit.jupiter.api.Test;
+import com.rhythmatician.voxygen.backend.voxy.VoxyWorldBinding;
 
 /**
  * Source-contract guards for the VoxyWorldBinding hot path. Behavioral
@@ -62,6 +63,12 @@ class VoxyWorldBindingSourceGuardTest {
             if (Files.exists(candidate)) return candidate;
             candidate = current.resolve(
                     "java/src/main/java/com/rhythmatician/lodiffusion/voxy/" + fileName);
+            if (Files.exists(candidate)) return candidate;
+            candidate = current.resolve(
+                    "src/main/java/com/rhythmatician/voxygen/backend/voxy/" + fileName);
+            if (Files.exists(candidate)) return candidate;
+            candidate = current.resolve(
+                    "java/src/main/java/com/rhythmatician/voxygen/backend/voxy/" + fileName);
             if (Files.exists(candidate)) return candidate;
         }
         throw new IllegalStateException("source not found: " + fileName);

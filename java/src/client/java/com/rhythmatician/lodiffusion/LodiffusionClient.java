@@ -1,11 +1,11 @@
 package com.rhythmatician.lodiffusion;
 
 import com.rhythmatician.lodiffusion.client.FlightTour;
-import com.rhythmatician.lodiffusion.voxy.LodGenerationService;
-import com.rhythmatician.lodiffusion.voxy.VoxyCompat;
-import com.rhythmatician.lodiffusion.voxy.VoxyDatasetExportService;
+import com.rhythmatician.voxygen.generation.scheduling.LodGenerationService;
+import com.rhythmatician.voxygen.backend.voxy.VoxyCompat;
+import com.rhythmatician.voxygen.backend.voxy.VoxyDatasetExportService;
 import com.rhythmatician.lodiffusion.voxy.VoxyDebugState;
-import com.rhythmatician.lodiffusion.voxy.LodOverlayState;
+import com.rhythmatician.voxygen.generation.refinement.LodOverlayState;
 import com.rhythmatician.lodiffusion.voxy.VoxyNativeLodStats;
 import com.rhythmatician.lodiffusion.world.noise.GpuNoiseDispatchQueue;
 
@@ -19,6 +19,7 @@ import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandManager;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
 import net.minecraft.text.Text;
+import com.rhythmatician.voxygen.backend.voxy.VoxyEngine;
 
 /**
  * Client-side entrypoint for LODiffusion.
@@ -186,7 +187,7 @@ public class LodiffusionClient implements ClientModInitializer {
                                 }
                                 Object we = null;
                                 try {
-                                    Class<?> ve = Class.forName("com.rhythmatician.lodiffusion.voxy.VoxyEngine");
+                                    Class<?> ve = Class.forName("com.rhythmatician.voxygen.backend.voxy.VoxyEngine");
                                     var m = ve.getDeclaredMethod("getWorldEngine", net.minecraft.world.World.class);
                                     m.setAccessible(true);
                                     we = m.invoke(null, level);

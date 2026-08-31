@@ -6,6 +6,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import com.rhythmatician.voxygen.backend.voxy.VoxyTopologyOwnership;
+import com.rhythmatician.voxygen.backend.voxy.VoxyWorldBinding;
+import com.rhythmatician.voxygen.semantic.Level;
 
 class VoxyTopologyOwnershipTest {
     @AfterEach

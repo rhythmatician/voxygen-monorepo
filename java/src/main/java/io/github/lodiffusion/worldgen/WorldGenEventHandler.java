@@ -14,7 +14,7 @@ import java.nio.file.Path;
 import java.util.Map;
 import java.util.WeakHashMap;
 
-import com.rhythmatician.lodiffusion.voxy.VoxyCompat;
+import com.rhythmatician.voxygen.backend.voxy.VoxyCompat;
 import com.rhythmatician.lodiffusion.world.noise.GpuNoiseDispatchQueue;
 
 /**

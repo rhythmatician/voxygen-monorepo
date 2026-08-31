@@ -1,5 +1,8 @@
 package com.rhythmatician.lodiffusion.voxy;
 
+import com.rhythmatician.voxygen.backend.voxy.VoxyTopologyOwnership;
+import com.rhythmatician.voxygen.backend.voxy.VoxyWorldBinding;
+import com.rhythmatician.voxygen.generation.refinement.CompleteChildHandoff;
 import me.cortex.voxy.common.world.WorldSection;
 import me.cortex.voxy.client.core.rendering.hierachical.HeadlessNodeManagerProbe;
 

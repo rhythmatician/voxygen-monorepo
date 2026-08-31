@@ -1,7 +1,7 @@
 package com.rhythmatician.lodiffusion.mixin;
 
 import com.rhythmatician.lodiffusion.voxy.LodOverlayNodeIdQueueProvider;
-import com.rhythmatician.lodiffusion.voxy.VoxyTraversalNodeIdShaderPatch;
+import com.rhythmatician.voxygen.backend.voxy.VoxyTraversalNodeIdShaderPatch;
 import me.cortex.voxy.client.core.gl.GlBuffer;
 import me.cortex.voxy.client.core.rendering.Viewport;
 import me.cortex.voxy.client.core.rendering.hierachical.HierarchicalOcclusionTraverser;

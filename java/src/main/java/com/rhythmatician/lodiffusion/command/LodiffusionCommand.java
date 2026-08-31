@@ -6,13 +6,14 @@ import com.rhythmatician.lodiffusion.Config;
 import com.rhythmatician.lodiffusion.onnx.OnnxModelFiles;
 import com.rhythmatician.lodiffusion.util.DebugUtils;
 import com.rhythmatician.lodiffusion.util.PerformanceMonitor;
-import com.rhythmatician.lodiffusion.voxy.LodGenerationService;
+import com.rhythmatician.voxygen.generation.scheduling.LodGenerationService;
 
 import net.minecraft.command.permission.Permission;
 import net.minecraft.command.permission.PermissionLevel;
 import net.minecraft.server.command.CommandManager;
 import net.minecraft.server.command.ServerCommandSource;
 import net.minecraft.text.Text;
+import com.rhythmatician.voxygen.semantic.Level;
 
 /**
  * Command interface for LODiffusion management and debugging.

@@ -11,6 +11,7 @@ import org.jglrxavpok.hephaistos.nbt.NBTCompound;
 import org.jglrxavpok.hephaistos.nbt.NBTWriter;
 import org.jglrxavpok.hephaistos.nbt.mutable.MutableNBTCompound;
 import com.rhythmatician.lodiffusion.world.ChunkDataExtractor;
+import com.rhythmatician.voxygen.semantic.Level;
 
 /**
  * Lightweight Fake builders for chunk NBT and region files.

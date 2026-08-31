@@ -1,6 +1,6 @@
 package com.rhythmatician.lodiffusion.mixin;
 
-import com.rhythmatician.lodiffusion.voxy.LodOverlayState;
+import com.rhythmatician.voxygen.generation.refinement.LodOverlayState;
 import com.rhythmatician.lodiffusion.voxy.LodOverlayNodeIdQueueProvider;
 import me.cortex.voxy.client.core.AbstractRenderPipeline;
 import me.cortex.voxy.client.core.rendering.Viewport;

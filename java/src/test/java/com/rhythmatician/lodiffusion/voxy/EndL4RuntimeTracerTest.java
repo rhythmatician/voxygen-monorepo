@@ -14,6 +14,17 @@ import net.minecraft.world.gen.chunk.ChunkGenerator;
 import net.minecraft.world.gen.noise.NoiseConfig;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
+import com.rhythmatician.voxygen.generation.refinement.DefaultEndRefinement;
+import com.rhythmatician.voxygen.generation.dimension.end.EndL4DeterministicCandidate;
+import com.rhythmatician.voxygen.generation.refinement.EndRefinement;
+import com.rhythmatician.voxygen.worldgen.WorldNoiseAccess;
+import com.rhythmatician.voxygen.generation.session.GenerationSession;
+import com.rhythmatician.voxygen.semantic.Level;
+import com.rhythmatician.voxygen.semantic.SectionPos;
+import com.rhythmatician.voxygen.semantic.VoxelVolume;
+import com.rhythmatician.voxygen.semantic.CanonicalRegistries;
+import com.rhythmatician.voxygen.output.InMemoryVolumeWriter;
+import com.rhythmatician.voxygen.generation.refinement.ParentRefinementResult;
 
 /** Runtime behavior retained by the extracted End-refinement seam. */
 class EndL4RuntimeTracerTest {

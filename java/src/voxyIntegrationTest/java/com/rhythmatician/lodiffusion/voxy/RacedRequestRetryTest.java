@@ -22,7 +22,7 @@ class RacedRequestRetryTest {
 
     @AfterEach
     void clearRetryRegistry() {
-        com.rhythmatician.lodiffusion.voxy.VoxyNodeRequestRetry.clearForTest();
+        com.rhythmatician.voxygen.backend.voxy.VoxyNodeRequestRetry.clearForTest();
     }
 
     @Test

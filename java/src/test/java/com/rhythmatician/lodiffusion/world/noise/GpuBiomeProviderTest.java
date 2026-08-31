@@ -7,6 +7,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import com.rhythmatician.voxygen.semantic.biome.BiomeMapping;
 
 /**
  * Unit tests for {@link GpuBiomeProvider}.
@@ -141,28 +142,28 @@ class GpuBiomeProviderTest {
 
         @Test
         void plainsHasExpectedCanonicalId() {
-            int id = com.rhythmatician.lodiffusion.voxy.BiomeMapping.toCanonicalId("minecraft:plains");
+            int id = com.rhythmatician.voxygen.semantic.biome.BiomeMapping.toCanonicalId("minecraft:plains");
             assertEquals(34, id, "plains should be at alphabetical index 34");
         }
 
         @Test
         void desertHasExpectedCanonicalId() {
-            int id = com.rhythmatician.lodiffusion.voxy.BiomeMapping.toCanonicalId("minecraft:desert");
+            int id = com.rhythmatician.voxygen.semantic.biome.BiomeMapping.toCanonicalId("minecraft:desert");
             assertEquals(12, id, "desert should be at alphabetical index 12");
         }
 
         @Test
         void unknownBiomeMapsTo255() {
-            int id = com.rhythmatician.lodiffusion.voxy.BiomeMapping.toCanonicalId("minecraft:the_end");
+            int id = com.rhythmatician.voxygen.semantic.biome.BiomeMapping.toCanonicalId("minecraft:the_end");
             assertEquals(255, id, "non-overworld biome should map to UNKNOWN (255)");
         }
 
         @Test
         void canonicalIdsRoundTrip() {
-            for (int i = 0; i < com.rhythmatician.lodiffusion.voxy.BiomeMapping.size(); i++) {
-                String name = com.rhythmatician.lodiffusion.voxy.BiomeMapping.getCanonicalName(i);
+            for (int i = 0; i < com.rhythmatician.voxygen.semantic.biome.BiomeMapping.size(); i++) {
+                String name = com.rhythmatician.voxygen.semantic.biome.BiomeMapping.getCanonicalName(i);
                 assertNotNull(name, "index " + i + " should have a name");
-                assertEquals(i, com.rhythmatician.lodiffusion.voxy.BiomeMapping.toCanonicalId(name),
+                assertEquals(i, com.rhythmatician.voxygen.semantic.biome.BiomeMapping.toCanonicalId(name),
                         "round-trip failed for " + name);
             }
         }

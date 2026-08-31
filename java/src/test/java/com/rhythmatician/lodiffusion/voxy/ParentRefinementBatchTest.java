@@ -7,6 +7,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.Test;
+import com.rhythmatician.voxygen.generation.dimension.end.EndL4DeterministicCandidate;
+import com.rhythmatician.voxygen.semantic.Level;
+import com.rhythmatician.voxygen.semantic.SectionPos;
+import com.rhythmatician.voxygen.semantic.VoxelVolume;
+import com.rhythmatician.voxygen.semantic.CanonicalRegistries;
+import com.rhythmatician.voxygen.output.InMemoryVolumeWriter;
+import com.rhythmatician.voxygen.generation.refinement.ParentRefinementBatch;
+import com.rhythmatician.voxygen.generation.refinement.ParentRefinementIntent;
+import com.rhythmatician.voxygen.generation.refinement.ParentRefinementResult;
 
 class ParentRefinementBatchTest {
     private static final SectionPos PARENT = new SectionPos(0, 0, 0);

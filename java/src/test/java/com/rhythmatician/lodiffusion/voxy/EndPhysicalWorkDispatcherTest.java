@@ -8,6 +8,16 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import net.lodiffusion.shadow.VoxyWorkKind;
 import org.junit.jupiter.api.Test;
+import com.rhythmatician.voxygen.generation.refinement.DefaultEndRefinement;
+import com.rhythmatician.voxygen.generation.dimension.end.EndL4DeterministicCandidate;
+import com.rhythmatician.voxygen.generation.refinement.EndRefinement;
+import com.rhythmatician.voxygen.generation.refinement.RefinementAdmissionGate;
+import com.rhythmatician.voxygen.semantic.Level;
+import com.rhythmatician.voxygen.semantic.SectionPos;
+import com.rhythmatician.voxygen.semantic.VoxelVolume;
+import com.rhythmatician.voxygen.output.WriteOutcome;
+import com.rhythmatician.voxygen.generation.refinement.ParentRefinementBatch;
+import com.rhythmatician.voxygen.generation.refinement.ParentRefinementResult;
 
 class EndPhysicalWorkDispatcherTest {
     private static final DefaultEndRefinement.Config CONFIG =

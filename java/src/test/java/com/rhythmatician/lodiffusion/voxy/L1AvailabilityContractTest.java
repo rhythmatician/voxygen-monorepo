@@ -5,6 +5,10 @@ import static org.junit.jupiter.api.Assertions.*;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import org.junit.jupiter.api.Test;
+import com.rhythmatician.voxygen.semantic.biome.AnchorSampler;
+import com.rhythmatician.voxygen.worldgen.heightmap.HeightmapFallbackGenerator;
+import com.rhythmatician.voxygen.generation.scheduling.LodGenerationService;
+import com.rhythmatician.voxygen.worldgen.WorldNoiseAccess;
 
 /**
  * Verifies the Layer-1 availability contract: WorldNoiseAccess fallback matrix.

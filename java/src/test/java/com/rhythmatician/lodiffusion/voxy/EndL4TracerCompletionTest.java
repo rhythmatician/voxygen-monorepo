@@ -12,6 +12,14 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import com.rhythmatician.voxygen.generation.refinement.DefaultEndRefinement;
+import com.rhythmatician.voxygen.generation.refinement.EndRefinement;
+import com.rhythmatician.voxygen.generation.session.GenerationSession;
+import com.rhythmatician.voxygen.semantic.Level;
+import com.rhythmatician.voxygen.semantic.SectionPos;
+import com.rhythmatician.voxygen.semantic.VoxelVolume;
+import com.rhythmatician.voxygen.output.WriteOutcome;
+import com.rhythmatician.voxygen.generation.refinement.ParentRefinementResult;
 
 /** Fixed initial-horizon completion behavior driven through {@link EndRefinement}. */
 class EndL4TracerCompletionTest {

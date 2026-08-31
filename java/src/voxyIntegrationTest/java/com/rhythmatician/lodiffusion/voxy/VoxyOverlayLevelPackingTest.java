@@ -1,5 +1,6 @@
 package com.rhythmatician.lodiffusion.voxy;
 
+import com.rhythmatician.voxygen.backend.voxy.VoxyOverlayNodeEncoding;
 import me.cortex.voxy.common.world.WorldEngine;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;

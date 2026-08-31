@@ -2,7 +2,7 @@ package net.lodiffusion.shadow;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
-import com.rhythmatician.lodiffusion.voxy.RefinementAdmissionGate;
+import com.rhythmatician.voxygen.generation.refinement.RefinementAdmissionGate;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 

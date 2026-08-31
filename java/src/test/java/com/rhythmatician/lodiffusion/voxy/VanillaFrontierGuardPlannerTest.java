@@ -6,6 +6,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.HashSet;
 import org.junit.jupiter.api.Test;
+import com.rhythmatician.voxygen.generation.scheduling.VanillaFrontierGuardPlanner;
+import com.rhythmatician.voxygen.semantic.SectionPos;
 
 class VanillaFrontierGuardPlannerTest {
     @Test

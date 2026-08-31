@@ -6,8 +6,8 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.rhythmatician.lodiffusion.oracle.OracleContract;
 import com.rhythmatician.lodiffusion.oracle.OracleFixture;
-import com.rhythmatician.lodiffusion.voxy.Level;
-import com.rhythmatician.lodiffusion.voxy.VoxelVolume;
+import com.rhythmatician.voxygen.semantic.Level;
+import com.rhythmatician.voxygen.semantic.VoxelVolume;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -80,7 +80,7 @@ public final class OracleFixtureWriter {
         blockRegion.addProperty("extentBlocks", br.extentBlocks());
         root.add("blockRegion", blockRegion);
         JsonObject perLevel = new JsonObject();
-        for (com.rhythmatician.lodiffusion.voxy.Level lvl : com.rhythmatician.lodiffusion.voxy.Level.values()) {
+        for (com.rhythmatician.voxygen.semantic.Level lvl : com.rhythmatician.voxygen.semantic.Level.values()) {
             var per = br.perLevelWorldSectionOrigin(lvl.value());
             JsonObject o = new JsonObject();
             o.addProperty("wsX", per.wsX());
@@ -131,7 +131,7 @@ public final class OracleFixtureWriter {
         for (String s : c.inspectedVoxyReferences()) vxRefs.add(s);
         root.add("inspectedVoxyReferences", vxRefs);
         JsonObject perLevelDecisions = new JsonObject();
-        for (var lvl : com.rhythmatician.lodiffusion.voxy.Level.values()) {
+        for (var lvl : com.rhythmatician.voxygen.semantic.Level.values()) {
             var pd = switch (lvl) {
                 case L4 -> c.perLevelDecisions().l4();
                 case L3 -> c.perLevelDecisions().l3();
@@ -452,8 +452,8 @@ public final class OracleFixtureWriter {
             }
             if (root.has("perLevelDecisions")) {
                 var pld = root.getAsJsonObject("perLevelDecisions");
-                var map = new java.util.HashMap<com.rhythmatician.lodiffusion.voxy.Level, com.rhythmatician.lodiffusion.oracle.OracleContract.PartitionDecision>();
-                for (var lvl : com.rhythmatician.lodiffusion.voxy.Level.values()) {
+                var map = new java.util.HashMap<com.rhythmatician.voxygen.semantic.Level, com.rhythmatician.lodiffusion.oracle.OracleContract.PartitionDecision>();
+                for (var lvl : com.rhythmatician.voxygen.semantic.Level.values()) {
                     if (!pld.has(lvl.name())) continue;
                     var o = pld.getAsJsonObject(lvl.name());
                     var cands = new java.util.ArrayList<String>();
@@ -462,7 +462,7 @@ public final class OracleFixtureWriter {
                     map.put(lvl, pd);
                 }
                 builder.perLevelDecisions(new com.rhythmatician.lodiffusion.oracle.OracleContract.PerLevelPartitionDecisions(
-                        map.get(com.rhythmatician.lodiffusion.voxy.Level.L4), map.get(com.rhythmatician.lodiffusion.voxy.Level.L3), map.get(com.rhythmatician.lodiffusion.voxy.Level.L2), map.get(com.rhythmatician.lodiffusion.voxy.Level.L1), map.get(com.rhythmatician.lodiffusion.voxy.Level.L0)));
+                        map.get(com.rhythmatician.voxygen.semantic.Level.L4), map.get(com.rhythmatician.voxygen.semantic.Level.L3), map.get(com.rhythmatician.voxygen.semantic.Level.L2), map.get(com.rhythmatician.voxygen.semantic.Level.L1), map.get(com.rhythmatician.voxygen.semantic.Level.L0)));
             }
             if (root.has("roles")) {
                 var r = root.getAsJsonObject("roles");

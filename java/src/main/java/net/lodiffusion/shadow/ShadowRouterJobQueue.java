@@ -1,6 +1,6 @@
 package net.lodiffusion.shadow;
 
-import com.rhythmatician.lodiffusion.voxy.RefinementAdmissionGate;
+import com.rhythmatician.voxygen.generation.refinement.RefinementAdmissionGate;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.ArrayList;

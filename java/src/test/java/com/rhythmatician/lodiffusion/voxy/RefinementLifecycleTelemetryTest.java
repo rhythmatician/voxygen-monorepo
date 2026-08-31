@@ -3,6 +3,10 @@ package com.rhythmatician.lodiffusion.voxy;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import org.junit.jupiter.api.Test;
+import com.rhythmatician.voxygen.generation.refinement.RefinementLifecycleTelemetry;
+import com.rhythmatician.voxygen.generation.refinement.RefinementOutcome;
+import com.rhythmatician.voxygen.semantic.SectionPos;
+import com.rhythmatician.voxygen.output.WriteOutcome;
 
 class RefinementLifecycleTelemetryTest {
     @Test

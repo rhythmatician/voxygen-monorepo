@@ -4,7 +4,7 @@ import java.util.EnumMap;
 import java.util.EnumSet;
 import java.util.Map;
 
-import com.rhythmatician.lodiffusion.voxy.BiomeMapping;
+import com.rhythmatician.voxygen.semantic.biome.BiomeMapping;
 import it.unimi.dsi.fastutil.objects.Object2ObjectArrayMap;
 import net.minecraft.util.math.ChunkPos;
 import net.minecraft.world.HeightLimitView;

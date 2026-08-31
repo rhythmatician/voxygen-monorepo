@@ -1,6 +1,7 @@
 package com.rhythmatician.lodiffusion.oracle;
 
 import java.util.Objects;
+import com.rhythmatician.voxygen.semantic.Level;
 
 public final class OracleContractValidator {
     private OracleContractValidator() {}

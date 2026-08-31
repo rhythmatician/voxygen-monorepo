@@ -2,6 +2,7 @@ package com.rhythmatician.lodiffusion;
 
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.util.math.ChunkPos;
+import com.rhythmatician.voxygen.semantic.Level;
 
 /**
  * Interface for querying Level of Detail (LOD) for chunks.

@@ -3,12 +3,13 @@ package com.rhythmatician.lodiffusion.oracle;
 import static org.junit.jupiter.api.Assertions.*;
 
 import com.rhythmatician.lodiffusion.oracle.capture.OracleFixtureWriter;
-import com.rhythmatician.lodiffusion.voxy.Level;
+import com.rhythmatician.voxygen.semantic.Level;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import com.rhythmatician.voxygen.semantic.SectionPos;
 
 /**
  * Regression for final provenance separation before merging #241:
@@ -193,7 +194,7 @@ class CaptureProtocolSeparationTest {
         assertEquals(OracleFixture.EvidenceKind.SYNTHETIC_TEST, synth.evidenceKind());
         // CandidateVerifier must reject it
         var per = c.blockRegionOrDerived().perLevelWorldSectionOrigin(Level.L0.value());
-        var origin = new com.rhythmatician.lodiffusion.voxy.SectionPos(per.wsX() * Level.L0.regionSections(), per.wsY() * Level.L0.regionSections(), per.wsZ() * Level.L0.regionSections());
+        var origin = new com.rhythmatician.voxygen.semantic.SectionPos(per.wsX() * Level.L0.regionSections(), per.wsY() * Level.L0.regionSections(), per.wsZ() * Level.L0.regionSections());
         var vol = synth.volume(Level.L0);
         assertThrows(IllegalArgumentException.class, () -> com.rhythmatician.lodiffusion.oracle.CandidateVerifier.verify(Level.L0, origin, vol, synth),
                 "SYNTHETIC_TEST must be rejected by parity verifier");

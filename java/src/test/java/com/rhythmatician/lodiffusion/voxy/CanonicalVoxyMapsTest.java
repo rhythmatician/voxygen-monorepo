@@ -3,6 +3,17 @@ package com.rhythmatician.lodiffusion.voxy;
 import static org.junit.jupiter.api.Assertions.*;
 
 import org.junit.jupiter.api.Test;
+import com.rhythmatician.voxygen.backend.voxy.CanonicalVoxyMaps;
+import com.rhythmatician.voxygen.backend.voxy.RealVoxyVolumeWriter;
+import com.rhythmatician.voxygen.backend.voxy.VoxyCompat;
+import com.rhythmatician.voxygen.backend.voxy.VoxyIdMaps;
+import com.rhythmatician.voxygen.semantic.Level;
+import com.rhythmatician.voxygen.semantic.SectionPos;
+import com.rhythmatician.voxygen.semantic.VoxelVolume;
+import com.rhythmatician.voxygen.semantic.CanonicalRegistries;
+import com.rhythmatician.voxygen.output.VoxelVolumeWriter;
+import com.rhythmatician.voxygen.output.WriteOutcome;
+import com.rhythmatician.voxygen.output.InMemoryVolumeWriter;
 
 /**
  * Focused tests that the writer's canonical identity is decoupled from

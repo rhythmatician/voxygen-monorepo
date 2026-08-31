@@ -1,6 +1,6 @@
 package net.lodiffusion.mixin.voxy;
 
-import com.rhythmatician.lodiffusion.voxy.VoxyTopologyOwnership;
+import com.rhythmatician.voxygen.backend.voxy.VoxyTopologyOwnership;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Coerce;

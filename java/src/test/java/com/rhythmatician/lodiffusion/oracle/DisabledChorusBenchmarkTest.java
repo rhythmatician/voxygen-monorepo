@@ -2,12 +2,13 @@ package com.rhythmatician.lodiffusion.oracle;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import com.rhythmatician.lodiffusion.voxy.EndChorusSynthesizer;
+import com.rhythmatician.voxygen.features.end.chorus.EndChorusSynthesizer;
 import com.rhythmatician.lodiffusion.oracle.synthetic.SyntheticEndChorusFixtureFactory;
-import com.rhythmatician.lodiffusion.voxy.Level;
-import com.rhythmatician.lodiffusion.voxy.SectionPos;
-import com.rhythmatician.lodiffusion.voxy.VoxelVolume;
+import com.rhythmatician.voxygen.semantic.Level;
+import com.rhythmatician.voxygen.semantic.SectionPos;
+import com.rhythmatician.voxygen.semantic.VoxelVolume;
 import org.junit.jupiter.api.Test;
+import com.rhythmatician.voxygen.generation.dimension.DimensionSynthesizers;
 
 /**
  * Benchmark receipt for the existing disabled deterministic chorus candidate.
@@ -67,7 +68,7 @@ class DisabledChorusBenchmarkTest {
 
     @Test
     void runtimeChorusRemainsDisabledByDefault() {
-        com.rhythmatician.lodiffusion.voxy.DimensionSynthesizers synthFactory = null;
+        com.rhythmatician.voxygen.generation.dimension.DimensionSynthesizers synthFactory = null;
         OracleContract c = EndChorusTracerContract.contract();
         assertEquals("UNRESOLVED", c.perLevelDecisions().l4().disposition());
         assertEquals("UNRESOLVED", c.perLevelDecisions().l3().disposition());

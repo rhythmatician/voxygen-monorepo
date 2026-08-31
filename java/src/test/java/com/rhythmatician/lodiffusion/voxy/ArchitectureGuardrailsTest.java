@@ -11,6 +11,24 @@ import com.tngtech.archunit.core.importer.ImportOption;
 import com.tngtech.archunit.lang.ArchRule;
 import com.tngtech.archunit.lang.syntax.ArchRuleDefinition;
 import org.junit.jupiter.api.Test;
+import com.rhythmatician.voxygen.backend.voxy.CanonicalVoxyMaps;
+import com.rhythmatician.voxygen.backend.voxy.RealVoxyVolumeWriter;
+import com.rhythmatician.voxygen.inference.onnx.VoxelPredictionDecoder;
+import com.rhythmatician.voxygen.backend.voxy.VoxyBlockMapper;
+import com.rhythmatician.voxygen.backend.voxy.VoxyCompat;
+import com.rhythmatician.voxygen.backend.voxy.VoxyDetection;
+import com.rhythmatician.voxygen.backend.voxy.VoxyEngine;
+import com.rhythmatician.voxygen.backend.voxy.VoxyIdMaps;
+import com.rhythmatician.voxygen.backend.voxy.VoxyProcessingAPI;
+import com.rhythmatician.voxygen.backend.voxy.VoxyWorldBinding;
+import com.rhythmatician.voxygen.semantic.Level;
+import com.rhythmatician.voxygen.semantic.SectionPos;
+import com.rhythmatician.voxygen.semantic.VoxelVolume;
+import com.rhythmatician.voxygen.semantic.CanonicalRegistries;
+import com.rhythmatician.voxygen.output.VoxelVolumeWriter;
+import com.rhythmatician.voxygen.output.WriteOutcome;
+import com.rhythmatician.voxygen.output.VolumeUnavailableException;
+import com.rhythmatician.voxygen.output.InMemoryVolumeWriter;
 
 /**
  * Executable guardrails for the settled Voxygen semantic and storage seams.
@@ -110,7 +128,7 @@ public class ArchitectureGuardrailsTest {
             .withImportOption(ImportOption.Predefined.DO_NOT_INCLUDE_TESTS)
             .withImportOption(location -> !location.contains("generated"))
             .withImportOption(location -> !location.contains("dataharvester"))
-            .importPackages("com.rhythmatician.lodiffusion");
+            .importPackages("com.rhythmatician.voxygen", "com.rhythmatician.lodiffusion");
     }
 
     @Test

@@ -13,6 +13,21 @@ import net.minecraft.util.Identifier;
 import net.minecraft.world.World;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
+import com.rhythmatician.voxygen.generation.refinement.DefaultEndRefinement;
+import com.rhythmatician.voxygen.generation.dimension.end.EndL4DeterministicCandidate;
+import com.rhythmatician.voxygen.generation.refinement.EndRefinement;
+import com.rhythmatician.voxygen.generation.dimension.end.ExactEndL1Candidate;
+import com.rhythmatician.voxygen.generation.scheduling.VanillaFrontierGuardPlanner;
+import com.rhythmatician.voxygen.worldgen.WorldNoiseAccess;
+import com.rhythmatician.voxygen.generation.session.GenerationSession;
+import com.rhythmatician.voxygen.semantic.Level;
+import com.rhythmatician.voxygen.semantic.SectionPos;
+import com.rhythmatician.voxygen.semantic.VoxelVolume;
+import com.rhythmatician.voxygen.output.VoxelVolumeWriter;
+import com.rhythmatician.voxygen.output.WriteOutcome;
+import com.rhythmatician.voxygen.generation.refinement.ParentRefinementBatch;
+import com.rhythmatician.voxygen.generation.refinement.ParentRefinementIntent;
+import com.rhythmatician.voxygen.generation.refinement.ParentRefinementResult;
 
 class EndRefinementPipelineTest {
     private static final DefaultEndRefinement.Config CONFIG =

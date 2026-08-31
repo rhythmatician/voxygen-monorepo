@@ -12,6 +12,15 @@ import java.util.List;
 import java.util.Set;
 import net.minecraft.util.Identifier;
 import org.junit.jupiter.api.Test;
+import com.rhythmatician.voxygen.generation.dimension.DimensionSynthesizers;
+import com.rhythmatician.voxygen.generation.dimension.end.EndDimensionSynthesizer;
+import com.rhythmatician.voxygen.generation.dimension.end.ExactEndL1Candidate;
+import com.rhythmatician.voxygen.generation.TerrainPublicationRoute;
+import com.rhythmatician.voxygen.worldgen.WorldNoiseAccess;
+import com.rhythmatician.voxygen.generation.session.GenerationSession;
+import com.rhythmatician.voxygen.semantic.Level;
+import com.rhythmatician.voxygen.semantic.SectionPos;
+import com.rhythmatician.voxygen.semantic.VoxelVolume;
 
 /** Behavioral exact-L1 checks plus guards for unobservable world-bound details. */
 class WorldNoiseAccessExactSamplingSourceGuardTest {
@@ -161,6 +170,19 @@ class WorldNoiseAccessExactSamplingSourceGuardTest {
             candidate = current.resolve(
                     "java/src/main/java/com/rhythmatician/lodiffusion/voxy/" + fileName);
             if (Files.exists(candidate)) return candidate;
+            // Voxygen migration: new canonical locations
+            String[] voxygenPaths = {
+                    "src/main/java/com/rhythmatician/voxygen/worldgen/" + fileName,
+                    "java/src/main/java/com/rhythmatician/voxygen/worldgen/" + fileName,
+                    "src/main/java/com/rhythmatician/voxygen/generation/dimension/end/" + fileName,
+                    "java/src/main/java/com/rhythmatician/voxygen/generation/dimension/end/" + fileName,
+                    "src/main/java/com/rhythmatician/voxygen/generation/session/" + fileName,
+                    "java/src/main/java/com/rhythmatician/voxygen/generation/session/" + fileName
+            };
+            for (String p : voxygenPaths) {
+                Path c = current.resolve(p);
+                if (Files.exists(c)) return c;
+            }
         }
         throw new IllegalStateException("source not found: " + fileName);
     }

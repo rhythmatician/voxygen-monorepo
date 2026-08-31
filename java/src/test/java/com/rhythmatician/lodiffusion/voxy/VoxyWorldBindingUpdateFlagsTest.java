@@ -3,6 +3,8 @@ package com.rhythmatician.lodiffusion.voxy;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import org.junit.jupiter.api.Test;
+import com.rhythmatician.voxygen.generation.refinement.CompleteChildHandoff;
+import com.rhythmatician.voxygen.backend.voxy.VoxyWorldBinding;
 
 class VoxyWorldBindingUpdateFlagsTest {
     @Test
