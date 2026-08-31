@@ -4,6 +4,7 @@ import type { IssueInput } from "./dispatch.mts";
 export type QualificationRequest =
   | { kind: "normal" }
   | { kind: "qualify"; issueNumber: string }
+  | { kind: "live"; issueNumber: string }
   | { kind: "invalid"; reason: string };
 
 export interface IterationControlConfig {
@@ -62,24 +63,32 @@ const DEFAULT_MAX_ITERATIONS = 10;
 
 export function parseQualificationArgs(argv: string[]): QualificationRequest {
   let requestedIssueValue: string | undefined;
+  let liveRequested = false;
   for (let i = 2; i < argv.length; i++) {
     const name = argv[i];
+    if (name === "--live" || name === "--apply") {
+      liveRequested = true;
+      continue;
+    }
     if (name !== "--issue") continue;
     const value = argv[i + 1];
     if (!value || value.startsWith("--")) {
       return { kind: "invalid", reason: value ? `${name} ${value}` : name };
     }
     requestedIssueValue = value;
-    break;
   }
 
-  if (requestedIssueValue === undefined) return { kind: "normal" };
+  if (requestedIssueValue === undefined) {
+    if (liveRequested) return { kind: "invalid", reason: "--live without --issue" };
+    return { kind: "normal" };
+  }
 
   const normalized = requestedIssueValue.startsWith("#") ? requestedIssueValue.slice(1) : requestedIssueValue;
   const issueNumber = normalized.trim();
-  if (/^\d+$/.test(issueNumber)) return { kind: "qualify", issueNumber };
+  if (!/^\d+$/.test(issueNumber)) return { kind: "invalid", reason: requestedIssueValue };
 
-  return { kind: "invalid", reason: requestedIssueValue };
+  if (liveRequested) return { kind: "live", issueNumber };
+  return { kind: "qualify", issueNumber };
 }
 
 export function resolveIterationLimit(defaultLimit: number, control: IterationControlConfig): number {
@@ -138,7 +147,7 @@ export function planIssuesForIteration(
 
 export function makeIterationControl(defaultMaxIterations: number, argv: string[]): IterationControl {
   const config = parseQualificationArgs(argv);
-  const requestedIssueNumber = config.kind === "qualify" ? config.issueNumber : undefined;
+  const requestedIssueNumber = config.kind === "qualify" || config.kind === "live" ? config.issueNumber : undefined;
   return {
     maxIterations: resolveIterationLimit(defaultMaxIterations, { requestedIssueNumber }),
     requestedIssueNumber,
@@ -170,6 +179,7 @@ export function planResearchForIteration(
 export function qualificationLifecyclePolicy(control: QualificationRequest): QualificationLifecyclePolicy {
   switch (control.kind) {
     case "normal":
+    case "live":
       return {
         claimExternalState: true,
         mutateOutcomeState: true,

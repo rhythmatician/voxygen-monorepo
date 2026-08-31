@@ -16,7 +16,13 @@ export const SANDCASTLE_REPO_URL = "https://github.com/rhythmatician/sandcastle"
 // ---------------------------------------------------------------------------
 
 export function resolveSiblingSandcastlePath(repoRoot: string = process.cwd()): string {
-  return path.resolve(repoRoot, "../../sandcastle");
+  const primary = path.resolve(repoRoot, "../../sandcastle");
+  // Fallback for WSL dev where sibling is at Windows path (permission-constrained /mnt/wsl mount)
+  // Only use fallback for the real repoRoot (process.cwd()), keep deterministic for tests with fake repoRoot
+  const windowsFallback = "/mnt/c/Users/JeffHall/git/sandcastle";
+  if (fs.existsSync(path.join(primary, ".git"))) return primary;
+  if (repoRoot === process.cwd() && fs.existsSync(path.join(windowsFallback, ".git"))) return windowsFallback;
+  return primary;
 }
 
 export function resolvePackageLinkPath(repoRoot: string = process.cwd()): string {
