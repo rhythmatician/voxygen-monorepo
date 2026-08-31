@@ -518,18 +518,8 @@ def _ensure_dataharvester_jar_in_run_mods() -> None:
 
     candidates = []
     for pat in [
-        REPO_ROOT
-        / "tools"
-        / "data-harvester"
-        / "build"
-        / "libs"
-        / "data-harvester-*.jar",
-        REPO_ROOT
-        / "tools"
-        / "server-harness"
-        / "runtime"
-        / "mods"
-        / "data-harvester-*.jar",
+        REPO_ROOT / "tools" / "data-harvester" / "build" / "libs" / "data-harvester-*.jar",
+        REPO_ROOT / "tools" / "server-harness" / "runtime" / "mods" / "data-harvester-*.jar",
     ]:
         candidates.extend(list(pat.parent.glob(pat.name)))
     candidates = [c for c in candidates if "sources" not in c.name]
