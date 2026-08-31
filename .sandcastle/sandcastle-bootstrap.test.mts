@@ -26,14 +26,14 @@ describe("sandcastle-bootstrap deterministic helpers", () => {
     expect(bootstrapContent).toMatch(/from\s+["']\.\/sandcastle-runtime-provenance\.mts["']/);
     expect(bootstrapContent).toContain("EXPECTED_SANDCASTLE_SOURCE_SHA");
     // Should not contain a hardcoded second SHA definition
-    const shaMatches = [...bootstrapContent.matchAll(/fa118c6ae3116e2bc113fe23f1430a28a21d3aba/g)];
+    const shaMatches = [...bootstrapContent.matchAll(/4692bc0681d2e9228bdaaaecd6f16c8058c4bb0f/g)];
     // The bootstrap may mention SHA in logs/errors but should not define const EXPECTED_... =
-    expect(bootstrapContent).not.toMatch(/const\s+EXPECTED_SANDCASTLE_SOURCE_SHA\s*=\s*["']fa118c6/);
+    expect(bootstrapContent).not.toMatch(/const\s+EXPECTED_SANDCASTLE_SOURCE_SHA\s*=\s*["']4692bc0/);
     expect(bootstrapContent).not.toMatch(/const\s+EXPECTED_SANDCASTLE_SOURCE_PREFIX\s*=/);
     // Repo URL is correct
     expect(SANDCASTLE_REPO_URL).toBe("https://github.com/rhythmatician/sandcastle");
-    expect(EXPECTED_SANDCASTLE_SOURCE_SHA).toBe("fa118c6ae3116e2bc113fe23f1430a28a21d3aba");
-    expect(EXPECTED_SANDCASTLE_SOURCE_PREFIX).toBe("fa118c6");
+    expect(EXPECTED_SANDCASTLE_SOURCE_SHA).toBe("4692bc0681d2e9228bdaaaecd6f16c8058c4bb0f");
+    expect(EXPECTED_SANDCASTLE_SOURCE_PREFIX).toBe("4692bc0");
   });
 
   it("resolves sibling and link paths deterministically from repo root", () => {

@@ -8,12 +8,12 @@ import {
 } from "./sandcastle-runtime-provenance.mts";
 
 describe("Sandcastle runtime provenance guard", () => {
-  it("locks runtime verification to the exact Muse prompt-transport fix", () => {
-    expect(EXPECTED_SANDCASTLE_SOURCE_SHA).toBe("fa118c6ae3116e2bc113fe23f1430a28a21d3aba");
-    expect(EXPECTED_SANDCASTLE_SOURCE_PREFIX).toBe("fa118c6");
-    expect(isExpectedSandcastleSourceHead("fa118c6ae3116e2bc113fe23f1430a28a21d3aba")).toBe(true);
-    expect(isExpectedSandcastleSourceHead("fa118c699")).toBe(false);
-    expect(isExpectedSandcastleSourceHead("bfa118c6")).toBe(false);
+  it("locks runtime verification to the exact reviewed Sandcastle revision", () => {
+    expect(EXPECTED_SANDCASTLE_SOURCE_SHA).toBe("4692bc0681d2e9228bdaaaecd6f16c8058c4bb0f");
+    expect(EXPECTED_SANDCASTLE_SOURCE_PREFIX).toBe("4692bc0");
+    expect(isExpectedSandcastleSourceHead("4692bc0681d2e9228bdaaaecd6f16c8058c4bb0f")).toBe(true);
+    expect(isExpectedSandcastleSourceHead("4692bc099")).toBe(false);
+    expect(isExpectedSandcastleSourceHead("b4692bc0")).toBe(false);
     expect(isExpectedSandcastleSourceHead("")).toBe(false);
   });
 
