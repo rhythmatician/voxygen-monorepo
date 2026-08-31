@@ -1,7 +1,7 @@
-# 0011 — Sampler-direct End base-terrain generation
+# 0013 — Sampler-direct End base-terrain generation
 
 Date: 2026-08-27
-Status: Proposed
+Status: Accepted
 
 ## Context
 
