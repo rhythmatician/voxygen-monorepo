@@ -42,6 +42,31 @@ export type ResearchGhOps = {
   runGh: (args: string[]) => Promise<string>;
 };
 
+// Bounded retry for transient GitHub publish failures (500/rate-limit/network).
+// Retries only safeRunGh false, not validation/reviewer rejections.
+const RESEARCH_PUBLISH_RETRY_BUDGET = 2; // 3 attempts total
+const RESEARCH_PUBLISH_RETRY_BASE_MS = 1000;
+
+async function sleep(ms: number): Promise<void> {
+  return new Promise((res) => setTimeout(res, ms));
+}
+
+async function retryPublish(
+  op: () => Promise<boolean>,
+  label: string,
+): Promise<boolean> {
+  for (let attempt = 0; attempt <= RESEARCH_PUBLISH_RETRY_BUDGET; attempt++) {
+    const ok = await op();
+    if (ok) return true;
+    if (attempt < RESEARCH_PUBLISH_RETRY_BUDGET) {
+      const delay = RESEARCH_PUBLISH_RETRY_BASE_MS * (1 << attempt);
+      console.warn(`  [research] ${label} failed transiently, retry ${attempt + 1}/${RESEARCH_PUBLISH_RETRY_BUDGET} in ${delay}ms`);
+      await sleep(delay);
+    }
+  }
+  return false;
+}
+
 export async function publishResearchResult(
   issueId: string,
   branch: string,
@@ -197,20 +222,20 @@ export async function completeResearchLifecycle(
     // In production main.mts this is also logged via console.warn/info, but here we keep lifecycle pure.
   }
 
-  // 1. Publish research result
-  const published = await publishResearchResult(issue.id, issue.branch, result, rawText, ops);
+  // 1. Publish research result — retry transient 500/rate-limit (idempotent marker allows duplicate, test expects 2 on retry)
+  const published = await retryPublish(() => publishResearchResult(issue.id, issue.branch, result, rawText, ops), `publish #${issue.id}`);
   if (!published) {
-    await markResearchFactoryError(issue.id, issue.branch, `publication failed for research #${issue.id}`, ops);
+    await markResearchFactoryError(issue.id, issue.branch, `publication failed for research #${issue.id} after ${RESEARCH_PUBLISH_RETRY_BUDGET + 1} attempts`, ops);
     return { outcome: "FACTORY_ERROR", closeAttempted: false, parentPointerAttempted: false };
   }
 
-  // 2. Parent map pointer if required (Part of #N)
+  // 2. Parent map pointer if required (Part of #N) — retry transient
   const parentId = extractParentMapId(issue.body);
   if (parentId) {
-    const pointerOk = await addParentMapPointer(parentId, issue.id, issue.title, result, ops);
+    const pointerOk = await retryPublish(() => addParentMapPointer(parentId, issue.id, issue.title, result, ops), `parent-pointer #${issue.id}->#${parentId}`);
     if (!pointerOk) {
       // Required pointer failed: do not close, FACTORY_ERROR, release transient, retain research
-      await markResearchFactoryError(issue.id, issue.branch, `parent map pointer to #${parentId} failed for research #${issue.id}`, ops);
+      await markResearchFactoryError(issue.id, issue.branch, `parent map pointer to #${parentId} failed for research #${issue.id} after ${RESEARCH_PUBLISH_RETRY_BUDGET + 1} attempts`, ops);
       return { outcome: "FACTORY_ERROR", closeAttempted: false, parentPointerAttempted: true, parentPointerSucceeded: false };
     }
   }
