@@ -1070,16 +1070,15 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
   if (eligible.length > 0) {
     const iterationPlan = planIssuesForIteration(eligible, {
       requestedIssueNumber: ITERATION_CONTROL.requestedIssueNumber,
-      requestedIssueNumbers: ITERATION_CONTROL.requestedIssueNumbers,
     });
     if (iterationPlan.mode === "qualified") {
       plannedIssues = iterationPlan.plannedIssues;
       const ids = plannedIssues.map((p) => `#${p.id}`).join(", ");
       console.log(`Qualification mode: explicitly selected ${plannedIssues.length === 1 ? `issue ${ids} only.` : `issues ${ids} only.`}`);
     } else if (iterationPlan.mode === "qualify-unsupported") {
-      const requested = ITERATION_CONTROL.requestedIssueNumbers ?? (ITERATION_CONTROL.requestedIssueNumber ? [ITERATION_CONTROL.requestedIssueNumber] : []);
+      const requested = ITERATION_CONTROL.requestedIssueNumber ? [ITERATION_CONTROL.requestedIssueNumber] : [];
       const requestedStr = requested.join(", #");
-      const isResearchTarget = requested.some((id) => researchEligible.some((r) => String(r.number) === id));
+      const isResearchTarget = requested.some((id: string) => researchEligible.some((r) => String(r.number) === id));
       if (isResearchTarget) {
         console.log(`Qualification mode requested issue #${requestedStr} is a research ticket — skipping implementation, dispatching research only`);
       } else {
@@ -1179,10 +1178,10 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
       }
     }
   } else {
-    const requestedForResearchOnly = ITERATION_CONTROL.requestedIssueNumbers ?? (ITERATION_CONTROL.requestedIssueNumber ? [ITERATION_CONTROL.requestedIssueNumber] : []);
+    const requestedForResearchOnly = ITERATION_CONTROL.requestedIssueNumber ? [ITERATION_CONTROL.requestedIssueNumber] : [];
     if (requestedForResearchOnly.length > 0) {
-      const isResearchTarget = requestedForResearchOnly.some((id) => researchEligible.some((r) => String(r.number) === id));
-      const ids = requestedForResearchOnly.map((id) => `#${id}`).join(", ");
+      const isResearchTarget = requestedForResearchOnly.some((id: string) => researchEligible.some((r) => String(r.number) === id));
+      const ids = requestedForResearchOnly.map((id: string) => `#${id}`).join(", ");
       if (isResearchTarget) {
         console.log(`Qualification mode: explicitly selected research ${requestedForResearchOnly.length === 1 ? `issue ${ids} only.` : `issues ${ids} only.`}`);
       } else {
@@ -1298,7 +1297,7 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
     const researchPlanned: PlannedIssue[] = planResearchForIteration(
       researchEligible,
       eligible,
-      { requestedIssueNumber: ITERATION_CONTROL.requestedIssueNumber, requestedIssueNumbers: ITERATION_CONTROL.requestedIssueNumbers },
+      { requestedIssueNumber: ITERATION_CONTROL.requestedIssueNumber },
     );
     if (QUALIFICATION_LIFECYCLE.claimExternalState) {
       for (const p of researchPlanned) {
