@@ -1,4 +1,4 @@
-package com.rhythmatician.voxygen.worldgen;
+package com.rhythmatician.voxygen.generation.dimension;
 import com.rhythmatician.voxygen.semantic.WorldSectionCoord;
 
 /**

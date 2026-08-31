@@ -55,7 +55,7 @@ public class PackageBoundaryTest {
         "com.rhythmatician.voxygen.output.VolumeUnavailableException",
         "com.rhythmatician.voxygen.output.InMemoryVolumeWriter",
         "com.rhythmatician.voxygen.worldgen.WorldNoiseAccess",
-        "com.rhythmatician.voxygen.worldgen.DimensionGenerationDomain",
+        "com.rhythmatician.voxygen.generation.dimension.DimensionGenerationDomain",
         "com.rhythmatician.voxygen.worldgen.heightmap.HeightmapFallbackGenerator",
         "com.rhythmatician.voxygen.generation.session.GenerationSession",
         "com.rhythmatician.voxygen.generation.scheduling.LodGenerationQueue",
