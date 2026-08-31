@@ -78,6 +78,7 @@ public class LodiffusionClient implements ClientModInitializer {
         ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
             HelloTerrainMod.LOGGER.info("[LODiffusion] Disconnected — stopping services");
             LOD_SERVICE.stop();
+            com.rhythmatician.voxygen.backend.voxy.VoxyNodeRequestRetry.clear();
             stopDatasetExportService();
         });
 
