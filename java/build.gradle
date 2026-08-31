@@ -288,6 +288,7 @@ tasks.register('verifyUnitTestIsolation') {
 	def unitSources = fileTree('src/test/java') {
 		include '**/*.java'
 		exclude '**/ArchitectureGuardrailsTest.java'
+		exclude '**/PackageBoundaryTest.java'
 	}
 	inputs.files(unitSources)
 	doLast {

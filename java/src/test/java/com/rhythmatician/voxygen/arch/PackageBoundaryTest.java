@@ -12,6 +12,8 @@ import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import com.tngtech.archunit.base.DescribedPredicate;
+import com.tngtech.archunit.core.domain.JavaClass;
 import com.tngtech.archunit.core.domain.JavaClasses;
 import com.tngtech.archunit.core.importer.ClassFileImporter;
 import com.tngtech.archunit.core.importer.ImportOption;
@@ -20,11 +22,16 @@ import com.tngtech.archunit.lang.syntax.ArchRuleDefinition;
 import org.junit.jupiter.api.Test;
 
 /**
- * Package boundary enforcement for Voxygen architecture.
+ * Package-ownership guardrails — repository/package ownership doctrine.
  *
- * <p>Ensures backend.voxy is a leaf (no core depends on it) and that expected
- * voxygen types exist. Also asserts no production Java remains under legacy
- * {@code com.rhythmatician.lodiffusion} except enumerated shims.
+ * <p>Audience: repository/package ownership doctrine. This test remains the enforcement home for
+ * ADR 0016 Decisions 1–3 (canonical root, flat {@code backend.voxy} leaf, legacy shims) and
+ * repository/package ownership rules, including foreign-Voxy ownership and production
+ * package-direction invariants.
+ *
+ * <p>ADR 0016 ownership is enforced here; see {@code ArchitectureGuardrailsTest} for deep
+ * seam/runtime independence. Foreign-Voxy ownership ({@code me.cortex.voxy..}) is explicit:
+ * only the adapter {@code backend.voxy} may depend on it.
  */
 public class PackageBoundaryTest {
 
@@ -135,11 +142,39 @@ public class PackageBoundaryTest {
     }
 
     @Test
-    void semantic_doesNotDependOnBackendVoxy() {
+    void nonAdapterVoxygen_doesNotDependOnForeignVoxy() {
         JavaClasses voxygen = importVoxygenProduction();
         ArchRule rule = ArchRuleDefinition.noClasses()
-            .that().resideInAnyPackage("com.rhythmatician.voxygen.semantic..")
-            .should().dependOnClassesThat().resideInAnyPackage(BACKEND_VOXY);
+            .that().resideInAnyPackage("com.rhythmatician.voxygen..")
+            .and(DescribedPredicate.not(JavaClass.Predicates.resideInAnyPackage(BACKEND_VOXY)))
+            .should().dependOnClassesThat().resideInAnyPackage("me.cortex.voxy..");
+        rule.check(voxygen);
+    }
+
+    @Test
+    void output_doesNotDependOnGenerationInferenceOrBackend() {
+        JavaClasses voxygen = importVoxygenProduction();
+        // Production output is the neutral three-type seam (VoxelVolumeWriter, WriteOutcome,
+        // VolumeUnavailableException). InMemoryVolumeWriter has moved to testFixtures per #249
+        // so production output must not depend on generation/inference/backend. The refineParent
+        // seam (ParentRefinementIntent/Result/Batch etc.) is the only allowed generation bridge
+        // for the writer's parent-refinement capability; all other generation/inference/backend
+        // dependencies are forbidden.
+        DescribedPredicate<JavaClass> allowedOutputDependency = DescribedPredicate.or(
+            JavaClass.Predicates.resideInAnyPackage("java.."),
+            JavaClass.Predicates.resideInAnyPackage("com.rhythmatician.voxygen.output.."),
+            JavaClass.Predicates.resideInAnyPackage("com.rhythmatician.voxygen.semantic.."),
+            JavaClass.Predicates.resideInAnyPackage("org.slf4j.."),
+            JavaClass.Predicates.belongToAnyOf(
+                com.rhythmatician.voxygen.generation.refinement.ParentRefinementIntent.class,
+                com.rhythmatician.voxygen.generation.refinement.ParentRefinementResult.class,
+                com.rhythmatician.voxygen.generation.refinement.ParentRefinementBatch.class,
+                com.rhythmatician.voxygen.generation.refinement.ChildMaterializationOutcome.class,
+                com.rhythmatician.voxygen.generation.refinement.CompleteChildHandoff.class)
+        ).as("allowed output dependencies");
+        ArchRule rule = ArchRuleDefinition.classes()
+            .that().resideInAnyPackage("com.rhythmatician.voxygen.output..")
+            .should().onlyDependOnClassesThat(allowedOutputDependency);
         rule.check(voxygen);
     }
 
