@@ -18,7 +18,6 @@ import com.rhythmatician.voxygen.generation.refinement.ChildMaterializationOutco
 import com.rhythmatician.voxygen.semantic.biome.BiomeMapping;
 import com.rhythmatician.voxygen.generation.refinement.CompleteChildHandoff;
 import com.rhythmatician.voxygen.worldgen.heightmap.HeightmapFallbackGenerator;
-import com.rhythmatician.voxygen.inference.onnx.VoxelPredictionDecoder;
 
 /**
  * Production {@link VoxelVolumeWriter} that translates semantic {@link VoxelVolume}
@@ -185,26 +184,27 @@ public final class RealVoxyVolumeWriter implements VoxelVolumeWriter {
     /**
      * Build fallback block map (canonical 0..1103 -&gt; Voxy) from fallback voxy IDs.
      *
-     * <p>Only 12 canonical IDs are used by {@link VoxelPredictionDecoder} fallback path;
-     * remaining entries stay 0 (air) which is correct because fallback never emits those IDs.
-     * Canonical IDs come from {@link VoxelPredictionDecoder.FallbackPalette#defaults()}
-     * (verified against {@code python/config/voxy_vocab.json}) so the two stay in sync.
+     * <p>Only 12 canonical IDs are used by the fallback path; remaining entries stay 0 (air)
+     * which is correct because fallback never emits those IDs. Canonical IDs are verified against
+     * {@code python/config/voxy_vocab.json} and mirror
+     * {@code com.rhythmatician.voxygen.inference.onnx.VoxelPredictionDecoder.FallbackPalette}
+     * so the two stay in sync without a direct inference dependency (writer must not depend on
+     * inference per seam rule).
      */
     public static int[] buildFallbackBlockMap(HeightmapFallbackGenerator.FallbackBlockIds voxyIds) {
         int[] map = new int[CanonicalRegistries.BLOCK_COUNT];
-        VoxelPredictionDecoder.FallbackPalette palette = VoxelPredictionDecoder.FallbackPalette.defaults();
-        map[palette.air()] = voxyIds.air();
-        map[palette.stone()] = voxyIds.stone();
-        map[palette.deepslate()] = voxyIds.deepslate();
-        map[palette.dirt()] = voxyIds.dirt();
-        map[palette.grassBlock()] = voxyIds.grassBlock();
-        map[palette.sand()] = voxyIds.sand();
-        map[palette.water()] = voxyIds.water();
-        map[palette.redSand()] = voxyIds.redSand();
-        map[palette.gravel()] = voxyIds.gravel();
-        map[palette.snowLayer()] = voxyIds.snowLayer();
-        map[palette.podzol()] = voxyIds.podzol();
-        map[palette.mycelium()] = voxyIds.mycelium();
+        map[0] = voxyIds.air();
+        map[923] = voxyIds.stone();
+        map[319] = voxyIds.deepslate();
+        map[343] = voxyIds.dirt();
+        map[400] = voxyIds.grassBlock();
+        map[855] = voxyIds.sand();
+        map[1018] = voxyIds.water();
+        map[825] = voxyIds.redSand();
+        map[401] = voxyIds.gravel();
+        map[893] = voxyIds.snowLayer();
+        map[703] = voxyIds.podzol();
+        map[593] = voxyIds.mycelium();
         return map;
     }
 

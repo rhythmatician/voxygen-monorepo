@@ -71,5 +71,7 @@ This slice implements the code motion required by map #246's destination without
 
 - Branch: `refactor/voxygen-package-architecture`
 - `java/src/test/java/com/rhythmatician/voxygen/arch/PackageBoundaryTest.java` — enforces decisions 1–3 in code.
+- `ArchitectureGuardrailsTest` enforces semantic/output seam purity; `PackageBoundaryTest` remains the
+  enforcement home for ADR 0016 Decisions 1–3 and repository/package ownership rules.
 - Wayfinder map #246, tickets #247, #252, #255.
 - Access-widening policy: no further widening to make a test compile; co-locate the test or leave the member package-private and note the gap. Any new widening requires an ADR amendment before merge.
