@@ -64,6 +64,38 @@ public final class VoxyWorldBinding {
      */
     public static VarHandle worldSectionNecVarHandle;
 
+    // Acquired-section ownership helper — ensures every successfully acquired
+    // WorldSection is released exactly once on success, early-return, and
+    // failure, with release failures attached as suppressed to the primary.
+    private static final class AcquiredSection implements AutoCloseable {
+        private final Object section;
+
+        private AcquiredSection(Object section) {
+            this.section = section;
+        }
+
+        static AcquiredSection acquire(Object worldEngine, int lvl, int wsX, int wsY, int wsZ)
+                throws Exception {
+            Object s = VoxyEngine.acquireMethod.invoke(worldEngine, lvl, wsX, wsY, wsZ);
+            return new AcquiredSection(s);
+        }
+
+        static AcquiredSection acquireIfExists(Object worldEngine, int lvl, int wsX, int wsY, int wsZ)
+                throws Exception {
+            Object s = VoxyEngine.acquireIfExistsMethod.invoke(worldEngine, lvl, wsX, wsY, wsZ);
+            return s == null ? null : new AcquiredSection(s);
+        }
+
+        Object get() {
+            return section;
+        }
+
+        @Override
+        public void close() throws Exception {
+            VoxyEngine.worldSectionReleaseMethod.invoke(section);
+        }
+    }
+
     private VoxyWorldBinding() {}
 
     // ------------------------------------------------------------------ //
@@ -292,10 +324,8 @@ public final class VoxyWorldBinding {
         int wsY = sectionY >> (lvl + 1);
         int wsZ = sectionZ >> (lvl + 1);
 
-        try {
-            // Acquire (or create) the WorldSection at the target level
-            Object worldSection = VoxyEngine.acquireMethod.invoke(
-                    worldEngine, lvl, wsX, wsY, wsZ);
+        try (AcquiredSection acquired = AcquiredSection.acquire(worldEngine, lvl, wsX, wsY, wsZ)) {
+            Object worldSection = acquired.get();
 
             // Compute base offset within the 32³ grid
             int mask = (1 << (lvl + 1)) - 1;
@@ -312,7 +342,6 @@ public final class VoxyWorldBinding {
             int octant = octXHalf | (octZHalf << 1) | (octYHalf << 2);
             byte childBit = (byte)(1 << octant);
             if ((readNec(worldSection) & childBit) != 0) {
-                VoxyEngine.worldSectionReleaseMethod.invoke(worldSection);
                 return 0;
             }
 
@@ -344,9 +373,6 @@ public final class VoxyWorldBinding {
             markDirty(worldEngine, worldSection,
                     BLOCK_UPDATE_FLAG | (nonAir > 0 ? CHILD_EXISTENCE_UPDATE_FLAG : 0));
 
-            // Release the WorldSection reference
-            VoxyEngine.worldSectionReleaseMethod.invoke(worldSection);
-
             return nonAir;
 
         } catch (Exception e) {
@@ -363,9 +389,9 @@ public final class VoxyWorldBinding {
             throw new IllegalArgumentException("parent level must be 1..4");
         }
         ensureWorldSectionBindings();
-        try {
-            Object parentSection = VoxyEngine.acquireMethod.invoke(
-                    worldEngine, parentLvl, parentWsX, parentWsY, parentWsZ);
+        try (AcquiredSection acquired = AcquiredSection.acquire(
+                worldEngine, parentLvl, parentWsX, parentWsY, parentWsZ)) {
+            Object parentSection = acquired.get();
             byte storedChildren = computeStoredChildDataMask(
                     worldEngine, parentLvl, parentWsX, parentWsY, parentWsZ);
             byte finalMask = completeHandoffMask(handoff.presentMask(), storedChildren);
@@ -375,7 +401,6 @@ public final class VoxyWorldBinding {
             // Ownership ends because the handoff is COMPLETE (every octant
             // terminal), not because every octant is occupied.
             VoxyTopologyOwnership.releaseAfterHandoff(parentSection);
-            VoxyEngine.worldSectionReleaseMethod.invoke(parentSection);
         } catch (Exception e) {
             throw new RuntimeException("publishCompleteChildMask failed at parent lvl=" + parentLvl
                     + " ws=(" + parentWsX + "," + parentWsY + "," + parentWsZ + ")", e);
@@ -437,32 +462,33 @@ public final class VoxyWorldBinding {
             // Fused child-topology probe result, computed lazily at most once
             // per write and reused for both the skip gate and backing mask.
             ChildTopologyMasks childTopology = null;
-            Object existingSection = VoxyEngine.acquireIfExistsMethod.invoke(
-                    worldEngine, lvl, wsX, wsY, wsZ);
-            if (existingSection != null) {
-                existingNec = readNec(existingSection);
-                if (lvl == 0 && existingNec == (byte) 0xFF) {
-                    // L0 NEC=0xFF means "has some blocks", NOT "all 8 octants full".
-                    // Scan actual voxel data to find which octants have real blocks.
-                    long[] existingData = (long[]) worldSectionDataField.get(existingSection);
-                    byte occupied = computeOccupiedOctantMask(existingData);
-                    VoxyEngine.worldSectionReleaseMethod.invoke(existingSection);
-                    if (occupied == (byte) 0xFF) {
-                        return 0; // every octant genuinely has blocks
-                    }
-                    // Preserve only the octants that actually contain data.
-                    preserveOctantsMask |= occupied;
-                } else {
-                    VoxyEngine.worldSectionReleaseMethod.invoke(existingSection);
-                    // For L1-4, do not trust existing NEC blindly: stale masks from
-                    // older runs may advertise children that do not actually exist.
-                    // Skip only when every advertised child is backed by real voxel
-                    // data (verified completeness, not stale advertisement).
-                    if (lvl > 0) {
-                        childTopology = computeChildTopologyMasks(worldEngine, lvl, wsX, wsY, wsZ);
-                        if (shouldSkipWriteForVerifiedChildren(
-                                childTopology.advertised(), childTopology.storedData())) {
-                            return 0;
+            AcquiredSection existingAcquired =
+                    AcquiredSection.acquireIfExists(worldEngine, lvl, wsX, wsY, wsZ);
+            if (existingAcquired != null) {
+                try (existingAcquired) {
+                    Object existingSection = existingAcquired.get();
+                    existingNec = readNec(existingSection);
+                    if (lvl == 0 && existingNec == (byte) 0xFF) {
+                        // L0 NEC=0xFF means "has some blocks", NOT "all 8 octants full".
+                        // Scan actual voxel data to find which octants have real blocks.
+                        long[] existingData = (long[]) worldSectionDataField.get(existingSection);
+                        byte occupied = computeOccupiedOctantMask(existingData);
+                        if (occupied == (byte) 0xFF) {
+                            return 0; // every octant genuinely has blocks
+                        }
+                        // Preserve only the octants that actually contain data.
+                        preserveOctantsMask |= occupied;
+                    } else {
+                        // For L1-4, do not trust existing NEC blindly: stale masks from
+                        // older runs may advertise children that do not actually exist.
+                        // Skip only when every advertised child is backed by real voxel
+                        // data (verified completeness, not stale advertisement).
+                        if (lvl > 0) {
+                            childTopology = computeChildTopologyMasks(worldEngine, lvl, wsX, wsY, wsZ);
+                            if (shouldSkipWriteForVerifiedChildren(
+                                    childTopology.advertised(), childTopology.storedData())) {
+                                return 0;
+                            }
                         }
                     }
                 }
@@ -485,36 +511,36 @@ public final class VoxyWorldBinding {
 
             // Acquire (or create) the WorldSection and claim its topology before
             // any generated nonterminal fallback can be dirtied for rendering.
-            Object worldSection = VoxyEngine.acquireMethod.invoke(
-                    worldEngine, lvl, wsX, wsY, wsZ);
-            byte preserveMask = preserveOctantsMask;
-            byte backedChildOctants = 0;
-            if (lvl > 0) {
-                // Preserve physical child data, not the parent's advertised topology.
-                // Stored finer sections and this section's coarse voxel octants are
-                // separate representations even when they cover the same space.
-                // Reuse the fused probe when the skip gate already computed it;
-                // otherwise probe now (single pass either way).
-                if (childTopology == null) {
-                    childTopology = computeChildTopologyMasks(worldEngine, lvl, wsX, wsY, wsZ);
+            try (AcquiredSection acquired = AcquiredSection.acquire(worldEngine, lvl, wsX, wsY, wsZ)) {
+                Object worldSection = acquired.get();
+                byte preserveMask = preserveOctantsMask;
+                byte backedChildOctants = 0;
+                if (lvl > 0) {
+                    // Preserve physical child data, not the parent's advertised topology.
+                    // Stored finer sections and this section's coarse voxel octants are
+                    // separate representations even when they cover the same space.
+                    // Reuse the fused probe when the skip gate already computed it;
+                    // otherwise probe now (single pass either way).
+                    if (childTopology == null) {
+                        childTopology = computeChildTopologyMasks(worldEngine, lvl, wsX, wsY, wsZ);
+                    }
+                    backedChildOctants = childTopology.storedData();
+                    preserveMask |= backedChildOctants;
                 }
-                backedChildOctants = childTopology.storedData();
-                preserveMask |= backedChildOctants;
+                writeAcquiredWorldSection(
+                        worldSection,
+                        lvl,
+                        wsX, wsY, wsZ,
+                        voxels,
+                        preserveMask,
+                        backedChildOctants,
+                        (section, flags) -> markDirty(worldEngine, section, flags));
+                LOGGER.info("[VoidWatch] WRITE lvl={} ws=({},{},{}) nonAir={} preserve=0x{} backed=0x{} existingNec=0x{}",
+                        lvl, wsX, wsY, wsZ, nonAir,
+                        Integer.toHexString(Byte.toUnsignedInt(preserveMask)),
+                        Integer.toHexString(Byte.toUnsignedInt(backedChildOctants)),
+                        Integer.toHexString(Byte.toUnsignedInt(existingNec)));
             }
-            writeAcquiredWorldSection(
-                    worldSection,
-                    lvl,
-                    wsX, wsY, wsZ,
-                    voxels,
-                    preserveMask,
-                    backedChildOctants,
-                    (section, flags) -> markDirty(worldEngine, section, flags));
-            VoxyEngine.worldSectionReleaseMethod.invoke(worldSection);
-            LOGGER.info("[VoidWatch] WRITE lvl={} ws=({},{},{}) nonAir={} preserve=0x{} backed=0x{} existingNec=0x{}",
-                    lvl, wsX, wsY, wsZ, nonAir,
-                    Integer.toHexString(Byte.toUnsignedInt(preserveMask)),
-                    Integer.toHexString(Byte.toUnsignedInt(backedChildOctants)),
-                    Integer.toHexString(Byte.toUnsignedInt(existingNec)));
 
         } catch (Exception e) {
             throw new RuntimeException(
@@ -745,12 +771,13 @@ public final class VoxyWorldBinding {
             int childWsY = (wsY << 1) + ((octant >> 2) & 1);
             int childWsZ = (wsZ << 1) + ((octant >> 1) & 1);
 
-            Object childSection = VoxyEngine.acquireIfExistsMethod.invoke(
+            AcquiredSection acquired = AcquiredSection.acquireIfExists(
                     worldEngine, childLvl, childWsX, childWsY, childWsZ);
-            if (childSection == null) {
+            if (acquired == null) {
                 continue;
             }
-            try {
+            try (acquired) {
+                Object childSection = acquired.get();
                 // Match Voxy's own semantic (DebugUtils.java L63):
                 // bit i is set only if the child's own NEC is non-zero,
                 // not merely if the section object exists in the LRU cache.
@@ -761,8 +788,6 @@ public final class VoxyWorldBinding {
                 if (containsNonAir(childData)) {
                     storedData |= (byte) (1 << octant);
                 }
-            } finally {
-                VoxyEngine.worldSectionReleaseMethod.invoke(childSection);
             }
         }
         return new ChildTopologyMasks(advertised, storedData);
@@ -783,18 +808,17 @@ public final class VoxyWorldBinding {
             int childWsX = (wsX << 1) + (octant & 1);
             int childWsY = (wsY << 1) + ((octant >> 2) & 1);
             int childWsZ = (wsZ << 1) + ((octant >> 1) & 1);
-            Object childSection = VoxyEngine.acquireIfExistsMethod.invoke(
+            AcquiredSection acquired = AcquiredSection.acquireIfExists(
                     worldEngine, childLvl, childWsX, childWsY, childWsZ);
-            if (childSection == null) {
+            if (acquired == null) {
                 continue;
             }
-            try {
+            try (acquired) {
+                Object childSection = acquired.get();
                 long[] childData = (long[]) worldSectionDataField.get(childSection);
                 if (containsNonAir(childData)) {
                     mask |= (byte) (1 << octant);
                 }
-            } finally {
-                VoxyEngine.worldSectionReleaseMethod.invoke(childSection);
             }
         }
         return mask;
@@ -917,7 +941,7 @@ public final class VoxyWorldBinding {
         try {
             return computeChildExistenceMask(worldEngine, lvl, wsX, wsY, wsZ);
         } catch (Exception e) {
-            LOGGER.warn("getChildExistenceMask failed: {}", e.getMessage());
+            LOGGER.warn("getChildExistenceMask failed", e);
             return 0;
         }
     }
@@ -930,17 +954,19 @@ public final class VoxyWorldBinding {
                                              int wsX, int wsY, int wsZ) {
         ensureWorldSectionBindings();
         try {
-            Object section = VoxyEngine.acquireIfExistsMethod.invoke(
+            AcquiredSection acquired = AcquiredSection.acquireIfExists(
                     worldEngine, lvl, wsX, wsY, wsZ);
-            if (section == null) {
+            if (acquired == null) {
                 return 0;
             }
-            long[] data = (long[]) worldSectionDataField.get(section);
-            byte mask = computeOccupiedOctantMask(data);
-            VoxyEngine.worldSectionReleaseMethod.invoke(section);
-            return mask;
+            try (acquired) {
+                Object section = acquired.get();
+                long[] data = (long[]) worldSectionDataField.get(section);
+                byte mask = computeOccupiedOctantMask(data);
+                return mask;
+            }
         } catch (Exception e) {
-            LOGGER.warn("getOccupiedOctantMask failed: {}", e.getMessage());
+            LOGGER.warn("getOccupiedOctantMask failed", e);
             return 0;
         }
     }
@@ -965,22 +991,26 @@ public final class VoxyWorldBinding {
                                                int wsX, int wsY, int wsZ) {
         ensureWorldSectionBindings();
         try {
-            Object section = VoxyEngine.acquireIfExistsMethod.invoke(
+            AcquiredSection acquired = AcquiredSection.acquireIfExists(
                     worldEngine, lvl, wsX, wsY, wsZ);
-            if (section == null) return false;
+            if (acquired == null) return false;
             if (lvl == 0) {
-                long[] data = (long[]) worldSectionDataField.get(section);
-                byte occupied = computeOccupiedOctantMask(data);
-                VoxyEngine.worldSectionReleaseMethod.invoke(section);
-                return occupied == (byte) 0xFF;
+                try (acquired) {
+                    Object section = acquired.get();
+                    long[] data = (long[]) worldSectionDataField.get(section);
+                    byte occupied = computeOccupiedOctantMask(data);
+                    return occupied == (byte) 0xFF;
+                }
             }
 
-            VoxyEngine.worldSectionReleaseMethod.invoke(section);
+            try (acquired) {
+                // Existence confirmed; release before probing children.
+            }
 
             // True completeness for L1+: every child world-section exists.
             return computeChildExistenceMask(worldEngine, lvl, wsX, wsY, wsZ) == (byte) 0xFF;
         } catch (Exception e) {
-            LOGGER.warn("allOctantsPopulated check failed: {}", e.getMessage());
+            LOGGER.warn("allOctantsPopulated check failed", e);
             return false;
         }
     }
@@ -1000,15 +1030,17 @@ public final class VoxyWorldBinding {
                                                 int wsX, int wsY, int wsZ) {
         ensureWorldSectionBindings();
         try {
-            Object section = VoxyEngine.acquireIfExistsMethod.invoke(
+            AcquiredSection acquired = AcquiredSection.acquireIfExists(
                     worldEngine, lvl, wsX, wsY, wsZ);
-            if (section != null) {
-                VoxyEngine.worldSectionReleaseMethod.invoke(section);
+            if (acquired != null) {
+                try (acquired) {
+                    // Existence confirmed; ownership ends here.
+                }
                 return true;
             }
             return false;
         } catch (Exception e) {
-            LOGGER.warn("sectionExistsAtLevel check failed: " + e.getMessage());
+            LOGGER.warn("sectionExistsAtLevel check failed", e);
             return false;
         }
     }
@@ -1022,28 +1054,28 @@ public final class VoxyWorldBinding {
                                                    int wsX, int wsY, int wsZ) {
         ensureWorldSectionBindings();
         try {
-            Object section = VoxyEngine.acquireIfExistsMethod.invoke(
+            AcquiredSection acquired = AcquiredSection.acquireIfExists(
                     worldEngine, lvl, wsX, wsY, wsZ);
-            if (section == null) {
+            if (acquired == null) {
                 return null;
             }
-
-            long[] data = (long[]) worldSectionDataField.get(section);
-            int[][][] out = new int[32][32][32];
-            for (int y = 0; y < 32; y++) {
-                for (int z = 0; z < 32; z++) {
-                    for (int x = 0; x < 32; x++) {
-                        int idx = (y << 10) | (z << 5) | x;
-                        long voxel = data[idx];
-                        out[y][z][x] = (int) ((voxel & BLOCK_ID_MASK) >> BLOCK_ID_SHIFT);
+            try (acquired) {
+                Object section = acquired.get();
+                long[] data = (long[]) worldSectionDataField.get(section);
+                int[][][] out = new int[32][32][32];
+                for (int y = 0; y < 32; y++) {
+                    for (int z = 0; z < 32; z++) {
+                        for (int x = 0; x < 32; x++) {
+                            int idx = (y << 10) | (z << 5) | x;
+                            long voxel = data[idx];
+                            out[y][z][x] = (int) ((voxel & BLOCK_ID_MASK) >> BLOCK_ID_SHIFT);
+                        }
                     }
                 }
+                return out;
             }
-
-            VoxyEngine.worldSectionReleaseMethod.invoke(section);
-            return out;
         } catch (Exception e) {
-            LOGGER.warn("readWorldSectionBlocks failed: {}", e.getMessage());
+            LOGGER.warn("readWorldSectionBlocks failed", e);
             return null;
         }
     }
