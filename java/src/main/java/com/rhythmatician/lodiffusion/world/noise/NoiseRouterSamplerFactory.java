@@ -3,7 +3,10 @@ package com.rhythmatician.lodiffusion.world.noise;
 import com.rhythmatician.lodiffusion.Config;
 import com.rhythmatician.lodiffusion.HelloTerrainMod;
 
+import net.minecraft.registry.RegistryKey;
 import net.minecraft.server.world.ServerWorld;
+import net.minecraft.util.Identifier;
+import net.minecraft.world.World;
 import net.minecraft.world.biome.source.BiomeSource;
 import net.minecraft.world.gen.chunk.ChunkGenerator;
 import net.minecraft.world.gen.noise.NoiseConfig;
@@ -17,6 +20,15 @@ import net.minecraft.world.gen.noise.NoiseConfig;
  * sampler is closed and a new one is created.  This allows switching between
  * {@code "vanilla"}, {@code "gpu"}, and {@code "shadow"} at runtime without
  * restarting the world.
+ *
+ * <h2>Overworld-only lattice (fail-closed)</h2>
+ * <p>{@link SectionNoiseData} is the Overworld conditioning shape
+ * ({@code 4×2×4 → 480 floats}).  This factory is world-bound: when the bound
+ * {@link ServerWorld} is a non-Overworld dimension (Nether, End),
+ * {@link #getSampler()} and {@link #getUpstreamContext()} fail with
+ * {@link UnsupportedOperationException} before any misleading tensor is produced.
+ * The deprecated {@link #create(NoiseConfig)} overload has no world context and
+ * is treated as Overworld for legacy/test use.
  *
  * <h2>Lifecycle</h2>
  * <ol>
@@ -103,6 +115,7 @@ public final class NoiseRouterSamplerFactory implements AutoCloseable {
      * @return the active sampler, never null
      */
     public NoiseRouterSampler getSampler() {
+        ensureSupportedDimension();
         String requested = resolveBackendKey(Config.terrainBackend());
 
         // Fast path: no change
@@ -154,6 +167,7 @@ public final class NoiseRouterSamplerFactory implements AutoCloseable {
      * @throws IllegalStateException if world context is not available
      */
     public UpstreamNoiseContext getUpstreamContext() {
+        ensureSupportedDimension();
         // Ensure sampler is current
         getSampler();
 
@@ -245,13 +259,54 @@ public final class NoiseRouterSamplerFactory implements AutoCloseable {
     }
 
     private NoiseRouterSampler createSampler(String backendKey) {
+        RegistryKey<World> dim = boundDimension();
         return switch (backendKey) {
-            case "gpu"    -> new GpuNoiseRouterSampler(noiseConfig);
+            case "gpu"    -> new GpuNoiseRouterSampler(noiseConfig, dim);
             case "shadow" -> new ShadowValidatingSampler(
-                    new VanillaNoiseRouterSampler(noiseConfig),
-                    new GpuNoiseRouterSampler(noiseConfig),
+                    new VanillaNoiseRouterSampler(noiseConfig, dim),
+                    new GpuNoiseRouterSampler(noiseConfig, dim),
                     Config.parityConfig());
-            default       -> new VanillaNoiseRouterSampler(noiseConfig);
+            default       -> new VanillaNoiseRouterSampler(noiseConfig, dim);
         };
+    }
+
+    private RegistryKey<World> boundDimension() {
+        if (serverWorld == null) return null;
+        try {
+            return serverWorld.getRegistryKey();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private void ensureSupportedDimension() {
+        if (serverWorld == null) return; // legacy/test path treated as Overworld
+        RegistryKey<World> key;
+        try {
+            key = serverWorld.getRegistryKey();
+        } catch (Exception e) {
+            return;
+        }
+        if (key == null) return;
+        validateDimension(key);
+    }
+
+    /**
+     * Validate that the given dimension is the supported Overworld lattice.
+     * Extracted for headless testability without mocking {@link ServerWorld}.
+     *
+     * @param key dimension key to validate
+     * @throws UnsupportedOperationException if not Overworld
+     */
+    static void validateDimension(RegistryKey<World> key) {
+        if (key == null) return;
+        Identifier id = key.getValue();
+        if (!id.equals(Identifier.of("minecraft", "overworld"))) {
+            throw new UnsupportedOperationException(
+                    "SectionNoiseData Overworld-only lattice (4×2×4 → 480 floats, spacing 4/8/4) "
+                    + "not supported for dimension " + id
+                    + " — supported: " + SectionNoiseData.SUPPORTED_DIMENSION
+                    + ". Nether/End must not use the Overworld sampler.");
+        }
     }
 }

@@ -27,16 +27,28 @@ public interface NoiseRouterSampler {
 
     /**
      * Sample all 15 {@link RouterField NoiseRouter fields} for a single
-     * 16³-block section at quart resolution (4×4×4).
+     * 16³-block section at the <b>Overworld lattice</b>:
+     * {@code float[480]} in {@code [field][qx][qy][qz]} order where
+     * {@code 4 × 2 × 4 = 32} cells per field (spacing 4 on X/Z, 8 on Y).
      *
-     * <p>The returned {@link SectionNoiseData} contains a flat
-     * {@code float[960]} tensor in {@code [field][qx][qy][qz]} order,
-     * ready to be passed directly to the sparse octree ONNX model.
+     * <p>This sampler is <b>Overworld-only today</b>. The returned
+     * {@link SectionNoiseData} is the Overworld conditioning shape
+     * ({@link SectionNoiseData#FLAT_LENGTH} = 480). Unsupported dimensions
+     * (Nether, End, or any non-Overworld lattice) must fail closed before
+     * producing data — callers obtain the sampler via
+     * {@link NoiseRouterSamplerFactory} which validates the bound dimension.
+     * Direct sampler use outside the Overworld also throws
+     * {@link UnsupportedOperationException}.
+     *
+     * <p>Layout: {@code flat[field * 32 + qx * 8 + qy * 4 + qz]}, ready to be
+     * passed to the downstream sparse octree pipeline where supported.
      *
      * @param sectionX chunk-X coordinate (same as section-X at L0)
      * @param sectionY section-Y in native units (overworld: −4 to 19)
      * @param sectionZ chunk-Z coordinate (same as section-Z at L0)
      * @return noise data for the section, never {@code null}
+     * @throws UnsupportedOperationException if the sampler is bound to an
+     *         unsupported dimension/lattice
      */
     SectionNoiseData sampleSection(int sectionX, int sectionY, int sectionZ);
 

@@ -21,9 +21,11 @@ import java.util.stream.Collectors;
  * GPU dispatcher for the quart-resolution NoiseRouter field evaluator.
  *
  * <p>Compiles and manages the {@code quart_noise_compute.comp} compute shader,
- * which evaluates all 15 {@code RouterField} values at 4×4×4 quart resolution
- * for batched sections.  This is the data source that will back
- * {@code GpuNoiseRouterSampler} once the async dispatch queue is in place.
+ * which evaluates all 15 {@code RouterField} values at the Overworld
+ * {@code 4×2×4} quart resolution for batched sections.  This is the data source
+ * that will back {@code GpuNoiseRouterSampler} once the async dispatch queue
+ * is in place.  The output is {@code float[N × 480]} matching
+ * {@link SectionNoiseData#FLAT_LENGTH}.
  *
  * <h3>GPU resource layout</h3>
  * <ul>
@@ -38,8 +40,8 @@ import java.util.stream.Collectors;
  * </ul>
  *
  * <h3>Workgroup layout</h3>
- * {@code layout(local_size_x=4, local_size_y=4, local_size_z=4)} — 64 threads per
- * section.  {@code glDispatchCompute(N, 1, 1)} for a batch of N sections.
+ * {@code layout(local_size_x=4, local_size_y=2, local_size_z=4)} — 32 threads per
+ * section (Overworld 4×2×4).  {@code glDispatchCompute(N, 1, 1)} for a batch of N sections.
  *
  * <h3>Lifecycle</h3>
  * <pre>
@@ -62,8 +64,8 @@ public class QuartNoiseCompute {
     private static final int SECTION_ORIGINS_BINDING = 14;
     private static final int QUART_OUTPUT_BINDING = 15;
 
-    // SectionNoiseData constants
-    private static final int FLOATS_PER_SECTION = SectionNoiseData.FLAT_LENGTH;  // 960
+    // SectionNoiseData constants — Overworld lattice: 4×2×4 = 32 cells, 15×32 = 480 floats
+    private static final int FLOATS_PER_SECTION = SectionNoiseData.FLAT_LENGTH;  // 480
 
     /** Maximum sections per single dispatch.  Limits GPU memory and latency. */
     private static final int MAX_BATCH_SIZE = 256;
@@ -365,11 +367,11 @@ public class QuartNoiseCompute {
                 (long) batchCapacity * 4 * 4,   // 4 ints × 4 bytes each × N sections
                 GL15C.GL_DYNAMIC_DRAW);
 
-        // Quart noise output: N × 960 floats
+        // Quart noise output: N × 480 floats (Overworld 4×2×4 lattice)
         quartOutputSSBO = genBuffer();
         GL15C.glBindBuffer(GL43C.GL_SHADER_STORAGE_BUFFER, quartOutputSSBO);
         GL15C.glBufferData(GL43C.GL_SHADER_STORAGE_BUFFER,
-                (long) batchCapacity * FLOATS_PER_SECTION * 4,  // 960 floats × 4 bytes × N
+                (long) batchCapacity * FLOATS_PER_SECTION * 4,  // 480 floats × 4 bytes × N
                 GL15C.GL_DYNAMIC_READ);
 
         GL15C.glBindBuffer(GL43C.GL_SHADER_STORAGE_BUFFER, 0);

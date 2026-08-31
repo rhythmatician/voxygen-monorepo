@@ -2,6 +2,8 @@ package com.rhythmatician.lodiffusion.world.noise;
 
 import com.rhythmatician.lodiffusion.HelloTerrainMod;
 
+import net.minecraft.registry.RegistryKey;
+import net.minecraft.world.World;
 import net.minecraft.world.gen.noise.NoiseConfig;
 
 import java.util.concurrent.CompletableFuture;
@@ -54,7 +56,15 @@ public final class GpuNoiseRouterSampler implements NoiseRouterSampler {
      * @param noiseConfig the server's NoiseConfig (used for CPU fallback)
      */
     public GpuNoiseRouterSampler(NoiseConfig noiseConfig) {
-        this.cpuFallback = new VanillaNoiseRouterSampler(noiseConfig);
+        this(noiseConfig, null);
+    }
+
+    /**
+     * @param noiseConfig the server's NoiseConfig (used for CPU fallback)
+     * @param dimension   bound dimension; null means Overworld (legacy/test), non-Overworld fails closed
+     */
+    public GpuNoiseRouterSampler(NoiseConfig noiseConfig, RegistryKey<World> dimension) {
+        this.cpuFallback = new VanillaNoiseRouterSampler(noiseConfig, dimension);
     }
 
     @Override
