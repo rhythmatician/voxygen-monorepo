@@ -744,6 +744,8 @@ async function reconcileInProgressIssues(): Promise<void> {
   console.log("=== Reconciliation complete ===\n");
 }
 import { doctorWorktreePath, cleanupDoctorBranchAndWorktree, reconcileStaleDoctorResources } from "./doctor-helpers.mts";
+import { mergeCompletedBranchesLocally } from "./round-integration.mts";
+import { runSandcastleGC } from "./sandcastle-gc.mts";
 
 // ---------------------------------------------------------------------------
 // Factory doctor — fail-closed preflight before any claim
@@ -972,6 +974,14 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
     }
     if (QUALIFICATION_LIFECYCLE.mutateOutcomeState) {
       await reconcileInProgressIssues();
+      // Sandcastle GC (RALPH) — part of the loop, not manual branch -d.
+      // Prunes CLOSED-issue branches (ancestor of origin/main or >7d) and old
+      // batch branches; bounded, fail-open, mutates only when qualify allows.
+      try {
+        await runSandcastleGC({ repoRoot: REPO_ROOT, ghRun: runGh });
+      } catch (e) {
+        console.warn(`  GC failed (fail-open): ${getErrorMessage(e).slice(0, 300)}`);
+      }
     } else {
       console.log("Qualification mode: production reconciliation suppressed (read-only external state).");
     }
@@ -1060,17 +1070,20 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
   if (eligible.length > 0) {
     const iterationPlan = planIssuesForIteration(eligible, {
       requestedIssueNumber: ITERATION_CONTROL.requestedIssueNumber,
+      requestedIssueNumbers: ITERATION_CONTROL.requestedIssueNumbers,
     });
     if (iterationPlan.mode === "qualified") {
       plannedIssues = iterationPlan.plannedIssues;
-      console.log(`Qualification mode: explicitly selected issue #${plannedIssues[0]!.id} only.`);
+      const ids = plannedIssues.map((p) => `#${p.id}`).join(", ");
+      console.log(`Qualification mode: explicitly selected ${plannedIssues.length === 1 ? `issue ${ids} only.` : `issues ${ids} only.`}`);
     } else if (iterationPlan.mode === "qualify-unsupported") {
-      const requestedIssueNumber = ITERATION_CONTROL.requestedIssueNumber!;
-      const isResearchTarget = researchEligible.some((r) => String(r.number) === requestedIssueNumber);
+      const requested = ITERATION_CONTROL.requestedIssueNumbers ?? (ITERATION_CONTROL.requestedIssueNumber ? [ITERATION_CONTROL.requestedIssueNumber] : []);
+      const requestedStr = requested.join(", #");
+      const isResearchTarget = requested.some((id) => researchEligible.some((r) => String(r.number) === id));
       if (isResearchTarget) {
-        console.log(`Qualification mode requested issue #${requestedIssueNumber} is a research ticket — skipping implementation, dispatching research only`);
+        console.log(`Qualification mode requested issue #${requestedStr} is a research ticket — skipping implementation, dispatching research only`);
       } else {
-        console.log(`Qualification mode requested issue #${requestedIssueNumber}, but it is not eligible in either profile. Dispatching nothing.`);
+        console.log(`Qualification mode requested issue #${requestedStr}, but it is not eligible in either profile. Dispatching nothing.`);
       }
       plannedIssues = [];
     } else if (iterationPlan.mode === "single-eligible") {
@@ -1166,13 +1179,14 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
       }
     }
   } else {
-    const requestedForResearchOnly = ITERATION_CONTROL.requestedIssueNumber;
-    if (requestedForResearchOnly) {
-      const isResearchTarget = researchEligible.some((r) => String(r.number) === requestedForResearchOnly);
+    const requestedForResearchOnly = ITERATION_CONTROL.requestedIssueNumbers ?? (ITERATION_CONTROL.requestedIssueNumber ? [ITERATION_CONTROL.requestedIssueNumber] : []);
+    if (requestedForResearchOnly.length > 0) {
+      const isResearchTarget = requestedForResearchOnly.some((id) => researchEligible.some((r) => String(r.number) === id));
+      const ids = requestedForResearchOnly.map((id) => `#${id}`).join(", ");
       if (isResearchTarget) {
-        console.log(`Qualification mode: explicitly selected research issue #${requestedForResearchOnly} only.`);
+        console.log(`Qualification mode: explicitly selected research ${requestedForResearchOnly.length === 1 ? `issue ${ids} only.` : `issues ${ids} only.`}`);
       } else {
-        console.log(`Qualification mode requested issue #${requestedForResearchOnly}, but it is not eligible in either profile. Dispatching nothing.`);
+        console.log(`Qualification mode requested issue ${ids}, but it is not eligible in either profile. Dispatching nothing.`);
       }
     } else {
       console.log("No implement eligible — skipping planner, research only this iteration");
@@ -1207,8 +1221,16 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
     factoryBaseSha = execSync('git rev-parse origin/main', {encoding:'utf8'}).trim();
     callerBranch = execSync('git branch --show-current', {encoding:'utf8'}).trim();
     callerSha = execSync('git rev-parse HEAD', {encoding:'utf8'}).trim();
+    // Merge-between-rounds: if caller HEAD is ahead of origin/main (contains locally integrated round), use it as base so next round builds on prerequisites
+    try {
+      const isAncestor = (() => { try { execFileSync("git", ["merge-base", "--is-ancestor", factoryBaseSha, callerSha], { stdio: "ignore", cwd: REPO_ROOT }); return true; } catch { return false; } })();
+      if (isAncestor && callerSha !== factoryBaseSha) {
+        console.log(`[round-integration] caller HEAD ${callerSha.slice(0,7)} contains origin/main ${factoryBaseSha.slice(0,7)} + local round integration — using HEAD as factory base for next round`);
+        factoryBaseSha = callerSha;
+      }
+    } catch {}
     callerStatusBefore = (() => { try { return execSync('git status --porcelain', {encoding:'utf8', cwd: REPO_ROOT}).trim(); } catch { return null; } })();
-    console.log(`Factory base frozen: ${factoryBaseSha.slice(0,7)} (origin/main), caller ${callerBranch}@${callerSha.slice(0,7)} status "${(callerStatusBefore||'').slice(0,80)}" — will NOT be mutated`);
+    console.log(`Factory base frozen: ${factoryBaseSha.slice(0,7)} (${factoryBaseSha === callerSha ? "local integration HEAD" : "origin/main"}), caller ${callerBranch}@${callerSha.slice(0,7)} status "${(callerStatusBefore||'').slice(0,80)}" — will NOT be mutated`);
   } catch (e) {
     const fe = e as unknown as { stdout?: unknown; stderr?: unknown; status?: unknown; code?: unknown };
     const stdout = fe.stdout ? String(fe.stdout).slice(0,1000) : "";
@@ -1276,7 +1298,7 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
     const researchPlanned: PlannedIssue[] = planResearchForIteration(
       researchEligible,
       eligible,
-      { requestedIssueNumber: ITERATION_CONTROL.requestedIssueNumber },
+      { requestedIssueNumber: ITERATION_CONTROL.requestedIssueNumber, requestedIssueNumbers: ITERATION_CONTROL.requestedIssueNumbers },
     );
     if (QUALIFICATION_LIFECYCLE.claimExternalState) {
       for (const p of researchPlanned) {
@@ -1847,21 +1869,34 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
     if (result.next.reason === "submission-complete") {
       // Successful submission — note that authoritative CI/merge remains pending
       // If research had factory error, result.next would have been stop, so here we know research is clean
-      // Do GC for ephemeral batch artefacts
+      // Merge-between-rounds: integrate completed branches locally so the next
+      // iteration's workers build on prerequisite commits without waiting for
+      // origin/main PR merges. This satisfies blockedBy locally while the bulk
+      // PR awaits human review. If review amends a branch, the integration
+      // branch will need a rebase — fail-open here (log, continue).
+      try {
+        const ids = result.implementation.completedIds;
+        if (ids.length > 0) {
+          console.log(`\n[round-integration] Merging ${ids.length} completed branch(es) locally for next round: ${ids.join(", ")}`);
+          const r = mergeCompletedBranchesLocally(REPO_ROOT, ids);
+          console.log(`[round-integration] merged=${r.merged.join(",") || "(none)"} already=${r.alreadyContained.join(",") || "(none)"} failed=${r.failed.map(f => `${f.id}:${f.reason.slice(0,80)}`).join(",") || "(none)"}`);
+        }
+      } catch (e) {
+        console.warn(`[round-integration] local merge failed: ${getErrorMessage(e)} — continuing, next round will base on origin/main`);
+      }
+      // GC (RALPH) after round integration — keep worktree/branch count bounded per iteration
+      try {
+        await runSandcastleGC({ repoRoot: REPO_ROOT, ghRun: runGh });
+      } catch (e) {
+        console.warn(`  GC failed (fail-open): ${getErrorMessage(e).slice(0, 300)}`);
+      }
+      // Preserve-local is separate ephemeral artefact (not sandcastle GC)
       try { branchHelpers.cleanupPreserveLocalBranches(REPO_ROOT); } catch {}
       try { execSync("git worktree prune", { stdio: "ignore", cwd: REPO_ROOT }); } catch {}
       console.log("\nBatch submitted -- authoritative CI and merge remain pending.");
       continue;
     }
   }
-
-  // Immediate GC for ephemeral batch artefacts -- same-process lifecycle (not weekly cron)
-    try { branchHelpers.cleanupPreserveLocalBranches(REPO_ROOT); } catch {}
-  try {
-    execSync("git worktree prune", { stdio: "ignore", cwd: REPO_ROOT });
-  } catch {}
-
-  console.log("\nBatch submitted -- authoritative CI and merge remain pending.");
 }
 
 console.log("\nAll done.");
