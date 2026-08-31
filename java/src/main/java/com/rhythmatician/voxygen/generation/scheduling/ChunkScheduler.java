@@ -7,6 +7,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import net.minecraft.world.World;
+import com.rhythmatician.voxygen.generation.session.GenerationSession;
 
 /**
  * Continuous, position-aware chunk scheduler that feeds the 4-stage ONNX
@@ -93,7 +94,7 @@ public final class ChunkScheduler {
     /** Minimum heading magnitude to activate directional priority. */
     private static final float HEADING_THRESHOLD = 0.1f;
 
-    /** Base section Y range constants (matching LodGenerationService). */
+    /** Base section Y range constants (matching GenerationSession). */
     private static final int Y_SECTIONS = 16;
     private static final int Y_BASE_SECTION = -4;
     private static final int SURFACE_MARGIN = 1;
@@ -108,7 +109,7 @@ public final class ChunkScheduler {
 
     /**
      * Callback to build/cache column conditioning context.
-     * This decouples ChunkScheduler from LodGenerationService's
+     * This decouples ChunkScheduler from GenerationSession's
      * internal column context cache.
      */
     @FunctionalInterface
@@ -121,14 +122,14 @@ public final class ChunkScheduler {
          * @param sectionZ section Z coordinate
          * @return conditioning context, or null to skip this column
          */
-        LodGenerationService.ColumnContext provide(World world, int sectionX, int sectionZ);
+        GenerationSession.ColumnContext provide(World world, int sectionX, int sectionZ);
     }
 
     // ── Construction ────────────────────────────────────────────────────
 
     /**
      * @param queue             the pipeline queue to feed
-     * @param stopRequested     shared stop flag from LodGenerationService
+     * @param stopRequested     shared stop flag from GenerationSession lifecycle
      * @param generatedSections shared set of already-generated section keys
      * @param contextProvider   callback to build/cache ColumnContext
      * @param generationRadius  radius in sections
@@ -334,7 +335,7 @@ public final class ChunkScheduler {
         if (vanillaCheck.test(sx, sz)) return 0;
 
         // Get or build column context
-        LodGenerationService.ColumnContext ctx = contextProvider.provide(world, sx, sz);
+        GenerationSession.ColumnContext ctx = contextProvider.provide(world, sx, sz);
         if (ctx == null) return 0;
 
         // Compute Y range from surface heightmap
@@ -358,7 +359,7 @@ public final class ChunkScheduler {
 
         int enqueued = 0;
         for (int sy = minSectionY; sy <= maxSectionY; sy++) {
-            long key = LodGenerationService.sectionKey(sx, sy, sz);
+            long key = GenerationSession.sectionKey(sx, sy, sz);
             if (generatedSections.contains(key)) continue;
 
             SectionTask task = new SectionTask(sx, sy, sz, priority, key);
