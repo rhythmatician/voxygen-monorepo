@@ -700,7 +700,7 @@ The hybrid hypothesis is supported for **most** responsibilities **on 1.21.11-on
 - `voxy/WorldNoiseAccess.java` -- single L1 server-noise entry; canonical factory bundle
 - `voxy/AnchorSampler.java:68-78` -- `BiomeMapping.toCanonicalId` (54-entry alpha for OW)
 - `voxy/HeightmapFallbackGenerator.java` -- stateless semantic fallback (synthetic path)
-- `voxy/LodGenerationService.java:218-220,482,610-730,739-760` -- metric counters + column-context null-guard
+- `voxygen/generation/session/GenerationSession.java:528-532,887-941,1053-1143,1170-1195` -- metric counters + column-context null-guard (thin facade `voxy/LodGenerationService` delegates since #121)
 - `world/noise/NoiseRouterSamplerFactory.java:40-180` -- factory + hot-swap
 - `world/noise/{VanillaNoiseRouterSampler,VanillaHeightmapProvider,VanillaBiomeProvider}.java` -- vanilla adapters
 - `world/noise/RouterField.java:17-61` -- 15-field `COUNT=15` enum

@@ -73,7 +73,7 @@ package com.rhythmatician.voxygen;
  *
  * <h3>Members widened within already-public types</h3>
  * <ul>
- *   <li>{@code generation.session.GenerationSession.Y_BASE_SECTION}, {@code MIN_WORLD_BLOCK_Y}, {@code MAX_WORLD_BLOCK_Y}, {@code GENERATION_RADIUS}, {@code SEA_LEVEL}, {@code HEIGHT_AMPLITUDE} — were {@code static final} package-private, now {@code public static final}; accessed from {@code generation.scheduling.LodGenerationService} (different package) after split.</li>
+ *   <li>{@code generation.session.GenerationSession.Y_BASE_SECTION}, {@code MIN_WORLD_BLOCK_Y}, {@code MAX_WORLD_BLOCK_Y}, {@code GENERATION_RADIUS}, {@code SEA_LEVEL}, {@code HEIGHT_AMPLITUDE} — were {@code static final} package-private, now {@code public static final}; originally accessed from {@code generation.scheduling.LodGenerationService} after split, compatibility mirrors removed in #121.</li>
  *   <li>{@code GenerationSession.isOutOfWorldY(int,int)} — was {@code static boolean}, now {@code public static boolean}.</li>
  *   <li>{@code GenerationSession.sectionKey(int,int,int)} — now {@code public static long}.</li>
  *   <li>{@code GenerationSession.buildHeightmap(int,int)} — now {@code public static float[][]}.</li>
@@ -81,8 +81,7 @@ package com.rhythmatician.voxygen;
  *   <li>{@code GenerationSession.tracerCompletion()} — was package-private, now {@code public TracerCompletion}; accessed from tests in {@code lodiffusion.voxy}.</li>
  *   <li>{@code GenerationSession.TracerCompletion} — already {@code public record}, retained; no widening needed beyond class.</li>
  *   <li>{@code LodGenerationService.getBoundDimensionForTest()} — was package-private, now {@code public}.</li>
- *   <li>{@code LodGenerationService.buildHeightmap(int,int)} — was package-private, now {@code public}; retained for {@code L1AvailabilityContractTest} reflection.</li>
- *   <li>{@code LodGenerationService.Y_SECTIONS}, {@code Y_BASE_SECTION}, {@code MIN_WORLD_BLOCK_Y}, {@code MAX_WORLD_BLOCK_Y}, {@code isOutOfWorldY}, {@code sectionKey} — already public via delegation to GenerationSession; no additional widening.</li>
+ *   <li>{@code LodGenerationService} compatibility mirrors ({@code Y_SECTIONS}, {@code Y_BASE_SECTION}, {@code MIN_WORLD_BLOCK_Y}, {@code MAX_WORLD_BLOCK_Y}, {@code isOutOfWorldY}, {@code sectionKey}, {@code buildHeightmap}, {@code ColumnContext}, {@code GENERATION_RADIUS}, {@code SEA_LEVEL}, {@code HEIGHT_AMPLITUDE}) — removed in #121; now owned directly by {@code GenerationSession} (see generation package).</li>
  *   <li>{@code VanillaOccupancyPyramid.classify}, {@code urgentBoundary}, {@code Delta.isEmpty} — widened as above.</li>
  *   <li>{@code ExactL1SamplingTelemetry} — added public no-arg constructor; widened all record* methods and compact/reset.</li>
  *   <li>{@code WorldNoiseAccess.sampleExactEndBaseTerrainChunk(...)} — was package-private {@code void}, now {@code public void}; called from {@code generation.dimension.end.ExactEndL1Candidate} (different package after move).</li>

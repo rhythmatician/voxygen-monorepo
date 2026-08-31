@@ -6,7 +6,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
-import com.rhythmatician.voxygen.generation.scheduling.LodGenerationService;
+import com.rhythmatician.voxygen.generation.session.GenerationSession;
 import com.rhythmatician.voxygen.semantic.Level;
 import com.rhythmatician.voxygen.semantic.WorldSectionCoord;
 
@@ -452,7 +452,7 @@ class WorldSectionCoordTest {
     // ══════════════════════════════════════════════════════════════════════
     //  ★ ROOT POPULATION: verify L4 center contains the player ★
     //
-    //  Reproduces the exact computation from LodGenerationService root
+    //  Reproduces the exact computation from GenerationSession root
     //  population: l4Cx = playerSectionX >> 5
     // ══════════════════════════════════════════════════════════════════════
 
@@ -684,7 +684,7 @@ class WorldSectionCoordTest {
     }
 
     // ══════════════════════════════════════════════════════════════════════
-    //  isOutOfWorldY  (uses LodGenerationService.isOutOfWorldY)
+    //  isOutOfWorldY  (uses GenerationSession.isOutOfWorldY)
     // ══════════════════════════════════════════════════════════════════════
 
     // Minecraft world Y: [-64, 192)   (MIN_WORLD_BLOCK_Y=-64, MAX_WORLD_BLOCK_Y=192)
@@ -692,69 +692,69 @@ class WorldSectionCoordTest {
     @Test
     void isOutOfWorldY_L0_inWorld() {
         // L0: 32 blocks.  wsY=-2 → [-64, -32) — in world
-        assertFalse(LodGenerationService.isOutOfWorldY(0, -2));
+        assertFalse(GenerationSession.isOutOfWorldY(0, -2));
         // wsY=0 → [0, 32) — in world
-        assertFalse(LodGenerationService.isOutOfWorldY(0, 0));
+        assertFalse(GenerationSession.isOutOfWorldY(0, 0));
         // wsY=5 → [160, 192) — in world
-        assertFalse(LodGenerationService.isOutOfWorldY(0, 5));
+        assertFalse(GenerationSession.isOutOfWorldY(0, 5));
     }
 
     @Test
     void isOutOfWorldY_L0_outsideWorld() {
         // wsY=-3 → [-96, -64) — blockMax=-64, <= -64 → out
-        assertTrue(LodGenerationService.isOutOfWorldY(0, -3));
+        assertTrue(GenerationSession.isOutOfWorldY(0, -3));
         // wsY=6 → [192, 224) — blockMin=192, >= 192 → out
-        assertTrue(LodGenerationService.isOutOfWorldY(0, 6));
+        assertTrue(GenerationSession.isOutOfWorldY(0, 6));
         // wsY=-100 → [-3200, -3168) — way below
-        assertTrue(LodGenerationService.isOutOfWorldY(0, -100));
+        assertTrue(GenerationSession.isOutOfWorldY(0, -100));
     }
 
     @Test
     void isOutOfWorldY_L0_exactBoundaries() {
         // wsY=-2 → blockMin=-64, blockMax=-32-1=-33 → exclusive upper = -32
         // -32 <= -64?  NO.  -64 >= 192?  NO.  → in world
-        assertFalse(LodGenerationService.isOutOfWorldY(0, -2));
+        assertFalse(GenerationSession.isOutOfWorldY(0, -2));
         // wsY=-3 → blockMin=-96, exclusive upper = -64.  -64 <= -64? YES → out
-        assertTrue(LodGenerationService.isOutOfWorldY(0, -3));
+        assertTrue(GenerationSession.isOutOfWorldY(0, -3));
     }
 
     @Test
     void isOutOfWorldY_L4_rootsUsedByPipeline() {
         // L4: 512 blocks per section.
         // wsY=-1 → [-512, 0) — overlaps [-64, 0) → IN world
-        assertFalse(LodGenerationService.isOutOfWorldY(4, -1));
+        assertFalse(GenerationSession.isOutOfWorldY(4, -1));
         // wsY=0 → [0, 512) — overlaps [0, 192) → IN world
-        assertFalse(LodGenerationService.isOutOfWorldY(4, 0));
+        assertFalse(GenerationSession.isOutOfWorldY(4, 0));
         // wsY=-2 → [-1024, -512) — entirely below -64 → OUT
-        assertTrue(LodGenerationService.isOutOfWorldY(4, -2));
+        assertTrue(GenerationSession.isOutOfWorldY(4, -2));
         // wsY=1 → [512, 1024) — entirely above 192 → OUT
-        assertTrue(LodGenerationService.isOutOfWorldY(4, 1));
+        assertTrue(GenerationSession.isOutOfWorldY(4, 1));
     }
 
     @Test
     void isOutOfWorldY_L3_childrenFromL4() {
         // L3: 256 blocks.  Children of L4 wsY=-1 are L3 wsY ∈ {-2, -1}
         // L3 wsY=-2 → [-512, -256) — -256 <= -64 → OUT
-        assertTrue(LodGenerationService.isOutOfWorldY(3, -2));
+        assertTrue(GenerationSession.isOutOfWorldY(3, -2));
         // L3 wsY=-1 → [-256, 0) — overlaps [-64, 0) → IN
-        assertFalse(LodGenerationService.isOutOfWorldY(3, -1));
+        assertFalse(GenerationSession.isOutOfWorldY(3, -1));
         // Children of L4 wsY=0 are L3 wsY ∈ {0, 1}
         // L3 wsY=0 → [0, 256) — overlaps [0, 192) → IN
-        assertFalse(LodGenerationService.isOutOfWorldY(3, 0));
+        assertFalse(GenerationSession.isOutOfWorldY(3, 0));
         // L3 wsY=1 → [256, 512) — 256 >= 192 → OUT
-        assertTrue(LodGenerationService.isOutOfWorldY(3, 1));
+        assertTrue(GenerationSession.isOutOfWorldY(3, 1));
     }
 
     @Test
     void isOutOfWorldY_L1_childrenFromL2() {
         // L1: 64 blocks. L1 wsY=-2 → [-128, -64) — -64 <= -64 → OUT
-        assertTrue(LodGenerationService.isOutOfWorldY(1, -2));
+        assertTrue(GenerationSession.isOutOfWorldY(1, -2));
         // L1 wsY=-1 → [-64, 0) — in world
-        assertFalse(LodGenerationService.isOutOfWorldY(1, -1));
+        assertFalse(GenerationSession.isOutOfWorldY(1, -1));
         // L1 wsY=2 → [128, 192) — in world (192 > -64 and 128 < 192)
-        assertFalse(LodGenerationService.isOutOfWorldY(1, 2));
+        assertFalse(GenerationSession.isOutOfWorldY(1, 2));
         // L1 wsY=3 → [192, 256) — 192 >= 192 → OUT
-        assertTrue(LodGenerationService.isOutOfWorldY(1, 3));
+        assertTrue(GenerationSession.isOutOfWorldY(1, 3));
     }
 
     /**
@@ -773,7 +773,7 @@ class WorldSectionCoordTest {
         for (int level = 4; level >= 0; level--) {
             java.util.Set<Integer> inWorld = new java.util.TreeSet<>();
             for (int wsY : current) {
-                if (!LodGenerationService.isOutOfWorldY(level, wsY)) {
+                if (!GenerationSession.isOutOfWorldY(level, wsY)) {
                     inWorld.add(wsY);
                     // Verify this world section actually overlaps [-64, 192)
                     int bMin = WorldSectionCoord.worldSectionToBlockMin(wsY, level);
@@ -804,16 +804,16 @@ class WorldSectionCoordTest {
     @Test
     void isOutOfWorldY_rejectsLoggedBugCoordinates() {
         // L1 wsY=-16 from the bug log
-        assertTrue(LodGenerationService.isOutOfWorldY(1, -16),
+        assertTrue(GenerationSession.isOutOfWorldY(1, -16),
                 "L1 wsY=-16 → blocks [-1024,-960) should be out of world");
         // L2 wsY=-8
-        assertTrue(LodGenerationService.isOutOfWorldY(2, -8),
+        assertTrue(GenerationSession.isOutOfWorldY(2, -8),
                 "L2 wsY=-8 → blocks [-1024,-896) should be out of world");
         // L3 wsY=-4
-        assertTrue(LodGenerationService.isOutOfWorldY(3, -4),
+        assertTrue(GenerationSession.isOutOfWorldY(3, -4),
                 "L3 wsY=-4 → blocks [-1024,-768) should be out of world");
         // L4 wsY=-2 (the root that shouldn't exist)
-        assertTrue(LodGenerationService.isOutOfWorldY(4, -2),
+        assertTrue(GenerationSession.isOutOfWorldY(4, -2),
                 "L4 wsY=-2 → blocks [-1024,-512) should be out of world");
     }
 }
