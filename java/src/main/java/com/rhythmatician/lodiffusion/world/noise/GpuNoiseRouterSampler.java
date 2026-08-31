@@ -3,6 +3,7 @@ package com.rhythmatician.lodiffusion.world.noise;
 import com.rhythmatician.lodiffusion.HelloTerrainMod;
 
 import net.minecraft.registry.RegistryKey;
+import net.minecraft.util.Identifier;
 import net.minecraft.world.World;
 import net.minecraft.world.gen.noise.NoiseConfig;
 
@@ -47,6 +48,9 @@ public final class GpuNoiseRouterSampler implements NoiseRouterSampler {
     /** CPU fallback sampler (always available). */
     private final VanillaNoiseRouterSampler cpuFallback;
 
+    /** Bound dimension; null means Overworld (legacy/test). */
+    private final RegistryKey<World> dimension;
+
     // ── Metrics ─────────────────────────────────────────────────────────
     private final AtomicLong gpuHits = new AtomicLong();
     private final AtomicLong cpuFallbackHits = new AtomicLong();
@@ -64,11 +68,13 @@ public final class GpuNoiseRouterSampler implements NoiseRouterSampler {
      * @param dimension   bound dimension; null means Overworld (legacy/test), non-Overworld fails closed
      */
     public GpuNoiseRouterSampler(NoiseConfig noiseConfig, RegistryKey<World> dimension) {
+        this.dimension = dimension;
         this.cpuFallback = new VanillaNoiseRouterSampler(noiseConfig, dimension);
     }
 
     @Override
     public SectionNoiseData sampleSection(int sectionX, int sectionY, int sectionZ) {
+        ensureSupportedDimension();
         GpuNoiseDispatchQueue queue = GpuNoiseDispatchQueue.instance();
 
         // If the dispatch queue isn't up yet, go straight to CPU
@@ -121,6 +127,20 @@ public final class GpuNoiseRouterSampler implements NoiseRouterSampler {
         HelloTerrainMod.LOGGER.info(
                 "[GpuNoiseRouterSampler] Closed — gpuHits={}, cpuFallbacks={}",
                 gpuHits.get(), cpuFallbackHits.get());
+    }
+
+    // ── Overworld-only validation ───────────────────────────────────────
+
+    private void ensureSupportedDimension() {
+        if (dimension == null) return; // legacy/test path treated as Overworld
+        Identifier id = dimension.getValue();
+        if (!id.equals(Identifier.of("minecraft", "overworld"))) {
+            throw new UnsupportedOperationException(
+                    "SectionNoiseData Overworld-only lattice (4×2×4 → 480 floats, spacing 4/8/4) "
+                    + "not supported for dimension " + id
+                    + " — supported: " + SectionNoiseData.SUPPORTED_DIMENSION
+                    + ". Nether/End must not use the Overworld sampler.");
+        }
     }
 
     // ── Metrics accessors (for status commands / debugging) ─────────────

@@ -3,9 +3,9 @@
 // quart_noise_compute.comp
 // GPU Shadow Router — Quart-resolution NoiseRouter field evaluator.
 //
-// Evaluates all 15 RouterField values at 4×4×4 quart resolution for batched
-// sections.  Each workgroup (64 threads) handles one section; threads map 1:1
-// to quart cells.
+// Evaluates all 15 RouterField values at Overworld 4×2×4 quart resolution for
+// batched sections.  Each workgroup (32 threads) handles one section;
+// threads map 1:1 to quart cells.
 //
 // Output: float[N × 480] SSBO in channel-first layout matching SectionNoiseData (Overworld 4×2×4):
 //   flat[sectionIdx * 480 + field * 32 + qx * 8 + qy * 4 + qz]
