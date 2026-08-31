@@ -34,7 +34,10 @@ public class PackageBoundaryTest {
         "com.rhythmatician.voxygen.worldgen..",
         "com.rhythmatician.voxygen.terrain..",
         "com.rhythmatician.voxygen.inference..",
-        "com.rhythmatician.voxygen.generation.."
+        "com.rhythmatician.voxygen.generation.scheduling..",
+        "com.rhythmatician.voxygen.generation.refinement..",
+        "com.rhythmatician.voxygen.generation.dimension..",
+        "com.rhythmatician.voxygen.generation.features.."
     };
 
     private static final String BACKEND_VOXY = "com.rhythmatician.voxygen.backend.voxy..";
@@ -109,6 +112,10 @@ public class PackageBoundaryTest {
     @Test
     void corePackages_doNotDependOnBackendVoxy() {
         JavaClasses voxygen = importVoxygenProduction();
+        // GenerationSession (generation.session) is the composition root that wires
+        // the backend via the neutral VoxelVolumeWriter seam and is excluded from
+        // this check via CORE_PACKAGES. All other generation subpackages must
+        // remain backend-agnostic.
         ArchRule rule = ArchRuleDefinition.noClasses()
             .that().resideInAnyPackage(CORE_PACKAGES)
             .should().dependOnClassesThat().resideInAnyPackage(BACKEND_VOXY);

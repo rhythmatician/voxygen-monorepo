@@ -170,6 +170,19 @@ class WorldNoiseAccessExactSamplingSourceGuardTest {
             candidate = current.resolve(
                     "java/src/main/java/com/rhythmatician/lodiffusion/voxy/" + fileName);
             if (Files.exists(candidate)) return candidate;
+            // Voxygen migration: new canonical locations
+            String[] voxygenPaths = {
+                    "src/main/java/com/rhythmatician/voxygen/worldgen/" + fileName,
+                    "java/src/main/java/com/rhythmatician/voxygen/worldgen/" + fileName,
+                    "src/main/java/com/rhythmatician/voxygen/generation/dimension/end/" + fileName,
+                    "java/src/main/java/com/rhythmatician/voxygen/generation/dimension/end/" + fileName,
+                    "src/main/java/com/rhythmatician/voxygen/generation/session/" + fileName,
+                    "java/src/main/java/com/rhythmatician/voxygen/generation/session/" + fileName
+            };
+            for (String p : voxygenPaths) {
+                Path c = current.resolve(p);
+                if (Files.exists(c)) return c;
+            }
         }
         throw new IllegalStateException("source not found: " + fileName);
     }

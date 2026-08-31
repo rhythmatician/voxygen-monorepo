@@ -286,7 +286,7 @@ public final class GenerationSession {
      * (ONNX via {@link VoxelPredictionDecoder}). Tests may supply a double
      * via {@link #GenerationSession(VoxelVolumeWriter, TerrainCandidate)}.
      */
-    public interface TerrainCandidate {
+    interface TerrainCandidate {
         VoxelVolume produceSection(SectionPos pos, ColumnContext ctx);
         VoxelVolume produceRegion(Level level, SectionPos origin, long[] parentInput);
     }

@@ -1,4 +1,4 @@
-package com.rhythmatician.lodiffusion.voxy;
+package com.rhythmatician.voxygen.generation.session;
 
 import static org.junit.jupiter.api.Assertions.*;
 

@@ -64,6 +64,12 @@ class VoxyWorldBindingSourceGuardTest {
             candidate = current.resolve(
                     "java/src/main/java/com/rhythmatician/lodiffusion/voxy/" + fileName);
             if (Files.exists(candidate)) return candidate;
+            candidate = current.resolve(
+                    "src/main/java/com/rhythmatician/voxygen/backend/voxy/" + fileName);
+            if (Files.exists(candidate)) return candidate;
+            candidate = current.resolve(
+                    "java/src/main/java/com/rhythmatician/voxygen/backend/voxy/" + fileName);
+            if (Files.exists(candidate)) return candidate;
         }
         throw new IllegalStateException("source not found: " + fileName);
     }
