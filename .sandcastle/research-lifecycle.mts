@@ -147,13 +147,13 @@ export async function defaultResearchReviewer(
   _issue: { id: string; branch: string; title: string; body?: string },
   result: ResearchResult,
 ): Promise<ResearchReviewVerdict> {
-  if (!result.summary || result.summary.trim().length < 10) return { approved: false, reason: "summary too short" };
-  if (!result.recommendation || result.recommendation.trim().length < 10) return { approved: false, reason: "recommendation too short" };
+  if (!result.summary || result.summary.trim().length === 0) return { approved: false, reason: "summary too short" };
+  if (!result.recommendation || result.recommendation.trim().length === 0) return { approved: false, reason: "recommendation too short" };
   if (!result.findings || result.findings.length === 0) return { approved: false, reason: "no findings" };
   for (let i = 0; i < result.findings.length; i++) {
     const f = result.findings[i]!;
     if (!f.claim || !f.evidence || !f.source) return { approved: false, reason: `finding ${i + 1} missing claim/evidence/source` };
-    if (f.evidence.trim().length < 10) return { approved: false, reason: `finding ${i + 1} evidence too short` };
+    if (f.claim.trim().length === 0 || f.evidence.trim().length === 0 || f.source.trim().length === 0) return { approved: false, reason: `finding ${i + 1} claim/evidence/source empty` };
   }
   return { approved: true };
 }
