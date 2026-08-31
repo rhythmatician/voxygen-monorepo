@@ -7,7 +7,7 @@ $ManifestServer = Join-Path $Harness "server.manifest.json"
 
 New-Item -ItemType Directory -Force -Path (Join-Path $Runtime "mods"), (Join-Path $Runtime "versions/1.21.11"), (Join-Path $Runtime "config") | Out-Null
 Write-Host "[server-harness] Copying tracked config -> runtime/config/"
-Copy-Item -Recurse -Force (Join-Path $Harness "config/*") $Runtime
+Copy-Item -Recurse -Force (Join-Path $Harness "config/*") (Join-Path $Runtime "config")
 
 function Verify-Hash($file, $expected) {
     $actual = (Get-FileHash $file -Algorithm SHA256).Hash.ToLower()
