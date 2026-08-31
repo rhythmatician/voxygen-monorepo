@@ -30,8 +30,8 @@ from pathlib import Path
 # Paths
 # ---------------------------------------------------------------------------
 REPO = Path(__file__).resolve().parent.parent
-SERVER_RUNTIME = REPO / "tools" / "fabric-server" / "runtime"
-SERVER_JAR = next((REPO / "tools" / "fabric-server").glob("fabric-server-mc.*.jar"), None)
+SERVER_RUNTIME = REPO / "tools" / "server-harness" / "runtime"
+SERVER_JAR = next((REPO / "tools" / "server-harness").glob("fabric-server-mc.*.jar"), None)
 V7_DUMPS_DIR = SERVER_RUNTIME / "v7_dumps"
 VOXY_DIR = REPO / "data" / "voxy_octree"
 NPZ_OUTPUT = REPO / "noise_training_data" / "voxy_pairs_v7.npz"
@@ -89,7 +89,7 @@ def _rcon_command(cmd: str) -> str:
 def start_server(xmx: str = "12g") -> subprocess.Popen:
     """Start the Fabric server and return the process handle."""
     if SERVER_JAR is None:
-        print("ERROR: No fabric-server-mc.*.jar found in tools/fabric-server/")
+        print("ERROR: No fabric-server-mc.*.jar found in tools/server-harness/")
         sys.exit(1)
 
     jvm_flags = [f.format(xmx=xmx) for f in _JVM_FLAGS_TEMPLATE]

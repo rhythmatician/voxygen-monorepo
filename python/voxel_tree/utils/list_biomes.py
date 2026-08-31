@@ -14,7 +14,7 @@ except ImportError:
 # Path to the v7 dumps directory
 DUMPS_DIR = os.path.abspath(
     os.path.join(
-        os.path.dirname(__file__), "../../tools/fabric-server/runtime/v7_dumps"
+        os.path.dirname(__file__), "../../tools/server-harness/runtime/v7_dumps"
     )  # Dumps dir location
 )
 

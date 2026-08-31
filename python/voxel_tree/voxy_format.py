@@ -2,7 +2,7 @@
 
 Grounding
 ---------
-Audited against pinned Voxy source ``python/tools/fabric-server/runtime/mods/voxy-0.2.11-alpha.jar``
+Audited against pinned Voxy source ``tools/server-harness/runtime/mods/voxy-0.2.11-alpha.jar (pinned via .ci/voxy-artifact.json, reconstructed by tools/server-harness/scripts/install.sh)``
 (version ``0.2.11-alpha``, sha256 ``63d1747017041b659ef620f589006d079d3574e3124dbdb165f9998533a7920c``)
 and the public mirror ``MCRcortex/voxy`` (commit ``337b919`` on ``dev`` branch,
 cloned to ``/tmp/voxy`` during task). Key methods/constants:

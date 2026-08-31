@@ -1,0 +1,49 @@
+{
+  "minecraftVersion": "1.21.11",
+  "mods": [
+    {
+      "name": "voxy",
+      "version": "0.2.11-alpha",
+      "file": "voxy-0.2.11-alpha.jar",
+      "sha256": "63d1747017041b659ef620f589006d079d3574e3124dbdb165f9998533a7920c",
+      "source": "modrinth:fxxUqruK:w33aHXHj",
+      "url": "https://api.modrinth.com/maven/maven/modrinth/fxxUqruK/w33aHXHj/fxxUqruK-w33aHXHj.jar"
+    },
+    {
+      "name": "fabric-api",
+      "version": "0.141.3+1.21.11",
+      "file": "fabric-api-0.141.3+1.21.11.jar",
+      "sha256": "86c453a86139662e775697d03b0ca7867f547374868c0cb3e3dc06f98dbfeef5",
+      "source": "modrinth:P7dR8mSH:i5tSkVBH",
+      "url": "https://cdn.modrinth.com/data/P7dR8mSH/versions/i5tSkVBH/fabric-api-0.141.3%2B1.21.11.jar"
+    },
+    {
+      "name": "chunky",
+      "version": "1.4.55",
+      "file": "Chunky-Fabric-1.4.55.jar",
+      "sha256": "33cbd9bce0e3366851c4b59861043334eb7c1892248f1ef11403bbedb476bd15",
+      "source": "modrinth:fALzjamp:1CpEkmcD",
+      "url": "https://cdn.modrinth.com/data/fALzjamp/versions/1CpEkmcD/Chunky-Fabric-1.4.55.jar"
+    },
+    {
+      "name": "sodium",
+      "version": "0.8.6+mc1.21.11",
+      "file": "sodium-fabric-0.8.6+mc1.21.11.jar",
+      "sha256": "31b731cfe583cd8787152ee8affc90b763592b0056c9b15b1343e52438dc198a",
+      "source": "modrinth:AANobbMI:ZPWbiWXz",
+      "url": "https://cdn.modrinth.com/data/AANobbMI/versions/ZPWbiWXz/sodium-fabric-0.8.6%2Bmc1.21.11.jar"
+    }
+  ],
+  "builtArtifacts": [
+    {
+      "name": "data-harvester",
+      "note": "built locally via tools/data-harvester/gradlew build, not downloaded",
+      "pattern": "data-harvester-1.21.11-*.jar"
+    },
+    {
+      "name": "lodiffusion",
+      "note": "built locally via java/gradlew -p java build",
+      "pattern": "lodiffusion-*.jar"
+    }
+  ]
+}

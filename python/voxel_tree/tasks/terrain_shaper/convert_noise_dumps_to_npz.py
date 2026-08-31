@@ -233,7 +233,7 @@ def main():
     ap = argparse.ArgumentParser(description="Convert LODiffusion noise dumps → NPZ")
     ap.add_argument(
         "--dump-dir",
-        default=r"VoxelTree\tools\fabric-server\runtime\terrain_shaper_dumps",
+        default=r"VoxelTree\tools\server-harness\runtime\terrain_shaper_dumps",
         help="Directory containing terrain_shaper chunk_*.json files",
     )
     ap.add_argument(

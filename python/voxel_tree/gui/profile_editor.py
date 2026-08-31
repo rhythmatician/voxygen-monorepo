@@ -60,7 +60,7 @@ _DEFAULT_PROFILE: dict = {
         "max_sections": 1000,
         "min_solid": 0.02,
         "val_split": 0.1,
-        "noise_dump_dir": "tools/fabric-server/runtime/noise_dumps",
+        "noise_dump_dir": "tools/server-harness/runtime/noise_dumps",
     },
     "train": {
         "output_dir": "models/new_profile",

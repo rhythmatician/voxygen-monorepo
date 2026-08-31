@@ -379,7 +379,7 @@ def _dumpnoise_run(p: dict[str, Any]) -> None:
     # /dumpnoise v7 writes a consolidated DB file at the server runtime root.
     # Copy it into the profile-configured path so train/holdout datasets stay isolated.
     server_db = DEFAULT_SERVER_DIR / "v7_dumps.db"
-    target_db = Path(data.get("v7_dumps_db", "tools/fabric-server/runtime/v7_dumps.db"))
+    target_db = Path(data.get("v7_dumps_db", "tools/server-harness/runtime/v7_dumps.db"))
     if not server_db.exists():
         raise FileNotFoundError(f"Expected v7 dump DB not found: {server_db}")
 

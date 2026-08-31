@@ -7,7 +7,7 @@ Level 1–7 = flowing (physics-created, means /tick freeze didn't run in time).
 
 Usage:
     python scripts/data_acq/check_flowing_liquids.py <world_dir>
-    python scripts/data_acq/check_flowing_liquids.py tools/fabric-server/runtime/world
+    python scripts/data_acq/check_flowing_liquids.py tools/server-harness/runtime/world
 
 Reads all ``region/*.mca`` files, extracts chunk NBT, and reports any
 palette entries containing ``minecraft:water`` or ``minecraft:lava``
@@ -188,7 +188,7 @@ def find_flowing_liquids(nbt: dict) -> list[dict]:
 def main() -> int:
     if len(sys.argv) < 2:
         print(f"Usage: {sys.argv[0]} <world_dir>")
-        print(f"  e.g. {sys.argv[0]} tools/fabric-server/runtime/world")
+        print(f"  e.g. {sys.argv[0]} tools/server-harness/runtime/world")
         return 1
 
     world_dir = Path(sys.argv[1])

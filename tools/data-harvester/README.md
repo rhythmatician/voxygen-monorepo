@@ -40,7 +40,7 @@ teleport around" step in the data pipeline.
 ### 1. Build & install the DataHarvester mod
 
 ```powershell
-cd VoxelTree\tools\data-harvester
+cd tools\data-harvester
 .\build_and_install.bat
 ```
 
@@ -50,7 +50,9 @@ This builds the Fabric mod JAR and copies it to the Modrinth
 ### 2. Start the Fabric server
 
 ```powershell
-cd VoxelTree\tools\fabric-server\runtime
+# Reconstruct runtime first (downloads pinned jars, verifies hashes)
+tools\server-harness\scripts\install.ps1
+cd tools\server-harness\runtime
 java -jar fabric-server-mc.1.21.11-loader.0.18.4-launcher.1.1.1.jar nogui
 ```
 
@@ -117,9 +119,9 @@ Placed at `config/dataharvester.json` in the Minecraft profile directory:
 ## Project Structure
 
 ```
-VoxelTree/tools/data-harvester/
-├── build.gradle                 # Fabric Loom project
-├── gradle.properties            # MC 1.21.11, Fabric 0.18.4
+tools/data-harvester/
+├── build.gradle                 # Fabric Loom project (independent Gradle build, Mojang mappings, Java 25)
+├── gradle.properties            # MC 1.21.11, Fabric 0.18.4, Loom 1.14.10, Gradle 9.7.1
 ├── settings.gradle
 ├── build_and_install.bat        # Build + deploy to Modrinth profile
 ├── gradle/wrapper/
@@ -135,7 +137,7 @@ VoxelTree/tools/data-harvester/
         ├── fabric.mod.json
         └── dataharvester.mixins.json
 
-VoxelTree/VoxelTree/preprocessing/
+python/voxel_tree/preprocessing/ (not moved)
 ├── harvest.py                   # Python orchestration (teleport spiral, DB monitoring)
 ├── rcon.py                      # RCON client (used by harvest.py)
 └── cli.py                       # Unified CLI (harvest subcommand added)
@@ -173,8 +175,8 @@ Plus Chunky pregen time (if not skipped) and Voxy DB stabilisation.
 
 ## Prerequisites
 
-- **Java 21+** on PATH
-- **Fabric server** with: Chunky, VoxyWorldGen v2, Fabric API
+- **Java 25** on PATH (Gradle 9.7.1 / Loom 1.14.10)
+- **Server harness** `tools/server-harness/` with: Chunky, VoxyWorldGen v2, Fabric API (run its install script to reconstruct `runtime/`)
 - **Modrinth profile** "LODiffusion dependencies" with: Voxy, VoxyWorldGen v2, Fabric API
 - **Server**: `online-mode=false`, `gamemode=spectator`, `enable-rcon=true`
 - **Python 3.10+** with the VoxelTree package on the path

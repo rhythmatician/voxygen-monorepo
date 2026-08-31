@@ -11,6 +11,14 @@ base {
 
 repositories {
     mavenCentral()
+    maven {
+        name = 'Modrinth'
+        url = 'https://api.modrinth.com/maven'
+    }
+    maven {
+        name = 'Fabric'
+        url = 'https://maven.fabricmc.net/'
+    }
 }
 
 dependencies {
@@ -20,10 +28,10 @@ dependencies {
     modImplementation "net.fabricmc.fabric-api:fabric-api:${fabric_version}"
 
     // SQLite JDBC — needed for direct-to-DB noise dumps
-    include implementation("org.xerial:sqlite-jdbc:3.49.1.0")
+    implementation "org.xerial:sqlite-jdbc:3.49.1.0"
 
-    // Voxy — compileOnly for OracleInsertUpdateTrackerMixin (WorldUpdater/VoxelizedSection); present in runtime/mods and Modrinth profile
-    compileOnly files("../fabric-server/runtime/mods/voxy-0.2.11-alpha.jar")
+    // Voxy — compileOnly for OracleInsertUpdateTrackerMixin (WorldUpdater/VoxelizedSection); fetched from Modrinth via pinned version, not a committed binary
+    compileOnly 'maven.modrinth:fxxUqruK:w33aHXHj'
 }
 
 loom {

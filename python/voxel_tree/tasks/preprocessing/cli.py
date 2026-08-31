@@ -136,7 +136,7 @@ DATAPREP_STEPS = [
 ]
 
 #: Fabric server runtime directory (contains server.properties, world folders, etc.).
-DEFAULT_SERVER_DIR = _REPO_ROOT / "tools" / "fabric-server" / "runtime"
+DEFAULT_SERVER_DIR = _REPO_ROOT / "tools" / "server-harness" / "runtime"
 
 #: Default noise-dump output directory (relative to repo root).
 DEFAULT_NOISE_DUMP_DIR = DEFAULT_SERVER_DIR / "noise_dumps"
