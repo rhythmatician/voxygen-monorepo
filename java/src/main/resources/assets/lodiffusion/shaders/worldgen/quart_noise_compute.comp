@@ -3,12 +3,12 @@
 // quart_noise_compute.comp
 // GPU Shadow Router — Quart-resolution NoiseRouter field evaluator.
 //
-// Evaluates all 15 RouterField values at 4×4×4 quart resolution for batched
-// sections.  Each workgroup (64 threads) handles one section; threads map 1:1
-// to quart cells.
+// Evaluates all 15 RouterField values at Overworld 4×2×4 quart resolution for
+// batched sections.  Each workgroup (32 threads) handles one section;
+// threads map 1:1 to quart cells.
 //
-// Output: float[N × 960] SSBO in channel-first layout matching SectionNoiseData:
-//   flat[sectionIdx * 960 + field * 64 + qx * 16 + qy * 4 + qz]
+// Output: float[N × 480] SSBO in channel-first layout matching SectionNoiseData (Overworld 4×2×4):
+//   flat[sectionIdx * 480 + field * 32 + qx * 8 + qy * 4 + qz]
 //
 // This shader is DRAMATICALLY simpler than terrain_compute.comp — no per-block
 // iteration, no surface detection, no material pass.  Just noise evaluation.
@@ -21,10 +21,10 @@
 //   [this file from "// --- INCLUDE CUT ---" to end]
 // =============================================================================
 
-// One workgroup = one section (4×4×4 quart cells).
+// One workgroup = one section (Overworld 4×2×4 quart cells).
 // gl_WorkGroupID.x = section index within the batch (0..N-1).
 // gl_LocalInvocationID = (qx, qy, qz) within the section.
-layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+layout(local_size_x = 4, local_size_y = 2, local_size_z = 4) in;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -33,8 +33,8 @@ layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
 #define Y_MAX         320
 #define MAX_OCTAVES   16
 #define FIELD_COUNT   15
-#define CELLS_PER_FIELD 64   // 4 × 4 × 4
-#define FLOATS_PER_SECTION 960  // 15 × 64
+#define CELLS_PER_FIELD 32   // Overworld 4 × 2 × 4
+#define FLOATS_PER_SECTION 480  // 15 × 32
 
 // RouterField ordinals (must match Java RouterField enum)
 #define RF_TEMPERATURE              0
@@ -178,8 +178,8 @@ layout(binding = 14, std430) buffer SectionOrigins {
     int data[];
 } section_origins;
 
-// Output: float[N * 960] — all 15 RouterField values at 4×4×4 quart resolution.
-// Layout: [sectionIdx * 960 + fieldOrdinal * 64 + qx * 16 + qy * 4 + qz]
+// Output: float[N * 480] — all 15 RouterField values at Overworld 4×2×4 quart resolution.
+// Layout: [sectionIdx * 480 + fieldOrdinal * 32 + qx * 8 + qy * 4 + qz]
 layout(binding = 15, std430) buffer QuartNoiseOutput {
     float data[];
 } quart_out;
@@ -418,7 +418,7 @@ float computePreliminarySurface(float continents, float erosion, float weirdness
 void writeField(int sectionIdx, int fieldOrdinal, int qx, int qy, int qz, float value) {
     int idx = sectionIdx * FLOATS_PER_SECTION
             + fieldOrdinal * CELLS_PER_FIELD
-            + qx * 16 + qy * 4 + qz;
+            + qx * 8 + qy * 4 + qz;
     quart_out.data[idx] = value;
 }
 
@@ -429,7 +429,7 @@ void main() {
     int sectionIdx = int(gl_WorkGroupID.x);
 
     int qx = int(gl_LocalInvocationID.x);  // 0..3
-    int qy = int(gl_LocalInvocationID.y);  // 0..3
+    int qy = int(gl_LocalInvocationID.y);  // 0..1 (Overworld QY=2)
     int qz = int(gl_LocalInvocationID.z);  // 0..3
 
     // Read section origin from SSBO (block coordinates)
@@ -438,8 +438,9 @@ void main() {
     int sectionBaseZ = section_origins.data[sectionIdx * 4 + 2];
 
     // Block coordinate at the center of this quart cell
+    // Overworld spacing: 4 on X/Z, 8 on Y (matching VanillaNoiseRouterSampler)
     float bx = float(sectionBaseX + qx * 4 + 2);
-    float by = float(sectionBaseY + qy * 4 + 2);
+    float by = float(sectionBaseY + qy * 8 + 4);
     float bz = float(sectionBaseZ + qz * 4 + 2);
 
     // Compute shifted XZ coordinates (for climate fields)

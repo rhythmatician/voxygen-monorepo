@@ -1,4 +1,4 @@
-package com.rhythmatician.lodiffusion.voxy;
+package com.rhythmatician.voxygen.arch;
 
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -11,16 +11,6 @@ import com.tngtech.archunit.core.importer.ImportOption;
 import com.tngtech.archunit.lang.ArchRule;
 import com.tngtech.archunit.lang.syntax.ArchRuleDefinition;
 import org.junit.jupiter.api.Test;
-import com.rhythmatician.voxygen.backend.voxy.CanonicalVoxyMaps;
-import com.rhythmatician.voxygen.backend.voxy.RealVoxyVolumeWriter;
-import com.rhythmatician.voxygen.inference.onnx.VoxelPredictionDecoder;
-import com.rhythmatician.voxygen.backend.voxy.VoxyBlockMapper;
-import com.rhythmatician.voxygen.backend.voxy.VoxyCompat;
-import com.rhythmatician.voxygen.backend.voxy.VoxyDetection;
-import com.rhythmatician.voxygen.backend.voxy.VoxyEngine;
-import com.rhythmatician.voxygen.backend.voxy.VoxyIdMaps;
-import com.rhythmatician.voxygen.backend.voxy.VoxyProcessingAPI;
-import com.rhythmatician.voxygen.backend.voxy.VoxyWorldBinding;
 import com.rhythmatician.voxygen.semantic.Level;
 import com.rhythmatician.voxygen.semantic.SectionPos;
 import com.rhythmatician.voxygen.semantic.VoxelVolume;
@@ -31,10 +21,20 @@ import com.rhythmatician.voxygen.output.VolumeUnavailableException;
 import com.rhythmatician.voxygen.output.InMemoryVolumeWriter;
 
 /**
- * Executable guardrails for the settled Voxygen semantic and storage seams.
+ * Seam-integrity guardrails — deep seam/runtime independence.
  *
- * <p>Three rules protect {@code VoxelVolume} opacity, the {@code VoxelVolumeWriter}
- * deep seam, and {@code VoxelPredictionDecoder} model-output ownership.
+ * <p>Audience: deep seam/runtime independence. This test owns semantic/output seam integrity
+ * and ensures the pure semantic core remains free of Minecraft/Fabric/Voxy/runtime implementation
+ * dependencies and that writer implementations do not leak model/inference concerns.
+ *
+ * <p>Note: {@code com.rhythmatician.voxygen.semantic.biome.AnchorSampler} and
+ * {@code com.rhythmatician.voxygen.semantic.biome.BiomeMapping} are currently
+ * Minecraft-bound bridge-side semantic helpers and therefore intentionally outside the
+ * pure-core set. They depend on {@code net.minecraft..} and are excluded from
+ * {@code SEMANTIC_CORE} by design; the pure-core rule remains strict about
+ * Minecraft/Fabric/Voxy/runtime implementation dependencies.
+ *
+ * <p>Two rules protect {@code VoxelVolume} opacity and the {@code VoxelVolumeWriter} deep seam.
  */
 public class ArchitectureGuardrailsTest {
 
@@ -59,24 +59,9 @@ public class ArchitectureGuardrailsTest {
     };
 
     private static final String[] WRITER_FORBIDDEN_PACKAGES = {
+        "com.rhythmatician.voxygen.inference..",
         "com.rhythmatician.lodiffusion.onnx..",
         "ai.djl.."
-    };
-
-    private static final Class<?>[] DECODER_FORBIDDEN_CLASSES = {
-        RealVoxyVolumeWriter.class,
-        VoxyCompat.class,
-        VoxyEngine.class,
-        VoxyWorldBinding.class,
-        VoxyProcessingAPI.class,
-        VoxyDetection.class,
-        VoxyBlockMapper.class,
-        VoxyIdMaps.class,
-        CanonicalVoxyMaps.class
-    };
-
-    private static final String[] DECODER_FORBIDDEN_PACKAGES = {
-        "me.cortex.voxy.."
     };
 
     private static DescribedPredicate<JavaClass> allowedSemanticDependency() {
@@ -87,19 +72,6 @@ public class ArchitectureGuardrailsTest {
     private static DescribedPredicate<JavaClass> allowedWriterDependency() {
         return DescribedPredicate.not(JavaClass.Predicates.resideInAnyPackage(WRITER_FORBIDDEN_PACKAGES))
             .as("not in forbidden writer packages");
-    }
-
-    private static DescribedPredicate<JavaClass> decoderForbiddenPredicate() {
-        DescribedPredicate<JavaClass> inPackage =
-            JavaClass.Predicates.resideInAnyPackage(DECODER_FORBIDDEN_PACKAGES);
-        DescribedPredicate<JavaClass> inClasses =
-            JavaClass.Predicates.belongToAnyOf(DECODER_FORBIDDEN_CLASSES);
-        return inPackage.or(inClasses).as("decoder forbidden storage");
-    }
-
-    private static DescribedPredicate<JavaClass> allowedDecoderDependency() {
-        return DescribedPredicate.not(decoderForbiddenPredicate())
-            .as("not decoder forbidden");
     }
 
     static ArchRule semanticCoreRule() {
@@ -114,12 +86,6 @@ public class ArchitectureGuardrailsTest {
     static ArchRule writerRule() {
         return ArchRuleDefinition.classes().that(JavaClass.Predicates.implement(VoxelVolumeWriter.class))
             .should().onlyDependOnClassesThat(allowedWriterDependency());
-    }
-
-    static ArchRule decoderRule() {
-        return ArchRuleDefinition.classes()
-            .that(JavaClass.Predicates.belongToAnyOf(VoxelPredictionDecoder.class))
-            .should().onlyDependOnClassesThat(allowedDecoderDependency());
     }
 
     private JavaClasses importProductionClasses() {
@@ -141,12 +107,6 @@ public class ArchitectureGuardrailsTest {
     void writers_doNotDependOnModelOutput() {
         JavaClasses production = importProductionClasses();
         writerRule().check(production);
-    }
-
-    @Test
-    void decoder_doesNotReachIntoStorage() {
-        JavaClasses production = importProductionClasses();
-        decoderRule().check(production);
     }
 
     // ------------------------------------------------------------------

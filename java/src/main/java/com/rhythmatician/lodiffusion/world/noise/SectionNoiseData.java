@@ -2,16 +2,22 @@ package com.rhythmatician.lodiffusion.world.noise;
 
 /**
  * Immutable snapshot of all 15 {@link RouterField NoiseRouter fields} sampled
- * at <b>quart resolution</b> for a single 16³-block Voxy section.
+ * at <b>quart resolution</b> for a single 16³-block Voxy section — the
+ * <b>Overworld-only conditioning shape</b> (no universal cross-dimension tensor).
  *
- * <p>Vanilla uses cellWidth=4 (4-block quart spacing on X/Z) and cellHeight=8
- * (8-block cell spacing on Y), yielding 4×2×4 cells per 16-block section.
+ * <p>Overworld lattice: cellWidth=4 (4-block quart spacing on X/Z) and
+ * cellHeight=8 (8-block cell spacing on Y), yielding
+ * {@code QX × QY × QZ = 4 × 2 × 4 = 32} cells per field.  End uses
+ * {@code 8×4×8} and Nether has a different profile; this type does not
+ * represent those lattices.  Nether/End use must fail closed before any
+ * {@code SectionNoiseData} is produced (see {@link NoiseRouterSamplerFactory}).
  *
- * <h2>Tensor layout</h2>
+ * <h2>Tensor layout (Overworld)</h2>
  * <pre>
  *   shape:   float[15][4][2][4]          (480 floats)
  *   order:   [field][qx][qy][qz]        channel-outermost, C-contiguous
  *   spacing: 4 blocks on X/Z, 8 blocks on Y
+ *   counts:  QX=4, QY=2, QZ=4, CELLS_PER_FIELD=32, FLAT_LENGTH=480
  * </pre>
  *
  * <p>The flat array is indexed as:
@@ -19,10 +25,10 @@ package com.rhythmatician.lodiffusion.world.noise;
  *   flatIndex = field * 32 + qx * 8 + qy * 4 + qz
  * </pre>
  *
- * <p>This is the <b>sole data contract</b> between the noise source (vanilla CPU
- * or shadow router GPU) and the downstream sparse octree model.  Both
- * {@link VanillaNoiseRouterSampler} and {@code GpuNoiseRouterSampler} produce
- * this exact format.
+ * <p>This is the <b>sole Overworld data contract</b> between the noise source
+ * (vanilla CPU or shadow-router GPU) and the downstream sparse octree path.
+ * Both {@link VanillaNoiseRouterSampler} and {@code GpuNoiseRouterSampler}
+ * produce this exact format; GPU buffer sizes must agree on 480, not 960.
  *
  * @see RouterField
  * @see NoiseRouterSampler
@@ -38,11 +44,32 @@ public record SectionNoiseData(
         int sectionZ
 ) {
 
-    /** Floats per spatial cell: 4 × 2 × 4. */
-    public static final int CELLS_PER_FIELD = 4 * 2 * 4;  // 32
+    /** Cells along X within one section (Overworld). */
+    public static final int QX = 4;
+    /** Cells along Y within one section (Overworld). */
+    public static final int QY = 2;
+    /** Cells along Z within one section (Overworld). */
+    public static final int QZ = 4;
+
+    /** Floats per field: QX × QY × QZ. */
+    public static final int CELLS_PER_FIELD = QX * QY * QZ;  // 32
 
     /** Total floats in the flat tensor: 15 fields × 32 cells. */
     public static final int FLAT_LENGTH = RouterField.COUNT * CELLS_PER_FIELD;  // 480
+
+    /**
+     * Supported dimension identifier for this tensor shape.
+     * Only {@code minecraft:overworld} is supported; other dimensions
+     * must fail closed before producing this type.
+     */
+    public static final String SUPPORTED_DIMENSION = "minecraft:overworld";
+
+    /** Overworld block spacing on X/Z (quart spacing). */
+    public static final int SPACING_X = 4;
+    /** Overworld block spacing on Y (cellHeight). */
+    public static final int SPACING_Y = 8;
+    /** Overworld block spacing on Z (quart spacing). */
+    public static final int SPACING_Z = 4;
 
     /**
      * Read a single value by field + spatial position.

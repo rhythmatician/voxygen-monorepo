@@ -79,7 +79,7 @@ def _default_profile_dict(name: str) -> dict[str, Any]:
             "max_sections": 1000,
             "min_solid": 0.02,
             "val_split": 0.1,
-            "noise_dump_dir": "tools/fabric-server/runtime/noise_dumps",
+            "noise_dump_dir": "tools/server-harness/runtime/noise_dumps",
         },
         "train": {
             "output_dir": f"models/{name}",
@@ -232,7 +232,7 @@ def _cmd_server(action: str, role: str | None) -> None:
         )
         if not _JAR_PATH or not _JAR_PATH.exists():
             print(
-                "error: server JAR not found — expected in tools/fabric-server/",
+                "error: server JAR not found — expected in tools/server-harness/",
                 file=sys.stderr,
             )
             sys.exit(1)

@@ -286,8 +286,8 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host "Advisory screenshot verdict: $verdictPath"
 
 # Per-waypoint before/after pixel diff (replaces manual GIMP comparison).
-# Uses python/tools/img_diff.py; advisory only — never fails the loop.
-$diffTool = Join-Path $PSScriptRoot "python\tools\img_diff.py"
+# Uses dev/flight/img_diff.py; advisory only — never fails the loop.
+$diffTool = Join-Path $PSScriptRoot "dev\flight\img_diff.py"
 $python = "C:\Python314\python.exe"
 $diffStats = @()
 if ((Test-Path $python) -and (Test-Path $diffTool)) {

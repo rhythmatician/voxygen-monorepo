@@ -5,7 +5,7 @@ stdout/stderr capture.  Detects startup completion via RCON port polling
 (no log-line parsing needed — works regardless of RCON credential changes).
 
 The single source of truth for RCON credentials (host, port, password) is
-``tools/fabric-server/runtime/server.properties``.  The server status bar's
+``tools/server-harness/runtime/server.properties``.  The server status bar's
 world selector calls :meth:`ServerManager.configure_for_role` **before**
 :meth:`ServerManager.start`; the manager will patch ``server.properties``
 with the role's seed, level-name, and network ports.
@@ -76,29 +76,29 @@ UNFREEZE_COMMANDS: list[tuple[str, str]] = [
 
 
 def _find_fabric_tools_dir() -> Path:
-    """Find the repository's tools/fabric-server directory.
+    """Find the repository's tools/server-harness directory.
 
     The GUI may be executed from an installed package or directly from the repo.
-    Walk up the parent chain looking for a `tools/fabric-server` directory and
+    Walk up the parent chain looking for a `tools/server-harness` directory and
     return the first match.
     """
 
     cur = Path(__file__).resolve()
     for _ in range(6):
-        candidate = cur.parent / "tools" / "fabric-server"
+        candidate = cur.parent / "tools" / "server-harness"
         if candidate.exists():
             return candidate
         cur = cur.parent
 
     # Fallback (best-effort): assume repo root is two levels up.
-    return Path(__file__).resolve().parents[2] / "tools" / "fabric-server"
+    return Path(__file__).resolve().parents[2] / "tools" / "server-harness"
 
 
 _TOOLS_DIR = _find_fabric_tools_dir()
 _RUNTIME_DIR = _TOOLS_DIR / "runtime"
 _SERVER_PROPERTIES = _RUNTIME_DIR / "server.properties"
 
-# Locate the server JAR in tools/fabric-server (not inside runtime/)
+# Locate the server JAR in tools/server-harness (not inside runtime/)
 _JAR_CANDIDATES = list(_TOOLS_DIR.glob("*.jar"))
 _JAR_PATH: Path | None = _JAR_CANDIDATES[0] if _JAR_CANDIDATES else None
 
@@ -323,8 +323,8 @@ class ServerManager(QObject):
         if not _JAR_PATH or not _JAR_PATH.exists():
             self.log_line.emit(
                 f"[Server] ERROR: Server JAR not found in {_TOOLS_DIR}\n"
-                "Expected: tools/fabric-server/fabric-server-mc.*.jar\n"
-                "Tip: run the Fabric installer (or ensure the jar is checked out/copied into tools/fabric-server)."
+                "Expected: tools/server-harness/fabric-server-mc.*.jar\n"
+                "Tip: run tools/server-harness/scripts/install.sh (or ensure the jar is fetched/copied into tools/server-harness)."
             )
             return
         if not _RUNTIME_DIR.exists():

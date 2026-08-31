@@ -11,7 +11,7 @@
 >
 > **Exact source revision / commit:** `337b919` (`dev` branch, mirrored at `MCRcortex/voxy`)
 >
-> **Artifact inspected:** `python/tools/fabric-server/runtime/mods/voxy-0.2.11-alpha.jar`
+> **Artifact inspected:** `tools/server-harness/runtime/mods/voxy-0.2.11-alpha.jar (pinned via .ci/voxy-artifact.json, reconstructed by tools/server-harness/scripts/install.sh)`
 >
 > **Artifact SHA-256:** `63d1747017041b659ef620f589006d079d3574e3124dbdb165f9998533a7920c`
 >

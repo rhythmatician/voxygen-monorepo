@@ -265,7 +265,7 @@ class RunRegistry:
         # Dumpnoise can be considered successful if the noise-dump directory exists
         # and contains any files.  This allows users to run dumpnoise independently
         # from pregen.
-        dump_dir = Path(data.get("noise_dump_dir", "tools/fabric-server/runtime/noise_dumps"))
+        dump_dir = Path(data.get("noise_dump_dir", "tools/server-harness/runtime/noise_dumps"))
         if dump_dir.is_dir() and any(dump_dir.iterdir()):
             _set_success("dumpnoise")
             # If we have dumpnoise output, the server was clearly reachable.

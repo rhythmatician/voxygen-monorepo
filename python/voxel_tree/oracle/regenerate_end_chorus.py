@@ -79,9 +79,9 @@ REPO_ROOT = _find_repo_root()
 SERVERS_YAML = REPO_ROOT / "python" / "servers.yaml"
 if not SERVERS_YAML.exists():
     SERVERS_YAML = REPO_ROOT / "servers.yaml"
-RUNTIME_DIR = REPO_ROOT / "python" / "tools" / "fabric-server" / "runtime"
+RUNTIME_DIR = REPO_ROOT / "tools" / "server-harness" / "runtime"
 if not RUNTIME_DIR.exists():
-    RUNTIME_DIR = REPO_ROOT / "tools" / "fabric-server" / "runtime"
+    RUNTIME_DIR = REPO_ROOT / "tools" / "server-harness" / "runtime"
 
 ORACLE_ROLE = {
     "name": "oracle_end_chorus",
@@ -332,15 +332,15 @@ def _start_oracle_server_via_manager() -> bool:
         def _find_tools_dir() -> Path:
             cur = Path(__file__).resolve()
             for _ in range(6):
-                cand = cur.parent / "tools" / "fabric-server"
+                cand = cur.parent / "tools" / "server-harness"
                 if cand.exists():
                     return cand
                 cur = cur.parent
-            return REPO_ROOT / "python" / "tools" / "fabric-server"
+            return REPO_ROOT / "tools" / "server-harness"
 
         _td = _find_tools_dir()
         if not _td.exists():
-            _td = REPO_ROOT / "tools" / "fabric-server"
+            _td = REPO_ROOT / "tools" / "server-harness"
         _RUNTIME_DIR = _td / "runtime"
         cands = list(_td.glob("*.jar"))
         _JAR_PATH = cands[0] if cands else None
@@ -518,20 +518,8 @@ def _ensure_dataharvester_jar_in_run_mods() -> None:
 
     candidates = []
     for pat in [
-        REPO_ROOT
-        / "python"
-        / "tools"
-        / "data-harvester"
-        / "build"
-        / "libs"
-        / "data-harvester-*.jar",
-        REPO_ROOT
-        / "python"
-        / "tools"
-        / "fabric-server"
-        / "runtime"
-        / "mods"
-        / "data-harvester-*.jar",
+        REPO_ROOT / "tools" / "data-harvester" / "build" / "libs" / "data-harvester-*.jar",
+        REPO_ROOT / "tools" / "server-harness" / "runtime" / "mods" / "data-harvester-*.jar",
     ]:
         candidates.extend(list(pat.parent.glob(pat.name)))
     candidates = [c for c in candidates if "sources" not in c.name]
@@ -962,7 +950,7 @@ def _run_ingest_via_rcon(radius_chunks: int | None = None) -> None:
         )
         if "Unknown" in resp or "Incorrect" in resp or "No such" in resp:
             print(
-                "[oracle] ERROR: /ingestall oracle command not installed - ensure DataHarvester JAR built from python/tools/data-harvester is installed",
+                "[oracle] ERROR: /ingestall oracle command not installed - ensure DataHarvester JAR built from tools/data-harvester is installed",
                 file=sys.stderr,
             )
             sys.exit(1)

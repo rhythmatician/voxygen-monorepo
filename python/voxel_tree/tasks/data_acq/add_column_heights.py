@@ -32,7 +32,7 @@ Octree mode:
 Usage::
 
     python scripts/add_column_heights.py data/voxy_octree \\
-        --noise-dump-dir tools/fabric-server/runtime/noise_dumps
+        --noise-dump-dir tools/server-harness/runtime/noise_dumps
 """
 
 from __future__ import annotations

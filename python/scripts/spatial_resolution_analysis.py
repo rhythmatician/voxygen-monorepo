@@ -1017,7 +1017,7 @@ def main():
         candidates = [
             Path(__file__).resolve().parents[1]
             / "tools"
-            / "fabric-server"
+            / "server-harness"
             / "runtime"
             / "v7_dumps.db",
             Path(__file__).resolve().parents[1] / "data" / "v7_dumps.db",
