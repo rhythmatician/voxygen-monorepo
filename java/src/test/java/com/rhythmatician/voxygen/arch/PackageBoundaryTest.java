@@ -155,8 +155,8 @@ public class PackageBoundaryTest {
     void output_doesNotDependOnGenerationInferenceOrBackend() {
         JavaClasses voxygen = importVoxygenProduction();
         // Production output is the neutral three-type seam (VoxelVolumeWriter, WriteOutcome,
-        // VolumeUnavailableException). InMemoryVolumeWriter has moved to testFixtures per #249
-        // so production output must not depend on generation/inference/backend. The refineParent
+        // VolumeUnavailableException) plus InMemoryVolumeWriter (still in production pending
+        // #249 testFixtures move) so production output must not depend on generation/inference/backend. The refineParent
         // seam (ParentRefinementIntent/Result/Batch etc.) is the only allowed generation bridge
         // for the writer's parent-refinement capability; all other generation/inference/backend
         // dependencies are forbidden.
