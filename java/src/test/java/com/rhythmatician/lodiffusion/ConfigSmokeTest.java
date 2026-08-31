@@ -20,6 +20,14 @@ public class ConfigSmokeTest {
     
     @Test
     public void testDefaultConfig() {
+        // Ensure isolated default state (previous tests may have toggled useOnnxTerrain)
+        try {
+            java.lang.reflect.Field f = Config.class.getDeclaredField("CACHED");
+            f.setAccessible(true);
+            ((java.util.concurrent.atomic.AtomicReference<?>) f.get(null)).set(null);
+            java.nio.file.Files.deleteIfExists(java.nio.file.Paths.get("config/lodiffusion/runtime.json"));
+            java.nio.file.Files.deleteIfExists(java.nio.file.Paths.get("java/config/lodiffusion/runtime.json"));
+        } catch (Exception ignored) {}
         // Test that defaults are loaded correctly
         assertTrue(Config.useOnnxTerrain(), "ONNX terrain should be enabled by default");
         assertEquals("unified_v1", Config.adapter(), "Default adapter should be unified_v1");
