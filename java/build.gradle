@@ -3,6 +3,7 @@ plugins {
 	id 'maven-publish'
 	id 'jacoco'
 	id 'checkstyle'
+	id 'info.solidsoft.pitest' version '1.19.0'
 }
 
 version = project.mod_version
@@ -399,7 +400,148 @@ afterEvaluate {
 		tryExtend('modRuntimeClasspathClientMapped')
 		exclude group: 'maven.modrinth', module: 'fxxUqruK'
 	}
-	check.dependsOn tasks.named('voxyIntegrationTest')
+		// Only run Voxy integration suite when not isolated — mutation hardening and ordinary unit lanes use -PexcludeVoxyTestRuntime
+	if (!hasProperty('excludeVoxyTestRuntime')) {
+		check.dependsOn tasks.named('voxyIntegrationTest')
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Mutation hardening — J-05 targeted PIT gate (Level / VoxelVolume / InMemoryVolumeWriter)
+// Pinned: plugin 1.19.0, PIT core 1.25.8, JUnit5 plugin 1.2.3
+// ---------------------------------------------------------------------------
+pitest {
+	pitestVersion = '1.25.8'
+	junit5PluginVersion = '1.2.3'
+	targetClasses = [
+		'com.rhythmatician.voxygen.semantic.Level',
+		'com.rhythmatician.voxygen.semantic.VoxelVolume',
+		'com.rhythmatician.voxygen.output.InMemoryVolumeWriter'
+	]
+	targetTests = [
+		'com.rhythmatician.voxygen.semantic.LevelTest',
+		'com.rhythmatician.voxygen.semantic.VoxelVolumeTest',
+		'com.rhythmatician.voxygen.output.InMemoryVolumeWriterTest'
+	]
+	threads = 4
+	outputFormats = ['XML', 'HTML']
+	timestampedReports = false
+	failWhenNoMutations = true
+	mutationThreshold = 100
+	// Line coverage 150/151 (99%) — one defensive throw at InMemoryVolumeWriter:125
+	// (if (!batch.isComplete()) throw ...) is unreachable via public contract:
+	// commitParentRefinement always records all 8 children, so isComplete is always true.
+	// The throw is retained for fail-closed safety but never executes in normal runs.
+	// Mutation coverage is 111/111 (100%) and is the authoritative gate; line coverage
+	// is set to 99 to allow this single unreachable defensive line while keeping the
+	// mutation gate at 100. See InMemoryVolumeWriterTest's comment for rationale.
+	coverageThreshold = 99
+	// Use default mutators for first tracer — do not enable ALL or experimental
+	// Narrow equivalent-mutant exclusions must be method+mutator specific with rationale.
+	// Example (uncomment with justification if demonstrably equivalent):
+	// excludedMethods = []
+	// excludedMutators = []
+	// if needed: excludedClasses = [] // never whole target class
+	jvmArgs = ['-Dnet.bytebuddy.experimental=true']
+	// Ensure PIT only runs the isolated unit suite, not Voxy integration
+	mainSourceSets = [sourceSets.main]
+	testSourceSets = [sourceSets.test]
+}
+
+// Isolated test runtime — ordinary test lanes and PIT must not see Voxy when -PexcludeVoxyTestRuntime is set
+if (hasProperty('excludeVoxyTestRuntime')) {
+	tasks.matching { it.name == 'voxyIntegrationTest' }.configureEach { enabled = false }
+	tasks.named('pitest').configure {
+		// PIT already limited to testSourceSets above; ensure no Voxy classpath leakage
+		doFirst {
+			def leaked = classpath.files.findAll { it.name.contains('fxxUqruK') || (it.name.startsWith('voxy-') && it.name.endsWith('.jar')) }
+			if (!leaked.isEmpty()) {
+				throw new RuntimeException("PIT classpath must not contain Voxy under -PexcludeVoxyTestRuntime: ${leaked}")
+			}
+		}
+	}
+}
+
+// Deterministic verifier over native PIT XML — fails on any disallowed status
+tasks.register('verifyPitestReport') {
+	group = 'verification'
+	description = 'Verifies PIT mutations.xml has no SURVIVED/NO_COVERAGE/TIMED_OUT/MEMORY_ERROR/RUN_ERROR'
+	dependsOn tasks.named('pitest')
+	doLast {
+		def reportDir = file("$buildDir/reports/pitest")
+		def xmlFile = new File(reportDir, 'mutations.xml')
+		def html = new File(reportDir, 'index.html')
+		if (!xmlFile.exists()) throw new RuntimeException("PIT XML report missing at ${xmlFile}")
+		if (!html.exists()) throw new RuntimeException("PIT HTML report missing at ${html} — XML and HTML must be preserved")
+		// Use Java DOM to avoid Groovy XmlSlurper classloading issues in Gradle 9
+		def dbf = javax.xml.parsers.DocumentBuilderFactory.newInstance()
+		def db = dbf.newDocumentBuilder()
+		def doc = db.parse(xmlFile)
+		def nodes = doc.getElementsByTagName('mutation')
+		int total = nodes.getLength()
+		int killed = 0
+		def failingStatuses = ['SURVIVED', 'NO_COVERAGE', 'TIMED_OUT', 'MEMORY_ERROR', 'RUN_ERROR']
+		def countsByFailing = [:]
+		failingStatuses.each { s -> countsByFailing[s] = 0 }
+		def failures = []
+		for (int i = 0; i < total; i++) {
+			def node = nodes.item(i)
+			def status = node.getAttributes().getNamedItem('status')?.getNodeValue() ?: ''
+			if (status == 'KILLED') killed++
+			if (failingStatuses.contains(status)) {
+				countsByFailing[status] = countsByFailing[status] + 1
+				def mutatedClass = node.getAttributes().getNamedItem('mutatedClass')?.getNodeValue() ?: ''
+				def mutatedMethod = node.getAttributes().getNamedItem('mutatedMethod')?.getNodeValue() ?: ''
+				def mutator = ''
+				def children = node.getChildNodes()
+				for (int j = 0; j < children.getLength(); j++) {
+					def child = children.item(j)
+					if (child.getNodeName() == 'mutator') { mutator = child.getTextContent(); break }
+				}
+				def lineNumber = node.getAttributes().getNamedItem('lineNumber')?.getNodeValue() ?: ''
+				failures << "${status} ${mutatedClass}.${mutatedMethod} [${mutator}] line ${lineNumber}"
+			}
+		}
+		// Excluded / equivalent counts — only if PIT reports them; do not fabricate
+		def excludedAttr = doc.getDocumentElement().getAttribute('excluded')
+		boolean hasExcludedCount = excludedAttr != null && !excludedAttr.isEmpty()
+		println "=== PIT hardening report ==="
+		def expectedTargets = [
+			'com.rhythmatician.voxygen.semantic.Level',
+			'com.rhythmatician.voxygen.semantic.VoxelVolume',
+			'com.rhythmatician.voxygen.output.InMemoryVolumeWriter'
+		]
+		def expectedTests = [
+			'com.rhythmatician.voxygen.semantic.LevelTest',
+			'com.rhythmatician.voxygen.semantic.VoxelVolumeTest',
+			'com.rhythmatician.voxygen.output.InMemoryVolumeWriterTest'
+		]
+		println "targetClasses: ${expectedTargets}"
+		println "targetTests: ${expectedTests}"
+		println "reportDir: ${reportDir}"
+		println "generated: ${total}"
+		println "killed: ${killed}"
+		if (hasExcludedCount) {
+			println "excluded/equivalent (as reported by PIT): ${excludedAttr}"
+		} else {
+			println "excluded/equivalent: n/a (not reported by PIT XML)"
+		}
+		println "counts by failing status:"
+		countsByFailing.each { k, v -> println "  ${k}: ${v}" }
+		if (total == 0) throw new RuntimeException("PIT generated 0 mutations — failWhenNoMutations should have failed earlier")
+		if (!failures.isEmpty()) {
+			println "--- disallowed mutations (${failures.size()}) ---"
+			failures.each { println it }
+			throw new RuntimeException("PIT hardening failed: ${failures.size()} disallowed mutation(s) with status in ${failingStatuses}")
+		}
+		println "PIT hardening: all ${total} mutations killed, no disallowed statuses"
+	}
+}
+
+tasks.register('mutationHardening') {
+	group = 'verification'
+	description = 'Stable project-owned hardening gate for Level/VoxelVolume/InMemoryVolumeWriter (J-05) — delegates to pitest + verification'
+	dependsOn tasks.named('verifyPitestReport')
 }
 
 publishing {

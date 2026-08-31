@@ -143,4 +143,57 @@ describe("factory CI policy", () => {
     expect(checks).toContain("SEC-01");
     expect(checks).toEqual(expect.arrayContaining(["I-01", "I-03", "I-04"]));
   });
+
+  it("requires J-05 mutation hardening for Java engineering evidence", () => {
+    const files = ["java/src/main/java/com/rhythmatician/voxygen/semantic/Level.java"];
+    const checks = requiredChecks(classifyChanges(files));
+    expect(checks).toContain("J-05");
+    // J-05 is part of the Java group, required for any C1_JAVA change
+    expect(checks).toEqual(expect.arrayContaining(["J-01", "J-02", "J-04", "J-05"]));
+    // also for a generic java test file
+    const checks2 = requiredChecks(classifyChanges(["java/src/test/java/com/rhythmatician/voxygen/semantic/LevelTest.java"]));
+    expect(checks2).toContain("J-05");
+  });
+
+  it("fails closed when J-05 evidence is missing", () => {
+    const files = ["java/src/main/java/com/rhythmatician/voxygen/semantic/VoxelVolume.java"];
+    const required = requiredChecks(classifyChanges(files));
+    expect(required).toContain("J-05");
+    const evidence = required.filter((id) => id !== "J-05").map((checkId) => ({ checkId, candidateSha: "abc", status: "PASS" as const }));
+    const decision = decideMerge({ candidateSha: "abc", baseSha: "base", files, evidence });
+    expect(decision.status).toBe("FAIL");
+    expect(decision.missing).toContain("J-05");
+  });
+
+  it.each(["FAIL", "CANCELLED", "FLAKY", "PENDING", "INFRASTRUCTURE_FAILURE"] as const)("fails closed when J-05 evidence is %s", (status) => {
+    const files = ["java/src/main/java/com/rhythmatician/voxygen/output/InMemoryVolumeWriter.java"];
+    const required = requiredChecks(classifyChanges(files));
+    const evidence = required.map((checkId) => ({
+      checkId,
+      candidateSha: "abc",
+      status: (checkId === "J-05" ? status : "PASS") as typeof status | "PASS",
+    }));
+    const decision = decideMerge({ candidateSha: "abc", baseSha: "base", files, evidence });
+    expect(decision.status).toBe("FAIL");
+    expect(decision.invalid.join(" ")).toContain("J-05");
+  });
+
+  it("binds J-05 evidence to the exact candidate SHA", () => {
+    const files = ["java/src/main/java/com/rhythmatician/voxygen/semantic/Level.java"];
+    const required = requiredChecks(classifyChanges(files));
+    // stale SHA for J-05 only
+    const evidenceStale = required.map((checkId) => ({
+      checkId,
+      candidateSha: checkId === "J-05" ? "old-sha" : "abc",
+      status: "PASS" as const,
+    }));
+    const decisionStale = decideMerge({ candidateSha: "abc", baseSha: "base", files, evidence: evidenceStale });
+    expect(decisionStale.status).toBe("FAIL");
+    expect(decisionStale.invalid.join(" ")).toContain("J-05");
+    expect(decisionStale.invalid.join(" ")).toContain("stale candidate SHA");
+    // correct SHA passes
+    const evidenceGood = required.map((checkId) => ({ checkId, candidateSha: "abc", status: "PASS" as const }));
+    const decisionGood = decideMerge({ candidateSha: "abc", baseSha: "base", files, evidence: evidenceGood });
+    expect(decisionGood.status).toBe("PASS");
+  });
 });

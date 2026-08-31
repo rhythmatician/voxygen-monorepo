@@ -135,7 +135,11 @@ jobs:
         run: ./gradlew lint compileJava compileClientJava --info
         working-directory: java
       - name: Unit and contract tests without Voxy runtime
-        run: ./gradlew test --info
+        run: ./gradlew test -PexcludeVoxyTestRuntime --info
+        working-directory: java
+      - name: Targeted Java mutation hardening (J-05)
+        timeout-minutes: 10
+        run: ./gradlew mutationHardening -PexcludeVoxyTestRuntime --info
         working-directory: java
       - name: Pinned real-Voxy integration tests (must fail, not skip, if artifact missing)
         run: ./gradlew voxyIntegrationTest --info
@@ -152,6 +156,12 @@ jobs:
             java/build/reports/tests/voxyIntegrationTest
             java/build/test-results/test
             java/build/test-results/voxyIntegrationTest
+          if-no-files-found: warn
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pitest-reports-${{ github.sha }}
+          path: java/build/reports/pitest/**
           if-no-files-found: warn
       - uses: actions/upload-artifact@v4
         if: always()
