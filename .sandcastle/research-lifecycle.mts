@@ -140,12 +140,31 @@ export async function markResearchFactoryError(
 
 export type ResearchOutcome = "SUCCESS" | "FACTORY_ERROR";
 
+export type ResearchReviewVerdict = { approved: boolean; reason?: string };
+export type ResearchReviewer = (issue: { id: string; branch: string; title: string; body?: string }, result: ResearchResult) => Promise<ResearchReviewVerdict>;
+
+export async function defaultResearchReviewer(
+  _issue: { id: string; branch: string; title: string; body?: string },
+  result: ResearchResult,
+): Promise<ResearchReviewVerdict> {
+  if (!result.summary || result.summary.trim().length < 10) return { approved: false, reason: "summary too short" };
+  if (!result.recommendation || result.recommendation.trim().length < 10) return { approved: false, reason: "recommendation too short" };
+  if (!result.findings || result.findings.length === 0) return { approved: false, reason: "no findings" };
+  for (let i = 0; i < result.findings.length; i++) {
+    const f = result.findings[i]!;
+    if (!f.claim || !f.evidence || !f.source) return { approved: false, reason: `finding ${i + 1} missing claim/evidence/source` };
+    if (f.evidence.trim().length < 10) return { approved: false, reason: `finding ${i + 1} evidence too short` };
+  }
+  return { approved: true };
+}
+
 export interface SingleResearchLifecycleParams {
   issue: { id: string; branch: string; title: string; body?: string };
   result: ResearchResult;
   rawText: string;
   ops: ResearchGhOps;
   commits?: string[];
+  reviewResearch?: ResearchReviewer;
 }
 
 export interface SingleResearchLifecycleResult {
@@ -158,17 +177,19 @@ export interface SingleResearchLifecycleResult {
 /**
  * Completes lifecycle for a single research issue after worker has produced
  * a validated result. Orchestrates: publish result → parent pointer (if required)
- * → close. Each step's failure maps to FACTORY_ERROR with transient release,
+ * → review → close. Each step's failure maps to FACTORY_ERROR with transient release,
  * retained research authorization, no blocked, retryable, and close not attempted
- * after parent failure.
+ * after parent/review failure.
  *
  * Commits, if present, are preserved on the branch and do not affect outcome.
  * They never invoke implementation paths (caller must not call review/merger).
+ * Research review is Voxygen control-plane: even research deserves a reviewer
+ * to ensure findings are evidence-backed before the ticket is closed.
  */
 export async function completeResearchLifecycle(
   params: SingleResearchLifecycleParams,
 ): Promise<SingleResearchLifecycleResult> {
-  const { issue, result, rawText, ops } = params;
+  const { issue, result, rawText, ops, reviewResearch } = params;
 
   // Commits are optional and preserved — log but do not fail or integrate.
   if (params.commits && params.commits.length > 0) {
@@ -192,7 +213,35 @@ export async function completeResearchLifecycle(
       await markResearchFactoryError(issue.id, issue.branch, `parent map pointer to #${parentId} failed for research #${issue.id}`, ops);
       return { outcome: "FACTORY_ERROR", closeAttempted: false, parentPointerAttempted: true, parentPointerSucceeded: false };
     }
-    // pointer succeeded, continue to close
+  }
+
+  // 3. Research review — Voxygen control-plane, even research deserves a reviewer
+  if (reviewResearch) {
+    try {
+      const verdict = await reviewResearch(issue, result);
+      if (!verdict.approved) {
+        const reason = verdict.reason ? `: ${verdict.reason.slice(0, 500)}` : "";
+        await markResearchFactoryError(issue.id, issue.branch, `research review rejected for #${issue.id}${reason}`, ops);
+        return {
+          outcome: "FACTORY_ERROR",
+          closeAttempted: false,
+          parentPointerAttempted: !!parentId,
+          parentPointerSucceeded: parentId ? true : undefined,
+        };
+      }
+    } catch (e) {
+      await markResearchFactoryError(issue.id, issue.branch, `research review failed for #${issue.id}: ${String(e).slice(0, 500)}`, ops);
+      return {
+        outcome: "FACTORY_ERROR",
+        closeAttempted: false,
+        parentPointerAttempted: !!parentId,
+        parentPointerSucceeded: parentId ? true : undefined,
+      };
+    }
+  }
+
+  // 4. Close
+  if (parentId) {
     const closed = await closeResearchTicket(issue.id, issue.branch, ops);
     if (!closed) {
       await markResearchFactoryError(issue.id, issue.branch, `failed to close research ticket #${issue.id}`, ops);
@@ -233,6 +282,7 @@ export interface OrchestrateResearchBatchParams {
   runWorker: RunResearchWorker;
   ops: BatchOrchestrationOps;
   shouldMutateOutcomeState?: boolean; // mirrors QUALIFICATION_LIFECYCLE.mutateOutcomeState; defaults to true
+  reviewResearch?: ResearchReviewer;
 }
 
 export interface OrchestrateResearchBatchResult {
@@ -275,7 +325,8 @@ export function shouldStopBeforeNextClaimForResearchError(researchHadFactoryErro
 export async function orchestrateResearchBatch(
   params: OrchestrateResearchBatchParams,
 ): Promise<OrchestrateResearchBatchResult> {
-  const { issues, runWorker, ops, shouldMutateOutcomeState = true } = params;
+  const { issues, runWorker, ops, shouldMutateOutcomeState = true, reviewResearch: explicitReviewer } = params;
+  const reviewResearch = explicitReviewer ?? (shouldMutateOutcomeState ? defaultResearchReviewer : undefined);
 
   // Independent per-issue pipelines: worker → validation → publish → parent → close.
   // Start all pipelines before awaiting any, so all researchers become active before any is released,
@@ -310,6 +361,7 @@ export async function orchestrateResearchBatch(
       rawText: workerResult.rawText,
       ops,
       commits: workerResult.commits,
+      reviewResearch,
     });
 
     if (lifecycle.outcome === "FACTORY_ERROR") {
