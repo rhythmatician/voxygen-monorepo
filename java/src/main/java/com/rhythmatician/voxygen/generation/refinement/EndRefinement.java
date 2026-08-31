@@ -66,6 +66,7 @@ public interface EndRefinement {
                     long pendingChildren, long executingChildren,
                     long representedChildren, long deterministicEmptyChildren,
                     long vanillaCoveredChildren, long retryableChildren,
+                    long exhaustedChildren,
                     InitialHorizonSummary initialHorizon,
                     String lifecycle) {}
 }

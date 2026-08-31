@@ -123,6 +123,7 @@ public final class DefaultEndRefinement implements EndRefinement {
         int deterministicEmpty;
         int vanillaCovered;
         int retryable;
+        int exhausted;
         final int[] attempts = new int[8];
         final long[] nextEligibleMillis = new long[8];
         Urgency urgency = Urgency.VISUAL;
@@ -251,7 +252,10 @@ public final class DefaultEndRefinement implements EndRefinement {
             for (VanillaFrontierGuardPlanner.ParentTransaction transaction : transactions) {
                 ParentKey key = new ParentKey(Level.L1, transaction.origin());
                 int mask = occupancy.missingChildOctants(cell(key));
-                state(key).vanillaCovered |= (~mask) & 0xFF;
+                ParentState frontierState = state(key);
+                int vanilla = (~mask) & 0xFF;
+                frontierState.vanillaCovered |= vanilla;
+                clearRetryState(frontierState, vanilla);
                 if (admit(key, mask, Urgency.FRONTIER, 0.0)) admitted++;
             }
             return admitted;
@@ -509,11 +513,16 @@ public final class DefaultEndRefinement implements EndRefinement {
             int flag = 1 << bit;
             if ((mask & flag) == 0) continue;
             state.attempts[bit]++;
-            state.retryable |= flag;
             if (state.attempts[bit] < config.maxAttempts()) {
+                state.retryable |= flag;
+                state.exhausted &= ~flag;
                 state.pending |= flag;
                 state.nextEligibleMillis[bit] = now + retryDelay(state.attempts[bit]);
             } else {
+                state.retryable &= ~flag;
+                state.exhausted |= flag;
+                state.pending &= ~flag;
+                state.nextEligibleMillis[bit] = 0;
                 exhausted |= flag;
             }
         }
@@ -527,6 +536,7 @@ public final class DefaultEndRefinement implements EndRefinement {
 
     private void clearRetryState(ParentState state, int mask) {
         state.retryable &= ~mask;
+        state.exhausted &= ~mask;
         for (int bit = 0; bit < 8; bit++) {
             int flag = 1 << bit;
             if ((mask & flag) == 0) continue;
@@ -647,7 +657,7 @@ public final class DefaultEndRefinement implements EndRefinement {
     private boolean admit(ParentKey key, int mask, Urgency urgency, double distance) {
         if (mask == 0) return false;
         ParentState state = state(key);
-        int terminal = state.represented | state.deterministicEmpty | state.vanillaCovered;
+        int terminal = state.represented | state.deterministicEmpty | state.vanillaCovered | state.exhausted;
         int newMask = mask & ~terminal & ~state.pending & ~state.executing;
         if (newMask == 0) {
             if (urgency.ordinal() < state.urgency.ordinal()) state.urgency = urgency;
@@ -673,7 +683,10 @@ public final class DefaultEndRefinement implements EndRefinement {
         if (parent.level() < 1 || parent.level() > 4) return;
         ParentKey key = fromCell(parent);
         int missing = occupancy.missingChildOctants(parent);
-        state(key).vanillaCovered |= (~missing) & 0xFF;
+        ParentState state = state(key);
+        int vanilla = (~missing) & 0xFF;
+        state.vanillaCovered |= vanilla;
+        clearRetryState(state, vanilla);
         admit(key, missing, Urgency.FRONTIER, 0.0);
     }
 
@@ -746,8 +759,16 @@ public final class DefaultEndRefinement implements EndRefinement {
     }
 
     private void terminallyFailed(ParentState state) {
-        state.retryable |= state.pending;
+        int mask = state.pending;
         state.pending = 0;
+        state.exhausted |= mask;
+        state.retryable &= ~mask;
+        for (int bit = 0; bit < 8; bit++) {
+            int flag = 1 << bit;
+            if ((mask & flag) == 0) continue;
+            state.attempts[bit] = 0;
+            state.nextEligibleMillis[bit] = 0;
+        }
     }
 
     private void resolveFailedParentDependents(ParentKey completed, int failedMask) {
@@ -777,6 +798,7 @@ public final class DefaultEndRefinement implements EndRefinement {
         long empty = 0;
         long vanilla = 0;
         long retryable = 0;
+        long exhausted = 0;
         int queuedParents = 0;
         int executingParents = 0;
         for (ParentState state : parents.values()) {
@@ -786,6 +808,7 @@ public final class DefaultEndRefinement implements EndRefinement {
             empty += Integer.bitCount(state.deterministicEmpty);
             vanilla += Integer.bitCount(state.vanillaCovered);
             retryable += Integer.bitCount(state.retryable);
+            exhausted += Integer.bitCount(state.exhausted);
             if (state.queued) queuedParents++;
             if (state.executing != 0) executingParents++;
         }
@@ -812,7 +835,7 @@ public final class DefaultEndRefinement implements EndRefinement {
                         horizonSkipped, horizonQueue.size(), (int) horizonExecuting),
                 new DemandSummary(refinementAdmitted, refinementCompleted, refinementFailed,
                         refinementSkipped, queuedParents, executingParents),
-                pending, executing, represented, empty, vanilla, retryable,
+                pending, executing, represented, empty, vanilla, retryable, exhausted,
                 new InitialHorizonSummary(
                         initialHorizonTargets == null ? 0 : initialHorizonTargets.size(),
                         initialTerminal, initialWritten, initialExisting,
