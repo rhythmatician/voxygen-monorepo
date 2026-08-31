@@ -43,17 +43,11 @@ class L1AvailabilityContractTest {
     }
 
     @Test
-    void syntheticBuildHeightmap_deterministic_rangeClamped() throws Exception {
-        GenerationSession svc = new GenerationSession();
-        // Reflection: buildHeightmap is private synthetic fallback with no public accessor.
-        // Direct access would require widening production visibility; reflection keeps
-        // the fallback contract testable without changing the service API.
-        // TODO: consider @VisibleForTesting package-private if this invariant grows.
-        Method m = GenerationSession.class.getDeclaredMethod("buildHeightmap", int.class, int.class);
-        m.setAccessible(true);
-
-        float[][] a = (float[][]) m.invoke(svc, 0, 0);
-        float[][] b = (float[][]) m.invoke(svc, 0, 0);
+    void syntheticBuildHeightmap_deterministic_rangeClamped() {
+        // GenerationSession.buildHeightmap is public static since #121 (ownership moved from facade).
+        // Call directly — no reflection needed.
+        float[][] a = GenerationSession.buildHeightmap(0, 0);
+        float[][] b = GenerationSession.buildHeightmap(0, 0);
         assertEquals(16, a.length);
         for (int x = 0; x < 16; x++) {
             assertEquals(16, a[x].length);
@@ -63,7 +57,7 @@ class L1AvailabilityContractTest {
             }
         }
 
-        float[][] c = (float[][]) m.invoke(svc, 100, -50);
+        float[][] c = GenerationSession.buildHeightmap(100, -50);
         // neighbouring sections use global block coords — not identical to (0,0)
         boolean differs = false;
         outer:
