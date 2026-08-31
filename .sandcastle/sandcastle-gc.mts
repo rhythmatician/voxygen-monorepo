@@ -137,15 +137,12 @@ export async function runSandcastleGC(opts: {
         result.skipped.push({ branch, reason: "issue OPEN" });
         continue;
       }
-      // CLOSED — check if safe to delete: must be ancestor of origin/main OR age > 7 days OR not in open PR
-      // Conservative: only delete if ancestor of origin/main OR age > 7 days to avoid deleting recent closed-but-not-merged work
+      // CLOSED — safe to delete if ancestor of origin/main OR age > 1 hour (recent batch merges are NOT_ANCESTOR due to squash/rebase, so 7d audit would miss 9 closed branches for a week; 1h grace is enough for manual inspection while keeping branch count bounded per RALPH iteration)
       const ancestor = originMain ? isAncestor(repoRoot, branch, "origin/main") : false;
       const age = branchAgeDays(repoRoot, branch);
-      const ageOk = age !== null && age > 7;
-      // Also allow delete if branch was part of bulk that is now merged — but we don't have bulk state here, so require ancestor or age
+      const ageOk = age !== null && age > (1 / 24); // 1 hour grace, not 7 days — closed batch merges are batch-scoped, not direct ancestors
       if (!ancestor && !ageOk) {
-        // Keep for audit unless bulk merged — log and skip
-        result.skipped.push({ branch, reason: `CLOSED but not ancestor of origin/main and age ${age?.toFixed(1) ?? "?"}d <7d — audit` });
+        result.skipped.push({ branch, reason: `CLOSED but not ancestor of origin/main and age ${age?.toFixed(2) ?? "?"}d <1h — audit` });
         continue;
       }
       // Safe to delete
