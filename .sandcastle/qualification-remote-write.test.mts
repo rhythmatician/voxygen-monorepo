@@ -7,8 +7,11 @@ describe("qualification remote-write policy", () => {
 
   it("qualification skips production reconciliation mutations", () => {
     expect(main).toContain(
-      "if (QUALIFICATION_LIFECYCLE.mutateOutcomeState) {\n      await reconcileInProgressIssues();\n    }",
+      "if (QUALIFICATION_LIFECYCLE.mutateOutcomeState) {\n      await reconcileInProgressIssues();",
     );
+    // GC is a production mutation (branch/worktree/remote deletes) and must also be gated
+    expect(main).toContain("runSandcastleGC");
+    expect(main).toMatch(/if \(QUALIFICATION_LIFECYCLE\.mutateOutcomeState\)[\s\S]*?runSandcastleGC/);
   });
 
   it("qualification forbids stale-branch remote deletion while normal callers retain it", () => {
