@@ -5,7 +5,7 @@ import net.minecraft.util.Identifier;
 import net.minecraft.world.World;
 import com.rhythmatician.voxygen.semantic.Level;
 import com.rhythmatician.voxygen.semantic.SectionPos;
-import com.rhythmatician.voxygen.worldgen.DimensionGenerationDomain;
+import com.rhythmatician.voxygen.generation.dimension.DimensionGenerationDomain;
 import com.rhythmatician.voxygen.generation.dimension.end.EndDimensionSynthesizer;
 import com.rhythmatician.voxygen.generation.dimension.end.EndL4DeterministicCandidate;
 import com.rhythmatician.voxygen.generation.dimension.end.ExactEndL1Candidate;

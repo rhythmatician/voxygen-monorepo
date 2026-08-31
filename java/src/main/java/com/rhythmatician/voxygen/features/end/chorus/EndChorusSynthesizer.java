@@ -8,7 +8,7 @@ import com.rhythmatician.voxygen.semantic.Level;
 import com.rhythmatician.voxygen.semantic.SectionPos;
 import com.rhythmatician.voxygen.semantic.VoxelVolume;
 import com.rhythmatician.voxygen.semantic.CanonicalRegistries;
-import com.rhythmatician.voxygen.worldgen.DimensionGenerationDomain;
+import com.rhythmatician.voxygen.generation.dimension.DimensionGenerationDomain;
 import com.rhythmatician.voxygen.generation.dimension.end.EndL4DeterministicCandidate;
 import com.rhythmatician.voxygen.worldgen.WorldNoiseAccess;
 
