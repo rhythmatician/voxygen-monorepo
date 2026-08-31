@@ -791,6 +791,9 @@ async function runDoctor(): Promise<boolean> {
   let sandcastleHead = "";
   try { sandcastleHead = execSync('git -C ../../sandcastle rev-parse HEAD', {encoding:'utf8'}).trim(); } catch {}
   if (!isExpectedSandcastleSourceHead(sandcastleHead)) {
+    try { sandcastleHead = execSync('git -C /mnt/c/Users/JeffHall/git/sandcastle rev-parse HEAD', {encoding:'utf8'}).trim(); } catch {}
+  }
+  if (!isExpectedSandcastleSourceHead(sandcastleHead)) {
     console.error(`  FAIL: Sandcastle HEAD is ${sandcastleHead.slice(0,7) || "unavailable"}, expected ${EXPECTED_SANDCASTLE_SOURCE_PREFIX} — refusing to run factory.`);
     return false;
   }
