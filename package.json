@@ -27,6 +27,7 @@
     "ci:oracle": "tsx .sandcastle/ci-oracle.mts"
   },
   "dependencies": {
+    "@standard-schema/spec": "^1.1.0",
     "zod": "^4.4.3"
   }
 }
