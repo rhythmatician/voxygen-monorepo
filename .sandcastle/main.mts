@@ -51,12 +51,12 @@ import * as branchHelpers from "./branch-helpers.mts";
 import type { GitRunner, GitResult } from "./branch-helpers.mts";
 import { publishBatchBranch } from "./batch-publication.mts";
 import { mayAutonomouslyMerge } from "./ci-policy.mts";
-import { runReviewerPass } from "./review-pass.mts";
 import {
   reviewVerdictSchema,
   isVerdictApproved,
   type ReviewVerdict,
 } from "./review-verdict.mts";
+import { runReviewCycle } from "./review-cycle.mts";
 import { formatGhFailure, getErrorMessage, getGhErrorDetails } from "./gh-errors.mts";
 import { createGhTransport, resolveGhToken, GhCapabilityError, type GhTransport } from "./gh-transport.mts";
 import { createTrackerAdapter, type TrackerAdapter, type TrackerTransitionResult, type TransitionReceipt } from "./tracker-adapter.mts";
@@ -1473,8 +1473,7 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
           idleTimeoutSeconds: 1800,
           budget: 100,
         });
-        let reviewVerdict: ReviewVerdict | null = null;
-        let reviewTextForRetry = "";
+        // Collect commits (preserve existing branch commits if implement produced none)
         let allCommits = [...implement.commits];
         if (allCommits.length === 0) {
           try {
@@ -1489,17 +1488,13 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
             }
           } catch {}
         }
-        let shouldRetryReview = false;
-        // Protected candidate proof gate — host-owned verification before reviewer
-        // For protected candidates, collect exact-SHA evidence and stop before reviewer if not ready.
-        // Deterministic candidate failure => stable verification finding (semantic rejection); infrastructure/settlement uncertainty => FACTORY_ERROR.
+        // Protected candidate proof gate — host-owned verification before review
         if (implement.commits.length > 0) {
           let changedFiles: string[] = [];
           try {
             const diffOut = execFileSync("git", ["diff", "--name-only", `${factoryBaseSha}..${issue.branch}`], { encoding: "utf8", cwd: REPO_ROOT }).toString().trim();
             changedFiles = diffOut ? diffOut.split("\n").filter(Boolean) : [];
           } catch {}
-          // Also consider untracked? For protected, changedFiles via diff is authoritative.
           if (isProtectedCandidate(changedFiles)) {
             console.log(`  Protected candidate ${issue.branch} — collecting candidate proof before reviewer (changed: ${changedFiles.slice(0,5).join(", ")})`);
             try {
@@ -1516,9 +1511,6 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
                 },
                 {
                   repoRoot: REPO_ROOT,
-                  // No injected runCommand — production path uses host-owned real execution
-                  // (spawnSync in candidate worktree), real sibling FS detection, and
-                  // structured worktree/process-group/log- writer scopes.
                 }
               );
               if (!proof.readyForReview) {
@@ -1527,9 +1519,9 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
                 const hasSettlementIssue = !proof.processesSettled || !proof.resourcesSettled;
                 if (hasUnavailable || hasNotRun || hasSettlementIssue || proof.environment.ambientSiblingDetected || !proof.environment.cleanCheckout) {
                   console.error(`  FACTORY_ERROR candidate-proof for #${issue.id}: ${proof.blockingReasons.join("; ").slice(0, 800)}`);
+                  await sandbox!.close(); try { process.chdir(REPO_ROOT); } catch {}
                   return { commits: allCommits, verdict: null, reviewText: `FACTORY_ERROR candidate-proof: ${proof.blockingReasons.join("; ")}` };
                 }
-                // Deterministic candidate failure — host-generated blocking verification finding, no reviewer call
                 console.warn(`  Candidate-proof blocked #${issue.id}: ${proof.blockingReasons.join("; ").slice(0, 800)} — stopping before reviewer`);
                 const verificationVerdict = {
                   approved: false as const,
@@ -1537,107 +1529,156 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
                   acceptanceCriteriaMet: proof.proofs.map(pr => ({ criterion: pr.criterionId, met: pr.proved, evidence: pr.gap ?? (pr.proved ? "proved" : "not proved") })),
                   summary: `candidate-proof verification failed: ${proof.blockingReasons.join("; ").slice(0, 500)}`,
                 };
+                await sandbox!.close(); try { process.chdir(REPO_ROOT); } catch {}
                 return { commits: allCommits, verdict: verificationVerdict as unknown as import("./review-verdict.mts").ReviewVerdict, reviewText: `candidate-proof blocked: ${proof.blockingReasons.join("; ")}` };
               }
               console.log(`  Candidate-proof readyForReview=true for #${issue.id} (${proof.candidateSha.slice(0,7)})`);
             } catch (e) {
               if (e instanceof CandidateProofFactoryError) {
                 console.error(`  FACTORY_ERROR candidate-proof for #${issue.id}: ${e.message.slice(0, 800)}`);
+                await sandbox!.close(); try { process.chdir(REPO_ROOT); } catch {}
                 return { commits: allCommits, verdict: null, reviewText: `FACTORY_ERROR candidate-proof: ${e.message}` };
               }
               throw e;
             }
           }
         }
-        for (let reviewAttempt = 0; reviewAttempt <= REVIEW_RETRY_BUDGET; reviewAttempt++) {
-          if (implement.commits.length === 0) break;
-          if (reviewAttempt > 0) {
-            const feedback = formatVerdictForRetry(reviewVerdict, reviewTextForRetry);
-            console.log(`  Reviewer requested changes for #${issue.id} (attempt ${reviewAttempt}/${REVIEW_RETRY_BUDGET}) — re-running implementer with feedback`);
-            const retryImplement = await runUntilCompletion((opts) => sandbox!.run(opts as any), {
-              name: "implementer-retry",
-              agent: sandcastle.muse("muse-spark-1.2-contributor"),
-              promptFile: "./.sandcastle/implement-prompt.md",
-              promptArgs: {
-                TASK_ID: issue.id,
-                ISSUE_TITLE: issue.title,
-                ISSUE_BODY: implementationIssueBody,
-                BRANCH: issue.branch,
-                REVIEW_FEEDBACK: feedback,
-              },
-              // Emergency deadman only — not liveness detection. 30m matches sandcastle principled fix.
-              idleTimeoutSeconds: 1800,
-              budget: 50,
-            });
-            allCommits = [...allCommits, ...(retryImplement.commits ?? [])];
-            implement = retryImplement;
-            if (retryImplement.commits.length === 0) break;
-          }
-          const issueBody = await fetchIssueBody(issue.id);
-          const reviewerResult = await runReviewerPass({
-            issueId: issue.id,
-            issueTitle: issue.title,
-            branch: issue.branch,
-            attempt: reviewAttempt,
-            issueBody,
-            allCommits,
-            runReviewer: async (_issueBody, _attempt, isRetry) => {
-              const review = await runStructuredOnce((opts) => sandbox!.run(opts as any), {
-                name: isRetry ? "reviewer-retry" : "reviewer",
-                agent: sandcastle.muse("muse-spark-1.2-contributor"),
-                promptFile: "./.sandcastle/review-prompt.md",
-                promptArgs: {
-                  BRANCH: issue.branch,
-                  ISSUE_NUMBER: issue.id,
-                  ISSUE_TITLE: issue.title,
-                  ISSUE_BODY: _issueBody,
-                },
-                tag: "verdict",
-                schema: reviewVerdictSchema,
+        if (allCommits.length === 0) {
+          await sandbox!.close(); try { process.chdir(REPO_ROOT); } catch {}
+          return { commits: implement.commits, verdict: null, reviewText: "no commits to review" };
+        }
+        // Capture candidate SHA before closing implementer sandbox
+        let candidateShaForReview: string;
+        try { candidateShaForReview = execFileSync("git", ["rev-parse", issue.branch], { encoding: "utf8", cwd: REPO_ROOT }).toString().trim(); } catch { candidateShaForReview = ""; }
+        await sandbox!.close(); try { process.chdir(REPO_ROOT); } catch {}
+        // Fresh issue body for reviewer
+        const freshIssueBody = await fetchIssueBody(issue.id);
+        // Build review-cycle dependencies with sandcastle adapters
+        const reviewCycleResult = await runReviewCycle(
+          { issueId: issue.id, issueTitle: issue.title, issueBody: freshIssueBody, branch: issue.branch },
+          {
+            repoRoot: REPO_ROOT,
+            getBaseSha: () => factoryBaseSha,
+            runReviewer: async ({ candidateSha, branch, issueBody, priorFindings, isReReview, worktreePath, env }) => {
+              // Disposable reviewer sandbox — fresh context, read-only GH tokens
+              const reviewerSandbox = await sandcastle.createSandbox({
+                branch,
+                baseBranch: factoryBaseSha,
+                sandbox: docker({ env: { ...env, META_API_KEY: WORKER_SANDBOX_ENV.META_API_KEY } }),
+                hooks,
+                copyToWorktree,
+                timeouts: { worktreeMs: 600_000 },
               });
-              return review;
+              try {
+                // Provide exact SHA and prior findings context via prompt args
+                const priorSection = isReReview && priorFindings && priorFindings.length
+                  ? `## Prior blocking findings — must classify every ID\n${priorFindings.map(f => `- ${f.id}: [${f.severity}] ${f.invariant} — ${f.failureMode} (proof: ${f.requiredProof})`).join("\n")}`
+                  : "";
+                const review = await runStructuredOnce((opts) => reviewerSandbox.run(opts as any), {
+                  name: isReReview ? "reviewer-rereview" : "reviewer",
+                  agent: sandcastle.muse("muse-spark-1.2-contributor"),
+                  promptFile: "./.sandcastle/review-prompt.md",
+                  promptArgs: {
+                    BRANCH: branch,
+                    ISSUE_NUMBER: issue.id,
+                    ISSUE_TITLE: issue.title,
+                    ISSUE_BODY: issueBody,
+                    CANDIDATE_SHA: candidateSha,
+                    PRIOR_FINDINGS_SECTION: priorSection,
+                  },
+                  tag: "verdict",
+                  schema: reviewVerdictSchema,
+                });
+                // Enforce read-only: reviewer env already empty; also verify worktree not mutated via git status (handled by review-cycle)
+                return { stdout: (review as { stdout?: string }).stdout ?? "", output: (review as { output?: unknown }).output, env };
+              } finally {
+                try { await reviewerSandbox.close(); } catch {}
+                try { process.chdir(REPO_ROOT); } catch {}
+              }
             },
-            onReviewerFailure: (id, attemptIndex, reviewError) => {
-              console.warn(`  Reviewer failed for #${id} (attempt ${attemptIndex + 1}): ${String(reviewError).slice(0, REVIEW_ERROR_TRUNCATE)} - treating as FACTORY_ERROR (missing/invalid machine-verifiable verdict)`);
+            runFixer: async ({ reviewedSha, findings, unmetCriteria, summary, issueBody, branch }) => {
+              const fixerSandbox = await sandcastle.createSandbox({
+                branch,
+                baseBranch: factoryBaseSha,
+                sandbox: docker({ env: WORKER_SANDBOX_ENV }),
+                hooks,
+                copyToWorktree,
+                timeouts: { worktreeMs: 600_000 },
+              });
+              try {
+                const findingsDetail = findings.map(f => `ID ${f.id} [${f.severity}] ${f.axis}: ${f.invariant} — ${f.failureMode}\n  evidence: ${(f.evidence ?? []).join("; ")}\n  requiredProof: ${f.requiredProof}`).join("\n\n");
+                const findingsBlock = findings.length ? `\n${findingsDetail}` : "";
+                const fixerResult = await runUntilCompletion((opts) => fixerSandbox.run(opts as any), {
+                  name: "fixer",
+                  agent: sandcastle.muse("muse-spark-1.2-contributor"),
+                  promptFile: "./.sandcastle/fix-review-findings-prompt.md",
+                  promptArgs: {
+                    ISSUE_NUMBER: issue.id,
+                    ISSUE_TITLE: issue.title,
+                    ISSUE_BODY: issueBody,
+                    BRANCH: branch,
+                    REVIEWED_SHA: reviewedSha,
+                    UNMET_CRITERIA: unmetCriteria.join("; ") || "(none)",
+                    FINDINGS_BLOCK: findingsBlock,
+                    REVIEW_SUMMARY: summary.slice(0, 2000),
+                    FINDINGS_DETAIL: findingsDetail.slice(0, 6000),
+                  },
+                  idleTimeoutSeconds: 1800,
+                  budget: 50,
+                });
+                const newSha = execFileSync("git", ["rev-parse", branch], { encoding: "utf8", cwd: REPO_ROOT }).toString().trim();
+                return { newSha, commits: fixerResult.commits ?? [] };
+              } finally {
+                try { await fixerSandbox.close(); } catch {}
+                try { process.chdir(REPO_ROOT); } catch {}
+              }
             },
-            onInvalidVerdict: (id, attemptIndex, reason, reviewText) => {
-              console.warn(`  Reviewer produced invalid verdict for #${id} (attempt ${attemptIndex + 1}): ${reason} — ${reviewText.slice(0, REVIEW_ERROR_TRUNCATE)} — treating as FACTORY_ERROR`);
+            runVerification: async (candidateSha, branch) => {
+              // Host-owned deterministic verification in repoRoot (branch at candidateSha)
+              const { spawnSync } = await import("node:child_process");
+              try {
+                const changed = (() => { try { const out = execFileSync("git", ["diff", "--name-only", `${factoryBaseSha}..${branch}`], { encoding: "utf8", cwd: REPO_ROOT }).toString().trim(); return out ? out.split("\n").filter(Boolean) : []; } catch { return []; } })();
+                let cmds: Array<[string, string[]]> = [["npm", ["run", "typecheck"]], ["npm", ["test"]]];
+                if (changed.some(f => f.startsWith("mod/"))) {
+                  cmds = [["npm", ["run", "typecheck"]], ["bash", [".ci/install-voxy.sh", "install"]], ["./mod/gradlew", ["-p", "mod", "lint", "compileJava", "compileClientJava"]], ["./mod/gradlew", ["-p", "mod", "test", "-PexcludeVoxyTestRuntime"]]] as Array<[string, string[]]>;
+                }
+                for (const [cmd, args] of cmds) {
+                  const res = spawnSync(cmd, args as string[], { cwd: REPO_ROOT, encoding: "utf8", timeout: 300000 });
+                  if (res.error) return { ok: false, infraError: true, reason: `spawn ${cmd} failed: ${String(res.error).slice(0,500)}` };
+                  if (res.status !== 0) return { ok: false, reason: `${cmd} ${(args as string[]).join(" ")} failed: ${((res.stdout ?? "") + (res.stderr ?? "")).slice(0,800)}` };
+                }
+                return { ok: true };
+              } catch (e) { return { ok: false, infraError: true, reason: String(e).slice(0,800) }; }
             },
-          });
-          const verdict = reviewerResult.verdict;
-          reviewVerdict = verdict;
-          reviewTextForRetry = reviewerResult.reviewText;
-          if (verdict === null) {
-            return reviewerResult;
           }
-          allCommits = reviewerResult.commits;
-          if (isVerdictApproved(verdict)) {
-            return {
-              commits: allCommits,
-              verdict,
-              reviewText: reviewerResult.reviewText,
-            };
-          }
-          if (reviewAttempt < REVIEW_RETRY_BUDGET) {
-            shouldRetryReview = true;
-            continue;
-          }
-          return {
-            commits: allCommits,
-            verdict,
-            reviewText: reviewerResult.reviewText,
-          };
-          }
-          if (implement.commits.length > 0 && shouldRetryReview) {
-            return {
-              commits: allCommits,
-              verdict: reviewVerdict,
-              reviewText: reviewTextForRetry,
-            };
-          }
-          return { commits: allCommits.length > 0 ? allCommits : implement.commits, verdict: reviewVerdict, reviewText: reviewTextForRetry };
+        );
+        // Map review-cycle result to WorkerResult
+        if (reviewCycleResult.kind === "approved") {
+          // Collect updated commits after fixer
+          let finalCommits: string[] = allCommits;
+          try {
+            const log = execFileSync("git", ["log", `main..${issue.branch}`, "--oneline"], { encoding: "utf8", cwd: REPO_ROOT }).toString().trim();
+            if (log) {
+              const shas = log.split("\n").map(l => l.split(" ")[0]).filter(Boolean);
+              if (shas.length) finalCommits = shas;
+            }
+          } catch {}
+          return { commits: finalCommits, verdict: reviewCycleResult.verdict, reviewText: reviewCycleResult.verdict.summary ?? "approved" };
+        } else if (reviewCycleResult.kind === "reviewRejected") {
+          let finalCommits: string[] = allCommits;
+          try {
+            const log = execFileSync("git", ["log", `main..${issue.branch}`, "--oneline"], { encoding: "utf8", cwd: REPO_ROOT }).toString().trim();
+            if (log) {
+              const shas = log.split("\n").map(l => l.split(" ")[0]).filter(Boolean);
+              if (shas.length) finalCommits = shas;
+            }
+          } catch {}
+          return { commits: finalCommits, verdict: reviewCycleResult.verdict, reviewText: reviewCycleResult.verdict.summary ?? "reviewRejected" };
+        } else {
+          return { commits: allCommits, verdict: null, reviewText: reviewCycleResult.reason };
+        }
       } finally {
-        await sandbox!.close();
+        try { await sandbox!.close(); } catch {}
         try { process.chdir(REPO_ROOT); } catch {}
       }
     };
