@@ -26,8 +26,8 @@ Single file, no training. Reads fixed voxy_sections GT (build_voxy_pairs.py:504,
 and would benchmark FINAL_DENSITY quart sampling vs ChunkNoiseSampler heightmap if implemented.
 
 Usage:
-  python python/harness/thin_oracle.py --gt /path/to/voxy_sections --columns 100 --seed 42 --report json
-If --gt missing, probes repo for python/runs/*/voxy_sections or python/data.
+  python training/harness/thin_oracle.py --gt /path/to/voxy_sections --columns 100 --seed 42 --report json
+If --gt missing, probes repo for training/runs/*/voxy_sections or training/data.
 
 Outputs: voxel accuracy / surface MAE / silhouette IoU / rendered-pixel stub + P50/P95 ms/column for
   * FINAL_DENSITY-only sampleSection (32 floats/section, 768/col)
@@ -50,7 +50,7 @@ from pathlib import Path
 def find_gt(args_gt):
     if args_gt and Path(args_gt).exists():
         return Path(args_gt)
-    for cand in [Path("python/runs"), Path("python/data"), Path("data")]:
+    for cand in [Path("training/runs"), Path("training/data"), Path("data")]:
         if cand.exists():
             for p in cand.rglob("voxy_sections*"):
                 return p
@@ -98,7 +98,7 @@ def oracle_stub(gt_path, columns):
 
 def main():
     print(
-        "WARNING: python/harness/thin_oracle.py is SCAFFOLD — NOT authoritative evidence. "
+        "WARNING: training/harness/thin_oracle.py is SCAFFOLD — NOT authoritative evidence. "
         "Timings are synthetic random numbers; Oracles 1–4 are not evaluated. "
         "See file header.",
         file=sys.stderr,

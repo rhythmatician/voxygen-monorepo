@@ -53,14 +53,21 @@ function Remove-ValidatedTree([string]$path, [string]$allowedRoot) {
     }
 }
 
-function Get-ContaminatedEndRegions([string]$worldDir) {
-    $regions = Join-Path $worldDir "DIM1\region"
+function Get-ContaminatedRegions([string]$worldDir, $scenario) {
+    if (-not $scenario.contaminationCheck) { return @() }
+    $dimPath = [string]$scenario.contaminationCheck.dimensionPath
+    if (-not $dimPath) { return @() }
+    # Normalize forward slashes for Join-Path
+    $segments = $dimPath -split "[/\\]"
+    $regions = $worldDir
+    foreach ($seg in $segments) { $regions = Join-Path $regions $seg }
+    $allowed = @($scenario.contaminationCheck.allowedRegions)
+    if ($allowed.Count -eq 0) { return Get-ChildItem $regions -Filter *.mca -ErrorAction SilentlyContinue }
     Get-ChildItem $regions -Filter *.mca -ErrorAction SilentlyContinue |
-        Where-Object {
-            $_.Name -match '^r\.(-?\d+)\.(-?\d+)\.mca$' -and
-            ([int]$Matches[1] -notin -1, 0 -or [int]$Matches[2] -notin -1, 0)
-        }
+        Where-Object { $_.Name -notin $allowed }
 }
+# Backward-compat alias — generic harness no longer defines "flight" as "The End"
+function Get-ContaminatedEndRegions([string]$worldDir) { return Get-ContaminatedRegions $worldDir $scenario }
 
 function Test-FlightStatusMarker(
     [string]$path,
@@ -119,9 +126,9 @@ if ($CaptureTemplate) {
     if (-not (Test-Path $liveWorld)) {
         throw "No world at $liveWorld. Create $scenarioWorld first (seed 0, creative, structures off), move the player to the scenario start position, save, and quit without flying the corridor."
     }
-    $flown = Get-ContaminatedEndRegions $liveWorld
+    $flown = Get-ContaminatedRegions $liveWorld $scenario
     if ($flown) {
-        throw "Template is contaminated: End corridor regions already exist: $(($flown.Name) -join ', '). Create a fresh FlightTest world."
+        throw "Template is contaminated: unexpected regions already exist for scenario '$Scenario': $(($flown.Name) -join ', '). Create a fresh $scenarioWorld world."
     }
     Remove-ValidatedTree $templateDir $templateDir
     Copy-Item $liveWorld $templateDir -Recurse
@@ -132,7 +139,7 @@ if ($CaptureTemplate) {
 }
 
 if (-not (Test-Path $templateDir)) {
-    throw "No flight template at $templateDir. Create FlightTest once, then run .\flight-loop.ps1 -CaptureTemplate."
+    throw "No flight template at $templateDir for scenario '$Scenario'. Create $scenarioWorld once, then run with -CaptureTemplate."
 }
 Remove-ValidatedTree $liveWorld $liveWorld
 Copy-Item $templateDir $liveWorld -Recurse
@@ -169,9 +176,9 @@ foreach ($path in $expectedScreenshotPaths) {
     if (Test-Path $path) { Remove-Item $path -Force }
 }
 
-$stale = Get-ContaminatedEndRegions $liveWorld
+$stale = Get-ContaminatedRegions $liveWorld $scenario
 if ($stale) {
-    throw "Post-reset check failed: End corridor regions present: $(($stale.Name) -join ', ')."
+    throw "Post-reset check failed: unexpected regions present for scenario '$Scenario': $(($stale.Name) -join ', ')."
 }
 
 $runId = [Guid]::NewGuid().ToString("N")

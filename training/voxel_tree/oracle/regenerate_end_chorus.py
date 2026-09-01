@@ -16,13 +16,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 
 def _find_repo_root() -> Path:
-    # Use parents[3] directly for this file location (python/voxel_tree/oracle/...)
+    # Use parents[3] directly for this file location (training/voxel_tree/oracle/...)
     cur = Path(__file__).resolve().parents[3]
-    if (cur / "python" / "servers.yaml").exists() or (cur / "servers.yaml").exists():
+    if (cur / "training" / "servers.yaml").exists() or (cur / "servers.yaml").exists():
         return cur
     cur2 = Path(__file__).resolve()
     for _ in range(7):
-        if (cur2 / "python" / "servers.yaml").exists() or (cur2 / "servers.yaml").exists():
+        if (cur2 / "training" / "servers.yaml").exists() or (cur2 / "servers.yaml").exists():
             return cur2
         cur2 = cur2.parent
     return Path(__file__).resolve().parents[3]
@@ -76,7 +76,7 @@ def _rcon_is_zero_players(lst: str | None) -> bool:
 
 
 REPO_ROOT = _find_repo_root()
-SERVERS_YAML = REPO_ROOT / "python" / "servers.yaml"
+SERVERS_YAML = REPO_ROOT / "training" / "servers.yaml"
 if not SERVERS_YAML.exists():
     SERVERS_YAML = REPO_ROOT / "servers.yaml"
 RUNTIME_DIR = REPO_ROOT / "tools" / "server-harness" / "runtime"
@@ -119,11 +119,11 @@ ORACLE_ROLE = {
     "captureStage": "FULL",
 }
 
-REQUEST_PATH = REPO_ROOT / "java" / "run" / "config" / "oracle_capture_request.json"
-DONE_PATH = REPO_ROOT / "java" / "run" / "config" / "oracle_capture_done.json"
-INGEST_ACK_PATH = REPO_ROOT / "java" / "run" / "config" / "oracle_ingest_ack.json"
+REQUEST_PATH = REPO_ROOT / "mod" / "run" / "config" / "oracle_capture_request.json"
+DONE_PATH = REPO_ROOT / "mod" / "run" / "config" / "oracle_capture_done.json"
+INGEST_ACK_PATH = REPO_ROOT / "mod" / "run" / "config" / "oracle_ingest_ack.json"
 FIXTURE_PATH = Path(
-    "java/oracle-fixtures/end_chorus__s42__b1600_64_128_e32__fh8_gh1c_vh1_ch25__mc1.21.11_voxy0.2.11-alpha__fmtv3.json"
+    "mod/oracle-fixtures/end_chorus__s42__b1600_64_128_e32__fh8_gh1c_vh1_ch25__mc1.21.11_voxy0.2.11-alpha__fmtv3.json"
 )
 
 # Global handle for AFK client gradle process (retained for orderly shutdown)
@@ -474,7 +474,7 @@ def _verify_oracle_startup_receipt(timeout: int = 30) -> None:
 def _ensure_oracle_client_config() -> None:
     """Write DataHarvester autoConnect config and lodiffusion runtime overlay for AFK oracle."""
     for cfg_path in [
-        REPO_ROOT / "java" / "run" / "config" / "dataharvester.json",
+        REPO_ROOT / "mod" / "run" / "config" / "dataharvester.json",
         Path("config/dataharvester.json"),
         RUNTIME_DIR / "config" / "dataharvester.json",
     ]:
@@ -492,8 +492,8 @@ def _ensure_oracle_client_config() -> None:
         except Exception as e:
             print(f"[oracle] Failed to write {cfg_path}: {e}", file=sys.stderr)
     for rt_path in [
-        REPO_ROOT / "java" / "run" / "config" / "lodiffusion" / "runtime.json",
-        REPO_ROOT / "java" / "config" / "lodiffusion" / "runtime.json",
+        REPO_ROOT / "mod" / "run" / "config" / "lodiffusion" / "runtime.json",
+        REPO_ROOT / "mod" / "config" / "lodiffusion" / "runtime.json",
     ]:
         try:
             rt_path.parent.mkdir(parents=True, exist_ok=True)
@@ -529,7 +529,7 @@ def _ensure_dataharvester_jar_in_run_mods() -> None:
         )
         return
     src = max(candidates, key=lambda p: p.stat().st_mtime)
-    dst_dir = REPO_ROOT / "java" / "run" / "mods"
+    dst_dir = REPO_ROOT / "mod" / "run" / "mods"
     dst_dir.mkdir(parents=True, exist_ok=True)
     dst = dst_dir / src.name
     try:
@@ -540,14 +540,14 @@ def _ensure_dataharvester_jar_in_run_mods() -> None:
 
 
 def _start_oracle_client_via_gradlew() -> bool:
-    """AFK client launch via java/run/gradlew.bat runClient (nonblocking, retains handle). Mirrors flight-loop.ps1 deployToRunMods pattern."""
+    """AFK client launch via mod/run/gradlew.bat runClient (nonblocking, retains handle). Mirrors flight-loop.ps1 deployToRunMods pattern."""
     global _ORACLE_CLIENT_PROC
     try:
         _ensure_oracle_client_config()
         _ensure_dataharvester_jar_in_run_mods()
     except Exception as e:
         print(f"[oracle] Failed to prepare AFK client config: {e}", file=sys.stderr)
-    java_dir = REPO_ROOT / "java"
+    java_dir = REPO_ROOT / "mod"
     gradlew = java_dir / "gradlew.bat"
     if not gradlew.exists():
         gradlew = java_dir / "gradlew"

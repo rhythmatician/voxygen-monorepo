@@ -46,7 +46,7 @@ The single authoritative workflow is:
 
 ```powershell
 pip install -e training          # editable install from pyproject.toml (or: uv pip install -e training)
-pytest python -k "not integration"
+pytest training -k "not integration"
 python training/scripts/build_voxy_pairs.py --help
 ```
 

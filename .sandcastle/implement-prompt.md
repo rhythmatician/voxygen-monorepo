@@ -32,7 +32,7 @@ Explore the repo and fill context with relevant code and tests.
 Use Red-Green-Refactor where applicable.
 
 Before committing, run:
-- If `git diff --name-only` touches `java/` (or `java` files changed in this run), then `bash .ci/install-voxy.sh install` (if needed) and `./java/gradlew -p java lint compileJava compileClientJava` and `./java/gradlew -p java test -PexcludeVoxyTestRuntime` and `./java/gradlew -p java mutationHardening -PexcludeVoxyTestRuntime` must pass (mirrors factory-ci.yml Java lane; CI remains authoritative if an agent omits or mishandles the local command).
+- If `git diff --name-only` touches `mod/` (or `mod` files changed in this run), then `bash .ci/install-voxy.sh install` (if needed) and `./mod/gradlew -p mod lint compileJava compileClientJava` and `./mod/gradlew -p mod test -PexcludeVoxyTestRuntime` and `./mod/gradlew -p mod mutationHardening -PexcludeVoxyTestRuntime` must pass (mirrors factory-ci.yml Java lane; CI remains authoritative if an agent omits or mishandles the local command).
 - Then `npm run typecheck` and `npm run test` must pass.
 
 # DOCUMENTATION

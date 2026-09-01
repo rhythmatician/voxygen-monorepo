@@ -241,7 +241,7 @@ def z2lin(morton: int) -> int:
 # ---------------------------------------------------------------------------
 # The true on-disk format for SaveLoadSystem3 (little-endian, not big-endian)
 # is documented in ``SaveLoadSystem3.java:serialize/deserialize`` and used by
-# ``python/voxel_tree/tasks/voxy_reader.py``. This module provides helpers to
+# ``training/voxel_tree/tasks/voxy_reader.py``. This module provides helpers to
 # round-trip through YZX linear vs Morton order so tests can prove correctness
 # regardless of whether a given storage backend uses Morton ordering.
 
