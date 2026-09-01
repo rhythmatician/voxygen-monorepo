@@ -90,6 +90,11 @@ import {
   type ResearchResult,
 } from "./research-result.mts";
 import {
+  collectCandidateProof,
+  isProtectedCandidate,
+  CandidateProofFactoryError,
+} from "./candidate-proof.mts";
+import {
   type RunResearchWorker,
   type ResearchBatchIssue,
   RESEARCH_OUTPUT_TAG,
@@ -1485,6 +1490,65 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
           } catch {}
         }
         let shouldRetryReview = false;
+        // Protected candidate proof gate — host-owned verification before reviewer
+        // For protected candidates, collect exact-SHA evidence and stop before reviewer if not ready.
+        // Deterministic candidate failure => stable verification finding (semantic rejection); infrastructure/settlement uncertainty => FACTORY_ERROR.
+        if (implement.commits.length > 0) {
+          let changedFiles: string[] = [];
+          try {
+            const diffOut = execFileSync("git", ["diff", "--name-only", `${factoryBaseSha}..${issue.branch}`], { encoding: "utf8", cwd: REPO_ROOT }).toString().trim();
+            changedFiles = diffOut ? diffOut.split("\n").filter(Boolean) : [];
+          } catch {}
+          // Also consider untracked? For protected, changedFiles via diff is authoritative.
+          if (isProtectedCandidate(changedFiles)) {
+            console.log(`  Protected candidate ${issue.branch} — collecting candidate proof before reviewer (changed: ${changedFiles.slice(0,5).join(", ")})`);
+            try {
+              const candidateSha = execFileSync("git", ["rev-parse", issue.branch], { encoding: "utf8", cwd: REPO_ROOT }).toString().trim();
+              const proof = await collectCandidateProof(
+                {
+                  issueId: issue.id,
+                  issueTitle: issue.title,
+                  issueBody: implementationIssueBody,
+                  candidateBranch: issue.branch,
+                  baseSha: factoryBaseSha,
+                  candidateSha,
+                  changedFiles,
+                },
+                {
+                  repoRoot: REPO_ROOT,
+                  // No injected runCommand — production path uses host-owned real execution
+                  // (spawnSync in candidate worktree), real sibling FS detection, and
+                  // structured worktree/process-group/log- writer scopes.
+                }
+              );
+              if (!proof.readyForReview) {
+                const hasUnavailable = proof.obligations.some(o => o.required && (o.state === "unavailable" || o.state === "pending" || o.state === "running"));
+                const hasNotRun = proof.obligations.some(o => o.required && o.state === "not-run");
+                const hasSettlementIssue = !proof.processesSettled || !proof.resourcesSettled;
+                if (hasUnavailable || hasNotRun || hasSettlementIssue || proof.environment.ambientSiblingDetected || !proof.environment.cleanCheckout) {
+                  console.error(`  FACTORY_ERROR candidate-proof for #${issue.id}: ${proof.blockingReasons.join("; ").slice(0, 800)}`);
+                  return { commits: allCommits, verdict: null, reviewText: `FACTORY_ERROR candidate-proof: ${proof.blockingReasons.join("; ")}` };
+                }
+                // Deterministic candidate failure — host-generated blocking verification finding, no reviewer call
+                console.warn(`  Candidate-proof blocked #${issue.id}: ${proof.blockingReasons.join("; ").slice(0, 800)} — stopping before reviewer`);
+                const verificationVerdict = {
+                  approved: false as const,
+                  findings: [{ message: `verification failed: ${proof.blockingReasons.join("; ").slice(0, 500)}`, severity: "blocking" as const }],
+                  acceptanceCriteriaMet: proof.proofs.map(pr => ({ criterion: pr.criterionId, met: pr.proved, evidence: pr.gap ?? (pr.proved ? "proved" : "not proved") })),
+                  summary: `candidate-proof verification failed: ${proof.blockingReasons.join("; ").slice(0, 500)}`,
+                };
+                return { commits: allCommits, verdict: verificationVerdict as unknown as import("./review-verdict.mts").ReviewVerdict, reviewText: `candidate-proof blocked: ${proof.blockingReasons.join("; ")}` };
+              }
+              console.log(`  Candidate-proof readyForReview=true for #${issue.id} (${proof.candidateSha.slice(0,7)})`);
+            } catch (e) {
+              if (e instanceof CandidateProofFactoryError) {
+                console.error(`  FACTORY_ERROR candidate-proof for #${issue.id}: ${e.message.slice(0, 800)}`);
+                return { commits: allCommits, verdict: null, reviewText: `FACTORY_ERROR candidate-proof: ${e.message}` };
+              }
+              throw e;
+            }
+          }
+        }
         for (let reviewAttempt = 0; reviewAttempt <= REVIEW_RETRY_BUDGET; reviewAttempt++) {
           if (implement.commits.length === 0) break;
           if (reviewAttempt > 0) {
