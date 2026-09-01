@@ -235,7 +235,68 @@ export async function runSandcastleGC(opts: {
     }
   }
 
-  // 2. Prune remote tracking for gone branches
+  // 2. Stale rename debris — untracked top-level dirs that were tracked at origin/main but are now renamed
+  // This handles java/→mod/ and python/→training/ and any future top-level renames. Without this,
+  // every batch that renames a tracked directory leaves the old path as an untracked tree (48k files),
+  // flooding VS Code file watchers until the *next* GC run. GC must clean it *at merge time*, not next run.
+  try {
+    const untracked = runGit(repoRoot, ["ls-files", "--others", "--exclude-standard"]);
+    const topUntracked = new Set<string>();
+    if (untracked.ok) {
+      for (const f of untracked.stdout.split("\n")) {
+        const top = f.split("/")[0]?.trim();
+        if (top) topUntracked.add(top);
+      }
+    }
+    // Include explicit top-level dirs that appear as `?? java/` in porcelain but may have no `ls-files` entry yet due to large trees
+    const status = runGit(repoRoot, ["status", "--porcelain"]);
+    if (status.ok) {
+      for (const line of status.stdout.split("\n")) {
+        const m = line.match(/^\?\?\s+([^\/\s]+)\/?/);
+        if (m) topUntracked.add(m[1]);
+      }
+    }
+    const originTracked = runGit(repoRoot, ["ls-tree", "-r", "--name-only", "origin/main"]);
+    const originTops = new Set<string>();
+    if (originTracked.ok) {
+      for (const f of originTracked.stdout.split("\n")) {
+        const top = f.split("/")[0]?.trim();
+        if (top) originTops.add(top);
+      }
+    }
+    const headTracked = runGit(repoRoot, ["ls-tree", "-r", "--name-only", "HEAD"]);
+    const headTops = new Set<string>();
+    if (headTracked.ok) {
+      for (const f of headTracked.stdout.split("\n")) {
+        const top = f.split("/")[0]?.trim();
+        if (top) headTops.add(top);
+      }
+    }
+    for (const top of topUntracked) {
+      if (!originTops.has(top)) continue; // was never tracked → intentional untracked, keep
+      if (headTops.has(top)) continue; // still tracked at HEAD → not stale
+      const full = path.join(repoRoot, top);
+      let st: fs.Stats | null = null;
+      try { st = fs.statSync(full); } catch { continue; }
+      if (!st.isDirectory()) continue;
+      // Extra safety: also check explicit rename mappings first (fast path for known 100% renames)
+      // and generic: if top was tracked at origin but not at HEAD, it's stale debris.
+      console.log(`  GC: removing stale rename debris ${top}/ (tracked at origin/main, untracked at HEAD)`);
+      try {
+        fs.rmSync(full, { recursive: true, force: true, maxRetries: 3 });
+        result.deletedWorktrees.push(`${top}/ (stale debris)`);
+      } catch (e) {
+        // Fallback to git clean for Windows long-path / permission edge cases
+        const clean = runGit(repoRoot, ["clean", "-fd", "--", top]);
+        if (!clean.ok) result.errors.push(`stale debris ${top}: ${(e as Error).message.slice(0, 200)}`);
+        else result.deletedWorktrees.push(`${top}/ (stale debris via git clean)`);
+      }
+    }
+  } catch (e) {
+    result.errors.push(`stale debris scan failed: ${(e as Error).message.slice(0, 200)}`);
+  }
+
+  // 3. Prune remote tracking for gone branches
   const pruneR = runGit(repoRoot, ["fetch", "--prune"]);
   if (!pruneR.ok) {
     result.errors.push(`fetch --prune failed: ${pruneR.stderr.slice(0, 200)}`);
