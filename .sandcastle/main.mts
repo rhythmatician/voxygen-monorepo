@@ -1515,10 +1515,10 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
                   changedFiles,
                 },
                 {
-                  // Default production dependencies — host-owned verification runs real commands in candidate context
-                  // RunCommand uses execFileSync semantics; for now delegate to simple passed/failed via actual execution.
-                  // To keep factory path authentic without inventing a second runner, we use a minimal host runner that
-                  // executes required commands via the candidate worktree; unavailable => FACTORY_ERROR.
+                  repoRoot: REPO_ROOT,
+                  // No injected runCommand — production path uses host-owned real execution
+                  // (spawnSync in candidate worktree), real sibling FS detection, and
+                  // structured worktree/process-group/log- writer scopes.
                 }
               );
               if (!proof.readyForReview) {

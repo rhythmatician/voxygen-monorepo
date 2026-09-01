@@ -8,6 +8,11 @@ import {
   deriveCriterionIds,
   isProtectedCandidate,
   CandidateProofFactoryError,
+  detectAmbientSiblingCheckout,
+  verifyCleanDependencyClosure,
+  withCandidateWorktreeScope,
+  withCleanCheckoutScope,
+  withLogReceiptScope,
 } from "./candidate-proof.mts";
 
 // ---------------------------------------------------------------------------
@@ -461,5 +466,152 @@ describe("candidate-proof — host-owned verification", () => {
     expect(typeof persisted.readyForReview).toBe("boolean");
     expect(Array.isArray(persisted.blockingReasons)).toBe(true);
     expect(typeof persisted.generatedAt).toBe("string");
+  });
+
+  // -------------------------------------------------------------------------
+  // Real filesystem and structured-scope fixtures — pinned closure proof
+  // -------------------------------------------------------------------------
+
+  it("detectAmbientSiblingCheckout: real FS — sibling sandcastle dir triggers gap, clean repo does not", async () => {
+    const repo = makeTempRepo();
+    try {
+      // Initially no sibling at ../sandcastle relative to repo.dir
+      expect(detectAmbientSiblingCheckout(repo.dir)).toBe(false);
+      // package.json file: reference alone does NOT trigger gap — only filesystem sibling does
+      // (declared file: deps are expected; undeclared ambient reliance is via FS sibling)
+      const pkgPath = path.join(repo.dir, "package.json");
+      const pkg = { name: "x", dependencies: { "@ai-hero/sandcastle": "file:../../sandcastle" } };
+      fs.writeFileSync(pkgPath, JSON.stringify(pkg));
+      execSync("git add package.json", { cwd: repo.dir });
+      expect(detectAmbientSiblingCheckout(repo.dir)).toBe(false);
+      // Remove file: ref — still clean (no sibling dir)
+      fs.writeFileSync(pkgPath, JSON.stringify({ name: "x", dependencies: {} }));
+      expect(detectAmbientSiblingCheckout(repo.dir)).toBe(false);
+      // Create actual sibling directory on filesystem (sibling of repo.dir)
+      const sibling = path.resolve(repo.dir, "../sandcastle");
+      const siblingExisted = fs.existsSync(sibling);
+      if (!siblingExisted) {
+        fs.mkdirSync(sibling, { recursive: true });
+        fs.writeFileSync(path.join(sibling, "package.json"), JSON.stringify({ name: "sandcastle" }));
+        expect(detectAmbientSiblingCheckout(repo.dir)).toBe(true);
+        fs.rmSync(sibling, { recursive: true, force: true });
+        expect(detectAmbientSiblingCheckout(repo.dir)).toBe(false);
+      }
+    } finally { repo.cleanup(); }
+  });
+
+  it("verifyCleanDependencyClosure: real FS — pinned closure requires lockfile and no sibling/file: ref", async () => {
+    const repo = makeTempRepo();
+    try {
+      // No lockfile yet — not clean
+      const lockPath = path.join(repo.dir, "package-lock.json");
+      if (fs.existsSync(lockPath)) fs.unlinkSync(lockPath);
+      expect(verifyCleanDependencyClosure(repo.dir).clean).toBe(false);
+      // Write lockfile without file: sandcastle — should be clean (no sibling)
+      fs.writeFileSync(lockPath, JSON.stringify({ name: "x", packages: { "": { dependencies: { "zod": "^4" } } } }));
+      expect(verifyCleanDependencyClosure(repo.dir).clean).toBe(true);
+      // File: reference in lockfile alone is not flagged as unclean — only when
+      // sibling directory actually exists on filesystem (declared file: deps are expected).
+      // Verify that with no sibling dir present, closure is still clean even with file: in lock
+      fs.writeFileSync(lockPath, JSON.stringify({ name: "x", packages: { "node_modules/@ai-hero/sandcastle": { resolved: "file:../../sandcastle" } } }));
+      expect(verifyCleanDependencyClosure(repo.dir).clean).toBe(true);
+      // But if sibling dir exists on filesystem, closure is not clean (undeclared reliance)
+      const siblingForLock = path.resolve(repo.dir, "../sandcastle");
+      const existed = fs.existsSync(siblingForLock);
+      if (!existed) {
+        try {
+          fs.mkdirSync(siblingForLock, { recursive: true });
+          fs.writeFileSync(path.join(siblingForLock, "package.json"), JSON.stringify({ name: "sandcastle" }));
+          expect(verifyCleanDependencyClosure(repo.dir).clean).toBe(false);
+          expect(verifyCleanDependencyClosure(repo.dir).reason).toMatch(/sibling/);
+          fs.rmSync(siblingForLock, { recursive: true, force: true });
+        } catch (e) {
+          // If we cannot create sibling (permission), skip this sub-check — the detector
+          // still works, but environment may not allow /tmp/sandcastle creation
+          if ((e as NodeJS.ErrnoException).code !== "EACCES") throw e;
+        }
+      } else {
+        expect(verifyCleanDependencyClosure(repo.dir).clean).toBe(false);
+      }
+    } finally { repo.cleanup(); }
+  });
+
+  it("clean-checkout fixture proves pinned dependency closure for protected Node/Sandcastle path — real worktree with lockfile", async () => {
+    const repo = makeTempRepo();
+    const sibling = path.resolve(repo.dir, "../sandcastle-test-sibling");
+    try {
+      // Prepare candidate with a valid lockfile and no sibling
+      fs.writeFileSync(path.join(repo.dir, "package.json"), JSON.stringify({ name: "test", devDependencies: { zod: "^4.4.3" } }));
+      fs.writeFileSync(path.join(repo.dir, "package-lock.json"), JSON.stringify({ name: "test", lockfileVersion: 3, packages: { "": { name: "test" } } }));
+      execSync("git add .", { cwd: repo.dir });
+      execSync("git commit -m lockfile --allow-empty", { cwd: repo.dir });
+      const sha = execSync("git rev-parse HEAD", { cwd: repo.dir, encoding: "utf8" }).trim();
+      // Verify clean closure in repo.dir itself
+      expect(verifyCleanDependencyClosure(repo.dir).clean).toBe(true);
+      expect(detectAmbientSiblingCheckout(repo.dir)).toBe(false);
+      // Use real worktree scope — creates ephemeral worktree at exact SHA and cleans up
+      await withCandidateWorktreeScope(repo.dir, sha, async (wtPath) => {
+        expect(fs.existsSync(path.join(wtPath, "package-lock.json"))).toBe(true);
+        expect(verifyCleanDependencyClosure(wtPath).clean).toBe(true);
+        // Simulate ambient sibling: create sibling dir at a location the detector checks
+        // For wtPath=/tmp/cand-proof-wt-xxx/wt, "../sandcastle" is inside the wt tmp dir,
+        // "../../sandcastle" is /tmp/sandcastle — both are checked. Use ../ sibling which
+        // is writable and scoped to this worktree's temp parent.
+        const siblingInWt = path.resolve(wtPath, "../sandcastle");
+        const existedWt = fs.existsSync(siblingInWt);
+        if (!existedWt) {
+          try {
+            fs.mkdirSync(siblingInWt, { recursive: true });
+            fs.writeFileSync(path.join(siblingInWt, "package.json"), JSON.stringify({ name: "sandcastle" }));
+            expect(verifyCleanDependencyClosure(wtPath).clean).toBe(false);
+            fs.rmSync(siblingInWt, { recursive: true, force: true });
+          } catch (e) {
+            if ((e as NodeJS.ErrnoException).code !== "EACCES") throw e;
+          }
+        } else {
+          expect(verifyCleanDependencyClosure(wtPath).clean).toBe(false);
+        }
+        expect(verifyCleanDependencyClosure(wtPath).clean).toBe(true);
+      });
+      // Postcondition: worktree fully cleaned (no leftover tmp)
+      const list = execSync("git worktree list --porcelain", { cwd: repo.dir, encoding: "utf8" });
+      expect(list).not.toContain("cand-proof-wt-");
+      // Clean-checkout scope also proves closure (delegates to candidate worktree)
+      await withCleanCheckoutScope(repo.dir, sha, async (cleanPath) => {
+        expect(verifyCleanDependencyClosure(cleanPath).clean).toBe(true);
+      });
+    } finally {
+      repo.cleanup();
+      try { fs.rmSync(sibling, { recursive: true, force: true }); } catch {}
+    }
+  });
+
+  it("structured scopes: withCandidateWorktreeScope cleans on success and on throw, withLogReceiptScope is atomic", async () => {
+    const repo = makeTempRepo();
+    try {
+      fs.writeFileSync(path.join(repo.dir, "a.txt"), "a");
+      execSync("git add .", { cwd: repo.dir });
+      execSync("git commit -m a", { cwd: repo.dir });
+      const sha = execSync("git rev-parse HEAD", { cwd: repo.dir, encoding: "utf8" }).trim();
+      // Success path cleans
+      await withCandidateWorktreeScope(repo.dir, sha, async (wtPath) => {
+        expect(fs.existsSync(wtPath)).toBe(true);
+        fs.writeFileSync(path.join(wtPath, "tmp.txt"), "x");
+      });
+      let list = execSync("git worktree list --porcelain", { cwd: repo.dir, encoding: "utf8" });
+      expect(list.split("\n").filter(l=>l.includes("wt")).length).toBe(0);
+      // Throw path still cleans
+      await expect(withCandidateWorktreeScope(repo.dir, sha, async () => { throw new Error("boom"); })).rejects.toThrow("boom");
+      list = execSync("git worktree list --porcelain", { cwd: repo.dir, encoding: "utf8" });
+      expect(list.split("\n").filter(l=>l.includes("wt")).length).toBe(0);
+      // Log receipt atomicity
+      const logDir = fs.mkdtempSync(path.join(os.tmpdir(), "log-scope-"));
+      try {
+        const receipt = withLogReceiptScope(logDir, "typecheck", "hello log");
+        expect(fs.existsSync(receipt)).toBe(true);
+        expect(fs.readFileSync(receipt, "utf8")).toBe("hello log");
+        expect(fs.existsSync(`${receipt}.tmp-${process.pid}`)).toBe(false);
+      } finally { fs.rmSync(logDir, { recursive: true, force: true }); }
+    } finally { repo.cleanup(); }
   });
 });
