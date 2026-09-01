@@ -150,7 +150,6 @@ class DetailPanel(QDockWidget):
             "refine": ("Refine Model", "#9060d0"),
             "leaf": ("Leaf Model", "#40b060"),
             "voxy": ("Voxy", "#d07030"),
-            "terrain_shaper": ("Stage 1 Density", "#20b2aa"),
             "loopback": ("Loopback (Future)", "#666666"),
         }
 

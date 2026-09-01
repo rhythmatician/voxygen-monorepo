@@ -41,12 +41,12 @@
 #   export      — export checkpoint to ONNX / binary weights
 #   deploy      — copy exported artefacts to the LODiffusion mod directory
 #
-# ## Track IDs in use (add new tracks to this list when you create them)
+# ## Track IDs in use
 #
-#   "voxy"                — Voxy hierarchy classifier (15ch/4×2×4 RouterField → 5-level octree)
-#   "density"             — Density predictor (6 climate → 2 density fields)
-#   "biome_classifier"    — v7 Biome classifier (6 climate → 54 biome classes)
-#   "heightmap_predictor" — v7 Heightmap predictor (96 climate → 32 height values)
+#   "voxy" — Voxy hierarchy classifier (15ch/4×2×4 RouterField → 5-level octree)
+#   Additional tracks are added via ModelTrack entries below. Historical
+#   density/biome/heightmap tracks were removed during training purification
+#   (see #262 / #254) — recover via Git history if needed.
 #
 # ═══════════════════════════════════════════════════════════════════════════
 """
@@ -601,9 +601,6 @@ def _deploy_leaf_cmd(profile: dict[str, Any]) -> list[str]:
 # Each constant is referenced by BOTH the train runner (writes the file)
 # and the export/deploy runner (reads it).  Change here → all usages update.
 
-_DENSITY_CHECKPOINT = "density_best.pt"
-_BIOME_CHECKPOINT = "biome_classifier.pt"
-_HEIGHTMAP_CHECKPOINT = "heightmap_predictor.pt"
 _VOXY_CHECKPOINT = "voxy_model.pt"
 
 
@@ -1112,194 +1109,6 @@ def _build_v7_pairs_run(p: dict[str, Any]) -> None:
     print(f"[STEP_RESULT]{json.dumps(failure_stats, sort_keys=True)}", flush=True)
 
 
-# ---------------------------------------------------------------------------
-# Step runners — Density MLP
-# ---------------------------------------------------------------------------
-
-
-def _build_pairs_density_run(p: dict[str, Any]) -> None:
-    """Validate v7 pairs NPZ exists (pairs built by shared build_v7_pairs)."""
-    data = p.get("data", {})
-    npz = Path(data.get("v7_pairs_npz", "voxy_pairs_v7.npz"))
-    if not npz.exists():
-        raise FileNotFoundError(f"v7 pairs NPZ not found: {npz}")
-    print(f"[density] v7 pairs validated: {npz}")
-
-
-def _train_density_run(p: dict[str, Any]) -> None:
-    from voxel_tree.tasks.density.train_density import (
-        main as train_main,
-    )
-
-    data = p.get("data", {})
-    train = p.get("train", {})
-    argv: list[str] = []
-    npz = data.get("v7_pairs_npz", "voxy_pairs_v7.npz")
-    argv += ["--data", str(npz)]
-    if train.get("output_dir"):
-        argv += ["--out-dir", str(train["output_dir"])]
-    if train.get("epochs") is not None:
-        argv += ["--epochs", str(train["epochs"])]
-    if train.get("batch_size") is not None:
-        argv += ["--batch-size", str(train["batch_size"])]
-    if train.get("lr") is not None:
-        argv += ["--lr", str(train["lr"])]
-    train_main(argv)
-
-
-def _export_density_run(p: dict[str, Any]) -> None:
-    from voxel_tree.tasks.density.export_density import (
-        main as export_main,
-    )
-
-    train = p.get("train", {})
-    export = p.get("export", {})
-    checkpoint = Path(train.get("output_dir", ".")) / _DENSITY_CHECKPOINT
-    _out = export.get("output_dir")
-    out_dir = Path(_out) if _out else Path(__file__).parent.parent / "tasks" / "density" / "model"
-    export_main(["--checkpoint", str(checkpoint), "--out-dir", str(out_dir)])
-
-
-def _deploy_density_run(p: dict[str, Any]) -> None:
-    """Deploy density (re-export directly into the deploy target dir)."""
-    from voxel_tree.tasks.density.export_density import (
-        main as export_main,
-    )
-
-    train = p.get("train", {})
-    deploy = p.get("deploy", {})
-    out_dir = deploy.get("target_dir") or p.get("export", {}).get("output_dir")
-    checkpoint = Path(train.get("output_dir", ".")) / _DENSITY_CHECKPOINT
-    resolved = (
-        Path(out_dir) if out_dir else Path(__file__).parent.parent / "tasks" / "density" / "model"
-    )
-    export_main(["--checkpoint", str(checkpoint), "--out-dir", str(resolved)])
-
-
-# ---------------------------------------------------------------------------
-# Step runners — v7 Biome Classifier
-# ---------------------------------------------------------------------------
-
-
-def _build_pairs_biome_run(p: dict[str, Any]) -> None:
-    """Validate v7 pairs NPZ exists (pairs built by shared build_v7_pairs)."""
-    data = p.get("data", {})
-    npz = Path(data.get("v7_pairs_npz", "voxy_pairs_v7.npz"))
-    if not npz.exists():
-        raise FileNotFoundError(f"v7 pairs NPZ not found: {npz}")
-    print(f"[biome_classifier] v7 pairs validated: {npz}")
-
-
-def _train_biome_classifier_run(p: dict[str, Any]) -> None:
-    from voxel_tree.tasks.biome.train_biome_classifier import (
-        main as train_main,
-    )
-
-    data = p.get("data", {})
-    train = p.get("train", {})
-    argv: list[str] = []
-    npz = data.get("v7_pairs_npz", "voxy_pairs_v7.npz")
-    argv += ["--data", str(npz)]
-    if train.get("output_dir"):
-        argv += ["--out-dir", str(train["output_dir"])]
-    if train.get("epochs") is not None:
-        argv += ["--epochs", str(train["epochs"])]
-    if train.get("batch_size") is not None:
-        argv += ["--batch-size", str(train["batch_size"])]
-    if train.get("lr") is not None:
-        argv += ["--lr", str(train["lr"])]
-    train_main(argv)
-
-
-def _export_biome_classifier_run(p: dict[str, Any]) -> None:
-    from voxel_tree.tasks.biome.export_biome import main as export_main
-
-    train = p.get("train", {})
-    export = p.get("export", {})
-    checkpoint = Path(train.get("output_dir", ".")) / _BIOME_CHECKPOINT
-    _out = export.get("output_dir")
-    out_dir = Path(_out) if _out else Path(__file__).parent.parent / "tasks" / "biome" / "model"
-    export_main(["--checkpoint", str(checkpoint), "--out-dir", str(out_dir)])
-
-
-def _deploy_biome_classifier_run(p: dict[str, Any]) -> None:
-    """Deploy biome_classifier (re-export directly into the deploy target dir)."""
-    from voxel_tree.tasks.biome.export_biome import main as export_main
-
-    train = p.get("train", {})
-    deploy = p.get("deploy", {})
-    out_dir = deploy.get("target_dir") or p.get("export", {}).get("output_dir")
-    checkpoint = Path(train.get("output_dir", ".")) / _BIOME_CHECKPOINT
-    resolved = (
-        Path(out_dir) if out_dir else Path(__file__).parent.parent / "tasks" / "biome" / "model"
-    )
-    export_main(["--checkpoint", str(checkpoint), "--out-dir", str(resolved)])
-
-
-# ---------------------------------------------------------------------------
-# Step runners — v7 Heightmap Predictor
-# ---------------------------------------------------------------------------
-
-
-def _build_pairs_heightmap_run(p: dict[str, Any]) -> None:
-    """Validate v7 pairs NPZ exists (pairs built by shared build_v7_pairs)."""
-    data = p.get("data", {})
-    npz = Path(data.get("v7_pairs_npz", "voxy_pairs_v7.npz"))
-    if not npz.exists():
-        raise FileNotFoundError(f"v7 pairs NPZ not found: {npz}")
-    print(f"[heightmap_predictor] v7 pairs validated: {npz}")
-
-
-def _train_heightmap_run(p: dict[str, Any]) -> None:
-    from voxel_tree.tasks.heightmap.train_heightmap import (
-        main as train_main,
-    )
-
-    data = p.get("data", {})
-    train = p.get("train", {})
-    argv: list[str] = []
-    npz = data.get("v7_pairs_npz", "voxy_pairs_v7.npz")
-    argv += ["--data", str(npz)]
-    if train.get("output_dir"):
-        argv += ["--out-dir", str(train["output_dir"])]
-    if train.get("epochs") is not None:
-        argv += ["--epochs", str(train["epochs"])]
-    if train.get("batch_size") is not None:
-        argv += ["--batch-size", str(train["batch_size"])]
-    if train.get("lr") is not None:
-        argv += ["--lr", str(train["lr"])]
-    train_main(argv)
-
-
-def _export_heightmap_run(p: dict[str, Any]) -> None:
-    from voxel_tree.tasks.heightmap.export_heightmap import (
-        main as export_main,
-    )
-
-    train = p.get("train", {})
-    export = p.get("export", {})
-    checkpoint = Path(train.get("output_dir", ".")) / _HEIGHTMAP_CHECKPOINT
-    _out = export.get("output_dir")
-    out_dir = Path(_out) if _out else Path(__file__).parent.parent / "tasks" / "heightmap" / "model"
-    export_main(["--checkpoint", str(checkpoint), "--out-dir", str(out_dir)])
-
-
-def _deploy_heightmap_run(p: dict[str, Any]) -> None:
-    """Deploy heightmap_predictor (re-export directly into the deploy target dir)."""
-    from voxel_tree.tasks.heightmap.export_heightmap import (
-        main as export_main,
-    )
-
-    train = p.get("train", {})
-    deploy = p.get("deploy", {})
-    out_dir = deploy.get("target_dir") or p.get("export", {}).get("output_dir")
-    checkpoint = Path(train.get("output_dir", ".")) / _HEIGHTMAP_CHECKPOINT
-    resolved = (
-        Path(out_dir) if out_dir else Path(__file__).parent.parent / "tasks" / "heightmap" / "model"
-    )
-    export_main(["--checkpoint", str(checkpoint), "--out-dir", str(resolved)])
-
-
 # ═══════════════════════════════════════════════════════════════════════════
 # MODEL TRACKS
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1360,6 +1169,9 @@ del _lv, _train_consumes  # clean up module-level loop variables
 
 MODEL_TRACKS: list[ModelTrack] = [
     # ── Voxy ──────────────────────────────────────────────────────────────
+    # Sole retained model track; historical density/biome/heightmap tracks
+    # were removed during training purification (#262 / #254). Recover via
+    # Git history if needed — not as live code.
     ModelTrack(
         track_id="voxy",
         label="Voxy",
@@ -1373,48 +1185,6 @@ MODEL_TRACKS: list[ModelTrack] = [
         contract_name="voxy_l0",
         contract_revision=1,
         extra_steps=_VOXY_LEVEL_STEPS,
-    ),
-    # ── Density (climate → density prediction) ────────────────────────
-    ModelTrack(
-        track_id="density",
-        label="Density",
-        swim_lane_color="#1a2a00",
-        build_pairs_factory=_build_pairs_density_run,
-        train_factory=_train_density_run,
-        export_factory=_export_density_run,
-        deploy_factory=_deploy_density_run,
-        build_pairs_consumes=frozenset({"v7_pairs_npz"}),
-        checkpoint_filename=_DENSITY_CHECKPOINT,
-        contract_name="density",
-        contract_revision=1,
-    ),
-    # ── v7 Biome Classifier (climate → biome class) ──────────────────
-    ModelTrack(
-        track_id="biome_classifier",
-        label="BiomeClass",
-        swim_lane_color="#002a1a",
-        build_pairs_factory=_build_pairs_biome_run,
-        train_factory=_train_biome_classifier_run,
-        export_factory=_export_biome_classifier_run,
-        deploy_factory=_deploy_biome_classifier_run,
-        build_pairs_consumes=frozenset({"v7_pairs_npz"}),
-        checkpoint_filename=_BIOME_CHECKPOINT,
-        contract_name="biome",
-        contract_revision=1,
-    ),
-    # ── v7 Heightmap Predictor (climate → heightmaps) ────────────────
-    ModelTrack(
-        track_id="heightmap_predictor",
-        label="Heightmap",
-        swim_lane_color="#0a0a2a",
-        build_pairs_factory=_build_pairs_heightmap_run,
-        train_factory=_train_heightmap_run,
-        export_factory=_export_heightmap_run,
-        deploy_factory=_deploy_heightmap_run,
-        build_pairs_consumes=frozenset({"v7_pairs_npz"}),
-        checkpoint_filename=_HEIGHTMAP_CHECKPOINT,
-        contract_name="heightmap",
-        contract_revision=1,
     ),
 ]
 

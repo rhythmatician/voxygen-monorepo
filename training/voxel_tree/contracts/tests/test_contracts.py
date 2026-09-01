@@ -168,22 +168,24 @@ class TestRegistry:
 
     def test_list_models(self):
         models = list_models()
-        assert "density" in models
-        assert "biome" in models
-        assert "heightmap" in models
         assert {f"voxy_l{level}" for level in range(5)} <= set(models)
         assert "voxy" not in models
+        # Historical density/biome/heightmap contracts were removed during
+        # training purification (#262); they should not appear.
+        assert "density" not in models
+        assert "biome" not in models
+        assert "heightmap" not in models
 
-    def test_latest_revision_density(self):
-        rev = latest_revision("density")
-        assert rev >= 1  # we registered rev 0 and rev 1
+    def test_latest_revision_voxy(self):
+        rev = latest_revision("voxy_l0")
+        assert rev >= 1
 
     def test_get_contract_latest(self):
-        c = get_contract("density")
-        assert c.revision == latest_revision("density")
+        c = get_contract("voxy_l0")
+        assert c.revision == latest_revision("voxy_l0")
 
     def test_get_contract_specific_revision(self):
-        c1 = get_contract("density", revision=1)
+        c1 = get_contract("voxy_l0", revision=1)
         assert c1.revision == 1
         voxy_l4 = get_contract("voxy_l4", revision=1)
         assert voxy_l4.contract_id == "lodiffusion.v7.voxy_l4"
@@ -194,7 +196,7 @@ class TestRegistry:
 
     def test_get_contract_missing_revision(self):
         with pytest.raises(KeyError, match="Available revisions"):
-            get_contract("density", revision=999)
+            get_contract("voxy_l0", revision=999)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -205,38 +207,38 @@ class TestRegistry:
 class TestCheckpointValidation:
     def test_missing_meta_non_strict(self):
         """Non-strict should warn but not raise."""
-        contract = get_contract("density", revision=1)
+        contract = get_contract("voxy_l0", revision=1)
         ckpt = {"model_state_dict": {}}
         with pytest.warns(UserWarning, match="no contract_meta"):
             validate_checkpoint_contract(ckpt, contract, strict=False)
 
     def test_missing_meta_strict(self):
-        contract = get_contract("density", revision=1)
+        contract = get_contract("voxy_l0", revision=1)
         ckpt = {"model_state_dict": {}}
         with pytest.raises(ContractViolation, match="no contract_meta"):
             validate_checkpoint_contract(ckpt, contract, strict=True)
 
     def test_matching_meta(self):
-        contract = get_contract("density", revision=1)
+        contract = get_contract("voxy_l0", revision=1)
         ckpt = {"contract_meta": contract.to_checkpoint_meta()}
         validate_checkpoint_contract(ckpt, contract, strict=True)
 
     def test_wrong_model_name(self):
-        contract = get_contract("density", revision=1)
+        contract = get_contract("voxy_l0", revision=1)
         ckpt = {
             "contract_meta": {
-                "model_name": "biome",
+                "model_name": "voxy_l1",
                 "revision": 1,
                 "fingerprint": "abc",
             }
         }
-        with pytest.raises(ContractViolation, match="biome.*density"):
+        with pytest.raises(ContractViolation, match="voxy_l1.*voxy_l0"):
             validate_checkpoint_contract(ckpt, contract)
 
     def test_newer_revision_rejected(self):
-        contract = get_contract("density", revision=1)
+        contract = get_contract("voxy_l0", revision=1)
         newer = ModelContract(
-            model_name="density",
+            model_name="voxy_l0",
             revision=2,
             inputs=contract.inputs,
             outputs=contract.outputs,
@@ -254,22 +256,10 @@ class TestCheckpointValidation:
 class TestCatalogContracts:
     """Verify that catalog-registered contracts have sane shapes."""
 
-    def test_density_rev1_shapes(self):
-        c = get_contract("density", revision=1)
-        assert c.inputs[0].shape == ("batch", 6)
-        assert c.outputs[0].shape == ("batch", 2)
-        assert c.inputs[0].channels is not None
-        assert len(c.inputs[0].channels) == 6
-
-    def test_biome_rev1_shapes(self):
-        c = get_contract("biome", revision=1)
-        assert c.inputs[0].shape == ("batch", 6)
-        assert c.outputs[0].shape == ("batch", 54)
-
-    def test_heightmap_rev1_shapes(self):
-        c = get_contract("heightmap", revision=1)
-        assert c.inputs[0].shape == ("batch", 96)
-        assert c.outputs[0].shape == ("batch", 32)
+    def test_voxy_l0_rev1_shapes(self):
+        c = get_contract("voxy_l0", revision=1)
+        assert c.inputs[0].shape == ("batch", 15, 8, 4, 8)
+        assert c.outputs[0].shape[0] == "batch"
 
     @pytest.mark.parametrize(
         ("level", "input_names", "head_width", "output_shape", "byte_size"),
@@ -388,8 +378,8 @@ class TestTrackAlignment:
     def test_all_aligned_returns_empty(self, _fake_track):
         from voxel_tree.contracts.registry import check_track_alignment
 
-        # density rev 1 IS the latest → aligned
-        tracks = [_fake_track("density", "density", 1)]
+        # voxy_l0 rev 1 IS the latest → aligned
+        tracks = [_fake_track("voxy_track", "voxy_l0", 1)]
         issues = check_track_alignment(tracks)
         assert issues == []
 
@@ -426,7 +416,7 @@ class TestTrackAlignment:
         from voxel_tree.contracts.registry import check_track_alignment
 
         # contract_revision=None means "always track latest" — no issue raised
-        tracks = [_fake_track("auto_track", "density", None)]
+        tracks = [_fake_track("auto_track", "voxy_l0", None)]
         issues = check_track_alignment(tracks)
         assert issues == []
 
@@ -442,8 +432,8 @@ class TestTrackAlignment:
         from voxel_tree.contracts.registry import check_track_alignment
 
         tracks = [
-            _fake_track("ok_track", "density", 1),  # aligned
-            _fake_track("stale_track", "density", 0),  # stale
+            _fake_track("ok_track", "voxy_l0", 1),  # aligned
+            _fake_track("stale_track", "voxy_l0", 0),  # stale
             _fake_track("unbound", None, None),  # skipped
         ]
         issues = check_track_alignment(tracks)

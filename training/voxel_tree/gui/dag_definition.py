@@ -17,7 +17,7 @@ Format in profile YAML
       steps:                       # ordered list; omit = use full PIPELINE_STEPS
         - id: pregen
         - id: dumpnoise
-        - id: train_terrain_shaper_density
+        - id: train_voxy_l4
 
 Persistence note
 ----------------
