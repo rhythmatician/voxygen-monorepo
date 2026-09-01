@@ -90,6 +90,11 @@ import {
   type ResearchResult,
 } from "./research-result.mts";
 import {
+  collectCandidateProof,
+  isProtectedCandidate,
+  CandidateProofFactoryError,
+} from "./candidate-proof.mts";
+import {
   type RunResearchWorker,
   type ResearchBatchIssue,
   RESEARCH_OUTPUT_TAG,
@@ -115,7 +120,7 @@ const WORKER_REASON_TRUNCATE = 2000;
 const VERDICT_JSON_TRUNCATE = 2000;
 const REVIEW_ERROR_TRUNCATE = 500;
 const TARGET_BRANCH = "main";
-// Worker JDK major required by repository Java CI (java/build.gradle release 25 + factory-ci.yml Temurin 25 + Dockerfile Temurin 25)
+// Worker JDK major required by repository Java CI (mod/build.gradle release 25 + factory-ci.yml Temurin 25 + Dockerfile Temurin 25)
 // Centralized here so Doctor and Dockerfile stay in sync; do not generalize into a framework.
 const EXPECTED_JAVA_MAJOR = "25";
 
@@ -226,7 +231,7 @@ const hooks = {
       { command: 'if [ ! -d /tmp/mattpocock-skills ]; then git clone --depth 1 https://github.com/rhythmatician/mattpocock-skills.git /tmp/mattpocock-skills 2>&1 | tail -5; fi; for s in /tmp/mattpocock-skills/skills/* /tmp/mattpocock-skills/skills/engineering/*; do [ -f "$s/SKILL.md" ] && muse skills install "$s" --scope user 2>&1 | head -5; done; echo "[skills] Docker user skills from rhythmatician/mattpocock-skills/main installed"' },
       { command: 'for s in .muse/skills/*; do muse skills install "$s" --scope user 2>&1 | head -5; done' },
       { command: 'npm install' },
-      { command: 'bash .ci/install-voxy.sh install 2>&1 | tail -20; java -version 2>&1 | head -5; ./java/gradlew --version 2>&1 | tail -10' },
+      { command: 'bash .ci/install-voxy.sh install 2>&1 | tail -20; java -version 2>&1 | head -5; ./mod/gradlew --version 2>&1 | tail -10' },
       // Ensure every worktree agent has a current GRAPH_REPORT.md for its HEAD.
       // graphify-out/ is gitignored so worktrees start without it; the hook's
       // worktree guard intentionally skips background rebuilds in worktrees.
@@ -878,7 +883,7 @@ async function runDoctor(): Promise<boolean> {
     // Run the same commands that the worker will rely on, inside the sandbox
     const checks: Array<{cmd: string, label: string, mustContain?: string}> = [
       {cmd: 'bash -lc "java -version 2>&1" | head -5', label: `java ${EXPECTED_JAVA_MAJOR}`, mustContain: EXPECTED_JAVA_MAJOR},
-      {cmd: 'bash -lc "./java/gradlew --version 2>&1" | tail -10', label: 'gradle'},
+      {cmd: 'bash -lc "./mod/gradlew --version 2>&1" | tail -10', label: 'gradle'},
       {cmd: 'bash -lc "bash .ci/install-voxy.sh install 2>&1" | tail -20', label: 'voxy install'},
       {cmd: 'bash -lc "npm install 2>&1" | tail -10', label: 'npm install'},
     ];
@@ -1485,6 +1490,65 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
           } catch {}
         }
         let shouldRetryReview = false;
+        // Protected candidate proof gate — host-owned verification before reviewer
+        // For protected candidates, collect exact-SHA evidence and stop before reviewer if not ready.
+        // Deterministic candidate failure => stable verification finding (semantic rejection); infrastructure/settlement uncertainty => FACTORY_ERROR.
+        if (implement.commits.length > 0) {
+          let changedFiles: string[] = [];
+          try {
+            const diffOut = execFileSync("git", ["diff", "--name-only", `${factoryBaseSha}..${issue.branch}`], { encoding: "utf8", cwd: REPO_ROOT }).toString().trim();
+            changedFiles = diffOut ? diffOut.split("\n").filter(Boolean) : [];
+          } catch {}
+          // Also consider untracked? For protected, changedFiles via diff is authoritative.
+          if (isProtectedCandidate(changedFiles)) {
+            console.log(`  Protected candidate ${issue.branch} — collecting candidate proof before reviewer (changed: ${changedFiles.slice(0,5).join(", ")})`);
+            try {
+              const candidateSha = execFileSync("git", ["rev-parse", issue.branch], { encoding: "utf8", cwd: REPO_ROOT }).toString().trim();
+              const proof = await collectCandidateProof(
+                {
+                  issueId: issue.id,
+                  issueTitle: issue.title,
+                  issueBody: implementationIssueBody,
+                  candidateBranch: issue.branch,
+                  baseSha: factoryBaseSha,
+                  candidateSha,
+                  changedFiles,
+                },
+                {
+                  repoRoot: REPO_ROOT,
+                  // No injected runCommand — production path uses host-owned real execution
+                  // (spawnSync in candidate worktree), real sibling FS detection, and
+                  // structured worktree/process-group/log- writer scopes.
+                }
+              );
+              if (!proof.readyForReview) {
+                const hasUnavailable = proof.obligations.some(o => o.required && (o.state === "unavailable" || o.state === "pending" || o.state === "running"));
+                const hasNotRun = proof.obligations.some(o => o.required && o.state === "not-run");
+                const hasSettlementIssue = !proof.processesSettled || !proof.resourcesSettled;
+                if (hasUnavailable || hasNotRun || hasSettlementIssue || proof.environment.ambientSiblingDetected || !proof.environment.cleanCheckout) {
+                  console.error(`  FACTORY_ERROR candidate-proof for #${issue.id}: ${proof.blockingReasons.join("; ").slice(0, 800)}`);
+                  return { commits: allCommits, verdict: null, reviewText: `FACTORY_ERROR candidate-proof: ${proof.blockingReasons.join("; ")}` };
+                }
+                // Deterministic candidate failure — host-generated blocking verification finding, no reviewer call
+                console.warn(`  Candidate-proof blocked #${issue.id}: ${proof.blockingReasons.join("; ").slice(0, 800)} — stopping before reviewer`);
+                const verificationVerdict = {
+                  approved: false as const,
+                  findings: [{ message: `verification failed: ${proof.blockingReasons.join("; ").slice(0, 500)}`, severity: "blocking" as const }],
+                  acceptanceCriteriaMet: proof.proofs.map(pr => ({ criterion: pr.criterionId, met: pr.proved, evidence: pr.gap ?? (pr.proved ? "proved" : "not proved") })),
+                  summary: `candidate-proof verification failed: ${proof.blockingReasons.join("; ").slice(0, 500)}`,
+                };
+                return { commits: allCommits, verdict: verificationVerdict as unknown as import("./review-verdict.mts").ReviewVerdict, reviewText: `candidate-proof blocked: ${proof.blockingReasons.join("; ")}` };
+              }
+              console.log(`  Candidate-proof readyForReview=true for #${issue.id} (${proof.candidateSha.slice(0,7)})`);
+            } catch (e) {
+              if (e instanceof CandidateProofFactoryError) {
+                console.error(`  FACTORY_ERROR candidate-proof for #${issue.id}: ${e.message.slice(0, 800)}`);
+                return { commits: allCommits, verdict: null, reviewText: `FACTORY_ERROR candidate-proof: ${e.message}` };
+              }
+              throw e;
+            }
+          }
+        }
         for (let reviewAttempt = 0; reviewAttempt <= REVIEW_RETRY_BUDGET; reviewAttempt++) {
           if (implement.commits.length === 0) break;
           if (reviewAttempt > 0) {

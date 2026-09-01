@@ -2,31 +2,31 @@
 
 graphify-out/
 
-# --- Java Gradle build (java/) ---
-java/.gradle/
-java/build/
+# --- Mod Gradle build (mod/) ---
+mod/.gradle/
+mod/build/
 # keep wrapper jar
-!java/gradle/wrapper/gradle-wrapper.jar
+!mod/gradle/wrapper/gradle-wrapper.jar
 !**/src/main/**/build/
 !**/src/test/**/build/
 
-# Minecraft run outputs (java/run)
-java/run/mods/
-java/run/logs/
-java/run/crash-reports/
-java/run/screenshots/
-java/run/saves/
-java/run/resourcepacks/
-java/run/shaderpacks/
+# Minecraft run outputs (mod/run)
+mod/run/mods/
+mod/run/logs/
+mod/run/crash-reports/
+mod/run/screenshots/
+mod/run/saves/
+mod/run/resourcepacks/
+mod/run/shaderpacks/
 
-# Python artifacts (python/)
-python/__pycache__/
-python/.pytest_cache/
-python/.mypy_cache/
-python/*.egg-info/
-python/.venv/
-python/runs/
-python/artifacts/
+# Training artifacts (training/)
+training/__pycache__/
+training/.pytest_cache/
+training/.mypy_cache/
+training/*.egg-info/
+training/.venv/
+training/runs/
+training/artifacts/
 
 # Sandcastle mutable provenance (host-side, out of data plane)
 .sandcastle/provenance/
@@ -65,6 +65,6 @@ logs/
 tools/server-harness/runtime/
 tools/data-harvester/build/
 tools/data-harvester/.gradle/
-# keep data-harvester wrapper jar (mirrors java rule)
+# keep data-harvester wrapper jar (mirrors mod rule)
 !tools/data-harvester/gradle/wrapper/gradle-wrapper.jar
 .ci/.voxy-cache/

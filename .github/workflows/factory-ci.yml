@@ -63,7 +63,7 @@ jobs:
       - name: Verify locked Python environment
         uses: astral-sh/setup-uv@v6
         with: { version: "0.8.8" }
-      - run: uv lock --project python --check
+      - run: uv lock --project training --check
       - name: Verify pinned Voxy identity
         run: bash .ci/install-voxy.sh verify
       - name: R-02 Documentation policy
@@ -95,7 +95,7 @@ jobs:
       QT_QPA_PLATFORM: offscreen
     defaults:
       run:
-        working-directory: python
+        working-directory: training
     steps:
       - uses: actions/checkout@v4
         with:
@@ -130,44 +130,44 @@ jobs:
           ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: "25", cache: gradle }
-      - run: chmod +x java/gradlew
+      - run: chmod +x mod/gradlew
       - name: Compile against real Voxy (Modrinth w33aHXHj, remapped via Loom)
         run: ./gradlew lint compileJava compileClientJava --info
-        working-directory: java
+        working-directory: mod
       - name: Unit and contract tests without Voxy runtime
         run: ./gradlew test -PexcludeVoxyTestRuntime --info
-        working-directory: java
+        working-directory: mod
       - name: Targeted Java mutation hardening (J-05)
         timeout-minutes: 10
         run: ./gradlew mutationHardening -PexcludeVoxyTestRuntime --info
-        working-directory: java
+        working-directory: mod
       - name: Pinned real-Voxy integration tests (must fail, not skip, if artifact missing)
         run: ./gradlew voxyIntegrationTest --info
-        working-directory: java
+        working-directory: mod
       - name: Assemble deployable mod
         run: ./gradlew build -x test
-        working-directory: java
+        working-directory: mod
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: java-test-reports-${{ github.sha }}
           path: |
-            java/build/reports/tests/test
-            java/build/reports/tests/voxyIntegrationTest
-            java/build/test-results/test
-            java/build/test-results/voxyIntegrationTest
+            mod/build/reports/tests/test
+            mod/build/reports/tests/voxyIntegrationTest
+            mod/build/test-results/test
+            mod/build/test-results/voxyIntegrationTest
           if-no-files-found: warn
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: pitest-reports-${{ github.sha }}
-          path: java/build/reports/pitest/**
+          path: mod/build/reports/pitest/**
           if-no-files-found: warn
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: mod-jar-${{ github.sha }}
-          path: java/build/libs/*.jar
+          path: mod/build/libs/*.jar
           if-no-files-found: error
 
   cross-language:
@@ -180,8 +180,8 @@ jobs:
           ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
       - uses: astral-sh/setup-uv@v6
         with: { version: "0.8.8", enable-cache: true }
-      - run: uv sync --project python --locked --extra test
-      - run: uv run --project python pytest python/voxel_tree/contracts/tests python/voxel_tree/utils/tests/test_coords.py --tb=short
+      - run: uv sync --project training --locked --extra test
+      - run: uv run --project training pytest training/voxel_tree/contracts/tests training/voxel_tree/utils/tests/test_coords.py --tb=short
 
   performance:
     name: Deterministic performance guards
@@ -193,7 +193,7 @@ jobs:
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: "25", cache: gradle }
       - run: bash .ci/install-voxy.sh install
-      - run: chmod +x java/gradlew && ./java/gradlew -p java test --tests '*ChunkDataExtractorPerformanceTest'
+      - run: chmod +x mod/gradlew && ./mod/gradlew -p mod test --tests '*ChunkDataExtractorPerformanceTest'
 
   security:
     name: Supply-chain review

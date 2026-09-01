@@ -6,7 +6,7 @@
     "python.analysis.typeCheckingMode": "basic",
     "python.analysis.autoImportCompletions": true,
     "python.analysis.include": [
-        "python"
+        "training"
     ],
     "python.analysis.exclude": [
         "**/node_modules/**",
@@ -24,8 +24,8 @@
         "libraries/**",
         "logs/**",
         "tmp/**",
-        "java/__init__.py",
-        "java/data-cli.py"
+        "mod/__init__.py",
+        "mod/data-cli.py"
     ],
     "[python]": {
         "editor.defaultFormatter": "charliermarsh.ruff",
@@ -37,7 +37,7 @@
     "ruff.lineLength": 100,
     "ruff.nativeServer": "on",
     "ruff.interpreter": [
-        "${workspaceFolder}/python/.venv"
+        "${workspaceFolder}/training/.venv"
     ],
     "ruff.configurationPreference": "filesystemFirst",
     "autopep8.formatOnSave": false,
@@ -46,7 +46,7 @@
         "commands": [
             {
                 "match": "\\.py$",
-                "cmd": "${workspaceFolder}\\python\\.venv\\Scripts\\ruff.exe format ${file}"
+                "cmd": "${workspaceFolder}\\training\\.venv\\Scripts\\ruff.exe format ${file}"
             }
         ]
     },

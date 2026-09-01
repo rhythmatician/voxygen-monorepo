@@ -1,38 +1,38 @@
 # Voxygen — Monorepo
 
 Merged repository combining the former `LODiffusion` (Java/Fabric) and `VoxelTree` (Python/ML)
-projects under `java/` and `python/` respectively.
+projects under `mod/` and `training/` respectively.
 
 ## Layout
 
 | Path | What | Build |
 |------|------|-------|
-| `java/` | Fabric mod (MC 1.21.11, Fabric Loom 1.13.6, Gradle 8.14, Java 25) | `java/gradlew` (projectDir `java/`) |
-| `python/` | VoxelTree ML pipelines (pyproject.toml, PySide6 GUI, ONNX export) | `pip install -e python` / `uv pip` |
+| `mod/` | Fabric mod (MC 1.21.11, Fabric Loom 1.13.6, Gradle 8.14, Java 25) | `mod/gradlew` (projectDir `mod/`) |
+| `training/` | VoxelTree ML pipelines (pyproject.toml, PySide6 GUI, ONNX export) | `pip install -e training` / `uv pip` |
 | `external/` | Symlinks to local reference clones (Voxy, minecraft-src, fabric-api, ogn) | `dev/setup-external.ps1` |
 | `dev/` | Workspace harnesses | — |
 
 ## Gradle from the monorepo root
 
-The Gradle build lives in `java/` (`java/settings.gradle`, `java/build.gradle`, `java/gradle.properties`).
-Running `gradlew` from the monorepo root now forwards to `java/` via the delegation wrappers:
+The Gradle build lives in `mod/` (`mod/settings.gradle`, `mod/build.gradle`, `mod/gradle.properties`).
+Running `gradlew` from the monorepo root now forwards to `mod/` via the delegation wrappers:
 
 ```powershell
-# Preferred — from repo root (delegates to java/gradlew -p java)
+# Preferred — from repo root (delegates to mod/gradlew -p mod)
 rtk proxy .\gradlew.bat :compileJava
 rtk proxy .\gradlew.bat test jacocoTestReport build   # full gate (lint must pass first)
 .\gradlew.bat runClient                                 # launch client
 
 # Direct — explicitly set project dir
-rtk proxy java\gradlew.bat -p java :compileJava
-Push-Location java; rtk proxy .\gradlew.bat :compileJava; Pop-Location
+rtk proxy mod\gradlew.bat -p mod :compileJava
+Push-Location mod; rtk proxy .\gradlew.bat :compileJava; Pop-Location
 
 # Legacy nested path without -p WILL FAIL:
-#   rtk proxy java\gradlew.bat :compileJava
+#   rtk proxy mod\gradlew.bat :compileJava
 # -> Directory '...\voxygen-monorepo' does not contain a Gradle build.
 ```
 
-`projectDir` stays `java/` so all relative `file(...)` paths (`mods/`, `src/main/resources/…`,
+`projectDir` stays `mod/` so all relative `file(...)` paths (`mods/`, `src/main/resources/…`,
 `config/checkstyle/checkstyle.xml`, `run/mods/`) remain correct.
 
 ## CI
@@ -45,9 +45,9 @@ The single authoritative workflow is:
 ## Python from the monorepo root
 
 ```powershell
-pip install -e python          # editable install from pyproject.toml (or: uv pip install -e python)
-pytest python -k "not integration"
-python python/scripts/build_voxy_pairs.py --help
+pip install -e training          # editable install from pyproject.toml (or: uv pip install -e training)
+pytest training -k "not integration"
+python training/scripts/build_voxy_pairs.py --help
 ```
 
 ## Setup

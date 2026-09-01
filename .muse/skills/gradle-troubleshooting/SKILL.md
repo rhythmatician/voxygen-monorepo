@@ -14,8 +14,8 @@ Use when Gradle sync hangs, shows `ACQUIRED_PREVIOUS_OWNER_DISOWNED` file-lock, 
 - Action: Wait for `CONFIGURE SUCCESSFUL in Xm Ys` in `Output → Gradle for Java`. Verify `Found X tasks`. Do not delete `.gradle` or restart daemon while `Building workspace` shows. Check `gradlew --status` only to observe.
 
 **2. Hephaistos coordinate is stale.**
-- Correct: `implementation 'com.github.Minestom.Hephaistos:common:2.1.2'` + `kotlinStdlib` (see `java/build.gradle:82`)
-- Wrong (from old guide): `com.github.Minestom:Hephaistos:2.1.2` or `jglrxavpok` — repository moved. Update and re-sync; `java/src/.../ChunkDataExtractor.java` uses Hephaistos with raw-NBT fallback for 1.18+.
+- Correct: `implementation 'com.github.Minestom.Hephaistos:common:2.1.2'` + `kotlinStdlib` (see `mod/build.gradle:82`)
+- Wrong (from old guide): `com.github.Minestom:Hephaistos:2.1.2` or `jglrxavpok` — repository moved. Update and re-sync; `mod/src/.../ChunkDataExtractor.java` uses Hephaistos with raw-NBT fallback for 1.18+.
 
 **3. Imports unresolved after successful sync.**
 - Confirm sync succeeded first. If `CONFIGURE SUCCESSFUL`, restart Java language server (`Ctrl+Shift+P → Java: Reload Projects` / `Java: Restart Language Server`). Only then clean.

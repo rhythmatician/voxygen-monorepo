@@ -7,7 +7,7 @@
 .sandcastle/*.ts text eol=lf
 # Gradle wrappers: POSIX shell scripts need lf, Windows batch need crlf
 /gradlew        text eol=lf
-/java/gradlew   text eol=lf
+/mod/gradlew   text eol=lf
 /tools/data-harvester/gradlew text eol=lf
 *.bat           text eol=crlf
 *.onnx filter=lfs diff=lfs merge=lfs -text

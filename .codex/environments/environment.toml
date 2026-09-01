@@ -32,15 +32,15 @@ export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 uv --version
 
 echo "[setup] Verifying locked Python environment..."
-uv lock --project python --check
+uv lock --project training --check
 
 echo "[setup] Syncing Python environment (dev + test + type_stubs)..."
-uv sync --project python --locked --group dev --extra test --extra type_stubs
+uv sync --project training --locked --group dev --extra test --extra type_stubs
 
 echo "[setup] Verifying pinned Voxy artifact..."
 bash .ci/install-voxy.sh verify
 
-echo "[setup] Installing Voxy artifact to java/mods..."
+echo "[setup] Installing Voxy artifact to mod/mods..."
 bash .ci/install-voxy.sh install
 
 echo "[setup] Ensuring Java 21..."
@@ -50,7 +50,7 @@ fi
 java -version 2>&1 | head -n 1
 
 echo "[setup] Preparing Gradle wrapper..."
-chmod +x java/gradlew
+chmod +x mod/gradlew
 
 echo "[setup] Done."
 """
@@ -102,8 +102,8 @@ $uvVer = (uv --version)
 if (-not ($uvVer -match "0\.8\.8")) { throw "uv 0.8.8 required, found $uvVer - check astral-sh/setup-uv@v6 pin" }
 
 Write-Host "[setup.win32] Syncing Python environment..."
-uv lock --project python --check
-uv sync --project python --locked --group dev --extra test --extra type_stubs
+uv lock --project training --check
+uv sync --project training --locked --group dev --extra test --extra type_stubs
 
 Write-Host "[setup.win32] Verifying pinned Voxy artifact (PowerShell-native, no bash/jq)..."
 $manifest = Get-Content .ci/voxy-artifact.json -Raw | ConvertFrom-Json
@@ -113,9 +113,9 @@ if (-not (Test-Path $sourcePath)) { throw "Voxy artifact not found at $sourcePat
 $actualSha = (Get-FileHash -Algorithm SHA256 $sourcePath).Hash.ToLower()
 if ($actualSha -ne $expectedSha) { throw "Voxy sha256 mismatch: expected $expectedSha got $actualSha for $sourcePath" }
 Write-Host "Voxy artifact verified: $sourcePath ($actualSha)"
-New-Item -ItemType Directory -Force -Path java/mods | Out-Null
-Copy-Item $sourcePath "java/mods/$(Split-Path $sourcePath -Leaf)" -Force
-Write-Host "Voxy artifact installed to java/mods/"
+New-Item -ItemType Directory -Force -Path mod/mods | Out-Null
+Copy-Item $sourcePath "mod/mods/$(Split-Path $sourcePath -Leaf)" -Force
+Write-Host "Voxy artifact installed to mod/mods/"
 
 Write-Host "[setup.win32] Java 21 required - ensure Temurin 21 is on PATH"
 java -version
@@ -128,15 +128,15 @@ script = """
 set -euo pipefail
 echo "[cleanup] Removing ephemeral build outputs..."
 
-# Voxy artifact copy installed to java/mods by .ci/install-voxy.sh install
-rm -rf java/mods/voxy-*.jar
+# Voxy artifact copy installed to mod/mods by .ci/install-voxy.sh install
+rm -rf mod/mods/voxy-*.jar
 
 # Gradle build outputs
-rm -rf java/build
-rm -rf java/.gradle
+rm -rf mod/build
+rm -rf mod/.gradle
 
 # Python ephemeral env (lockfile preserved)
-rm -rf python/.venv
+rm -rf training/.venv
 
 # Node ephemeral (keep cache, remove only if present)
 # rm -rf node_modules

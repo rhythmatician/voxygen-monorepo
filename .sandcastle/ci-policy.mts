@@ -66,8 +66,8 @@ export function classifyChanges(files: string[]): ChangeClass[] {
   for (const raw of files) {
     const path = normalized(raw);
     if (/^(README|CONTEXT|GLOSSARY)\.md$|^docs\//.test(path)) classes.add("C0");
-    if (/^java\//.test(path)) classes.add("C1_JAVA");
-    if (/^python\//.test(path)) classes.add("C1_PYTHON");
+    if (/^mod\//.test(path)) classes.add("C1_JAVA");
+    if (/^training\//.test(path)) classes.add("C1_PYTHON");
     if (registry.evidencePathRules.some((rule) => rule.changeClass === "C1_FACTORY" && matchesPathSet(path, rule.pathSet))) classes.add("C1_FACTORY");
     if (matches(path, [/contracts?\//i, /contract/i, /CanonicalRegistries/, /biome_mapping/, /SectionPos/, /WorldSectionCoord/, /VoxelVolume/, /VoxelPredictionDecoder/, /model.*config/i])) classes.add("C2");
     if (matches(path, [/voxy/i, /fabric/i, /mixin/i, /worldgen/i, /fabric\.mod\.json$/])) classes.add("C3");

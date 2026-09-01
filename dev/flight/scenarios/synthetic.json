@@ -1,0 +1,13 @@
+{
+  "id": "synthetic",
+  "name": "Synthetic generic scenario",
+  "worldName": "SyntheticTest",
+  "dimension": "minecraft:overworld",
+  "templateDir": "synthetic-template",
+  "dwellTicks": 60,
+  "waypointCount": 2,
+  "waypoints": [
+    {"x": 0, "y": 80, "z": 0, "yaw": 0.0, "pitch": 0.0},
+    {"x": 100, "y": 80, "z": 100, "yaw": 45.0, "pitch": 0.0}
+  ]
+}
