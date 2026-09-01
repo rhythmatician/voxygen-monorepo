@@ -1,6 +1,0 @@
-# Root-level Ruff config so the VS Code Ruff extension (and any tool run from
-# the workspace root) resolves the same settings as training/pyproject.toml.
-# Keep in sync with [tool.ruff] in training/pyproject.toml.
-line-length = 100
-target-version = "py312"
-extend-exclude = ["reference-code", "notebooks", "external"]
