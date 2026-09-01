@@ -301,24 +301,56 @@ tasks.register('verifyUnitTestIsolation') {
 	}
 }
 
+// Shared Voxy artifact identification — single authority for both positive and negative classpath assertions.
+// Voxy is identified by Modrinth coordinates: maven.modrinth:fxxUqruK (raw) and remapped.maven.modrinth:fxxUqruK-4b5d3c0a (Yarn-remapped).
+// Prefer component-coordinate inspection; filename fallback is secondary.
+ext.voxyCoordPredicate = { group, name ->
+	(group == 'maven.modrinth' && name == 'fxxUqruK') ||
+	(group == 'remapped.maven.modrinth' && name.startsWith('fxxUqruK'))
+}
+ext.isVoxyFile = { File f ->
+	f.name.contains('fxxUqruK') || (f.name.startsWith('voxy-') && f.name.endsWith('.jar'))
+}
+
 tasks.named('test') {
 	dependsOn tasks.named('verifyUnitTestIsolation')
 	doFirst {
-		def leaked = classpath.files.findAll { it.name.startsWith('voxy-') && it.name.endsWith('.jar') }
+		// Prefer resolved coordinate check; fallback to filename for safety.
+		def predicate = project.ext.get('voxyCoordPredicate')
+		def fileCheck = project.ext.get('isVoxyFile')
+		def resolved = configurations.testRuntimeClasspath.resolvedConfiguration.resolvedArtifacts.findAll { art ->
+			def id = art.moduleVersion.id
+			(predicate.call(id.group, id.name) as Boolean)
+		}
+		if (!resolved.isEmpty()) {
+			throw new RuntimeException("Ordinary test runtime must not contain Voxy component: ${resolved.collect { it.moduleVersion.id }}")
+		}
+		def leaked = classpath.files.findAll { fileCheck.call(it) }
 		if (!leaked.isEmpty()) {
-			throw new RuntimeException("Ordinary test runtime must not contain Voxy: ${leaked}")
+			throw new RuntimeException("Ordinary test runtime must not contain Voxy jar: ${leaked}")
 		}
 	}
 }
 
 tasks.matching { it.name == 'voxyIntegrationTest' }.configureEach {
 	doFirst {
-		// Voxy is now fetched from Modrinth via modVoxyIntegrationTestImplementation; the jar lives in Gradle cache, not named voxy-*.jar
-		// Just assert we got the remapped artifact on classpath via the mod config
-		def voxyJars = classpath.files.findAll { (it.name.startsWith('voxy-') || it.name.contains('fxxUqruK')) && it.name.endsWith('.jar') }
-		if (voxyJars.size() != 1) {
+		def predicate = project.ext.get('voxyCoordPredicate')
+		def fileCheck = project.ext.get('isVoxyFile')
+		def resolved = configurations.named('voxyIntegrationTestRuntimeClasspath').get().resolvedConfiguration.resolvedArtifacts.findAll { art ->
+			def id = art.moduleVersion.id
+			(predicate.call(id.group, id.name) as Boolean)
+		}
+		// Fallback to filename if coordinates not resolved (e.g., flatDir)
+		def voxyJars = classpath.files.findAll { fileCheck.call(it) }
+		def count = !resolved.isEmpty() ? resolved.size() : voxyJars.size()
+		def details = !resolved.isEmpty() ? resolved.collect { it.moduleVersion.id } : voxyJars
+		if (count != 1) {
 			throw new RuntimeException(
-					"Expected exactly one Voxy jar on voxyIntegrationTest classpath, found ${voxyJars.size()}: ${voxyJars}")
+					"Expected exactly one Voxy component on voxyIntegrationTest classpath, found ${count}: ${details} (resolved=${resolved}, files=${voxyJars})")
+		}
+		// Also ensure no duplicate filename-based Voxy jars
+		if (voxyJars.size() != 1 && resolved.isEmpty()) {
+			throw new RuntimeException("Voxy jar count mismatch: ${voxyJars}")
 		}
 	}
 }
@@ -348,63 +380,61 @@ testing {
 	}
 }
 
-// Loom's remapped configurations must be created after test suite source sets exist.
-afterEvaluate {
-	loom.createRemapConfigurations(sourceSets.voxyIntegrationTest)
-	dependencies {
-		modVoxyIntegrationTestImplementation voxyArtifact
-		voxyIntegrationTestImplementation 'it.unimi.dsi:fastutil:8.5.12'
-		voxyIntegrationTestImplementation 'org.ow2.asm:asm:9.7'
-		voxyIntegrationTestImplementation 'org.ow2.asm:asm-commons:9.7'
-		voxyIntegrationTestImplementation 'org.ow2.asm:asm-util:9.7'
-		voxyIntegrationTestImplementation 'org.lwjgl:lwjgl:3.3.6'
-		voxyIntegrationTestImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
-		voxyIntegrationTestImplementation 'org.mockito:mockito-core:5.12.0'
-		voxyIntegrationTestImplementation 'org.mockito:mockito-junit-jupiter:5.12.0'
-		voxyIntegrationTestRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+// Loom remap wiring for custom source set — declared configuration wiring, no filesystem scan.
+// Must run after test suite source sets are created; uses Gradle's lazy configuration to avoid afterEvaluate.
+// Loom will remap modVoxyIntegrationTestImplementation artifacts via its declared remap configurations.
+loom.createRemapConfigurations(sourceSets.voxyIntegrationTest)
+
+dependencies {
+	modVoxyIntegrationTestImplementation voxyArtifact
+	voxyIntegrationTestImplementation 'it.unimi.dsi:fastutil:8.5.12'
+	voxyIntegrationTestImplementation 'org.ow2.asm:asm:9.7'
+	voxyIntegrationTestImplementation 'org.ow2.asm:asm-commons:9.7'
+	voxyIntegrationTestImplementation 'org.ow2.asm:asm-util:9.7'
+	voxyIntegrationTestImplementation 'org.lwjgl:lwjgl:3.3.6'
+	voxyIntegrationTestImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+	voxyIntegrationTestImplementation 'org.mockito:mockito-core:5.12.0'
+	voxyIntegrationTestImplementation 'org.mockito:mockito-junit-jupiter:5.12.0'
+	voxyIntegrationTestRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+// Extend voxyIntegrationTest classpaths from Loom's mapped classpaths so the suite
+// sees Minecraft + Fabric mappings. Do this lazily after configurations are realized,
+// but without filesystem discovery. Verify actual collector config names; do not assume
+// modVoxyIntegrationTestCompileClasspath exists (splitEnvironmentSourceSets may not create it).
+configurations.named('voxyIntegrationTestCompileClasspath') {
+	// Loom's remapped configurations are the source of truth; extend from the mapped
+	// mod compile classpaths that actually exist in this environment.
+	def tryExtend = { String name ->
+		def c = configurations.findByName(name)
+		if (c != null) extendsFrom(c)
+		else logger.lifecycle("voxyIntegrationTestCompileClasspath: optional configuration '${name}' not found, skipping")
 	}
-	// Fabric Loom 1.14 with splitEnvironmentSourceSets() does not correctly produce
-	// remapped modVoxyIntegrationTest* artefacts (see dumpConfigs2: modVoxyIntegrationTestCompileClasspath == null).
-	// Consequently maven.modrinth:fxxUqruK on voxyIntegrationTest would stay obfuscated.
-	// We therefore put the already-remapped artefact from loom-cache on the suite's classpath
-	// (via a lazy file collection so a clean checkout still configures) and exclude the unmapped one.
-	def remappedVoxyCollection = layout.files(provider {
-		def remappedDir = file('.gradle/loom-cache/remapped_mods/remapped')
-		if (!remappedDir.isDirectory()) return []
-		def found = fileTree(dir: remappedDir, include: '**/fxxUqruK*.jar').files
-		found
-	})
-	dependencies {
-		voxyIntegrationTestImplementation remappedVoxyCollection
-		voxyIntegrationTestRuntimeOnly remappedVoxyCollection
+	logger.lifecycle("voxyIntegrationTestCompileClasspath wiring: available mod/minecraft configs: ${configurations.names.findAll { it.toLowerCase().contains('minecraft') || it.toLowerCase().contains('mod') }.sort().join(', ')}")
+	tryExtend('minecraftNamedCompile')
+	tryExtend('minecraftCommonNamedCompile')
+	tryExtend('modCompileClasspathMapped')
+	tryExtend('modCompileClasspathMainMapped')
+	tryExtend('modCompileClasspathClientMapped')
+	exclude group: 'maven.modrinth', module: 'fxxUqruK'
+}
+configurations.named('voxyIntegrationTestRuntimeClasspath') {
+	def tryExtend = { String name ->
+		def c = configurations.findByName(name)
+		if (c != null) extendsFrom(c)
+		else logger.lifecycle("voxyIntegrationTestRuntimeClasspath: optional configuration '${name}' not found, skipping")
 	}
-	configurations.named('voxyIntegrationTestCompileClasspath') {
-		def tryExtend = { String name ->
-			def c = configurations.findByName(name)
-			if (c != null) extendsFrom(c)
-			else logger.warn("voxyIntegrationTestCompileClasspath: configuration '${name}' not found, skipping extendsFrom")
-		}
-		tryExtend('minecraftCommonNamedCompile')
-		tryExtend('modCompileClasspathMapped')
-		tryExtend('modCompileClasspathMainMapped')
-		tryExtend('modCompileClasspathClientMapped')
-		exclude group: 'maven.modrinth', module: 'fxxUqruK'
-	}
-	configurations.named('voxyIntegrationTestRuntimeClasspath') {
-		def tryExtend = { String name ->
-			def c = configurations.findByName(name)
-			if (c != null) extendsFrom(c)
-			else logger.warn("voxyIntegrationTestRuntimeClasspath: configuration '${name}' not found, skipping extendsFrom")
-		}
-		tryExtend('minecraftCommonNamedRuntime')
-		tryExtend('modRuntimeClasspathMainMapped')
-		tryExtend('modRuntimeClasspathClientMapped')
-		exclude group: 'maven.modrinth', module: 'fxxUqruK'
-	}
-		// Only run Voxy integration suite when not isolated — mutation hardening and ordinary unit lanes use -PexcludeVoxyTestRuntime
-	if (!hasProperty('excludeVoxyTestRuntime')) {
-		check.dependsOn tasks.named('voxyIntegrationTest')
-	}
+	logger.lifecycle("voxyIntegrationTestRuntimeClasspath wiring: available mod/minecraft configs: ${configurations.names.findAll { it.toLowerCase().contains('minecraft') || it.toLowerCase().contains('mod') }.sort().join(', ')}")
+	tryExtend('minecraftNamedRuntime')
+	tryExtend('minecraftCommonNamedRuntime')
+	tryExtend('modRuntimeClasspathMainMapped')
+	tryExtend('modRuntimeClasspathClientMapped')
+	exclude group: 'maven.modrinth', module: 'fxxUqruK'
+}
+
+// Only run Voxy integration suite when not isolated — mutation hardening and ordinary unit lanes use -PexcludeVoxyTestRuntime
+if (!hasProperty('excludeVoxyTestRuntime')) {
+	check.dependsOn tasks.named('voxyIntegrationTest')
 }
 
 // ---------------------------------------------------------------------------

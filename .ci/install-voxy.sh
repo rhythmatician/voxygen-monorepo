@@ -6,6 +6,12 @@ expected_sha=$(jq -r .sha256 "$manifest")
 filename=$(jq -r '.filename // "voxy-0.2.11-alpha.jar"' "$manifest")
 url=$(jq -r '.url // empty' "$manifest")
 legacy_path=$(jq -r '.path // empty' "$manifest")
+# Canonical identity fields — must match verification-metadata.xml and mod/build.gradle
+projectId=$(jq -r '.projectId // .sourceProject // empty' "$manifest")
+versionId=$(jq -r '.versionId // .sourceVersion // empty' "$manifest")
+friendlyVersion=$(jq -r '.friendlyVersion // .version // empty' "$manifest")
+# Log canonical identity for audit trail
+echo "[voxy] canonical identity: project=$projectId version=$versionId friendly=$friendlyVersion sha256=$expected_sha" >&2
 
 # Resolve source: prefer cached download, fallback to legacy committed path, else download
 cache_dir=".ci/.voxy-cache"

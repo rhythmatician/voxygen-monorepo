@@ -132,7 +132,7 @@ public final class ConfigLoader {
     // Rich / progressive pipeline sidecar
     // ------------------------------------------------------------------
 
-    @SuppressWarnings("all")
+    @SuppressWarnings({"unchecked", "rawtypes"})
     private static ModelConfig loadRich(JsonObject root, Path jsonPath) throws IOException {
         // Normalize snake_case top-level keys
         renameKey(root, "model_name", "modelName");
