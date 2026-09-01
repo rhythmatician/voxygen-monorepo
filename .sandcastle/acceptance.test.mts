@@ -290,7 +290,7 @@ describe("Factory v0 acceptance dry runs G1-G6 (issue #32)", () => {
       expect(typeof filterEligible).toBe("function");
       expect(typeof partitionWorkers).toBe("function");
       expect(typeof branchForIssue).toBe("function");
-      // The only mutable paths are implementation surfaces (e.g., java/src/main/, python/voxel_tree/) — not external/ or control-plane tests.
+      // The only mutable paths are implementation surfaces (e.g., mod/src/main/, training/voxel_tree/) — not external/ or control-plane tests.
       // No assertion on file existence — just that the factory's JS does not weaken oracles.
     });
 
