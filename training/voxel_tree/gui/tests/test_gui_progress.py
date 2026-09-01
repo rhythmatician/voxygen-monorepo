@@ -254,8 +254,8 @@ def test_profilerow_contains_new_export_deploy_nodes():
     for step in (
         "export_voxy",
         "deploy_voxy",
-        "export_density",
-        "deploy_density",
+        "export_voxy_l0",
+        "deploy_voxy_l0",
     ):
         assert step in row._nodes, f"missing node {step}"
 
