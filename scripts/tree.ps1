@@ -7,11 +7,11 @@
   the source of truth.  That means anything covered by .gitignore is
   automatically excluded - worktrees, caches, venvs, build outputs, etc.
 
-  * Python noise: python/__pycache__, python/.venv, python/.pytest_cache,
-    python/.mypy_cache, python/*.egg-info, python/runs, python/artifacts,
+  * Python noise: training/__pycache__, training/.venv, training/.pytest_cache,
+    training/.mypy_cache, training/*.egg-info, training/runs, training/artifacts,
     .ruff_cache, .mypy_cache, .pytest_cache, __pycache__  -> all in .gitignore
-  * Java/Gradle noise: java/.gradle, java/build, java/run/mods|logs|...,
-    *.class, *.jar, build/, out/, .gradle/  -> covered by root + java/.gitignore
+  * Java/Gradle noise: mod/.gradle, mod/build, mod/run/mods|logs|...,
+    *.class, *.jar, build/, out/, .gradle/  -> covered by root + mod/.gitignore
   * Worktrees: .sandcastle/worktrees/*, external/* (external/.gitignore = *),
     graphify-out/, node_modules/, tmp/, .tmp/.log, .vscode/prompt-diagnostics
     -> all in .gitignore

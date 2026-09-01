@@ -21,7 +21,7 @@ const javaIntegrationChecks = ["I-01", "I-03", "I-04"];
 
 describe("factory CI policy", () => {
   it("classifies cross-language contracts cumulatively", () => {
-    const classes = classifyChanges(["python/voxel_tree/contracts/spec.py"]);
+    const classes = classifyChanges(["training/voxel_tree/contracts/spec.py"]);
     expect(classes).toEqual(expect.arrayContaining(["C1_PYTHON", "C2", "C7"]));
     expect(requiredChecks(classes)).toEqual(
       expect.arrayContaining(["R-01", "P-01", "P-02", "P-03", "P-04", "J-01", "J-02", "J-03", "J-04", "X-01", "X-02", "X-03", "X-04"]),
@@ -55,14 +55,14 @@ describe("factory CI policy", () => {
     "package.json",
     "package-lock.json",
     "tsconfig.json",
-    "java/build.gradle",
-    "java/gradle.properties",
-    "java/gradle/wrapper/gradle-wrapper.properties",
-    "java/gradlew",
-    "java/gradlew.bat",
-    "java/settings.gradle",
-    "python/pyproject.toml",
-    "python/uv.lock",
+    "mod/build.gradle",
+    "mod/gradle.properties",
+    "mod/gradle/wrapper/gradle-wrapper.properties",
+    "mod/gradlew",
+    "mod/gradlew.bat",
+    "mod/settings.gradle",
+    "training/pyproject.toml",
+    "training/uv.lock",
   ])("requires factory evidence and independent approval for control-plane file %s", (file) => {
     const files = [file];
     const classes = classifyChanges(files);
@@ -90,7 +90,7 @@ describe("factory CI policy", () => {
   );
 
   it("allows an ordinary Java Voxy test to merge autonomously while retaining Java, contract, and integration evidence", () => {
-    const files = ["java/src/test/java/com/rhythmatician/lodiffusion/voxy/L1AvailabilityContractTest.java"];
+    const files = ["mod/src/test/java/com/rhythmatician/lodiffusion/voxy/L1AvailabilityContractTest.java"];
     const classes = classifyChanges(files);
     const checks = requiredChecks(classes);
     expect(classes).toEqual(expect.arrayContaining(["C1_JAVA", "C2", "C3"]));
@@ -102,7 +102,7 @@ describe("factory CI policy", () => {
   it("classifies PR #99's changed-file set as autonomous", () => {
     const files = [
       ".gitignore",
-      "java/src/test/java/com/rhythmatician/lodiffusion/voxy/L1AvailabilityContractTest.java",
+      "mod/src/test/java/com/rhythmatician/lodiffusion/voxy/L1AvailabilityContractTest.java",
     ];
     expect(requiresHumanApproval(files)).toBe(false);
     expect(mayAutonomouslyMerge(files)).toBe(true);
@@ -110,7 +110,7 @@ describe("factory CI policy", () => {
   });
 
   it("allows ordinary Python contract tests to merge autonomously while retaining Python and contract evidence", () => {
-    const files = ["python/voxel_tree/contracts/tests/test_contracts.py"];
+    const files = ["training/voxel_tree/contracts/tests/test_contracts.py"];
     const classes = classifyChanges(files);
     const checks = requiredChecks(classes);
     expect(classes).toEqual(expect.arrayContaining(["C1_PYTHON", "C2", "C7"]));
@@ -120,7 +120,7 @@ describe("factory CI policy", () => {
   });
 
   it("fails safe for a mixed product and protected factory diff", () => {
-    const files = ["java/src/main/java/example/Product.java", ".ci/checks.json"];
+    const files = ["mod/src/main/java/example/Product.java", ".ci/checks.json"];
     expect(classifyChanges(files)).toEqual(expect.arrayContaining(["C1_JAVA", "C1_FACTORY"]));
     expect(requiresHumanApproval(files)).toBe(true);
     expect(mayAutonomouslyMerge(files)).toBe(false);
@@ -145,18 +145,18 @@ describe("factory CI policy", () => {
   });
 
   it("requires J-05 mutation hardening for Java engineering evidence", () => {
-    const files = ["java/src/main/java/com/rhythmatician/voxygen/semantic/Level.java"];
+    const files = ["mod/src/main/java/com/rhythmatician/voxygen/semantic/Level.java"];
     const checks = requiredChecks(classifyChanges(files));
     expect(checks).toContain("J-05");
     // J-05 is part of the Java group, required for any C1_JAVA change
     expect(checks).toEqual(expect.arrayContaining(["J-01", "J-02", "J-04", "J-05"]));
     // also for a generic java test file
-    const checks2 = requiredChecks(classifyChanges(["java/src/test/java/com/rhythmatician/voxygen/semantic/LevelTest.java"]));
+    const checks2 = requiredChecks(classifyChanges(["mod/src/test/java/com/rhythmatician/voxygen/semantic/LevelTest.java"]));
     expect(checks2).toContain("J-05");
   });
 
   it("fails closed when J-05 evidence is missing", () => {
-    const files = ["java/src/main/java/com/rhythmatician/voxygen/semantic/VoxelVolume.java"];
+    const files = ["mod/src/main/java/com/rhythmatician/voxygen/semantic/VoxelVolume.java"];
     const required = requiredChecks(classifyChanges(files));
     expect(required).toContain("J-05");
     const evidence = required.filter((id) => id !== "J-05").map((checkId) => ({ checkId, candidateSha: "abc", status: "PASS" as const }));
@@ -166,7 +166,7 @@ describe("factory CI policy", () => {
   });
 
   it.each(["FAIL", "CANCELLED", "FLAKY", "PENDING", "INFRASTRUCTURE_FAILURE"] as const)("fails closed when J-05 evidence is %s", (status) => {
-    const files = ["java/src/main/java/com/rhythmatician/voxygen/output/InMemoryVolumeWriter.java"];
+    const files = ["mod/src/main/java/com/rhythmatician/voxygen/output/InMemoryVolumeWriter.java"];
     const required = requiredChecks(classifyChanges(files));
     const evidence = required.map((checkId) => ({
       checkId,
@@ -179,7 +179,7 @@ describe("factory CI policy", () => {
   });
 
   it("binds J-05 evidence to the exact candidate SHA", () => {
-    const files = ["java/src/main/java/com/rhythmatician/voxygen/semantic/Level.java"];
+    const files = ["mod/src/main/java/com/rhythmatician/voxygen/semantic/Level.java"];
     const required = requiredChecks(classifyChanges(files));
     // stale SHA for J-05 only
     const evidenceStale = required.map((checkId) => ({

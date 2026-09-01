@@ -7,8 +7,8 @@
 
 $ErrorActionPreference = "Stop"
 
-# Monorepo root check (java/ and python/ are the two subprojects)
-if (-not (Test-Path ".\java\build.gradle") -or -not (Test-Path ".\python\pyproject.toml")) {
+# Monorepo root check (mod/ and training/ are the two subprojects)
+if (-not (Test-Path ".\mod\build.gradle") -or -not (Test-Path ".\training\pyproject.toml")) {
     Write-Warning "Please run this script from the root of the voxygen-monorepo directory."
     exit 1
 }

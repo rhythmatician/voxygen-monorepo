@@ -18,8 +18,8 @@ if [ -f ".pre-commit-config.yaml" ]; then
     exit $?
   fi
   # Windows venv fallback (repo was set up on Windows)
-  if [ -x "python/.venv/Scripts/python.exe" ]; then
-    "python/.venv/Scripts/python.exe" -m pre_commit run --hook-stage pre-commit "$@"
+  if [ -x "training/.venv/Scripts/python.exe" ]; then
+    "training/.venv/Scripts/python.exe" -m pre_commit run --hook-stage pre-commit "$@"
     exit $?
   fi
   # Generic fallback: try python on PATH

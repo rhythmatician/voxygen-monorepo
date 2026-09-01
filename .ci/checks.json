@@ -110,7 +110,7 @@
         ".muse/",
         ".sandcastle/",
         "docs/agents/",
-        "java/gradle/wrapper/"
+        "mod/gradle/wrapper/"
       ],
       "files": [
         ".github/CODEOWNERS",
@@ -118,13 +118,13 @@
         "package.json",
         "package-lock.json",
         "tsconfig.json",
-        "java/build.gradle",
-        "java/gradle.properties",
-        "java/gradlew",
-        "java/gradlew.bat",
-        "java/settings.gradle",
-        "python/pyproject.toml",
-        "python/uv.lock"
+        "mod/build.gradle",
+        "mod/gradle.properties",
+        "mod/gradlew",
+        "mod/gradlew.bat",
+        "mod/settings.gradle",
+        "training/pyproject.toml",
+        "training/uv.lock"
       ]
     },
     "accepted-policy-roots": {

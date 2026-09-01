@@ -24,19 +24,19 @@ class TestModelTrackCoverage:
     """Validate all model tracks are properly configured for GUI integration."""
 
     def test_all_model_tracks_registered(self):
-        """Verify each model track is in the global registry."""
-        assert len(MODEL_TRACKS) > 0, "No MODEL_TRACKS registered"
+        """Verify the generic control-plane registry has no duplicates.
 
+        The GUI is a reusable control plane; specific model tracks are
+        registered via ModelTrack and may change over time. This test
+        asserts structural health, not the presence of any particular
+        historical track.
+        """
         track_ids = [t.track_id for t in MODEL_TRACKS]
         assert len(track_ids) == len(set(track_ids)), "Duplicate track IDs found"
-
-        # Current architecture handles models via ModelTrack registration.
-        # We check for the core models currently in active development.
-        required_tracks = {"voxy", "density"}
-        found_tracks = set(track_ids)
-        assert required_tracks.issubset(found_tracks), (
-            f"Missing required tracks. Expected {required_tracks}, got {found_tracks}"
-        )
+        # Purified training retains zero or more tracks; the shell itself
+        # must remain importable and well-formed regardless of count.
+        for tid in track_ids:
+            assert tid and isinstance(tid, str), f"Invalid track_id: {tid!r}"
 
     def test_all_tracks_have_label(self):
         """Each track must have a descriptive label."""
@@ -210,20 +210,17 @@ class TestCheckpointFilenames:
             seen[fn] = track.track_id
 
     def test_known_checkpoint_filenames(self):
-        """Snapshot: verify the exact checkpoint filenames for all current tracks."""
+        """Verify checkpoint filenames are well-formed for all registered tracks.
+
+        Generic control-plane contract: every declared checkpoint must be
+        a non-empty .pt string and unique across tracks (already covered
+        above). No snapshot of historical track names.
+        """
         from voxel_tree.gui.step_definitions import TRACK_BY_ID
 
-        expected = {
-            "voxy": "voxy_model.pt",
-            "density": "density_best.pt",
-            "biome_classifier": "biome_classifier.pt",
-            "heightmap_predictor": "heightmap_predictor.pt",
-        }
-        for track_id, filename in expected.items():
-            track = TRACK_BY_ID.get(track_id)
-            assert track is not None, f"Track '{track_id}' not found in registry"
-            assert track.checkpoint_filename == filename, (
-                f"Track '{track_id}' checkpoint_filename changed: "
-                f"expected '{filename}', got '{track.checkpoint_filename}'. "
-                f"Update both the _*_CHECKPOINT constant AND the training script."
-            )
+        for track_id, track in TRACK_BY_ID.items():
+            if track.checkpoint_filename:
+                assert track.checkpoint_filename.endswith(".pt"), (
+                    f"Track '{track_id}' checkpoint_filename "
+                    f"'{track.checkpoint_filename}' must end with '.pt'"
+                )

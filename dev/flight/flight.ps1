@@ -1,26 +1,39 @@
 # Reusable Stage 2 flight-test loop. The template keeps the verification
 # corridor virgin, while each run restores a disposable live world.
 param(
-    [string]$WorktreeJava = (Join-Path $PSScriptRoot "java"),
+    [string]$WorktreeMod = (Join-Path $PSScriptRoot "..\..\mod"),
+    [string]$Scenario = "end-tour",
+    [string]$ScenarioFile = "",
     [switch]$CaptureTemplate,
     [int]$TimeoutSeconds = 600,
     [int]$ReadinessTimeoutSeconds = 120,
-    [int]$DwellTicks = 200,
-    [int]$WaypointCount = 5,
+    [int]$DwellTicks = 0,
+    [int]$WaypointCount = 0,
     [switch]$DisableRefinementAdmission,
     [switch]$LaunchProofOnly
 )
 
 $ErrorActionPreference = "Stop"
 
-if ($WaypointCount -le 0) {
-    throw "WaypointCount must be positive: $WaypointCount"
+# Resolve scenario config (generic harness, scenario-specific preset)
+$scenarioPath = if ($ScenarioFile) { $ScenarioFile } else { Join-Path $PSScriptRoot "scenarios/$Scenario.json" }
+if (-not (Test-Path $scenarioPath)) {
+    throw "Scenario not found: $scenarioPath (use -Scenario <name> or -ScenarioFile <path>)"
 }
+$scenario = Get-Content $scenarioPath -Raw | ConvertFrom-Json
+$scenarioWorld = [string]$scenario.worldName
+$scenarioTemplate = [string]$scenario.templateDir
+if (-not $scenarioWorld) { throw "Scenario missing worldName: $scenarioPath" }
+if (-not $scenarioTemplate) { $scenarioTemplate = $scenarioWorld }
+if ($DwellTicks -le 0) { $DwellTicks = [int]$scenario.dwellTicks }
+if ($WaypointCount -le 0) { $WaypointCount = [int]$scenario.waypointCount }
+if ($DwellTicks -le 0) { $DwellTicks = 200 }
+if ($WaypointCount -le 0) { $WaypointCount = 5 }
 
-$runDir = Join-Path $WorktreeJava "run"
+$runDir = Join-Path $WorktreeMod "run"
 $savesDir = Join-Path $runDir "saves"
-$liveWorld = Join-Path $savesDir "FlightTest"
-$templateDir = Join-Path $WorktreeJava "flight-template"
+$liveWorld = Join-Path $savesDir $scenarioWorld
+$templateDir = Join-Path $WorktreeMod $scenarioTemplate
 
 function Resolve-ValidatedPath([string]$path, [string]$allowedRoot) {
     $resolvedPath = [IO.Path]::GetFullPath($path).TrimEnd([IO.Path]::DirectorySeparatorChar)
@@ -104,7 +117,7 @@ function Stop-ExactProcessTree([Diagnostics.Process]$process) {
 
 if ($CaptureTemplate) {
     if (-not (Test-Path $liveWorld)) {
-        throw "No world at $liveWorld. Create FlightTest first (seed 0, creative, structures off), move the player to The End at 0 96 0, save, and quit without flying the corridor."
+        throw "No world at $liveWorld. Create $scenarioWorld first (seed 0, creative, structures off), move the player to the scenario start position, save, and quit without flying the corridor."
     }
     $flown = Get-ContaminatedEndRegions $liveWorld
     if ($flown) {
@@ -164,9 +177,9 @@ if ($stale) {
 $runId = [Guid]::NewGuid().ToString("N")
 $disableRefinementValue = $DisableRefinementAdmission.IsPresent.ToString().ToLowerInvariant()
 
-Write-Host "Starting AFK tour run: runId=$runId world=FlightTest auto-start enabled (no manual command)"
+Write-Host "Starting AFK tour run: runId=$runId world=$scenarioWorld scenario=$Scenario auto-start enabled (no manual command)"
 Write-Host "AFK preflight: autoStart=true timeout=24000 dwell=$DwellTicks disableRefinementAdmission=$disableRefinementValue (Gradle JVM properties)"
-Push-Location $WorktreeJava
+Push-Location $WorktreeMod
 try {
     $arguments = @(
         "--no-daemon",
@@ -174,14 +187,14 @@ try {
         "deployToRunMods",
         "runClient",
         "--console=plain",
-        "-PflightWorld=FlightTest",
+        "-PflightWorld=$scenarioWorld",
         "-PflightTourAutoStart=true",
         "-PflightTourTimeoutTicks=24000",
         "-PflightTourDwellTicks=$DwellTicks",
         "-PflightTourRunId=$runId",
         "-PdisableRefinementAdmission=$disableRefinementValue"
     )
-    $process = Start-Process -FilePath .\gradlew.bat -ArgumentList $arguments -WorkingDirectory $WorktreeJava -NoNewWindow -PassThru
+    $process = Start-Process -FilePath .\gradlew.bat -ArgumentList $arguments -WorkingDirectory $WorktreeMod -NoNewWindow -PassThru
     $elapsed = [Diagnostics.Stopwatch]::StartNew()
     $readyDeadline = [DateTime]::UtcNow.AddSeconds($ReadinessTimeoutSeconds)
     $hasStarted = $false
@@ -277,7 +290,7 @@ foreach ($name in $expectedScreenshotNames) {
     Write-Host "  - $name"
 }
 
-$verdictHelper = Join-Path $PSScriptRoot "flight-screenshot-verdict.ps1"
+$verdictHelper = Join-Path $PSScriptRoot "verdict.ps1"
 $verdictPath = Join-Path $runDir "flight-tour-verdict.json"
 & $verdictHelper -ScreenshotDirectory $screenshotsDir -OutputPath $verdictPath
 if ($LASTEXITCODE -ne 0) {
@@ -287,8 +300,8 @@ Write-Host "Advisory screenshot verdict: $verdictPath"
 
 # Per-waypoint before/after pixel diff (replaces manual GIMP comparison).
 # Uses dev/flight/img_diff.py; advisory only — never fails the loop.
-$diffTool = Join-Path $PSScriptRoot "dev\flight\img_diff.py"
-$python = "C:\Python314\python.exe"
+$diffTool = Join-Path $PSScriptRoot "img_diff.py"
+$python = if (Get-Command python -ErrorAction SilentlyContinue) { (Get-Command python).Source } elseif (Test-Path "C:\Python314\python.exe") { "C:\Python314\python.exe" } else { "python" }
 $diffStats = @()
 if ((Test-Path $python) -and (Test-Path $diffTool)) {
     for ($idx = 1; $idx -le $WaypointCount; $idx++) {

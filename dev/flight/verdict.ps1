@@ -1,6 +1,6 @@
 param(
-    [string]$ScreenshotDirectory = (Join-Path $PSScriptRoot "java\run\screenshots"),
-    [string]$OutputPath = (Join-Path $PSScriptRoot "java\run\flight-tour-verdict.json"),
+    [string]$ScreenshotDirectory = (Join-Path $PSScriptRoot "..\..\mod\run\screenshots"),
+    [string]$OutputPath = (Join-Path $PSScriptRoot "..\..\mod\run\flight-tour-verdict.json"),
     [int]$MaxImages = 0,
     [switch]$SelfTest
 )

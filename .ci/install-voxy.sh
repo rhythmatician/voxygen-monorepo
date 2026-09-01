@@ -9,7 +9,7 @@ legacy_path=$(jq -r '.path // empty' "$manifest")
 
 # Resolve source: prefer cached download, fallback to legacy committed path, else download
 cache_dir=".ci/.voxy-cache"
-mkdir -p "$cache_dir" java/mods
+mkdir -p "$cache_dir" mod/mods
 cached_path="$cache_dir/$filename"
 legacy_exists=false
 if [[ -n "$legacy_path" && -f "$legacy_path" ]]; then
@@ -25,10 +25,10 @@ elif [[ -n "$url" ]]; then
   echo "[voxy] downloading $url -> $cached_path"
   if ! curl -L --fail --retry 3 -o "$cached_path" "$url"; then
     echo "[voxy] WARNING: download failed for $url (offline?)" >&2
-    # If java/mods already has the jar, verify that instead
-    if [[ -f "java/mods/$filename" ]]; then
-      echo "[voxy] verifying existing java/mods/$filename"
-      printf '%s  %s\n' "$expected_sha" "java/mods/$filename" | sha256sum --check --strict
+    # If mod/mods already has the jar, verify that instead
+    if [[ -f "mod/mods/$filename" ]]; then
+      echo "[voxy] verifying existing mod/mods/$filename"
+      printf '%s  %s\n' "$expected_sha" "mod/mods/$filename" | sha256sum --check --strict
       exit 0
     fi
     echo "[voxy] no cached artifact available; verification skipped (offline)" >&2
@@ -53,8 +53,8 @@ if [[ -n "$source_path" ]]; then
 fi
 
 if [[ ${1:-verify} == install ]]; then
-  mkdir -p java/mods
-  cp "$source_path" "java/mods/$filename"
+  mkdir -p mod/mods
+  cp "$source_path" "mod/mods/$filename"
   # Also verify the installed copy
-  printf '%s  %s\n' "$expected_sha" "java/mods/$filename" | sha256sum --check --strict
+  printf '%s  %s\n' "$expected_sha" "mod/mods/$filename" | sha256sum --check --strict
 fi
