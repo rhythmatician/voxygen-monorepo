@@ -1,6 +1,5 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import * as os from "node:os";
 import { execFileSync } from "node:child_process";
 import { classifyChanges, humanApprovalReasons } from "./ci-policy.mts";
 import { withAtomicJsonReceipt } from "./resource-scopes.mts";
@@ -312,10 +311,6 @@ export async function collectCandidateProof(
   const blockingReasons: string[] = [];
   let settlementError: string | undefined;
 
-  // Use try/finally scopes for resource ownership
-  const obligationStates = new Map<string, VerificationObligation>();
-  for (const o of obligations) obligationStates.set(o.id, o);
-
   try {
     for (const ob of obligations) {
       ob.startedAt = new Date().toISOString();
@@ -534,9 +529,8 @@ export async function collectCandidateProof(
 
     // Host-computed readiness — true only when all gates pass
     const requiredObligationsPassed = obligations.filter(o=>o.required).every(o=>o.state==="passed");
-    const deterministicCriteriaProved = proofs.every(p => p.proved || p.evidenceKind === "live-rollout-pending" ? false : p.proved);
-    // Actually readiness requires every required deterministic criterion has acceptable proof OR explicitly designated for semantic review
-    // For v1, we require all proofs proved; live-rollout-pending explicitly not proved blocks unless criterion is non-required
+    // Readiness requires every deterministic criterion has acceptable proof;
+    // live-rollout-pending is explicitly not proved and blocks unless excluded.
     let allRequiredProved = true;
     for (const p of proofs) {
       if (!p.proved) allRequiredProved = false;
