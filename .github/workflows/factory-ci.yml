@@ -147,6 +147,21 @@ jobs:
       - name: Assemble deployable mod
         run: ./gradlew build -x test
         working-directory: mod
+
+  java-voxy-clean-canary:
+    name: Voxy integration clean canary (no cache reliance)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+          ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: "25", cache: gradle }
+      - run: chmod +x mod/gradlew
+      - name: Clean standalone Voxy integrationTest (proves no loom-cache reliance)
+        run: ./gradlew clean voxyIntegrationTest --info --rerun-tasks
+        working-directory: mod
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -192,7 +207,6 @@ jobs:
           ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: "25", cache: gradle }
-      - run: bash .ci/install-voxy.sh install
       - run: chmod +x mod/gradlew && ./mod/gradlew -p mod test --tests '*ChunkDataExtractorPerformanceTest'
 
   security:
@@ -227,6 +241,7 @@ jobs:
         factory,
         python,
         java,
+        java-voxy-clean-canary,
         cross-language,
         performance,
         security,
@@ -253,7 +268,7 @@ jobs:
       - name: Materialize exact-SHA evidence
         env:
           CANDIDATE_SHA: ${{ github.sha }}
-          LANE_RESULTS: '{"repository":"${{ needs.repository.result }}","factory":"${{ needs.factory.result }}","python":"${{ needs.python.result }}","java":"${{ needs.java.result }}","cross-language":"${{ needs.cross-language.result }}","performance":"${{ needs.performance.result }}","security":"${{ needs.security.result }}"}'
+          LANE_RESULTS: '{"repository":"${{ needs.repository.result }}","factory":"${{ needs.factory.result }}","python":"${{ needs.python.result }}","java":"${{ needs.java.result }}","java-voxy-clean-canary":"${{ needs.java-voxy-clean-canary.result }}","cross-language":"${{ needs.cross-language.result }}","performance":"${{ needs.performance.result }}","security":"${{ needs.security.result }}"}'
         run: printf '%s' "$LANE_RESULTS" > lane-results.json && npx tsx .sandcastle/ci-results.mts lane-results.json "$CANDIDATE_SHA" evidence.json
       - name: Decide merge authority
         env:

@@ -1,8 +1,15 @@
 {
-  "version": "0.2.11-alpha",
+  "projectId": "fxxUqruK",
+  "versionId": "w33aHXHj",
+  "friendlyVersion": "0.2.11-alpha",
   "filename": "voxy-0.2.11-alpha.jar",
   "sha256": "63d1747017041b659ef620f589006d079d3574e3124dbdb165f9998533a7920c",
   "url": "https://api.modrinth.com/maven/maven/modrinth/fxxUqruK/w33aHXHj/fxxUqruK-w33aHXHj.jar",
   "sourceProject": "fxxUqruK",
-  "sourceVersion": "w33aHXHj"
+  "sourceVersion": "w33aHXHj",
+  "version": "0.2.11-alpha",
+  "upstreamRevision": "w33aHXHj",
+  "verifiedAt": "2026-09-01",
+  "origin": "https://modrinth.com/mod/voxy/version/w33aHXHj",
+  "note": "Canonical Voxy artifact identity - single source of truth for CI and fixture verification. mod/mods/voxy-0.2.11-alpha.jar is a derived fixture verified against this SHA, not a second dependency authority. Java lane resolves via Modrinth Maven (maven.modrinth:fxxUqruK:w33aHXHj) with Gradle verification-metadata.xml checksum."
 }

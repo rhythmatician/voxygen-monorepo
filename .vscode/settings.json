@@ -67,5 +67,5 @@
         "tmp_*.py",
         "**/voxygen-problems-fix/**"
     ],
-    "github-actions.workflows.validate": false
+    "github-actions.workflows.validate": true
 }
