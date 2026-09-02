@@ -3,6 +3,7 @@
 // review, and merger topology.
 
 import * as sandcastle from "@ai-hero/sandcastle";
+import { createWorktree } from "@ai-hero/sandcastle";
 import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
 import { z } from "zod";
 import { execSync, execFileSync } from "node:child_process";
@@ -1559,22 +1560,148 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
           {
             repoRoot: REPO_ROOT,
             getBaseSha: () => factoryBaseSha,
-            runReviewer: async ({ candidateSha, branch, issueBody, priorFindings, isReReview, worktreePath, env }) => {
-              // Disposable reviewer sandbox — fresh context, read-only GH tokens
-              const reviewerSandbox = await sandcastle.createSandbox({
-                branch,
-                baseBranch: factoryBaseSha,
-                sandbox: docker({ env: { ...env, META_API_KEY: WORKER_SANDBOX_ENV.META_API_KEY } }),
-                hooks,
-                copyToWorktree,
-                timeouts: { worktreeMs: 600_000 },
+            // Per ADR 0017 + #198: a single reviewer workspace anchored at the
+            // exact candidate SHA. The cycle checks mutations against THIS
+            // workspace (worktree.createSandbox() → Worktree.close() returns
+            // preservedWorktreePath on dirty cleanup, which we surface as
+            // FACTORY_ERROR).
+            createReviewerWorkspace: async (candidateSha: string) => {
+              // Detached worktree at the exact SHA via Sandcastle's Worktree
+              // primitive. Branch name is unique per review; the run id keeps
+              // re-reviews of the same SHA from colliding with stale local
+              // branches.
+              const worktreeBranch = `review/${issue.branch.replace(/[^a-zA-Z0-9-]/g, "-")}/${candidateSha.slice(0, 7)}/${Date.now().toString(36)}`;
+              const worktree = await createWorktree({
+                branchStrategy: { type: "branch", branch: worktreeBranch, baseBranch: candidateSha },
+                cwd: REPO_ROOT,
               });
+              let sandbox: Awaited<ReturnType<typeof worktree.createSandbox>>;
               try {
-                // Provide exact SHA and prior findings context via prompt args
-                const priorSection = isReReview && priorFindings && priorFindings.length
-                  ? `## Prior blocking findings — must classify every ID\n${priorFindings.map(f => `- ${f.id}: [${f.severity}] ${f.invariant} — ${f.failureMode} (proof: ${f.requiredProof})`).join("\n")}`
-                  : "";
-                const review = await runStructuredOnce((opts) => reviewerSandbox.run(opts as any), {
+                sandbox = await worktree.createSandbox({
+                  sandbox: docker({ env: { GH_TOKEN: "", GITHUB_TOKEN: "", META_API_KEY: WORKER_SANDBOX_ENV.META_API_KEY } }),
+                  hooks,
+                  copyToWorktree,
+                  timeouts: { worktreeMs: 600_000 },
+                });
+              } catch (e) {
+                // Sandbox start failed after the worktree exists — never leak
+                // it. Close the worktree we created, then rethrow so the
+                // cycle reports FACTORY_ERROR.
+                try { await worktree.close(); } catch (closeErr) {
+                  throw new Error(`reviewer workspace sandbox start failed: ${String(e).slice(0, 400)} (worktree close also failed: ${String(closeErr).slice(0, 200)})`);
+                }
+                throw e;
+              }
+              let head = candidateSha;
+              let status = "";
+              try {
+                head = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8", cwd: sandbox.worktreePath }).toString().trim();
+                status = execFileSync("git", ["status", "--porcelain=v1", "--untracked-files=all"], { encoding: "utf8", cwd: sandbox.worktreePath }).toString().trim();
+              } catch {}
+              return {
+                worktreePath: sandbox.worktreePath,
+                branch: sandbox.branch,
+                head,
+                status,
+                snapshot() {
+                  try {
+                    return {
+                      head: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8", cwd: sandbox.worktreePath }).toString().trim(),
+                      status: execFileSync("git", ["status", "--porcelain=v1", "--untracked-files=all"], { encoding: "utf8", cwd: sandbox.worktreePath }).toString().trim(),
+                    };
+                  } catch {
+                    return { head: "unknown", status: "unknown" };
+                  }
+                },
+                async runAgent(opts: Record<string, unknown>) {
+                  // Single sandbox per review — the agent runs in the SAME
+                  // worktree the cycle snapshots and closes.
+                  const result = await sandbox.run(opts as never);
+                  return { stdout: (result as { stdout?: string }).stdout, output: (result as { output?: unknown }).output };
+                },
+                async close() {
+                  // Sandcastle owns the close semantics. Per ADR 0017, if the
+                  // worktree was preserved (e.g. dirty cleanup), the close
+                  // result's `preservedWorktreePath` makes that observable.
+                  // Convert that to FACTORY_ERROR — uncertain cleanup must
+                  // not silently become success.
+                  const closeResult = await sandbox.close();
+                  if (closeResult.preservedWorktreePath) {
+                    throw new Error(`reviewer workspace preserved (dirty): ${closeResult.preservedWorktreePath}`);
+                  }
+                  const worktreeClose = await worktree.close();
+                  if (worktreeClose.preservedWorktreePath) {
+                    throw new Error(`reviewer worktree preserved (dirty): ${worktreeClose.preservedWorktreePath}`);
+                  }
+                  try { process.chdir(REPO_ROOT); } catch {}
+                },
+              };
+            },
+            // Verifier workspace anchored at the exact repaired SHA so
+            // post-fixer verification provably runs against the repaired
+            // candidate (not the host checkout).
+            createVerifierWorkspace: async (candidateSha: string) => {
+              const worktreeBranch = `verify/${issue.branch.replace(/[^a-zA-Z0-9-]/g, "-")}/${candidateSha.slice(0, 7)}/${Date.now().toString(36)}`;
+              const worktree = await createWorktree({
+                branchStrategy: { type: "branch", branch: worktreeBranch, baseBranch: candidateSha },
+                cwd: REPO_ROOT,
+              });
+              let sandbox: Awaited<ReturnType<typeof worktree.createSandbox>>;
+              try {
+                sandbox = await worktree.createSandbox({
+                  sandbox: docker({ env: { META_API_KEY: WORKER_SANDBOX_ENV.META_API_KEY } }),
+                  hooks,
+                  copyToWorktree,
+                  timeouts: { worktreeMs: 600_000 },
+                });
+              } catch (e) {
+                // Sandbox start failed after the worktree exists — never leak
+                // it. Close the worktree we created, then rethrow so the
+                // cycle reports FACTORY_ERROR.
+                try { await worktree.close(); } catch (closeErr) {
+                  throw new Error(`verifier workspace sandbox start failed: ${String(e).slice(0, 400)} (worktree close also failed: ${String(closeErr).slice(0, 200)})`);
+                }
+                throw e;
+              }
+              return {
+                worktreePath: sandbox.worktreePath,
+                branch: sandbox.branch,
+                async runCommand(cmd: string, args: string[]) {
+                  // Use the sandbox's exec so commands run inside the
+                  // workspace's filesystem. Per ADR 0017, the provider
+                  // handles command transport.
+                  const res = await sandbox.exec([cmd, ...args].join(" "));
+                  return {
+                    exitCode: typeof res.exitCode === "number" ? res.exitCode : -1,
+                    stdout: res.stdout ?? "",
+                    stderr: res.stderr ?? "",
+                    ...(res.error ? { error: String(res.error) } : {}),
+                  };
+                },
+                async close() {
+                  const closeResult = await sandbox.close();
+                  if (closeResult.preservedWorktreePath) {
+                    throw new Error(`verifier workspace preserved (dirty): ${closeResult.preservedWorktreePath}`);
+                  }
+                  const worktreeClose = await worktree.close();
+                  if (worktreeClose.preservedWorktreePath) {
+                    throw new Error(`verifier worktree preserved (dirty): ${worktreeClose.preservedWorktreePath}`);
+                  }
+                  try { process.chdir(REPO_ROOT); } catch {}
+                },
+              };
+            },
+            runReviewer: async ({ candidateSha, branch, issueBody, priorFindings, isReReview, workspace, env }) => {
+              // The reviewer runs inside the workspace passed by the cycle
+              // — same resource, not a parallel Sandcastle sandbox. The
+              // workspace owns the agent invocation via runAgent(); we only
+              // prepare the structured-output run options.
+              const priorSection = isReReview && priorFindings && priorFindings.length
+                ? `## Prior blocking findings — must classify every ID\n${priorFindings.map(f => `- ${f.id}: [${f.severity}] ${f.invariant} — ${f.failureMode} (proof: ${f.requiredProof})`).join("\n")}`
+                : "";
+              const review = await runStructuredOnce(
+                (opts) => workspace.runAgent(opts as Record<string, unknown>),
+                {
                   name: isReReview ? "reviewer-rereview" : "reviewer",
                   agent: sandcastle.muse("muse-spark-1.2-contributor"),
                   promptFile: "./.sandcastle/review-prompt.md",
@@ -1588,13 +1715,9 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
                   },
                   tag: "verdict",
                   schema: reviewVerdictSchema,
-                });
-                // Enforce read-only: reviewer env already empty; also verify worktree not mutated via git status (handled by review-cycle)
-                return { stdout: (review as { stdout?: string }).stdout ?? "", output: (review as { output?: unknown }).output, env };
-              } finally {
-                try { await reviewerSandbox.close(); } catch {}
-                try { process.chdir(REPO_ROOT); } catch {}
-              }
+                }
+              );
+              return { stdout: (review as { stdout?: string }).stdout ?? "", output: (review as { output?: unknown }).output, env };
             },
             runFixer: async ({ reviewedSha, findings, unmetCriteria, summary, issueBody, branch }) => {
               const fixerSandbox = await sandcastle.createSandbox({
@@ -1629,26 +1752,11 @@ for (let iteration = 1; iteration <= ITERATION_CONTROL.maxIterations; iteration+
                 const newSha = execFileSync("git", ["rev-parse", branch], { encoding: "utf8", cwd: REPO_ROOT }).toString().trim();
                 return { newSha, commits: fixerResult.commits ?? [] };
               } finally {
-                try { await fixerSandbox.close(); } catch {}
+                // Sandbox close; do NOT swallow errors. Sandcastle owns this
+                // and reports preserved worktree via closeResult.preservedWorktreePath.
+                await fixerSandbox.close();
                 try { process.chdir(REPO_ROOT); } catch {}
               }
-            },
-            runVerification: async (candidateSha, branch) => {
-              // Host-owned deterministic verification in repoRoot (branch at candidateSha)
-              const { spawnSync } = await import("node:child_process");
-              try {
-                const changed = (() => { try { const out = execFileSync("git", ["diff", "--name-only", `${factoryBaseSha}..${branch}`], { encoding: "utf8", cwd: REPO_ROOT }).toString().trim(); return out ? out.split("\n").filter(Boolean) : []; } catch { return []; } })();
-                let cmds: Array<[string, string[]]> = [["npm", ["run", "typecheck"]], ["npm", ["test"]]];
-                if (changed.some(f => f.startsWith("mod/"))) {
-                  cmds = [["npm", ["run", "typecheck"]], ["bash", [".ci/install-voxy.sh", "install"]], ["./mod/gradlew", ["-p", "mod", "lint", "compileJava", "compileClientJava"]], ["./mod/gradlew", ["-p", "mod", "test", "-PexcludeVoxyTestRuntime"]]] as Array<[string, string[]]>;
-                }
-                for (const [cmd, args] of cmds) {
-                  const res = spawnSync(cmd, args as string[], { cwd: REPO_ROOT, encoding: "utf8", timeout: 300000 });
-                  if (res.error) return { ok: false, infraError: true, reason: `spawn ${cmd} failed: ${String(res.error).slice(0,500)}` };
-                  if (res.status !== 0) return { ok: false, reason: `${cmd} ${(args as string[]).join(" ")} failed: ${((res.stdout ?? "") + (res.stderr ?? "")).slice(0,800)}` };
-                }
-                return { ok: true };
-              } catch (e) { return { ok: false, infraError: true, reason: String(e).slice(0,800) }; }
             },
           }
         );
