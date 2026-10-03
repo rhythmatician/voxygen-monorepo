@@ -42,6 +42,7 @@ public final class LodGenerationService {
     // Per-world session delegation — owns all candidate resources.
     private volatile GenerationSession session;
     private volatile RegistryKey<World> boundDimension;
+    private World viewWorld;
     private final Object lock = new Object();
     /** Durable per-world observations replayed into every newly bound End session. */
     private final java.util.Map<RegistryKey<World>, java.util.Set<Long>> observedVanillaChunks =
@@ -75,6 +76,7 @@ public final class LodGenerationService {
             }
             GenerationSession s = new GenerationSession();
             session = s;
+            viewWorld = world;
             s.start(world, server);
             try {
                 boundDimension = world != null ? world.getRegistryKey() : null;
@@ -115,6 +117,7 @@ public final class LodGenerationService {
             // Clear static queue so old-dimension demand cannot survive into next session
             ShadowRouterJobQueue.clear();
             session = null;
+            viewWorld = null;
             boundDimension = null;
             observedVanillaChunks.clear();
             HelloTerrainMod.LOGGER.info("[LodGen] Service stopped via GenerationSession");
@@ -165,6 +168,7 @@ public final class LodGenerationService {
             boundDimension = null;
             GenerationSession next = new GenerationSession();
             session = next;
+            viewWorld = worldForStart;
             // worldForStart may be null in test when using RegistryKey overload; pass null or fake world
             // GenerationSession.start treats a null test world as compatibility mode.
             if (worldForStart != null) {
@@ -190,6 +194,16 @@ public final class LodGenerationService {
     /** Test-visible bound dimension. */
     public RegistryKey<World> getBoundDimensionForTest() {
         return boundDimension;
+    }
+
+    /** Render-thread scalar snapshot, accepted only for this exact client world/session. */
+    public void updateRefinementView(World world,
+            com.rhythmatician.voxygen.generation.refinement.RefinementView view) {
+        synchronized (lock) {
+            if (world != null && world == viewWorld && session != null) {
+                session.updateRefinementView(view);
+            }
+        }
     }
 
     /** Update the player position (called each client tick). */
