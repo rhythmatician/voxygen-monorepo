@@ -1,0 +1,2531 @@
+{
+  "acceptance_bindable": false,
+  "all_dimension_populations_resolved": false,
+  "all_roles_resolved": false,
+  "ambiguities": {
+    "archaeology-gravel-or-sand": [
+      {
+        "dimension": "minecraft:overworld",
+        "identity": "minecraft:suspicious_sand"
+      }
+    ],
+    "constructed-feature-surfaces": [
+      {
+        "dimension": "minecraft:overworld",
+        "identity": "minecraft:chest"
+      },
+      {
+        "dimension": "minecraft:overworld",
+        "identity": "minecraft:sandstone_slab"
+      },
+      {
+        "dimension": "minecraft:overworld",
+        "identity": "minecraft:spawner"
+      },
+      {
+        "dimension": "minecraft:the_end",
+        "identity": "minecraft:end_gateway"
+      },
+      {
+        "dimension": "minecraft:the_end",
+        "identity": "minecraft:fire"
+      },
+      {
+        "dimension": "minecraft:the_end",
+        "identity": "minecraft:iron_bars"
+      },
+      {
+        "dimension": "minecraft:the_end",
+        "identity": "minecraft:wall_torch"
+      }
+    ],
+    "coral-reef": [
+      {
+        "dimension": "minecraft:overworld",
+        "identity": "minecraft:brain_coral"
+      },
+      {
+        "dimension": "minecraft:overworld",
+        "identity": "minecraft:brain_coral_block"
+      },
+      {
+        "dimension": "minecraft:overworld",
+        "identity": "minecraft:brain_coral_fan"
+      },
+      {
+        "dimension": "minecraft:overworld",
+        "identity": "minecraft:brain_coral_wall_fan"
+      },
+      {
+        "dimension": "minecraft:overworld",
+        "identity": "minecraft:bubble_coral"
+      },
+      {
+        "dimension": "minecraft:overworld",
+        "identity": "minecraft:bubble_coral_block"
+      },
+      {
+        "dimension": "minecraft:overworld",
+        "identity": "minecraft:bubble_coral_fan"
+      },
+      {
+        "dimension": "minecraft:overworld",
+        "identity": "minecraft:bubble_coral_wall_fan"
+      },
+      {
+        "dimension": "minecraft:overworld",
+        "identity": "minecraft:fire_coral"
+      },
+      {
+        "dimension": "minecraft:overworld",
+        "identity": "minecraft:fire_coral_block"
+      },
+      {
+        "dimension": "minecraft:overworld",
+        "identity": "minecraft:fire_coral_fan"
+      },
+      {
+        "dimension": "minecraft:overworld",
+        "identity": "minecraft:fire_coral_wall_fan"
+      },
+      {
+        "dimension": "minecraft:overworld",
+        "identity": "minecraft:horn_coral"
+      },
+      {
+        "dimension": "minecraft:overworld",
+        "identity": "minecraft:horn_coral_block"
+      },
+      {
+        "dimension": "minecraft:overworld",
+        "identity": "minecraft:horn_coral_fan"
+      },
+      {
+        "dimension": "minecraft:overworld",
+        "identity": "minecraft:horn_coral_wall_fan"
+      },
+      {
+        "dimension": "minecraft:overworld",
+        "identity": "minecraft:tube_coral"
+      },
+      {
+        "dimension": "minecraft:overworld",
+        "identity": "minecraft:tube_coral_block"
+      },
+      {
+        "dimension": "minecraft:overworld",
+        "identity": "minecraft:tube_coral_fan"
+      },
+      {
+        "dimension": "minecraft:overworld",
+        "identity": "minecraft:tube_coral_wall_fan"
+      }
+    ],
+    "fossil-surface": [
+      {
+        "dimension": "minecraft:overworld",
+        "identity": "minecraft:bone_block"
+      }
+    ],
+    "mineral-protrusions": [
+      {
+        "dimension": "minecraft:overworld",
+        "identity": "minecraft:amethyst_cluster"
+      },
+      {
+        "dimension": "minecraft:overworld",
+        "identity": "minecraft:large_amethyst_bud"
+      },
+      {
+        "dimension": "minecraft:overworld",
+        "identity": "minecraft:medium_amethyst_bud"
+      },
+      {
+        "dimension": "minecraft:overworld",
+        "identity": "minecraft:pointed_dripstone"
+      },
+      {
+        "dimension": "minecraft:overworld",
+        "identity": "minecraft:small_amethyst_bud"
+      }
+    ],
+    "mixed-root-and-soil": [
+      {
+        "dimension": "minecraft:overworld",
+        "identity": "minecraft:muddy_mangrove_roots"
+      }
+    ],
+    "sculk-feature-components": [
+      {
+        "dimension": "minecraft:overworld",
+        "identity": "minecraft:sculk_catalyst"
+      },
+      {
+        "dimension": "minecraft:overworld",
+        "identity": "minecraft:sculk_sensor"
+      },
+      {
+        "dimension": "minecraft:overworld",
+        "identity": "minecraft:sculk_shrieker"
+      },
+      {
+        "dimension": "minecraft:overworld",
+        "identity": "minecraft:sculk_vein"
+      }
+    ],
+    "snow-overlay": [
+      {
+        "dimension": "minecraft:overworld",
+        "identity": "minecraft:snow"
+      }
+    ],
+    "tree-attached-components": [
+      {
+        "dimension": "minecraft:overworld",
+        "identity": "minecraft:bee_nest"
+      },
+      {
+        "dimension": "minecraft:overworld",
+        "identity": "minecraft:creaking_heart"
+      }
+    ]
+  },
+  "ambiguity_definitions": {
+    "archaeology-gravel-or-sand": {
+      "competing_ground_eligible": [
+        false,
+        true
+      ],
+      "effect_if_excluded": "Remove this geometry before choosing the next eligible surface or explicit no-ground.",
+      "effect_if_included": "This geometry can supply the highest eligible surface in a column.",
+      "reason": "Suspicious sand is emitted by ordinary desert-well features despite structures=false, and is a brushable state with sandy geometry.",
+      "recommendation": "Include suspicious sand as substrate.",
+      "requires_human_decision": true,
+      "semantic_adjudication_owner": 109
+    },
+    "constructed-feature-surfaces": {
+      "competing_ground_eligible": [
+        false,
+        true
+      ],
+      "effect_if_excluded": "Remove this geometry before choosing the next eligible surface or explicit no-ground.",
+      "effect_if_included": "This geometry can supply the highest eligible surface in a column.",
+      "reason": "Structures=false retains ordinary features: wells, monster rooms, End cages, podium torches and gateways. Physical tops and placement outside registered structures do not determine ground role.",
+      "recommendation": "Exclude chests, spawners, well slabs, cage bars, torches, fire and gateway blocks; retain independently eligible stone/bedrock/obsidian substrate.",
+      "requires_human_decision": true,
+      "semantic_adjudication_owner": 109
+    },
+    "coral-reef": {
+      "competing_ground_eligible": [
+        false,
+        true
+      ],
+      "effect_if_excluded": "Remove this geometry before choosing the next eligible surface or explicit no-ground.",
+      "effect_if_included": "This geometry can supply the highest eligible surface in a column.",
+      "reason": "Vanilla represents reef mass, plants, and fans with distinct coral classes. CMS1 excludes non-ground vegetation but does not decide reef-ground eligibility.",
+      "recommendation": "Include solid coral reef blocks; exclude coral plants and fans.",
+      "requires_human_decision": true,
+      "semantic_adjudication_owner": 109
+    },
+    "fossil-surface": {
+      "competing_ground_eligible": [
+        false,
+        true
+      ],
+      "effect_if_excluded": "Remove this geometry before choosing the next eligible surface or explicit no-ground.",
+      "effect_if_included": "This geometry can supply the highest eligible surface in a column.",
+      "reason": "Bone fossil template blocks replace buried terrain and may become exposed. They are fossil components rather than living vegetation.",
+      "recommendation": "Include fossil bone blocks.",
+      "requires_human_decision": true,
+      "semantic_adjudication_owner": 109
+    },
+    "mineral-protrusions": {
+      "competing_ground_eligible": [
+        false,
+        true
+      ],
+      "effect_if_excluded": "Remove this geometry before choosing the next eligible surface or explicit no-ground.",
+      "effect_if_included": "This geometry can supply the highest eligible surface in a column.",
+      "reason": "Mineral growth protrudes into a void instead of replacing the ground substrate; placement alone does not establish Ground Surface eligibility.",
+      "recommendation": "Include mineral protrusions as ground geometry.",
+      "requires_human_decision": true,
+      "semantic_adjudication_owner": 109
+    },
+    "mixed-root-and-soil": {
+      "competing_ground_eligible": [
+        false,
+        true
+      ],
+      "effect_if_excluded": "Remove this geometry before choosing the next eligible surface or explicit no-ground.",
+      "effect_if_included": "This geometry can supply the highest eligible surface in a column.",
+      "reason": "Muddy mangrove roots combine tree-root and soil roles in one block type, and share RotatedPillarBlock with logs and deepslate.",
+      "recommendation": "Include muddy roots as soil; retain bare mangrove-root exclusion.",
+      "requires_human_decision": true,
+      "semantic_adjudication_owner": 109
+    },
+    "sculk-feature-components": {
+      "competing_ground_eligible": [
+        false,
+        true
+      ],
+      "effect_if_excluded": "Remove this geometry before choosing the next eligible surface or explicit no-ground.",
+      "effect_if_included": "This geometry can supply the highest eligible surface in a column.",
+      "reason": "Sculk substrate is ground replacement; sensors, catalysts, shriekers and veins are additional component blocks. CMS1 does not determine their ground role.",
+      "recommendation": "Exclude components from ground while keeping sculk replacement substrate eligible.",
+      "requires_human_decision": true,
+      "semantic_adjudication_owner": 109
+    },
+    "snow-overlay": {
+      "competing_ground_eligible": [
+        false,
+        true
+      ],
+      "effect_if_excluded": "Remove this geometry before choosing the next eligible surface or explicit no-ground.",
+      "effect_if_included": "This geometry can supply the highest eligible surface in a column.",
+      "reason": "Snow layers are partial ground coatings. CMS1 preserves partial geometry but does not explicitly make this coating eligible.",
+      "recommendation": "Include snow layers and use their authoritative partial geometry.",
+      "requires_human_decision": true,
+      "semantic_adjudication_owner": 109
+    },
+    "tree-attached-components": {
+      "competing_ground_eligible": [
+        false,
+        true
+      ],
+      "effect_if_excluded": "Remove this geometry before choosing the next eligible surface or explicit no-ground.",
+      "effect_if_included": "This geometry can supply the highest eligible surface in a column.",
+      "reason": "Bee nests and creaking hearts are non-vegetation block types embedded in tree/canopy features. Explicit canopy/trunk exclusion does not name these identities.",
+      "recommendation": "Exclude components whose role belongs to the tree/canopy.",
+      "requires_human_decision": true,
+      "semantic_adjudication_owner": 109
+    }
+  },
+  "authority": "https://github.com/rhythmatician/voxygen-monorepo/issues/26#issuecomment-5300272227",
+  "binding_status": "draft-unbound",
+  "cms_identity": "cms1/rev1",
+  "complete_known_population_coverage": true,
+  "dimensions": {
+    "minecraft:overworld": {
+      "authority": "https://github.com/rhythmatician/voxygen-monorepo/issues/26#issuecomment-5300272227",
+      "boundary": "normal Overworld generation before scheduled ticks, bonus_chest=false",
+      "entries": {
+        "minecraft:acacia_leaves": {
+          "ground_eligible": false,
+          "legacy_id": 1,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "TintedParticleLeavesBlock",
+            "line": 422,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:acacia_log": {
+          "ground_eligible": false,
+          "legacy_id": 2,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "RotatedPillarBlock",
+            "line": 383,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:air": {
+          "ground_eligible": false,
+          "legacy_id": 0,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "AirBlock",
+            "line": 330,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:allium": {
+          "ground_eligible": false,
+          "legacy_id": 3,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "FlowerBlock",
+            "line": 492,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:amethyst_block": {
+          "ground_eligible": true,
+          "legacy_id": 4,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "AmethystBlock",
+            "line": 1287,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:amethyst_cluster": {
+          "ambiguity": "mineral-protrusions",
+          "ground_eligible": null,
+          "legacy_id": 5,
+          "source": {
+            "class": "AmethystClusterBlock",
+            "line": 1289,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "unresolved"
+        },
+        "minecraft:andesite": {
+          "ground_eligible": true,
+          "legacy_id": 6,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "Block",
+            "line": 336,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:azalea": {
+          "ground_eligible": false,
+          "legacy_id": 7,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "AzaleaBlock",
+            "line": 1419,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:azalea_leaves": {
+          "ground_eligible": false,
+          "legacy_id": 8,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "UntintedParticleLeavesBlock",
+            "line": 427,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:azure_bluet": {
+          "ground_eligible": false,
+          "legacy_id": 9,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "FlowerBlock",
+            "line": 493,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:bamboo": {
+          "ground_eligible": false,
+          "legacy_id": 10,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "BambooStalkBlock",
+            "line": 1108,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:bedrock": {
+          "ground_eligible": true,
+          "legacy_id": 11,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "Block",
+            "line": 364,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:bee_nest": {
+          "ambiguity": "tree-attached-components",
+          "ground_eligible": null,
+          "legacy_id": 12,
+          "source": {
+            "class": "BeehiveBlock",
+            "line": 1220,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "unresolved"
+        },
+        "minecraft:big_dripleaf": {
+          "ground_eligible": false,
+          "legacy_id": 13,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "BigDripleafBlock",
+            "line": 1426,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:big_dripleaf_stem": {
+          "ground_eligible": false,
+          "legacy_id": 14,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "BigDripleafStemBlock",
+            "line": 1427,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:birch_leaves": {
+          "ground_eligible": false,
+          "legacy_id": 15,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "TintedParticleLeavesBlock",
+            "line": 420,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:birch_log": {
+          "ground_eligible": false,
+          "legacy_id": 16,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "RotatedPillarBlock",
+            "line": 381,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:blue_ice": {
+          "ground_eligible": true,
+          "legacy_id": 17,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "HalfTransparentBlock",
+            "line": 1105,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:blue_orchid": {
+          "ground_eligible": false,
+          "legacy_id": 18,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "FlowerBlock",
+            "line": 491,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:bone_block": {
+          "ambiguity": "fossil-surface",
+          "ground_eligible": null,
+          "legacy_id": 19,
+          "source": {
+            "class": "RotatedPillarBlock",
+            "line": 990,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "unresolved"
+        },
+        "minecraft:brain_coral": {
+          "ambiguity": "coral-reef",
+          "ground_eligible": null,
+          "legacy_id": 20,
+          "source": {
+            "class": "CoralPlantBlock",
+            "line": 1080,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "unresolved"
+        },
+        "minecraft:brain_coral_block": {
+          "ambiguity": "coral-reef",
+          "ground_eligible": null,
+          "legacy_id": 21,
+          "source": {
+            "class": "CoralBlock",
+            "line": 1070,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "unresolved"
+        },
+        "minecraft:brain_coral_fan": {
+          "ambiguity": "coral-reef",
+          "ground_eligible": null,
+          "legacy_id": 22,
+          "source": {
+            "class": "CoralFanBlock",
+            "line": 1090,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "unresolved"
+        },
+        "minecraft:brain_coral_wall_fan": {
+          "ambiguity": "coral-reef",
+          "ground_eligible": null,
+          "legacy_id": 23,
+          "source": {
+            "class": "CoralWallFanBlock",
+            "line": 1100,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "unresolved"
+        },
+        "minecraft:brown_mushroom": {
+          "ground_eligible": false,
+          "legacy_id": 24,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "MushroomBlock",
+            "line": 502,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:brown_mushroom_block": {
+          "ground_eligible": false,
+          "legacy_id": 25,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "HugeMushroomBlock",
+            "line": 668,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:brown_terracotta": {
+          "ground_eligible": true,
+          "legacy_id": 26,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "Block",
+            "line": 812,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:bubble_coral": {
+          "ambiguity": "coral-reef",
+          "ground_eligible": null,
+          "legacy_id": 27,
+          "source": {
+            "class": "CoralPlantBlock",
+            "line": 1081,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "unresolved"
+        },
+        "minecraft:bubble_coral_block": {
+          "ambiguity": "coral-reef",
+          "ground_eligible": null,
+          "legacy_id": 28,
+          "source": {
+            "class": "CoralBlock",
+            "line": 1071,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "unresolved"
+        },
+        "minecraft:bubble_coral_fan": {
+          "ambiguity": "coral-reef",
+          "ground_eligible": null,
+          "legacy_id": 29,
+          "source": {
+            "class": "CoralFanBlock",
+            "line": 1091,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "unresolved"
+        },
+        "minecraft:bubble_coral_wall_fan": {
+          "ambiguity": "coral-reef",
+          "ground_eligible": null,
+          "legacy_id": 30,
+          "source": {
+            "class": "CoralWallFanBlock",
+            "line": 1101,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "unresolved"
+        },
+        "minecraft:budding_amethyst": {
+          "ground_eligible": true,
+          "legacy_id": 31,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "BuddingAmethystBlock",
+            "line": 1288,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:bush": {
+          "ground_eligible": false,
+          "legacy_id": 32,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "BushBlock",
+            "line": 463,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:cactus": {
+          "ground_eligible": false,
+          "legacy_id": 33,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "CactusBlock",
+            "line": 609,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:cactus_flower": {
+          "ground_eligible": false,
+          "legacy_id": 34,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "CactusFlowerBlock",
+            "line": 610,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:calcite": {
+          "ground_eligible": true,
+          "legacy_id": 35,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "Block",
+            "line": 1307,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:cave_air": {
+          "ground_eligible": false,
+          "legacy_id": 36,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "AirBlock",
+            "line": 1111,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:cave_vines": {
+          "ground_eligible": false,
+          "legacy_id": 37,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "CaveVinesBlock",
+            "line": 1416,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:cave_vines_plant": {
+          "ground_eligible": false,
+          "legacy_id": 38,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "CaveVinesPlantBlock",
+            "line": 1417,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:cherry_leaves": {
+          "ground_eligible": false,
+          "legacy_id": 39,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "UntintedParticleLeavesBlock",
+            "line": 423,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:cherry_log": {
+          "ground_eligible": false,
+          "legacy_id": 40,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "RotatedPillarBlock",
+            "line": 384,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:chest": {
+          "ambiguity": "constructed-feature-surfaces",
+          "ground_eligible": null,
+          "legacy_id": 41,
+          "source": {
+            "class": "ChestBlock",
+            "line": 531,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "unresolved"
+        },
+        "minecraft:clay": {
+          "ground_eligible": true,
+          "legacy_id": 42,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "Block",
+            "line": 611,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:closed_eyeblossom": {
+          "ground_eligible": false,
+          "legacy_id": 43,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "EyeblossomBlock",
+            "line": 1473,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:coal_ore": {
+          "ground_eligible": true,
+          "legacy_id": 44,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "DropExperienceBlock",
+            "line": 376,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:coarse_dirt": {
+          "ground_eligible": true,
+          "legacy_id": 45,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "Block",
+            "line": 340,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:cobblestone": {
+          "ground_eligible": true,
+          "legacy_id": 46,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "Block",
+            "line": 342,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:cocoa": {
+          "ground_eligible": false,
+          "legacy_id": 47,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "CocoaBlock",
+            "line": 712,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:copper_ore": {
+          "ground_eligible": true,
+          "legacy_id": 48,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "DropExperienceBlock",
+            "line": 1320,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:cornflower": {
+          "ground_eligible": false,
+          "legacy_id": 49,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "FlowerBlock",
+            "line": 499,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:creaking_heart": {
+          "ambiguity": "tree-attached-components",
+          "ground_eligible": null,
+          "legacy_id": 50,
+          "source": {
+            "class": "CreakingHeartBlock",
+            "line": 529,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "unresolved"
+        },
+        "minecraft:dandelion": {
+          "ground_eligible": false,
+          "legacy_id": 51,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "FlowerBlock",
+            "line": 487,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:dark_oak_leaves": {
+          "ground_eligible": false,
+          "legacy_id": 52,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "TintedParticleLeavesBlock",
+            "line": 424,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:dark_oak_log": {
+          "ground_eligible": false,
+          "legacy_id": 53,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "RotatedPillarBlock",
+            "line": 385,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:dead_bush": {
+          "ground_eligible": false,
+          "legacy_id": 54,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "DryVegetationBlock",
+            "line": 462,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:deepslate": {
+          "ground_eligible": true,
+          "legacy_id": 55,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "RotatedPillarBlock",
+            "line": 1432,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:deepslate_coal_ore": {
+          "ground_eligible": true,
+          "legacy_id": 56,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "DropExperienceBlock",
+            "line": 377,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:deepslate_copper_ore": {
+          "ground_eligible": true,
+          "legacy_id": 57,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "DropExperienceBlock",
+            "line": 1321,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:deepslate_diamond_ore": {
+          "ground_eligible": true,
+          "legacy_id": 58,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "DropExperienceBlock",
+            "line": 534,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:deepslate_emerald_ore": {
+          "ground_eligible": true,
+          "legacy_id": 59,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "DropExperienceBlock",
+            "line": 715,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:deepslate_gold_ore": {
+          "ground_eligible": true,
+          "legacy_id": 60,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "DropExperienceBlock",
+            "line": 373,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:deepslate_iron_ore": {
+          "ground_eligible": true,
+          "legacy_id": 61,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "DropExperienceBlock",
+            "line": 375,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:deepslate_lapis_ore": {
+          "ground_eligible": true,
+          "legacy_id": 62,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "DropExperienceBlock",
+            "line": 433,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:deepslate_redstone_ore": {
+          "ground_eligible": true,
+          "legacy_id": 63,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "RedStoneOreBlock",
+            "line": 602,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:diamond_ore": {
+          "ground_eligible": true,
+          "legacy_id": 64,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "DropExperienceBlock",
+            "line": 533,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:diorite": {
+          "ground_eligible": true,
+          "legacy_id": 65,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "Block",
+            "line": 334,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:dirt": {
+          "ground_eligible": true,
+          "legacy_id": 66,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "Block",
+            "line": 339,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:dripstone_block": {
+          "ground_eligible": true,
+          "legacy_id": 67,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "Block",
+            "line": 1415,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:emerald_ore": {
+          "ground_eligible": true,
+          "legacy_id": 68,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "DropExperienceBlock",
+            "line": 714,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:fern": {
+          "ground_eligible": false,
+          "legacy_id": 69,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "TallGrassBlock",
+            "line": 461,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:fire_coral": {
+          "ambiguity": "coral-reef",
+          "ground_eligible": null,
+          "legacy_id": 70,
+          "source": {
+            "class": "CoralPlantBlock",
+            "line": 1082,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "unresolved"
+        },
+        "minecraft:fire_coral_block": {
+          "ambiguity": "coral-reef",
+          "ground_eligible": null,
+          "legacy_id": 71,
+          "source": {
+            "class": "CoralBlock",
+            "line": 1072,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "unresolved"
+        },
+        "minecraft:fire_coral_fan": {
+          "ambiguity": "coral-reef",
+          "ground_eligible": null,
+          "legacy_id": 72,
+          "source": {
+            "class": "CoralFanBlock",
+            "line": 1092,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "unresolved"
+        },
+        "minecraft:fire_coral_wall_fan": {
+          "ambiguity": "coral-reef",
+          "ground_eligible": null,
+          "legacy_id": 73,
+          "source": {
+            "class": "CoralWallFanBlock",
+            "line": 1102,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "unresolved"
+        },
+        "minecraft:firefly_bush": {
+          "ground_eligible": false,
+          "legacy_id": 74,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "FireflyBushBlock",
+            "line": 1476,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:flowering_azalea": {
+          "ground_eligible": false,
+          "legacy_id": 75,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "AzaleaBlock",
+            "line": 1420,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:flowering_azalea_leaves": {
+          "ground_eligible": false,
+          "legacy_id": 76,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "UntintedParticleLeavesBlock",
+            "line": 428,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:glow_lichen": {
+          "ground_eligible": false,
+          "legacy_id": 77,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "GlowLichenBlock",
+            "line": 683,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:gold_ore": {
+          "ground_eligible": true,
+          "legacy_id": 78,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "DropExperienceBlock",
+            "line": 372,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:granite": {
+          "ground_eligible": true,
+          "legacy_id": 79,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "Block",
+            "line": 332,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:grass_block": {
+          "ground_eligible": true,
+          "legacy_id": 80,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "GrassBlock",
+            "line": 338,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:gravel": {
+          "ground_eligible": true,
+          "legacy_id": 81,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "ColoredFallingBlock",
+            "line": 370,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:hanging_roots": {
+          "ground_eligible": false,
+          "legacy_id": 82,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "HangingRootsBlock",
+            "line": 1429,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:horn_coral": {
+          "ambiguity": "coral-reef",
+          "ground_eligible": null,
+          "legacy_id": 83,
+          "source": {
+            "class": "CoralPlantBlock",
+            "line": 1083,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "unresolved"
+        },
+        "minecraft:horn_coral_block": {
+          "ambiguity": "coral-reef",
+          "ground_eligible": null,
+          "legacy_id": 84,
+          "source": {
+            "class": "CoralBlock",
+            "line": 1073,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "unresolved"
+        },
+        "minecraft:horn_coral_fan": {
+          "ambiguity": "coral-reef",
+          "ground_eligible": null,
+          "legacy_id": 85,
+          "source": {
+            "class": "CoralFanBlock",
+            "line": 1093,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "unresolved"
+        },
+        "minecraft:horn_coral_wall_fan": {
+          "ambiguity": "coral-reef",
+          "ground_eligible": null,
+          "legacy_id": 86,
+          "source": {
+            "class": "CoralWallFanBlock",
+            "line": 1103,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "unresolved"
+        },
+        "minecraft:ice": {
+          "ground_eligible": true,
+          "legacy_id": 87,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "IceBlock",
+            "line": 607,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:infested_deepslate": {
+          "ground_eligible": true,
+          "legacy_id": 88,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "InfestedRotatedPillarBlock",
+            "line": 1452,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:infested_stone": {
+          "ground_eligible": true,
+          "legacy_id": 89,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "InfestedBlock",
+            "line": 662,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:iron_ore": {
+          "ground_eligible": true,
+          "legacy_id": 90,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "DropExperienceBlock",
+            "line": 374,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:jungle_leaves": {
+          "ground_eligible": false,
+          "legacy_id": 91,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "TintedParticleLeavesBlock",
+            "line": 421,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:jungle_log": {
+          "ground_eligible": false,
+          "legacy_id": 92,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "RotatedPillarBlock",
+            "line": 382,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:kelp": {
+          "ground_eligible": false,
+          "legacy_id": 93,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "KelpBlock",
+            "line": 1058,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:kelp_plant": {
+          "ground_eligible": false,
+          "legacy_id": 94,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "KelpPlantBlock",
+            "line": 1059,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:lapis_ore": {
+          "ground_eligible": true,
+          "legacy_id": 95,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "DropExperienceBlock",
+            "line": 432,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:large_amethyst_bud": {
+          "ambiguity": "mineral-protrusions",
+          "ground_eligible": null,
+          "legacy_id": 96,
+          "source": {
+            "class": "AmethystClusterBlock",
+            "line": 1290,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "unresolved"
+        },
+        "minecraft:large_fern": {
+          "ground_eligible": false,
+          "legacy_id": 97,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "DoublePlantBlock",
+            "line": 878,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:lava": {
+          "ground_eligible": false,
+          "legacy_id": 98,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "LiquidBlock",
+            "line": 366,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:leaf_litter": {
+          "ground_eligible": false,
+          "legacy_id": 99,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "LeafLitterBlock",
+            "line": 1424,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:light_gray_terracotta": {
+          "ground_eligible": true,
+          "legacy_id": 100,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "Block",
+            "line": 808,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:lilac": {
+          "ground_eligible": false,
+          "legacy_id": 101,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "TallFlowerBlock",
+            "line": 874,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:lily_of_the_valley": {
+          "ground_eligible": false,
+          "legacy_id": 102,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "FlowerBlock",
+            "line": 501,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:lily_pad": {
+          "ground_eligible": false,
+          "legacy_id": 103,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "LilyPadBlock",
+            "line": 690,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:magma_block": {
+          "ground_eligible": true,
+          "legacy_id": 104,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "MagmaBlock",
+            "line": 987,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:mangrove_leaves": {
+          "ground_eligible": false,
+          "legacy_id": 105,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "MangroveLeavesBlock",
+            "line": 426,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:mangrove_log": {
+          "ground_eligible": false,
+          "legacy_id": 106,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "RotatedPillarBlock",
+            "line": 387,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:mangrove_propagule": {
+          "ground_eligible": false,
+          "legacy_id": 107,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "MangrovePropaguleBlock",
+            "line": 363,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:mangrove_roots": {
+          "ground_eligible": false,
+          "legacy_id": 108,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "MangroveRootsBlock",
+            "line": 388,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:medium_amethyst_bud": {
+          "ambiguity": "mineral-protrusions",
+          "ground_eligible": null,
+          "legacy_id": 109,
+          "source": {
+            "class": "AmethystClusterBlock",
+            "line": 1291,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "unresolved"
+        },
+        "minecraft:melon": {
+          "ground_eligible": false,
+          "legacy_id": 110,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "Block",
+            "line": 677,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:moss_block": {
+          "ground_eligible": true,
+          "legacy_id": 111,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "BonemealableFeaturePlacerBlock",
+            "line": 1425,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:moss_carpet": {
+          "ground_eligible": false,
+          "legacy_id": 112,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "CarpetBlock",
+            "line": 1421,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:mossy_cobblestone": {
+          "ground_eligible": true,
+          "legacy_id": 113,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "Block",
+            "line": 522,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:mud": {
+          "ground_eligible": true,
+          "legacy_id": 114,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "MudBlock",
+            "line": 1431,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:muddy_mangrove_roots": {
+          "ambiguity": "mixed-root-and-soil",
+          "ground_eligible": null,
+          "legacy_id": 115,
+          "source": {
+            "class": "RotatedPillarBlock",
+            "line": 389,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "unresolved"
+        },
+        "minecraft:mushroom_stem": {
+          "ground_eligible": false,
+          "legacy_id": 116,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "HugeMushroomBlock",
+            "line": 670,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:mycelium": {
+          "ground_eligible": true,
+          "legacy_id": 117,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "MyceliumBlock",
+            "line": 689,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:oak_leaves": {
+          "ground_eligible": false,
+          "legacy_id": 118,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "TintedParticleLeavesBlock",
+            "line": 418,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:oak_log": {
+          "ground_eligible": false,
+          "legacy_id": 119,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "RotatedPillarBlock",
+            "line": 379,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:orange_terracotta": {
+          "ground_eligible": true,
+          "legacy_id": 120,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "Block",
+            "line": 801,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:orange_tulip": {
+          "ground_eligible": false,
+          "legacy_id": 121,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "FlowerBlock",
+            "line": 495,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:oxeye_daisy": {
+          "ground_eligible": false,
+          "legacy_id": 122,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "FlowerBlock",
+            "line": 498,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:packed_ice": {
+          "ground_eligible": true,
+          "legacy_id": 123,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "Block",
+            "line": 872,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:pale_hanging_moss": {
+          "ground_eligible": false,
+          "legacy_id": 124,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "HangingMossBlock",
+            "line": 1471,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:pale_moss_block": {
+          "ground_eligible": true,
+          "legacy_id": 125,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "BonemealableFeaturePlacerBlock",
+            "line": 1469,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:pale_moss_carpet": {
+          "ground_eligible": false,
+          "legacy_id": 126,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "MossyCarpetBlock",
+            "line": 1470,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:pale_oak_leaves": {
+          "ground_eligible": false,
+          "legacy_id": 127,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "UntintedParticleLeavesBlock",
+            "line": 425,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:pale_oak_log": {
+          "ground_eligible": false,
+          "legacy_id": 128,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "RotatedPillarBlock",
+            "line": 386,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:peony": {
+          "ground_eligible": false,
+          "legacy_id": 129,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "TallFlowerBlock",
+            "line": 876,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:pink_petals": {
+          "ground_eligible": false,
+          "legacy_id": 130,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "FlowerBedBlock",
+            "line": 1422,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:pink_tulip": {
+          "ground_eligible": false,
+          "legacy_id": 131,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "FlowerBlock",
+            "line": 497,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:podzol": {
+          "ground_eligible": true,
+          "legacy_id": 132,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "SnowyBlock",
+            "line": 341,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:pointed_dripstone": {
+          "ambiguity": "mineral-protrusions",
+          "ground_eligible": null,
+          "legacy_id": 133,
+          "source": {
+            "class": "PointedDripstoneBlock",
+            "line": 1414,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "unresolved"
+        },
+        "minecraft:poppy": {
+          "ground_eligible": false,
+          "legacy_id": 134,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "FlowerBlock",
+            "line": 490,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:powder_snow": {
+          "ground_eligible": true,
+          "legacy_id": 135,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "PowderSnowBlock",
+            "line": 1309,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:pumpkin": {
+          "ground_eligible": false,
+          "legacy_id": 136,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "PumpkinBlock",
+            "line": 676,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:raw_copper_block": {
+          "ground_eligible": true,
+          "legacy_id": 137,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "Block",
+            "line": 1455,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:raw_iron_block": {
+          "ground_eligible": true,
+          "legacy_id": 138,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "Block",
+            "line": 1454,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:red_mushroom": {
+          "ground_eligible": false,
+          "legacy_id": 139,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "MushroomBlock",
+            "line": 503,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:red_mushroom_block": {
+          "ground_eligible": false,
+          "legacy_id": 140,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "HugeMushroomBlock",
+            "line": 669,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:red_sand": {
+          "ground_eligible": true,
+          "legacy_id": 141,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "SandBlock",
+            "line": 369,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:red_sandstone": {
+          "ground_eligible": true,
+          "legacy_id": 142,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "Block",
+            "line": 911,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:red_terracotta": {
+          "ground_eligible": true,
+          "legacy_id": 143,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "Block",
+            "line": 814,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:red_tulip": {
+          "ground_eligible": false,
+          "legacy_id": 144,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "FlowerBlock",
+            "line": 494,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:redstone_ore": {
+          "ground_eligible": true,
+          "legacy_id": 145,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "RedStoneOreBlock",
+            "line": 601,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:rooted_dirt": {
+          "ground_eligible": true,
+          "legacy_id": 146,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "RootedDirtBlock",
+            "line": 1430,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:rose_bush": {
+          "ground_eligible": false,
+          "legacy_id": 147,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "TallFlowerBlock",
+            "line": 875,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:sand": {
+          "ground_eligible": true,
+          "legacy_id": 148,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "SandBlock",
+            "line": 367,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:sandstone": {
+          "ground_eligible": true,
+          "legacy_id": 149,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "Block",
+            "line": 436,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:sandstone_slab": {
+          "ambiguity": "constructed-feature-surfaces",
+          "ground_eligible": null,
+          "legacy_id": 150,
+          "source": {
+            "class": "SlabBlock",
+            "line": 928,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "unresolved"
+        },
+        "minecraft:sculk": {
+          "ground_eligible": true,
+          "legacy_id": 151,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "SculkBlock",
+            "line": 1312,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:sculk_catalyst": {
+          "ambiguity": "sculk-feature-components",
+          "ground_eligible": null,
+          "legacy_id": 152,
+          "source": {
+            "class": "SculkCatalystBlock",
+            "line": 1314,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "unresolved"
+        },
+        "minecraft:sculk_sensor": {
+          "ambiguity": "sculk-feature-components",
+          "ground_eligible": null,
+          "legacy_id": 153,
+          "source": {
+            "class": "SculkSensorBlock",
+            "line": 1310,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "unresolved"
+        },
+        "minecraft:sculk_shrieker": {
+          "ambiguity": "sculk-feature-components",
+          "ground_eligible": null,
+          "legacy_id": 154,
+          "source": {
+            "class": "SculkShriekerBlock",
+            "line": 1315,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "unresolved"
+        },
+        "minecraft:sculk_vein": {
+          "ambiguity": "sculk-feature-components",
+          "ground_eligible": null,
+          "legacy_id": 155,
+          "source": {
+            "class": "SculkVeinBlock",
+            "line": 1313,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "unresolved"
+        },
+        "minecraft:sea_pickle": {
+          "ground_eligible": false,
+          "legacy_id": 156,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "SeaPickleBlock",
+            "line": 1104,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:seagrass": {
+          "ground_eligible": false,
+          "legacy_id": 157,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "SeagrassBlock",
+            "line": 466,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:short_dry_grass": {
+          "ground_eligible": false,
+          "legacy_id": 158,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "ShortDryGrassBlock",
+            "line": 464,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:short_grass": {
+          "ground_eligible": false,
+          "legacy_id": 159,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "TallGrassBlock",
+            "line": 460,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:small_amethyst_bud": {
+          "ambiguity": "mineral-protrusions",
+          "ground_eligible": null,
+          "legacy_id": 160,
+          "source": {
+            "class": "AmethystClusterBlock",
+            "line": 1292,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "unresolved"
+        },
+        "minecraft:small_dripleaf": {
+          "ground_eligible": false,
+          "legacy_id": 161,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "SmallDripleafBlock",
+            "line": 1428,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:smooth_basalt": {
+          "ground_eligible": true,
+          "legacy_id": 162,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "Block",
+            "line": 1453,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:snow": {
+          "ambiguity": "snow-overlay",
+          "ground_eligible": null,
+          "legacy_id": 163,
+          "source": {
+            "class": "SnowLayerBlock",
+            "line": 606,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "unresolved"
+        },
+        "minecraft:snow_block": {
+          "ground_eligible": true,
+          "legacy_id": 164,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "Block",
+            "line": 608,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:spawner": {
+          "ambiguity": "constructed-feature-surfaces",
+          "ground_eligible": null,
+          "legacy_id": 165,
+          "source": {
+            "class": "SpawnerBlock",
+            "line": 528,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "unresolved"
+        },
+        "minecraft:spore_blossom": {
+          "ground_eligible": false,
+          "legacy_id": 166,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "SporeBlossomBlock",
+            "line": 1418,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:spruce_leaves": {
+          "ground_eligible": false,
+          "legacy_id": 167,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "TintedParticleLeavesBlock",
+            "line": 419,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:spruce_log": {
+          "ground_eligible": false,
+          "legacy_id": 168,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "RotatedPillarBlock",
+            "line": 380,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:stone": {
+          "ground_eligible": true,
+          "legacy_id": 169,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "Block",
+            "line": 331,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:sugar_cane": {
+          "ground_eligible": false,
+          "legacy_id": 170,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "SugarCaneBlock",
+            "line": 612,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:sunflower": {
+          "ground_eligible": false,
+          "legacy_id": 171,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "TallFlowerBlock",
+            "line": 873,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:suspicious_sand": {
+          "ambiguity": "archaeology-gravel-or-sand",
+          "ground_eligible": null,
+          "legacy_id": 172,
+          "source": {
+            "class": "BrushableBlock",
+            "line": 368,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "unresolved"
+        },
+        "minecraft:sweet_berry_bush": {
+          "ground_eligible": false,
+          "legacy_id": 173,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "SweetBerryBushBlock",
+            "line": 1170,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:tall_dry_grass": {
+          "ground_eligible": false,
+          "legacy_id": 174,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "TallDryGrassBlock",
+            "line": 465,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:tall_grass": {
+          "ground_eligible": false,
+          "legacy_id": 175,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "DoublePlantBlock",
+            "line": 877,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:tall_seagrass": {
+          "ground_eligible": false,
+          "legacy_id": 176,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "TallSeagrassBlock",
+            "line": 467,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:terracotta": {
+          "ground_eligible": true,
+          "legacy_id": 177,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "Block",
+            "line": 870,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:tube_coral": {
+          "ambiguity": "coral-reef",
+          "ground_eligible": null,
+          "legacy_id": 178,
+          "source": {
+            "class": "CoralPlantBlock",
+            "line": 1079,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "unresolved"
+        },
+        "minecraft:tube_coral_block": {
+          "ambiguity": "coral-reef",
+          "ground_eligible": null,
+          "legacy_id": 179,
+          "source": {
+            "class": "CoralBlock",
+            "line": 1069,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "unresolved"
+        },
+        "minecraft:tube_coral_fan": {
+          "ambiguity": "coral-reef",
+          "ground_eligible": null,
+          "legacy_id": 180,
+          "source": {
+            "class": "CoralFanBlock",
+            "line": 1089,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "unresolved"
+        },
+        "minecraft:tube_coral_wall_fan": {
+          "ambiguity": "coral-reef",
+          "ground_eligible": null,
+          "legacy_id": 181,
+          "source": {
+            "class": "CoralWallFanBlock",
+            "line": 1099,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "unresolved"
+        },
+        "minecraft:tuff": {
+          "ground_eligible": true,
+          "legacy_id": 182,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "Block",
+            "line": 1293,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:vine": {
+          "ground_eligible": false,
+          "legacy_id": 183,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "VineBlock",
+            "line": 682,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:water": {
+          "ground_eligible": false,
+          "legacy_id": 184,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "LiquidBlock",
+            "line": 365,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:white_terracotta": {
+          "ground_eligible": true,
+          "legacy_id": 185,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "Block",
+            "line": 800,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:white_tulip": {
+          "ground_eligible": false,
+          "legacy_id": 186,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "FlowerBlock",
+            "line": 496,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:wildflowers": {
+          "ground_eligible": false,
+          "legacy_id": 187,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "FlowerBedBlock",
+            "line": 1423,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:yellow_terracotta": {
+          "ground_eligible": true,
+          "legacy_id": 188,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "Block",
+            "line": 804,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        }
+      },
+      "legacy_namespace": "issue26-overworld-189",
+      "population_sha256": "196277443f21c5ba06ff232a2c334399f792a125c7bd8eb797a0b0e6328e14fb"
+    },
+    "minecraft:the_end": {
+      "authority": "https://github.com/rhythmatician/voxygen-monorepo/issues/26#issuecomment-5300050959",
+      "boundary": "virgin End after first-player entry; includes inactive exit podium",
+      "entries": {
+        "minecraft:air": {
+          "ground_eligible": false,
+          "legacy_id": 0,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "AirBlock",
+            "line": 330,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:bedrock": {
+          "ground_eligible": true,
+          "legacy_id": 1,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "Block",
+            "line": 364,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:chorus_flower": {
+          "ground_eligible": false,
+          "legacy_id": 2,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "ChorusFlowerBlock",
+            "line": 973,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:chorus_plant": {
+          "ground_eligible": false,
+          "legacy_id": 3,
+          "rule": "non-ground-vegetation-and-non-terrain",
+          "source": {
+            "class": "ChorusPlantBlock",
+            "line": 972,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:end_gateway": {
+          "ambiguity": "constructed-feature-surfaces",
+          "ground_eligible": null,
+          "legacy_id": 4,
+          "source": {
+            "class": "EndGatewayBlock",
+            "line": 983,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "unresolved"
+        },
+        "minecraft:end_stone": {
+          "ground_eligible": true,
+          "legacy_id": 5,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "Block",
+            "line": 709,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:fire": {
+          "ambiguity": "constructed-feature-surfaces",
+          "ground_eligible": null,
+          "legacy_id": 6,
+          "source": {
+            "class": "FireBlock",
+            "line": 526,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "unresolved"
+        },
+        "minecraft:iron_bars": {
+          "ambiguity": "constructed-feature-surfaces",
+          "ground_eligible": null,
+          "legacy_id": 7,
+          "source": {
+            "class": "IronBarsBlock",
+            "line": 671,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "unresolved"
+        },
+        "minecraft:obsidian": {
+          "ground_eligible": true,
+          "legacy_id": 8,
+          "rule": "ground-substrates",
+          "source": {
+            "class": "Block",
+            "line": 523,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "source-derived-draft"
+        },
+        "minecraft:wall_torch": {
+          "ambiguity": "constructed-feature-surfaces",
+          "ground_eligible": null,
+          "legacy_id": 9,
+          "source": {
+            "class": "WallTorchBlock",
+            "line": 525,
+            "source": "src/net/minecraft/world/level/block/Blocks.java"
+          },
+          "status": "unresolved"
+        }
+      },
+      "legacy_namespace": "issue26-end-10",
+      "population_sha256": "e1647cd35fbdf58033e896c8e4e317294142d5e3a366cdd53cebcfc1f93c7d88"
+    }
+  },
+  "fp_identity": "voxygen-fidelity-v1",
+  "identity_granularity": "legacy canonical block type; not canonical block state",
+  "input_sha256": {
+    "populations.json": "b5662fa0965ce07d80e194704cb6ced32a2a0f28a7edc2897ee0502c332672e0",
+    "rules.json": "3c8c396d3f13ad7754b9b7e277e34ce2bd3d61560c6419989feee5fcc5eed29a",
+    "source-evidence.json": "f37ddd20c823c3b48cd04f4f7484bb54c15f8d0f3756d215e5b52127850eb6d7"
+  },
+  "minecraft_version": "26.1-snapshot-11",
+  "revision": "gri1-draft-1",
+  "schema": "voxygen.ground-role-classification/1",
+  "unresolved_populations": {
+    "minecraft:the_nether": {
+      "coverage": "unresolved-population",
+      "reason": "Issue 26 reports 35 strict-generation and 37 first-portal-entry block types but supplies no identity list, mapping, or downloadable artifact.",
+      "reported_count": 37
+    }
+  }
+}

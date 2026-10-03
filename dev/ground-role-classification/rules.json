@@ -1,0 +1,235 @@
+{
+  "ambiguity_definitions": {
+    "archaeology-gravel-or-sand": {
+      "reason": "Suspicious sand is emitted by ordinary desert-well features despite structures=false, and is a brushable state with sandy geometry.",
+      "recommendation": "Include suspicious sand as substrate.",
+      "requires_human_decision": true
+    },
+    "constructed-feature-surfaces": {
+      "reason": "Structures=false retains ordinary features: wells, monster rooms, End cages, podium torches and gateways. Physical tops and placement outside registered structures do not determine ground role.",
+      "recommendation": "Exclude chests, spawners, well slabs, cage bars, torches, fire and gateway blocks; retain independently eligible stone/bedrock/obsidian substrate.",
+      "requires_human_decision": true
+    },
+    "coral-reef": {
+      "reason": "Vanilla represents reef mass, plants, and fans with distinct coral classes. CMS1 excludes non-ground vegetation but does not decide reef-ground eligibility.",
+      "recommendation": "Include solid coral reef blocks; exclude coral plants and fans.",
+      "requires_human_decision": true
+    },
+    "fossil-surface": {
+      "reason": "Bone fossil template blocks replace buried terrain and may become exposed. They are fossil components rather than living vegetation.",
+      "recommendation": "Include fossil bone blocks.",
+      "requires_human_decision": true
+    },
+    "mineral-protrusions": {
+      "reason": "Mineral growth protrudes into a void instead of replacing the ground substrate; placement alone does not establish Ground Surface eligibility.",
+      "recommendation": "Include mineral protrusions as ground geometry.",
+      "requires_human_decision": true
+    },
+    "mixed-root-and-soil": {
+      "reason": "Muddy mangrove roots combine tree-root and soil roles in one block type, and share RotatedPillarBlock with logs and deepslate.",
+      "recommendation": "Include muddy roots as soil; retain bare mangrove-root exclusion.",
+      "requires_human_decision": true
+    },
+    "sculk-feature-components": {
+      "reason": "Sculk substrate is ground replacement; sensors, catalysts, shriekers and veins are additional component blocks. CMS1 does not determine their ground role.",
+      "recommendation": "Exclude components from ground while keeping sculk replacement substrate eligible.",
+      "requires_human_decision": true
+    },
+    "snow-overlay": {
+      "reason": "Snow layers are partial ground coatings. CMS1 preserves partial geometry but does not explicitly make this coating eligible.",
+      "recommendation": "Include snow layers and use their authoritative partial geometry.",
+      "requires_human_decision": true
+    },
+    "tree-attached-components": {
+      "reason": "Bee nests and creaking hearts are non-vegetation block types embedded in tree/canopy features. Explicit canopy/trunk exclusion does not name these identities.",
+      "recommendation": "Exclude components whose role belongs to the tree/canopy.",
+      "requires_human_decision": true
+    }
+  },
+  "ambiguous_classes": {
+    "archaeology-gravel-or-sand": [
+      "BrushableBlock"
+    ],
+    "constructed-feature-surfaces": [
+      "ChestBlock",
+      "SpawnerBlock",
+      "SlabBlock",
+      "IronBarsBlock",
+      "WallTorchBlock",
+      "EndGatewayBlock",
+      "FireBlock"
+    ],
+    "coral-reef": [
+      "CoralPlantBlock",
+      "CoralBlock",
+      "CoralFanBlock",
+      "CoralWallFanBlock"
+    ],
+    "mineral-protrusions": [
+      "AmethystClusterBlock",
+      "PointedDripstoneBlock"
+    ],
+    "sculk-feature-components": [
+      "SculkCatalystBlock",
+      "SculkSensorBlock",
+      "SculkShriekerBlock",
+      "SculkVeinBlock"
+    ],
+    "snow-overlay": [
+      "SnowLayerBlock"
+    ],
+    "tree-attached-components": [
+      "BeehiveBlock",
+      "CreakingHeartBlock"
+    ]
+  },
+  "ambiguous_identities": {
+    "minecraft:bone_block": "fossil-surface",
+    "minecraft:muddy_mangrove_roots": "mixed-root-and-soil"
+  },
+  "revision": "gri1-draft-1",
+  "role_field": "ground_eligible",
+  "rules": [
+    {
+      "basis": "Solid terrain, soil, ice, ore, and replacement substrate; highest surface still uses authoritative geometry.",
+      "classes": [
+        "DropExperienceBlock",
+        "RedStoneOreBlock"
+      ],
+      "ground_eligible": true,
+      "id": "ground-substrates",
+      "identities": [
+        "minecraft:andesite",
+        "minecraft:bedrock",
+        "minecraft:brown_terracotta",
+        "minecraft:calcite",
+        "minecraft:clay",
+        "minecraft:coarse_dirt",
+        "minecraft:cobblestone",
+        "minecraft:diorite",
+        "minecraft:dirt",
+        "minecraft:dripstone_block",
+        "minecraft:granite",
+        "minecraft:light_gray_terracotta",
+        "minecraft:mossy_cobblestone",
+        "minecraft:orange_terracotta",
+        "minecraft:packed_ice",
+        "minecraft:raw_copper_block",
+        "minecraft:raw_iron_block",
+        "minecraft:red_sandstone",
+        "minecraft:red_terracotta",
+        "minecraft:sandstone",
+        "minecraft:smooth_basalt",
+        "minecraft:snow_block",
+        "minecraft:stone",
+        "minecraft:terracotta",
+        "minecraft:tuff",
+        "minecraft:white_terracotta",
+        "minecraft:yellow_terracotta",
+        "minecraft:amethyst_block",
+        "minecraft:budding_amethyst",
+        "minecraft:blue_ice",
+        "minecraft:grass_block",
+        "minecraft:gravel",
+        "minecraft:ice",
+        "minecraft:infested_deepslate",
+        "minecraft:infested_stone",
+        "minecraft:magma_block",
+        "minecraft:moss_block",
+        "minecraft:pale_moss_block",
+        "minecraft:mud",
+        "minecraft:mycelium",
+        "minecraft:podzol",
+        "minecraft:powder_snow",
+        "minecraft:red_sand",
+        "minecraft:sand",
+        "minecraft:rooted_dirt",
+        "minecraft:sculk",
+        "minecraft:deepslate",
+        "minecraft:end_stone",
+        "minecraft:obsidian"
+      ],
+      "source_files": [
+        "src/net/minecraft/data/worldgen/SurfaceRuleData.java",
+        "src/net/minecraft/data/worldgen/features/OreFeatures.java",
+        "src/net/minecraft/data/worldgen/features/CaveFeatures.java",
+        "src/net/minecraft/world/level/levelgen/feature/VegetationPatchFeature.java",
+        "src/net/minecraft/world/level/block/SculkVeinBlock.java"
+      ]
+    },
+    {
+      "basis": "CMS1 excludes non-ground vegetation, canopy and trunks. Air/fluid provide no non-fluid ground surface.",
+      "classes": [
+        "AirBlock",
+        "LiquidBlock",
+        "TintedParticleLeavesBlock",
+        "FlowerBlock",
+        "AzaleaBlock",
+        "UntintedParticleLeavesBlock",
+        "BambooStalkBlock",
+        "BigDripleafBlock",
+        "BigDripleafStemBlock",
+        "MushroomBlock",
+        "HugeMushroomBlock",
+        "BushBlock",
+        "CactusBlock",
+        "CactusFlowerBlock",
+        "CaveVinesBlock",
+        "CaveVinesPlantBlock",
+        "EyeblossomBlock",
+        "CocoaBlock",
+        "DryVegetationBlock",
+        "TallGrassBlock",
+        "FireflyBushBlock",
+        "GlowLichenBlock",
+        "HangingRootsBlock",
+        "KelpBlock",
+        "KelpPlantBlock",
+        "DoublePlantBlock",
+        "LeafLitterBlock",
+        "TallFlowerBlock",
+        "LilyPadBlock",
+        "MangroveLeavesBlock",
+        "MangrovePropaguleBlock",
+        "MangroveRootsBlock",
+        "CarpetBlock",
+        "HangingMossBlock",
+        "MossyCarpetBlock",
+        "FlowerBedBlock",
+        "PumpkinBlock",
+        "SeaPickleBlock",
+        "SeagrassBlock",
+        "ShortDryGrassBlock",
+        "SmallDripleafBlock",
+        "SporeBlossomBlock",
+        "SugarCaneBlock",
+        "SweetBerryBushBlock",
+        "TallDryGrassBlock",
+        "TallSeagrassBlock",
+        "VineBlock",
+        "ChorusFlowerBlock",
+        "ChorusPlantBlock"
+      ],
+      "ground_eligible": false,
+      "id": "non-ground-vegetation-and-non-terrain",
+      "identities": [
+        "minecraft:melon",
+        "minecraft:oak_log",
+        "minecraft:dark_oak_log",
+        "minecraft:mangrove_log",
+        "minecraft:pale_oak_log",
+        "minecraft:cherry_log",
+        "minecraft:birch_log",
+        "minecraft:spruce_log",
+        "minecraft:acacia_log",
+        "minecraft:jungle_log"
+      ],
+      "source_files": [
+        "src/net/minecraft/world/level/block/Blocks.java",
+        "src/net/minecraft/world/level/levelgen/feature/HugeFungusFeature.java"
+      ]
+    }
+  ],
+  "schema": "voxygen.ground-role-rules/1",
+  "unknown_policy": "unresolved; never default to ground"
+}

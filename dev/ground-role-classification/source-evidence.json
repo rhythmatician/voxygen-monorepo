@@ -1,0 +1,1007 @@
+{
+  "decompiled_sources": {
+    "src/net/minecraft/data/worldgen/SurfaceRuleData.java": "3170897510b3ea6b98df54b380ddbed5f4dd55e417ef0a0cc3f006c44e1ec753",
+    "src/net/minecraft/data/worldgen/features/CaveFeatures.java": "2b992698c8d9c477709961a3d5bfb10a9c0064dbd421137f869668bfc1d14c02",
+    "src/net/minecraft/data/worldgen/features/OreFeatures.java": "16f7d4749da78077a4229c35267f49525aaeaa5e142cc949bce33c3879949619",
+    "src/net/minecraft/world/level/block/Blocks.java": "ae93898750d8e78cf7f8e1cd46e4253395eaa790266cbd3bc4c56dbbb457c331",
+    "src/net/minecraft/world/level/block/SculkVeinBlock.java": "8c4d151a17efa5fd8a0ad56688d2da292ab2bcbca895984debd5edaec8b4204b",
+    "src/net/minecraft/world/level/levelgen/feature/CoralFeature.java": "d7808aad8dddb49d5d3f0212448c0a0e9fead3e57ba982c564692f24f6a9467c",
+    "src/net/minecraft/world/level/levelgen/feature/EndPodiumFeature.java": "5dd42f861931f5963dc677456254be9e8246b00f0ab551a720d55c41957d3d5e",
+    "src/net/minecraft/world/level/levelgen/feature/HugeFungusFeature.java": "8334ffbb17aed0b20e5763ecad2b48f2d7277f89efcdf1193ac9f75501ecdf48",
+    "src/net/minecraft/world/level/levelgen/feature/PointedDripstoneFeature.java": "f49361b160e9d22ff61201a0ec59b5c0a1b78e22449f39c6e5d274ea8869e774",
+    "src/net/minecraft/world/level/levelgen/feature/VegetationPatchFeature.java": "c2a97f08750b28634403bf5a7be51cd68353e2566dacf571b399767eea0dbe74",
+    "src/net/minecraft/world/level/levelgen/feature/treedecorators/BeehiveDecorator.java": "e50594dbc0600d44017fef26b428996116438591d4611e181fdea3839d37f1df",
+    "src/net/minecraft/world/level/levelgen/feature/treedecorators/CreakingHeartDecorator.java": "55160297bf932d125d2ad423b7bcd322218ac7754a942bf69e0bddc1bd14ede0"
+  },
+  "minecraft_jar_sha1": "632526298395b8483b608e9488d4787bfed9e3f6",
+  "minecraft_version": "26.1-snapshot-11",
+  "missing_source_files": [],
+  "registrations": {
+    "minecraft:acacia_leaves": {
+      "class": "TintedParticleLeavesBlock",
+      "line": 422,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:acacia_log": {
+      "class": "RotatedPillarBlock",
+      "line": 383,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:air": {
+      "class": "AirBlock",
+      "line": 330,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:allium": {
+      "class": "FlowerBlock",
+      "line": 492,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:amethyst_block": {
+      "class": "AmethystBlock",
+      "line": 1287,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:amethyst_cluster": {
+      "class": "AmethystClusterBlock",
+      "line": 1289,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:andesite": {
+      "class": "Block",
+      "line": 336,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:azalea": {
+      "class": "AzaleaBlock",
+      "line": 1419,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:azalea_leaves": {
+      "class": "UntintedParticleLeavesBlock",
+      "line": 427,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:azure_bluet": {
+      "class": "FlowerBlock",
+      "line": 493,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:bamboo": {
+      "class": "BambooStalkBlock",
+      "line": 1108,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:bedrock": {
+      "class": "Block",
+      "line": 364,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:bee_nest": {
+      "class": "BeehiveBlock",
+      "line": 1220,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:big_dripleaf": {
+      "class": "BigDripleafBlock",
+      "line": 1426,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:big_dripleaf_stem": {
+      "class": "BigDripleafStemBlock",
+      "line": 1427,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:birch_leaves": {
+      "class": "TintedParticleLeavesBlock",
+      "line": 420,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:birch_log": {
+      "class": "RotatedPillarBlock",
+      "line": 381,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:blue_ice": {
+      "class": "HalfTransparentBlock",
+      "line": 1105,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:blue_orchid": {
+      "class": "FlowerBlock",
+      "line": 491,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:bone_block": {
+      "class": "RotatedPillarBlock",
+      "line": 990,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:brain_coral": {
+      "class": "CoralPlantBlock",
+      "line": 1080,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:brain_coral_block": {
+      "class": "CoralBlock",
+      "line": 1070,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:brain_coral_fan": {
+      "class": "CoralFanBlock",
+      "line": 1090,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:brain_coral_wall_fan": {
+      "class": "CoralWallFanBlock",
+      "line": 1100,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:brown_mushroom": {
+      "class": "MushroomBlock",
+      "line": 502,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:brown_mushroom_block": {
+      "class": "HugeMushroomBlock",
+      "line": 668,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:brown_terracotta": {
+      "class": "Block",
+      "line": 812,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:bubble_coral": {
+      "class": "CoralPlantBlock",
+      "line": 1081,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:bubble_coral_block": {
+      "class": "CoralBlock",
+      "line": 1071,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:bubble_coral_fan": {
+      "class": "CoralFanBlock",
+      "line": 1091,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:bubble_coral_wall_fan": {
+      "class": "CoralWallFanBlock",
+      "line": 1101,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:budding_amethyst": {
+      "class": "BuddingAmethystBlock",
+      "line": 1288,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:bush": {
+      "class": "BushBlock",
+      "line": 463,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:cactus": {
+      "class": "CactusBlock",
+      "line": 609,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:cactus_flower": {
+      "class": "CactusFlowerBlock",
+      "line": 610,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:calcite": {
+      "class": "Block",
+      "line": 1307,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:cave_air": {
+      "class": "AirBlock",
+      "line": 1111,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:cave_vines": {
+      "class": "CaveVinesBlock",
+      "line": 1416,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:cave_vines_plant": {
+      "class": "CaveVinesPlantBlock",
+      "line": 1417,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:cherry_leaves": {
+      "class": "UntintedParticleLeavesBlock",
+      "line": 423,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:cherry_log": {
+      "class": "RotatedPillarBlock",
+      "line": 384,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:chest": {
+      "class": "ChestBlock",
+      "line": 531,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:chorus_flower": {
+      "class": "ChorusFlowerBlock",
+      "line": 973,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:chorus_plant": {
+      "class": "ChorusPlantBlock",
+      "line": 972,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:clay": {
+      "class": "Block",
+      "line": 611,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:closed_eyeblossom": {
+      "class": "EyeblossomBlock",
+      "line": 1473,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:coal_ore": {
+      "class": "DropExperienceBlock",
+      "line": 376,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:coarse_dirt": {
+      "class": "Block",
+      "line": 340,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:cobblestone": {
+      "class": "Block",
+      "line": 342,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:cocoa": {
+      "class": "CocoaBlock",
+      "line": 712,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:copper_ore": {
+      "class": "DropExperienceBlock",
+      "line": 1320,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:cornflower": {
+      "class": "FlowerBlock",
+      "line": 499,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:creaking_heart": {
+      "class": "CreakingHeartBlock",
+      "line": 529,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:dandelion": {
+      "class": "FlowerBlock",
+      "line": 487,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:dark_oak_leaves": {
+      "class": "TintedParticleLeavesBlock",
+      "line": 424,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:dark_oak_log": {
+      "class": "RotatedPillarBlock",
+      "line": 385,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:dead_bush": {
+      "class": "DryVegetationBlock",
+      "line": 462,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:deepslate": {
+      "class": "RotatedPillarBlock",
+      "line": 1432,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:deepslate_coal_ore": {
+      "class": "DropExperienceBlock",
+      "line": 377,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:deepslate_copper_ore": {
+      "class": "DropExperienceBlock",
+      "line": 1321,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:deepslate_diamond_ore": {
+      "class": "DropExperienceBlock",
+      "line": 534,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:deepslate_emerald_ore": {
+      "class": "DropExperienceBlock",
+      "line": 715,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:deepslate_gold_ore": {
+      "class": "DropExperienceBlock",
+      "line": 373,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:deepslate_iron_ore": {
+      "class": "DropExperienceBlock",
+      "line": 375,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:deepslate_lapis_ore": {
+      "class": "DropExperienceBlock",
+      "line": 433,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:deepslate_redstone_ore": {
+      "class": "RedStoneOreBlock",
+      "line": 602,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:diamond_ore": {
+      "class": "DropExperienceBlock",
+      "line": 533,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:diorite": {
+      "class": "Block",
+      "line": 334,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:dirt": {
+      "class": "Block",
+      "line": 339,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:dripstone_block": {
+      "class": "Block",
+      "line": 1415,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:emerald_ore": {
+      "class": "DropExperienceBlock",
+      "line": 714,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:end_gateway": {
+      "class": "EndGatewayBlock",
+      "line": 983,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:end_stone": {
+      "class": "Block",
+      "line": 709,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:fern": {
+      "class": "TallGrassBlock",
+      "line": 461,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:fire": {
+      "class": "FireBlock",
+      "line": 526,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:fire_coral": {
+      "class": "CoralPlantBlock",
+      "line": 1082,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:fire_coral_block": {
+      "class": "CoralBlock",
+      "line": 1072,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:fire_coral_fan": {
+      "class": "CoralFanBlock",
+      "line": 1092,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:fire_coral_wall_fan": {
+      "class": "CoralWallFanBlock",
+      "line": 1102,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:firefly_bush": {
+      "class": "FireflyBushBlock",
+      "line": 1476,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:flowering_azalea": {
+      "class": "AzaleaBlock",
+      "line": 1420,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:flowering_azalea_leaves": {
+      "class": "UntintedParticleLeavesBlock",
+      "line": 428,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:glow_lichen": {
+      "class": "GlowLichenBlock",
+      "line": 683,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:gold_ore": {
+      "class": "DropExperienceBlock",
+      "line": 372,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:granite": {
+      "class": "Block",
+      "line": 332,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:grass_block": {
+      "class": "GrassBlock",
+      "line": 338,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:gravel": {
+      "class": "ColoredFallingBlock",
+      "line": 370,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:hanging_roots": {
+      "class": "HangingRootsBlock",
+      "line": 1429,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:horn_coral": {
+      "class": "CoralPlantBlock",
+      "line": 1083,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:horn_coral_block": {
+      "class": "CoralBlock",
+      "line": 1073,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:horn_coral_fan": {
+      "class": "CoralFanBlock",
+      "line": 1093,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:horn_coral_wall_fan": {
+      "class": "CoralWallFanBlock",
+      "line": 1103,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:ice": {
+      "class": "IceBlock",
+      "line": 607,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:infested_deepslate": {
+      "class": "InfestedRotatedPillarBlock",
+      "line": 1452,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:infested_stone": {
+      "class": "InfestedBlock",
+      "line": 662,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:iron_bars": {
+      "class": "IronBarsBlock",
+      "line": 671,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:iron_ore": {
+      "class": "DropExperienceBlock",
+      "line": 374,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:jungle_leaves": {
+      "class": "TintedParticleLeavesBlock",
+      "line": 421,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:jungle_log": {
+      "class": "RotatedPillarBlock",
+      "line": 382,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:kelp": {
+      "class": "KelpBlock",
+      "line": 1058,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:kelp_plant": {
+      "class": "KelpPlantBlock",
+      "line": 1059,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:lapis_ore": {
+      "class": "DropExperienceBlock",
+      "line": 432,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:large_amethyst_bud": {
+      "class": "AmethystClusterBlock",
+      "line": 1290,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:large_fern": {
+      "class": "DoublePlantBlock",
+      "line": 878,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:lava": {
+      "class": "LiquidBlock",
+      "line": 366,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:leaf_litter": {
+      "class": "LeafLitterBlock",
+      "line": 1424,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:light_gray_terracotta": {
+      "class": "Block",
+      "line": 808,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:lilac": {
+      "class": "TallFlowerBlock",
+      "line": 874,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:lily_of_the_valley": {
+      "class": "FlowerBlock",
+      "line": 501,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:lily_pad": {
+      "class": "LilyPadBlock",
+      "line": 690,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:magma_block": {
+      "class": "MagmaBlock",
+      "line": 987,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:mangrove_leaves": {
+      "class": "MangroveLeavesBlock",
+      "line": 426,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:mangrove_log": {
+      "class": "RotatedPillarBlock",
+      "line": 387,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:mangrove_propagule": {
+      "class": "MangrovePropaguleBlock",
+      "line": 363,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:mangrove_roots": {
+      "class": "MangroveRootsBlock",
+      "line": 388,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:medium_amethyst_bud": {
+      "class": "AmethystClusterBlock",
+      "line": 1291,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:melon": {
+      "class": "Block",
+      "line": 677,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:moss_block": {
+      "class": "BonemealableFeaturePlacerBlock",
+      "line": 1425,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:moss_carpet": {
+      "class": "CarpetBlock",
+      "line": 1421,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:mossy_cobblestone": {
+      "class": "Block",
+      "line": 522,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:mud": {
+      "class": "MudBlock",
+      "line": 1431,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:muddy_mangrove_roots": {
+      "class": "RotatedPillarBlock",
+      "line": 389,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:mushroom_stem": {
+      "class": "HugeMushroomBlock",
+      "line": 670,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:mycelium": {
+      "class": "MyceliumBlock",
+      "line": 689,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:oak_leaves": {
+      "class": "TintedParticleLeavesBlock",
+      "line": 418,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:oak_log": {
+      "class": "RotatedPillarBlock",
+      "line": 379,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:obsidian": {
+      "class": "Block",
+      "line": 523,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:orange_terracotta": {
+      "class": "Block",
+      "line": 801,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:orange_tulip": {
+      "class": "FlowerBlock",
+      "line": 495,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:oxeye_daisy": {
+      "class": "FlowerBlock",
+      "line": 498,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:packed_ice": {
+      "class": "Block",
+      "line": 872,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:pale_hanging_moss": {
+      "class": "HangingMossBlock",
+      "line": 1471,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:pale_moss_block": {
+      "class": "BonemealableFeaturePlacerBlock",
+      "line": 1469,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:pale_moss_carpet": {
+      "class": "MossyCarpetBlock",
+      "line": 1470,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:pale_oak_leaves": {
+      "class": "UntintedParticleLeavesBlock",
+      "line": 425,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:pale_oak_log": {
+      "class": "RotatedPillarBlock",
+      "line": 386,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:peony": {
+      "class": "TallFlowerBlock",
+      "line": 876,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:pink_petals": {
+      "class": "FlowerBedBlock",
+      "line": 1422,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:pink_tulip": {
+      "class": "FlowerBlock",
+      "line": 497,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:podzol": {
+      "class": "SnowyBlock",
+      "line": 341,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:pointed_dripstone": {
+      "class": "PointedDripstoneBlock",
+      "line": 1414,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:poppy": {
+      "class": "FlowerBlock",
+      "line": 490,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:powder_snow": {
+      "class": "PowderSnowBlock",
+      "line": 1309,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:pumpkin": {
+      "class": "PumpkinBlock",
+      "line": 676,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:raw_copper_block": {
+      "class": "Block",
+      "line": 1455,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:raw_iron_block": {
+      "class": "Block",
+      "line": 1454,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:red_mushroom": {
+      "class": "MushroomBlock",
+      "line": 503,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:red_mushroom_block": {
+      "class": "HugeMushroomBlock",
+      "line": 669,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:red_sand": {
+      "class": "SandBlock",
+      "line": 369,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:red_sandstone": {
+      "class": "Block",
+      "line": 911,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:red_terracotta": {
+      "class": "Block",
+      "line": 814,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:red_tulip": {
+      "class": "FlowerBlock",
+      "line": 494,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:redstone_ore": {
+      "class": "RedStoneOreBlock",
+      "line": 601,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:rooted_dirt": {
+      "class": "RootedDirtBlock",
+      "line": 1430,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:rose_bush": {
+      "class": "TallFlowerBlock",
+      "line": 875,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:sand": {
+      "class": "SandBlock",
+      "line": 367,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:sandstone": {
+      "class": "Block",
+      "line": 436,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:sandstone_slab": {
+      "class": "SlabBlock",
+      "line": 928,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:sculk": {
+      "class": "SculkBlock",
+      "line": 1312,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:sculk_catalyst": {
+      "class": "SculkCatalystBlock",
+      "line": 1314,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:sculk_sensor": {
+      "class": "SculkSensorBlock",
+      "line": 1310,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:sculk_shrieker": {
+      "class": "SculkShriekerBlock",
+      "line": 1315,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:sculk_vein": {
+      "class": "SculkVeinBlock",
+      "line": 1313,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:sea_pickle": {
+      "class": "SeaPickleBlock",
+      "line": 1104,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:seagrass": {
+      "class": "SeagrassBlock",
+      "line": 466,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:short_dry_grass": {
+      "class": "ShortDryGrassBlock",
+      "line": 464,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:short_grass": {
+      "class": "TallGrassBlock",
+      "line": 460,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:small_amethyst_bud": {
+      "class": "AmethystClusterBlock",
+      "line": 1292,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:small_dripleaf": {
+      "class": "SmallDripleafBlock",
+      "line": 1428,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:smooth_basalt": {
+      "class": "Block",
+      "line": 1453,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:snow": {
+      "class": "SnowLayerBlock",
+      "line": 606,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:snow_block": {
+      "class": "Block",
+      "line": 608,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:spawner": {
+      "class": "SpawnerBlock",
+      "line": 528,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:spore_blossom": {
+      "class": "SporeBlossomBlock",
+      "line": 1418,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:spruce_leaves": {
+      "class": "TintedParticleLeavesBlock",
+      "line": 419,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:spruce_log": {
+      "class": "RotatedPillarBlock",
+      "line": 380,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:stone": {
+      "class": "Block",
+      "line": 331,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:sugar_cane": {
+      "class": "SugarCaneBlock",
+      "line": 612,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:sunflower": {
+      "class": "TallFlowerBlock",
+      "line": 873,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:suspicious_sand": {
+      "class": "BrushableBlock",
+      "line": 368,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:sweet_berry_bush": {
+      "class": "SweetBerryBushBlock",
+      "line": 1170,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:tall_dry_grass": {
+      "class": "TallDryGrassBlock",
+      "line": 465,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:tall_grass": {
+      "class": "DoublePlantBlock",
+      "line": 877,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:tall_seagrass": {
+      "class": "TallSeagrassBlock",
+      "line": 467,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:terracotta": {
+      "class": "Block",
+      "line": 870,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:tube_coral": {
+      "class": "CoralPlantBlock",
+      "line": 1079,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:tube_coral_block": {
+      "class": "CoralBlock",
+      "line": 1069,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:tube_coral_fan": {
+      "class": "CoralFanBlock",
+      "line": 1089,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:tube_coral_wall_fan": {
+      "class": "CoralWallFanBlock",
+      "line": 1099,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:tuff": {
+      "class": "Block",
+      "line": 1293,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:vine": {
+      "class": "VineBlock",
+      "line": 682,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:wall_torch": {
+      "class": "WallTorchBlock",
+      "line": 525,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:water": {
+      "class": "LiquidBlock",
+      "line": 365,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:white_terracotta": {
+      "class": "Block",
+      "line": 800,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:white_tulip": {
+      "class": "FlowerBlock",
+      "line": 496,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:wildflowers": {
+      "class": "FlowerBedBlock",
+      "line": 1423,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    },
+    "minecraft:yellow_terracotta": {
+      "class": "Block",
+      "line": 804,
+      "source": "src/net/minecraft/world/level/block/Blocks.java"
+    }
+  },
+  "schema": "voxygen.ground-role-source-evidence/1"
+}
