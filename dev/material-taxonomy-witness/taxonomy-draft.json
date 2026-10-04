@@ -1,0 +1,950 @@
+{
+  "acceptance_bindable": false,
+  "ambiguity_ledger": [
+    {
+      "affected_depths": [
+        "all"
+      ],
+      "competing_outcomes": [
+        "active-profile feasible state",
+        "diagnostic-only state",
+        "profile-inactive state"
+      ],
+      "consequence": "No acceptance-bound totality or retained/exact representative decisions can be made.",
+      "evidence": [
+        "Active 1.21.11 resources and callbacks are captured.",
+        "Legacy accepted #26 populations describe 26.1-snapshot-11 block types; Nether list is missing.",
+        "Chorus generation writes AGE=5 although assets also define ages 0-4."
+      ],
+      "id": "population-and-state-closure",
+      "identities": [
+        "all"
+      ],
+      "kind": "missing-input",
+      "missing": "Authoritative active-version profile boundary and complete canonical state/source closure."
+    },
+    {
+      "affected_depths": [
+        "coarse-family",
+        "surface-family"
+      ],
+      "competing_outcomes": [
+        "shared coarse rock with distinct surface families",
+        "separate coarse perceptual families"
+      ],
+      "consequence": "Candidate ancestry may merge strongly different tones at coarse depth.",
+      "evidence": [
+        "mojang_client:assets/minecraft/textures/block/obsidian.png",
+        "mojang_client:assets/minecraft/textures/block/bedrock.png"
+      ],
+      "id": "rock-merging-at-depth",
+      "identities": [
+        "minecraft:bedrock",
+        "minecraft:obsidian"
+      ],
+      "kind": "missing-perceptual-evidence",
+      "missing": "Level-appropriate rendered comparison with fixed views; texture alone is insufficient."
+    },
+    {
+      "affected_depths": [
+        "coarse-family",
+        "fine-family"
+      ],
+      "competing_outcomes": [
+        "shared coarse ice with transmission distinction at surface",
+        "coarse transmission split",
+        "merge solid-ice hue variants at fine depth"
+      ],
+      "consequence": "Sharing ice family may hide visible background transmission; hue alone does not force a fine split.",
+      "evidence": [
+        "javap:net.minecraft.client.render.BlockRenderLayers",
+        "mojang_client:assets/minecraft/textures/block/ice.png",
+        "mojang_client:assets/minecraft/textures/block/packed_ice.png",
+        "mojang_client:assets/minecraft/textures/block/blue_ice.png"
+      ],
+      "id": "ice-transmission-depth",
+      "identities": [
+        "minecraft:ice",
+        "minecraft:packed_ice",
+        "minecraft:blue_ice"
+      ],
+      "kind": "missing-perceptual-evidence",
+      "missing": "Bound render settings and Level-appropriate contrast/transmission witness."
+    },
+    {
+      "affected_depths": [
+        "surface-family",
+        "fine-family"
+      ],
+      "competing_outcomes": [
+        "separate living/dead fine material family",
+        "one flower family with appearance diagnostics"
+      ],
+      "consequence": "Block-name-only family lookup cannot express the visible age=5 texture difference.",
+      "evidence": [
+        "mojang_client:assets/minecraft/blockstates/chorus_flower.json",
+        "mojang_client:assets/minecraft/textures/block/chorus_flower.png",
+        "mojang_client:assets/minecraft/textures/block/chorus_flower_dead.png",
+        "javap:net.minecraft.block.ChorusFlowerBlock"
+      ],
+      "id": "chorus-live-dead-family",
+      "identities": [
+        "minecraft:chorus_flower"
+      ],
+      "kind": "missing-perceptual-evidence",
+      "missing": "Profile-feasible state closure and Level-appropriate appearance comparison."
+    },
+    {
+      "affected_depths": [
+        "all"
+      ],
+      "competing_outcomes": [
+        "material class stable with context-dependent visual diagnostics",
+        "context-specific refinement classes"
+      ],
+      "consequence": "Model geometry alone mislabels the gateway as empty and leaf texture alone cannot produce final color.",
+      "evidence": [
+        "javap:net.minecraft.client.render.block.entity.EndGatewayBlockEntityRenderer",
+        "javap:net.minecraft.client.render.BlockRenderLayers",
+        "javap:net.minecraft.client.color.block.BlockColors"
+      ],
+      "id": "special-render-context",
+      "identities": [
+        "minecraft:end_gateway",
+        "minecraft:oak_leaves",
+        "minecraft:short_grass"
+      ],
+      "kind": "missing-render-input",
+      "missing": "Authoritative treatment of block-entity visuals, biome tint and leaf configuration in pinned reference appearance."
+    }
+  ],
+  "canonical_registry_identity": null,
+  "compatibility_witness": {
+    "finding": "Canonical block-name mapping resolves each block default state; production writer uses that map. Pinned vanilla chorus default AGE=0 differs from generation AGE=5 and its texture. This is a source-level incompatibility with exact full-state claims, not a measured runtime comparison.",
+    "minecraft_source_references": [
+      "javap:net.minecraft.block.ChorusFlowerBlock",
+      "mojang_client:assets/minecraft/blockstates/chorus_flower.json"
+    ],
+    "no_production_change": true,
+    "repo_source_witnesses": {
+      "mod/src/main/java/com/rhythmatician/voxygen/backend/voxy/CanonicalVoxyMaps.java": {
+        "excerpt": "        try {\n            java.lang.reflect.Method m =\n                    voxyMapper.getClass().getMethod(\"getIdForBlockState\", BlockState.class);\n            int[] map = new int[CanonicalRegistries.BLOCK_COUNT];\n            for (int i = 0; i < map.length; i++) {\n                String name = canonicalName(i);\n                Identifier id = Identifier.of(name);\n                Block block = Registries.BLOCK.get(id);\n                BlockState state = block.getDefaultState();\n                Object voxyId = m.invoke(voxyMapper, state);\n                map[i] = voxyId instanceof Number n ? n.intValue() : 0;\n            }",
+        "hash_kind": "text-lf-utf8",
+        "line_range": [
+          38,
+          49
+        ],
+        "source_sha256": "8de360f72a0a6c5cd7650bb1549aefd1cbd04001b3f78042ab07325bfbb2c514"
+      },
+      "mod/src/main/java/com/rhythmatician/voxygen/backend/voxy/RealVoxyVolumeWriter.java": {
+        "excerpt": "                    int voxyBlock = toVoxyBlock(volume.blockId(x, y, z));\n                    int voxyBiome = toVoxyBiome(volume.biomeId(x, y, z));\n                    long voxel = VoxyCompat.composeVoxel(voxyBlock, voxyBiome, DEFAULT_LIGHT);\n                    data[VoxyCompat.l0Index(x, y, z)] = voxel;\n                    if (voxyBlock != 0) nonAir++;\n                }\n            }\n        }",
+        "hash_kind": "text-lf-utf8",
+        "line_range": [
+          369,
+          376
+        ],
+        "source_sha256": "3cdadc4cb5ff975210680c5d79a07635a4b62178daaf3cc29c0e4dafde4b67d3"
+      },
+      "mod/src/main/java/com/rhythmatician/voxygen/generation/session/GenerationSession.java": {
+        "excerpt": "            VoxyIdMaps fallbackMaps = CanonicalVoxyMaps.from(voxyMapper, biomeRegistry);\n            VoxelVolumeWriter fallbackWriter = RealVoxyVolumeWriter.create(worldEngine, fallbackMaps);\n",
+        "hash_kind": "text-lf-utf8",
+        "line_range": [
+          987,
+          989
+        ],
+        "source_sha256": "affc7e982d89d9c12313410ccedcac4a3d46176bccf4fd0d448f08b8835d90e5"
+      }
+    }
+  },
+  "derived_evidence_sha256": {
+    "model-evidence.json": "f1fbf4c793d4e088f296dc66e8df230006c8b94637bb1901aa2cad7696d8a588",
+    "texture-evidence.json": "ce572ffe4338c294284ddc9aad97ca8085dfa116889d0aa12e35f5f9e46b915f"
+  },
+  "evidence_limits": [
+    "Source and vanilla assets inspected; no Minecraft/Voxy rendering run, no same-view family error measurement.",
+    "Texture statistics are encoded pixel diagnostics, not perceptual equivalence rules.",
+    "Reference assets do not authorize backend representative choices.",
+    "State selectors are witness scopes, not a validated canonical state registry or total mapping.",
+    "Ground Role, consequentiality, retained-exact sets and representative permission are outside this artifact."
+  ],
+  "families": [
+    {
+      "depth": "coarse-family",
+      "id": "coarse.absence",
+      "parent": null,
+      "status": "candidate-unadjudicated"
+    },
+    {
+      "depth": "coarse-family",
+      "id": "coarse.biome_vegetation",
+      "parent": null,
+      "status": "candidate-unadjudicated"
+    },
+    {
+      "depth": "coarse-family",
+      "id": "coarse.emissive_effect",
+      "parent": null,
+      "status": "candidate-unadjudicated"
+    },
+    {
+      "depth": "coarse-family",
+      "id": "coarse.end_mineral",
+      "parent": null,
+      "status": "candidate-unadjudicated"
+    },
+    {
+      "depth": "coarse-family",
+      "id": "coarse.end_vegetation",
+      "parent": null,
+      "status": "candidate-unadjudicated"
+    },
+    {
+      "depth": "coarse-family",
+      "id": "coarse.ice",
+      "parent": null,
+      "status": "candidate-unadjudicated"
+    },
+    {
+      "depth": "coarse-family",
+      "id": "coarse.metal",
+      "parent": null,
+      "status": "candidate-unadjudicated"
+    },
+    {
+      "depth": "coarse-family",
+      "id": "coarse.portal_effect",
+      "parent": null,
+      "status": "candidate-unadjudicated"
+    },
+    {
+      "depth": "coarse-family",
+      "id": "coarse.rock",
+      "parent": null,
+      "status": "candidate-unadjudicated"
+    },
+    {
+      "depth": "coarse-family",
+      "id": "coarse.snow",
+      "parent": null,
+      "status": "candidate-unadjudicated"
+    },
+    {
+      "depth": "coarse-family",
+      "id": "coarse.wood",
+      "parent": null,
+      "status": "candidate-unadjudicated"
+    },
+    {
+      "depth": "fine-family",
+      "id": "fine.air",
+      "parent": "surface.absence",
+      "status": "candidate-unadjudicated"
+    },
+    {
+      "depth": "fine-family",
+      "id": "fine.animated_flame",
+      "parent": "surface.flame_effect",
+      "status": "candidate-unadjudicated"
+    },
+    {
+      "depth": "fine-family",
+      "id": "fine.bark_wood",
+      "parent": "surface.bark_wood",
+      "status": "candidate-unadjudicated"
+    },
+    {
+      "depth": "fine-family",
+      "id": "fine.biome_tinted_canopy",
+      "parent": "surface.canopy",
+      "status": "candidate-unadjudicated"
+    },
+    {
+      "depth": "fine-family",
+      "id": "fine.biome_tinted_low_vegetation",
+      "parent": "surface.low_vegetation",
+      "status": "candidate-unadjudicated"
+    },
+    {
+      "depth": "fine-family",
+      "id": "fine.blue_solid_ice",
+      "parent": "surface.solid_ice",
+      "status": "candidate-unadjudicated"
+    },
+    {
+      "depth": "fine-family",
+      "id": "fine.dark_violet_rock",
+      "parent": "surface.dark_violet_rock",
+      "status": "candidate-unadjudicated"
+    },
+    {
+      "depth": "fine-family",
+      "id": "fine.end_stone",
+      "parent": "surface.end_stone",
+      "status": "candidate-unadjudicated"
+    },
+    {
+      "depth": "fine-family",
+      "id": "fine.gateway_effect",
+      "parent": "surface.gateway_effect",
+      "status": "candidate-unadjudicated"
+    },
+    {
+      "depth": "fine-family",
+      "id": "fine.gray_mottled_rock",
+      "parent": "surface.gray_mottled_rock",
+      "status": "candidate-unadjudicated"
+    },
+    {
+      "depth": "fine-family",
+      "id": "fine.pale_live_flower",
+      "parent": "surface.purple_branched_vegetation",
+      "status": "candidate-unadjudicated"
+    },
+    {
+      "depth": "fine-family",
+      "id": "fine.pale_solid_ice",
+      "parent": "surface.solid_ice",
+      "status": "candidate-unadjudicated"
+    },
+    {
+      "depth": "fine-family",
+      "id": "fine.purple_branched_vegetation",
+      "parent": "surface.purple_branched_vegetation",
+      "status": "candidate-unadjudicated"
+    },
+    {
+      "depth": "fine-family",
+      "id": "fine.purple_terminal_flower",
+      "parent": "surface.purple_branched_vegetation",
+      "status": "candidate-unadjudicated"
+    },
+    {
+      "depth": "fine-family",
+      "id": "fine.snow",
+      "parent": "surface.snow",
+      "status": "candidate-unadjudicated"
+    },
+    {
+      "depth": "fine-family",
+      "id": "fine.thin_metal",
+      "parent": "surface.thin_metal",
+      "status": "candidate-unadjudicated"
+    },
+    {
+      "depth": "fine-family",
+      "id": "fine.torch_fixture",
+      "parent": "surface.torch_fixture",
+      "status": "candidate-unadjudicated"
+    },
+    {
+      "depth": "fine-family",
+      "id": "fine.translucent_ice",
+      "parent": "surface.translucent_ice",
+      "status": "candidate-unadjudicated"
+    },
+    {
+      "depth": "surface-family",
+      "id": "surface.absence",
+      "parent": "coarse.absence",
+      "status": "candidate-unadjudicated"
+    },
+    {
+      "depth": "surface-family",
+      "id": "surface.bark_wood",
+      "parent": "coarse.wood",
+      "status": "candidate-unadjudicated"
+    },
+    {
+      "depth": "surface-family",
+      "id": "surface.canopy",
+      "parent": "coarse.biome_vegetation",
+      "status": "candidate-unadjudicated"
+    },
+    {
+      "depth": "surface-family",
+      "id": "surface.dark_violet_rock",
+      "parent": "coarse.rock",
+      "status": "candidate-unadjudicated"
+    },
+    {
+      "depth": "surface-family",
+      "id": "surface.end_stone",
+      "parent": "coarse.end_mineral",
+      "status": "candidate-unadjudicated"
+    },
+    {
+      "depth": "surface-family",
+      "id": "surface.flame_effect",
+      "parent": "coarse.emissive_effect",
+      "status": "candidate-unadjudicated"
+    },
+    {
+      "depth": "surface-family",
+      "id": "surface.gateway_effect",
+      "parent": "coarse.portal_effect",
+      "status": "candidate-unadjudicated"
+    },
+    {
+      "depth": "surface-family",
+      "id": "surface.gray_mottled_rock",
+      "parent": "coarse.rock",
+      "status": "candidate-unadjudicated"
+    },
+    {
+      "depth": "surface-family",
+      "id": "surface.low_vegetation",
+      "parent": "coarse.biome_vegetation",
+      "status": "candidate-unadjudicated"
+    },
+    {
+      "depth": "surface-family",
+      "id": "surface.purple_branched_vegetation",
+      "parent": "coarse.end_vegetation",
+      "status": "candidate-unadjudicated"
+    },
+    {
+      "depth": "surface-family",
+      "id": "surface.snow",
+      "parent": "coarse.snow",
+      "status": "candidate-unadjudicated"
+    },
+    {
+      "depth": "surface-family",
+      "id": "surface.solid_ice",
+      "parent": "coarse.ice",
+      "status": "candidate-unadjudicated"
+    },
+    {
+      "depth": "surface-family",
+      "id": "surface.thin_metal",
+      "parent": "coarse.metal",
+      "status": "candidate-unadjudicated"
+    },
+    {
+      "depth": "surface-family",
+      "id": "surface.torch_fixture",
+      "parent": "coarse.emissive_effect",
+      "status": "candidate-unadjudicated"
+    },
+    {
+      "depth": "surface-family",
+      "id": "surface.translucent_ice",
+      "parent": "coarse.ice",
+      "status": "candidate-unadjudicated"
+    }
+  ],
+  "frozen_profile_identity": null,
+  "membership_candidates": [
+    {
+      "candidate_membership": {
+        "coarse-family": "coarse.absence",
+        "fine-family": "fine.air",
+        "surface-family": "surface.absence"
+      },
+      "canonical_block_name": "minecraft:air",
+      "canonical_state_population_complete": false,
+      "derivation": "source-supported candidate; not an accepted perceptual equivalence class",
+      "profile_reachability": "active-End base-noise default fluid witness; complete scope not frozen",
+      "rationale": [
+        "No model elements; explicit absence family is not an occupied material assertion."
+      ],
+      "rule_identity": "witness-air",
+      "source_references": [
+        "mojang_client:assets/minecraft/models/block/air.json",
+        "loom_named_merged:data/minecraft/worldgen/noise_settings/end.json"
+      ],
+      "state_selector": {}
+    },
+    {
+      "candidate_membership": {
+        "coarse-family": "coarse.end_mineral",
+        "fine-family": "fine.end_stone",
+        "surface-family": "surface.end_stone"
+      },
+      "canonical_block_name": "minecraft:end_stone",
+      "canonical_state_population_complete": false,
+      "derivation": "source-supported candidate; not an accepted perceptual equivalence class",
+      "profile_reachability": "active-End base-noise and small-island write witness",
+      "rationale": [
+        "Required End-defining mineral distinction; cube geometry and pale yellow patterned texture inspected."
+      ],
+      "rule_identity": "witness-end_stone",
+      "source_references": [
+        "mojang_client:assets/minecraft/models/block/end_stone.json",
+        "mojang_client:assets/minecraft/textures/block/end_stone.png",
+        "javap:net.minecraft.world.gen.feature.EndIslandFeature",
+        "loom_named_merged:data/minecraft/worldgen/noise_settings/end.json"
+      ],
+      "state_selector": {}
+    },
+    {
+      "candidate_membership": {
+        "coarse-family": "coarse.rock",
+        "fine-family": "fine.dark_violet_rock",
+        "surface-family": "surface.dark_violet_rock"
+      },
+      "canonical_block_name": "minecraft:obsidian",
+      "canonical_state_population_complete": false,
+      "derivation": "source-supported candidate; not an accepted perceptual equivalence class",
+      "profile_reachability": "active-End spike and platform write witness",
+      "rationale": [
+        "Cube model and dark violet texture inspected; no luminosity or translucency grouping inferred from names."
+      ],
+      "rule_identity": "witness-dark_violet_rock",
+      "source_references": [
+        "mojang_client:assets/minecraft/models/block/obsidian.json",
+        "mojang_client:assets/minecraft/textures/block/obsidian.png",
+        "javap:net.minecraft.world.gen.feature.EndSpikeFeature",
+        "javap:net.minecraft.world.gen.feature.EndPlatformFeature"
+      ],
+      "state_selector": {}
+    },
+    {
+      "candidate_membership": {
+        "coarse-family": "coarse.rock",
+        "fine-family": "fine.gray_mottled_rock",
+        "surface-family": "surface.gray_mottled_rock"
+      },
+      "canonical_block_name": "minecraft:bedrock",
+      "canonical_state_population_complete": false,
+      "derivation": "source-supported candidate; not an accepted perceptual equivalence class",
+      "profile_reachability": "active-End spike/gateway write witness",
+      "rationale": [
+        "Cube and mirrored model variants; gray high-contrast texture. Merging with other rocks remains open."
+      ],
+      "rule_identity": "witness-gray_mottled_rock",
+      "source_references": [
+        "mojang_client:assets/minecraft/blockstates/bedrock.json",
+        "mojang_client:assets/minecraft/textures/block/bedrock.png",
+        "javap:net.minecraft.world.gen.feature.EndSpikeFeature",
+        "javap:net.minecraft.world.gen.feature.EndGatewayFeature"
+      ],
+      "state_selector": {}
+    },
+    {
+      "candidate_membership": {
+        "coarse-family": "coarse.end_vegetation",
+        "fine-family": "fine.purple_branched_vegetation",
+        "surface-family": "surface.purple_branched_vegetation"
+      },
+      "canonical_block_name": "minecraft:chorus_plant",
+      "canonical_state_population_complete": false,
+      "derivation": "source-supported candidate; not an accepted perceptual equivalence class",
+      "profile_reachability": "active-End chorus generation writes connection-dependent plant states",
+      "rationale": [
+        "Partial multipart branch geometry; purple texture; CUTOUT layer, so not a solid-cube material shortcut."
+      ],
+      "rule_identity": "witness-purple_branched_vegetation",
+      "source_references": [
+        "mojang_client:assets/minecraft/blockstates/chorus_plant.json",
+        "mojang_client:assets/minecraft/models/block/chorus_plant_side.json",
+        "mojang_client:assets/minecraft/textures/block/chorus_plant.png",
+        "javap:net.minecraft.client.render.BlockRenderLayers",
+        "javap:net.minecraft.block.ChorusFlowerBlock"
+      ],
+      "state_selector": {
+        "connections": "not enumerated; multipart booleans"
+      }
+    },
+    {
+      "candidate_membership": {
+        "coarse-family": "coarse.end_vegetation",
+        "fine-family": "fine.purple_terminal_flower",
+        "surface-family": "surface.purple_branched_vegetation"
+      },
+      "canonical_block_name": "minecraft:chorus_flower",
+      "canonical_state_population_complete": false,
+      "derivation": "source-supported candidate; not an accepted perceptual equivalence class",
+      "profile_reachability": "active-End chorus generation AGE=5 write witness",
+      "rationale": [
+        "Age 5 selects dead flower texture over sculpted flower model. Generation explicitly writes AGE=5."
+      ],
+      "rule_identity": "witness-purple_terminal_flower",
+      "source_references": [
+        "mojang_client:assets/minecraft/blockstates/chorus_flower.json",
+        "mojang_client:assets/minecraft/models/block/chorus_flower_dead.json",
+        "mojang_client:assets/minecraft/textures/block/chorus_flower_dead.png",
+        "javap:net.minecraft.client.render.BlockRenderLayers",
+        "javap:net.minecraft.block.ChorusFlowerBlock"
+      ],
+      "state_selector": {
+        "age": 5
+      }
+    },
+    {
+      "candidate_membership": {
+        "coarse-family": "coarse.end_vegetation",
+        "fine-family": "fine.pale_live_flower",
+        "surface-family": "surface.purple_branched_vegetation"
+      },
+      "canonical_block_name": "minecraft:chorus_flower",
+      "canonical_state_population_complete": false,
+      "derivation": "source-supported candidate; not an accepted perceptual equivalence class",
+      "profile_reachability": "state diagnostic control; frozen pre-tick reachability unproven",
+      "rationale": [
+        "Same flower geometry with a different living texture; cannot infer pre-tick profile membership from registry existence."
+      ],
+      "rule_identity": "witness-pale_live_flower",
+      "source_references": [
+        "mojang_client:assets/minecraft/blockstates/chorus_flower.json",
+        "mojang_client:assets/minecraft/models/block/chorus_flower.json",
+        "mojang_client:assets/minecraft/textures/block/chorus_flower.png",
+        "javap:net.minecraft.client.render.BlockRenderLayers"
+      ],
+      "state_selector": {
+        "age": [
+          0,
+          1,
+          2,
+          3,
+          4
+        ]
+      }
+    },
+    {
+      "candidate_membership": {
+        "coarse-family": "coarse.portal_effect",
+        "fine-family": "fine.gateway_effect",
+        "surface-family": "surface.gateway_effect"
+      },
+      "canonical_block_name": "minecraft:end_gateway",
+      "canonical_state_population_complete": false,
+      "derivation": "source-supported candidate; not an accepted perceptual equivalence class",
+      "profile_reachability": "active-End gateway feature write witness; render context not fully bound",
+      "rationale": [
+        "Model has only an obsidian particle texture and no elements; actual portal and temporary beam come from a block entity renderer. Particle texture does not establish rock membership."
+      ],
+      "rule_identity": "witness-gateway_effect",
+      "source_references": [
+        "mojang_client:assets/minecraft/models/block/end_gateway.json",
+        "javap:net.minecraft.client.render.block.entity.EndGatewayBlockEntityRenderer",
+        "javap:net.minecraft.client.render.block.entity.AbstractEndPortalBlockEntityRenderer",
+        "javap:net.minecraft.world.gen.feature.EndGatewayFeature"
+      ],
+      "state_selector": {}
+    },
+    {
+      "candidate_membership": {
+        "coarse-family": "coarse.emissive_effect",
+        "fine-family": "fine.animated_flame",
+        "surface-family": "surface.flame_effect"
+      },
+      "canonical_block_name": "minecraft:fire",
+      "canonical_state_population_complete": false,
+      "derivation": "source-supported candidate; not an accepted perceptual equivalence class",
+      "profile_reachability": "active-End spike fire callback witness; exact state closure unproven",
+      "rationale": [
+        "CUTOUT multipart flame geometry and animated fire textures."
+      ],
+      "rule_identity": "witness-animated_flame",
+      "source_references": [
+        "mojang_client:assets/minecraft/blockstates/fire.json",
+        "mojang_client:assets/minecraft/textures/block/fire_0.png",
+        "mojang_client:assets/minecraft/textures/block/fire_0.png.mcmeta",
+        "javap:net.minecraft.client.render.BlockRenderLayers",
+        "javap:net.minecraft.world.gen.feature.EndSpikeFeature"
+      ],
+      "state_selector": {
+        "age": "not enumerated",
+        "directional_properties": "not enumerated"
+      }
+    },
+    {
+      "candidate_membership": {
+        "coarse-family": "coarse.metal",
+        "fine-family": "fine.thin_metal",
+        "surface-family": "surface.thin_metal"
+      },
+      "canonical_block_name": "minecraft:iron_bars",
+      "canonical_state_population_complete": false,
+      "derivation": "source-supported candidate; not an accepted perceptual equivalence class",
+      "profile_reachability": "active-End spike connection-state write witness; waterlogged feasibility unproven",
+      "rationale": [
+        "Connection-sensitive thin geometry, gray texture and CUTOUT layer. Waterlogged behavior is separate from this witness classification."
+      ],
+      "rule_identity": "witness-thin_metal",
+      "source_references": [
+        "mojang_client:assets/minecraft/blockstates/iron_bars.json",
+        "mojang_client:assets/minecraft/models/block/iron_bars_side.json",
+        "mojang_client:assets/minecraft/textures/block/iron_bars.png",
+        "javap:net.minecraft.client.render.BlockRenderLayers",
+        "javap:net.minecraft.world.gen.feature.EndSpikeFeature",
+        "javap:net.minecraft.block.PaneBlock"
+      ],
+      "state_selector": {
+        "connections": "not enumerated",
+        "waterlogged": "not enumerated"
+      }
+    },
+    {
+      "candidate_membership": {
+        "coarse-family": "coarse.emissive_effect",
+        "fine-family": "fine.torch_fixture",
+        "surface-family": "surface.torch_fixture"
+      },
+      "canonical_block_name": "minecraft:wall_torch",
+      "canonical_state_population_complete": false,
+      "derivation": "source-supported candidate; not an accepted perceptual equivalence class",
+      "profile_reachability": "End podium source write witness; active first-player event boundary unresolved",
+      "rationale": [
+        "Wall-oriented thin torch model and CUTOUT layer. Its small fixture is distinct from animated flame geometry."
+      ],
+      "rule_identity": "witness-torch_fixture",
+      "source_references": [
+        "mojang_client:assets/minecraft/blockstates/wall_torch.json",
+        "mojang_client:assets/minecraft/models/block/wall_torch.json",
+        "mojang_client:assets/minecraft/textures/block/torch.png",
+        "javap:net.minecraft.client.render.BlockRenderLayers",
+        "javap:net.minecraft.world.gen.feature.EndPortalFeature"
+      ],
+      "state_selector": {
+        "facing": [
+          "east",
+          "north",
+          "south",
+          "west"
+        ]
+      }
+    },
+    {
+      "candidate_membership": {
+        "coarse-family": "coarse.snow",
+        "fine-family": "fine.snow",
+        "surface-family": "surface.snow"
+      },
+      "canonical_block_name": "minecraft:snow",
+      "canonical_state_population_complete": false,
+      "derivation": "source-supported candidate; not an accepted perceptual equivalence class",
+      "profile_reachability": "Overworld control; legacy #26 membership exists, active frozen closure unproven",
+      "rationale": [
+        "White snow texture; variants select model heights 2 through 16. Geometry remains observable even if material family is shared."
+      ],
+      "rule_identity": "witness-snow",
+      "source_references": [
+        "mojang_client:assets/minecraft/blockstates/snow.json",
+        "mojang_client:assets/minecraft/textures/block/snow.png",
+        "mojang_client:assets/minecraft/models/block/snow_height2.json",
+        "mojang_client:assets/minecraft/models/block/snow_block.json",
+        "javap:net.minecraft.block.SnowBlock"
+      ],
+      "state_selector": {
+        "layers": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8
+        ]
+      }
+    },
+    {
+      "candidate_membership": {
+        "coarse-family": "coarse.snow",
+        "fine-family": "fine.snow",
+        "surface-family": "surface.snow"
+      },
+      "canonical_block_name": "minecraft:snow_block",
+      "canonical_state_population_complete": false,
+      "derivation": "source-supported candidate; not an accepted perceptual equivalence class",
+      "profile_reachability": "Overworld control; legacy #26 membership exists, active frozen closure unproven",
+      "rationale": [
+        "Shares snow texture; full cube geometry. Required snow-vs-ice coarse separation preserved."
+      ],
+      "rule_identity": "witness-snow",
+      "source_references": [
+        "mojang_client:assets/minecraft/models/block/snow_block.json",
+        "mojang_client:assets/minecraft/textures/block/snow.png"
+      ],
+      "state_selector": {}
+    },
+    {
+      "candidate_membership": {
+        "coarse-family": "coarse.ice",
+        "fine-family": "fine.translucent_ice",
+        "surface-family": "surface.translucent_ice"
+      },
+      "canonical_block_name": "minecraft:ice",
+      "canonical_state_population_complete": false,
+      "derivation": "source-supported candidate; not an accepted perceptual equivalence class",
+      "profile_reachability": "Overworld control; legacy #26 membership exists, active frozen closure unproven",
+      "rationale": [
+        "Blue-white texture and explicit TRANSLUCENT layer; visually inspected against snow."
+      ],
+      "rule_identity": "witness-translucent_ice",
+      "source_references": [
+        "mojang_client:assets/minecraft/models/block/ice.json",
+        "mojang_client:assets/minecraft/textures/block/ice.png",
+        "javap:net.minecraft.client.render.BlockRenderLayers"
+      ],
+      "state_selector": {}
+    },
+    {
+      "candidate_membership": {
+        "coarse-family": "coarse.ice",
+        "fine-family": "fine.pale_solid_ice",
+        "surface-family": "surface.solid_ice"
+      },
+      "canonical_block_name": "minecraft:packed_ice",
+      "canonical_state_population_complete": false,
+      "derivation": "source-supported candidate; not an accepted perceptual equivalence class",
+      "profile_reachability": "Overworld control; legacy #26 membership exists, active frozen closure unproven",
+      "rationale": [
+        "Ice-colored cube texture; no explicit layer override in pinned BlockRenderLayers, which defaults to SOLID."
+      ],
+      "rule_identity": "witness-pale_solid_ice",
+      "source_references": [
+        "mojang_client:assets/minecraft/models/block/packed_ice.json",
+        "mojang_client:assets/minecraft/textures/block/packed_ice.png",
+        "javap:net.minecraft.client.render.BlockRenderLayers"
+      ],
+      "state_selector": {}
+    },
+    {
+      "candidate_membership": {
+        "coarse-family": "coarse.ice",
+        "fine-family": "fine.blue_solid_ice",
+        "surface-family": "surface.solid_ice"
+      },
+      "canonical_block_name": "minecraft:blue_ice",
+      "canonical_state_population_complete": false,
+      "derivation": "source-supported candidate; not an accepted perceptual equivalence class",
+      "profile_reachability": "Overworld control; legacy #26 membership exists, active frozen closure unproven",
+      "rationale": [
+        "Blue cube texture; no explicit layer override in pinned BlockRenderLayers, which defaults to SOLID. Hue threshold for fine-family separation remains unmeasured."
+      ],
+      "rule_identity": "witness-blue_solid_ice",
+      "source_references": [
+        "mojang_client:assets/minecraft/models/block/blue_ice.json",
+        "mojang_client:assets/minecraft/textures/block/blue_ice.png",
+        "javap:net.minecraft.client.render.BlockRenderLayers"
+      ],
+      "state_selector": {}
+    },
+    {
+      "candidate_membership": {
+        "coarse-family": "coarse.biome_vegetation",
+        "fine-family": "fine.biome_tinted_canopy",
+        "surface-family": "surface.canopy"
+      },
+      "canonical_block_name": "minecraft:oak_leaves",
+      "canonical_state_population_complete": false,
+      "derivation": "source-supported candidate; not an accepted perceptual equivalence class",
+      "profile_reachability": "Overworld control; legacy #26 membership exists, active frozen closure unproven",
+      "rationale": [
+        "Tinted cube faces with alpha-cutout leaf texture; foliage color provider uses biome context. SOLID/CUTOUT selection depends on leaf render configuration. Ground exclusion does not remove material-family membership."
+      ],
+      "rule_identity": "witness-biome_tinted_canopy",
+      "source_references": [
+        "mojang_client:assets/minecraft/models/block/oak_leaves.json",
+        "mojang_client:assets/minecraft/models/block/leaves.json",
+        "mojang_client:assets/minecraft/textures/block/oak_leaves.png",
+        "javap:net.minecraft.client.render.BlockRenderLayers",
+        "javap:net.minecraft.client.color.block.BlockColors",
+        "javap:net.minecraft.block.LeavesBlock"
+      ],
+      "state_selector": {
+        "distance": "not enumerated",
+        "persistent": "not enumerated",
+        "waterlogged": "not enumerated"
+      }
+    },
+    {
+      "candidate_membership": {
+        "coarse-family": "coarse.wood",
+        "fine-family": "fine.bark_wood",
+        "surface-family": "surface.bark_wood"
+      },
+      "canonical_block_name": "minecraft:oak_log",
+      "canonical_state_population_complete": false,
+      "derivation": "source-supported candidate; not an accepted perceptual equivalence class",
+      "profile_reachability": "Overworld control; legacy #26 membership exists, active frozen closure unproven",
+      "rationale": [
+        "Separate bark/end-grain texture slots and axis-rotated cube models. No perceptual wood-species equivalence claim made."
+      ],
+      "rule_identity": "witness-bark_wood",
+      "source_references": [
+        "mojang_client:assets/minecraft/blockstates/oak_log.json",
+        "mojang_client:assets/minecraft/models/block/oak_log.json",
+        "mojang_client:assets/minecraft/textures/block/oak_log.png",
+        "mojang_client:assets/minecraft/textures/block/oak_log_top.png"
+      ],
+      "state_selector": {
+        "axis": [
+          "x",
+          "y",
+          "z"
+        ]
+      }
+    },
+    {
+      "candidate_membership": {
+        "coarse-family": "coarse.biome_vegetation",
+        "fine-family": "fine.biome_tinted_low_vegetation",
+        "surface-family": "surface.low_vegetation"
+      },
+      "canonical_block_name": "minecraft:short_grass",
+      "canonical_state_population_complete": false,
+      "derivation": "source-supported candidate; not an accepted perceptual equivalence class",
+      "profile_reachability": "Overworld control; legacy #26 membership exists, active frozen closure unproven",
+      "rationale": [
+        "Cross geometry with tintindex; CUTOUT layer and grass biome color provider. Shares vegetation ancestry with canopy without equating geometry."
+      ],
+      "rule_identity": "witness-biome_tinted_low_vegetation",
+      "source_references": [
+        "mojang_client:assets/minecraft/models/block/short_grass.json",
+        "mojang_client:assets/minecraft/models/block/tinted_cross.json",
+        "mojang_client:assets/minecraft/textures/block/short_grass.png",
+        "javap:net.minecraft.client.render.BlockRenderLayers",
+        "javap:net.minecraft.client.color.block.BlockColors"
+      ],
+      "state_selector": {}
+    }
+  ],
+  "other_accounting": {
+    "explicit_other_assignments": 0,
+    "implicit_defaults": 0
+  },
+  "revision": "mt38-active-end-witness-1",
+  "schema": "voxygen.material-taxonomy-witness-draft/0",
+  "scope": {
+    "cohort_block_names": [
+      "minecraft:air",
+      "minecraft:bedrock",
+      "minecraft:blue_ice",
+      "minecraft:chorus_flower",
+      "minecraft:chorus_plant",
+      "minecraft:end_gateway",
+      "minecraft:end_stone",
+      "minecraft:fire",
+      "minecraft:ice",
+      "minecraft:iron_bars",
+      "minecraft:oak_leaves",
+      "minecraft:oak_log",
+      "minecraft:obsidian",
+      "minecraft:packed_ice",
+      "minecraft:short_grass",
+      "minecraft:snow",
+      "minecraft:snow_block",
+      "minecraft:wall_torch"
+    ],
+    "full_canonical_states_enumerated": false,
+    "kind": "End source/render witnesses plus Overworld controls",
+    "minecraft_version": "1.21.11",
+    "perceptual_family_assignments_accepted": false,
+    "profile_boundary_frozen": false,
+    "profile_generate_structures": false,
+    "runtime_catalog_is_profile_feasibility": false
+  },
+  "semantic_authorities": {
+    "cms": "cms1/rev1",
+    "fp": "voxygen-fidelity-v1",
+    "lis": "LIS1/rev1",
+    "taxonomy_ticket": 38
+  },
+  "source_capture_sha256": "3314e89619337b8e25377ab8fd2a373e34407ea41932a8c7a04fc9f6a7441a96",
+  "source_population_identity": null,
+  "total_population_classification": false
+}

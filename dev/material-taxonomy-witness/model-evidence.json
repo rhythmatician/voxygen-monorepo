@@ -1,0 +1,1406 @@
+{
+  "mojang_client:assets/minecraft/models/block/air.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [],
+    "local_tint_indices": [],
+    "parent": null,
+    "source_sha256": "2e9529f356eefaf65f6b64592e879df5b854e138a1c203328943282ea314c393",
+    "textures": {
+      "particle": "minecraft:missingno"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/bedrock.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [],
+    "local_tint_indices": [],
+    "parent": "minecraft:block/cube_all",
+    "source_sha256": "82293246971414497dc4b1c4d0b03172d4fd10fa87db5d8fcd4cff6962109ab9",
+    "textures": {
+      "all": "minecraft:block/bedrock"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/bedrock_mirrored.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [],
+    "local_tint_indices": [],
+    "parent": "minecraft:block/cube_mirrored_all",
+    "source_sha256": "050621b0853efd119acd1e6d1dcef329c5b9964f243aeec66825b93d6f32e737",
+    "textures": {
+      "all": "minecraft:block/bedrock"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/block.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [],
+    "local_tint_indices": [],
+    "parent": null,
+    "source_sha256": "212df16c5aa3e6aef3f4d3e080532d28a86cf9b2071618e4ca587ee9ef3c6d09",
+    "textures": {}
+  },
+  "mojang_client:assets/minecraft/models/block/blue_ice.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [],
+    "local_tint_indices": [],
+    "parent": "minecraft:block/cube_all",
+    "source_sha256": "011323005077c0f7264a068eba992f4a2de64f39cd84bcd66ec673e42ab3bab9",
+    "textures": {
+      "all": "minecraft:block/blue_ice"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/chorus_flower.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [],
+    "local_tint_indices": [],
+    "parent": "minecraft:block/template_chorus_flower",
+    "source_sha256": "a15152ba063b465c8306f8fbfdf4208d6cd2af394c8530fc6d59c6e237bbda49",
+    "textures": {
+      "texture": "minecraft:block/chorus_flower"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/chorus_flower_dead.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [],
+    "local_tint_indices": [],
+    "parent": "minecraft:block/template_chorus_flower",
+    "source_sha256": "8bd110d9aeef41c92a5d1b712f6d1192d2bfa7b029d8bc99598db970ac52eaec",
+    "textures": {
+      "texture": "minecraft:block/chorus_flower_dead"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/chorus_plant_noside.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [
+      {
+        "from": [
+          4,
+          4,
+          4
+        ],
+        "to": [
+          12,
+          12,
+          12
+        ]
+      }
+    ],
+    "local_tint_indices": [],
+    "parent": null,
+    "source_sha256": "8f0334563a6e7372b89124cd572af3fb69c435b762629abba0d19bd0ea40bf49",
+    "textures": {
+      "inside": "block/chorus_plant",
+      "particle": "block/chorus_plant",
+      "texture": "block/chorus_plant"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/chorus_plant_noside1.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [
+      {
+        "from": [
+          4,
+          4,
+          4
+        ],
+        "to": [
+          12,
+          12,
+          12
+        ]
+      },
+      {
+        "from": [
+          4,
+          4,
+          3
+        ],
+        "to": [
+          12,
+          12,
+          4
+        ]
+      }
+    ],
+    "local_tint_indices": [],
+    "parent": null,
+    "source_sha256": "065065163a0e877ea6a66d16415a76d9d96db9a4be26b542f370aae922a1ddb1",
+    "textures": {
+      "inside": "block/chorus_plant",
+      "particle": "block/chorus_plant",
+      "texture": "block/chorus_plant"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/chorus_plant_noside2.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [
+      {
+        "from": [
+          4,
+          4,
+          4
+        ],
+        "to": [
+          12,
+          12,
+          12
+        ]
+      },
+      {
+        "from": [
+          5,
+          5,
+          2
+        ],
+        "to": [
+          11,
+          11,
+          4
+        ]
+      }
+    ],
+    "local_tint_indices": [],
+    "parent": null,
+    "source_sha256": "73c56b9b007676d74645adb5e597ad2095df5e0626e1ec103063fb56d87117e9",
+    "textures": {
+      "inside": "block/chorus_plant",
+      "particle": "block/chorus_plant",
+      "texture": "block/chorus_plant"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/chorus_plant_noside3.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [
+      {
+        "from": [
+          4,
+          4,
+          4
+        ],
+        "to": [
+          12,
+          12,
+          12
+        ]
+      },
+      {
+        "from": [
+          4,
+          4,
+          3
+        ],
+        "to": [
+          12,
+          12,
+          4
+        ]
+      }
+    ],
+    "local_tint_indices": [],
+    "parent": null,
+    "source_sha256": "065065163a0e877ea6a66d16415a76d9d96db9a4be26b542f370aae922a1ddb1",
+    "textures": {
+      "inside": "block/chorus_plant",
+      "particle": "block/chorus_plant",
+      "texture": "block/chorus_plant"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/chorus_plant_side.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [
+      {
+        "from": [
+          4,
+          4,
+          0
+        ],
+        "to": [
+          12,
+          12,
+          4
+        ]
+      }
+    ],
+    "local_tint_indices": [],
+    "parent": null,
+    "source_sha256": "29e0d1eb0274acbc27ddcc42aa807c88799620ae08d825ffdcd0d2f2f5aba817",
+    "textures": {
+      "inside": "block/chorus_plant",
+      "particle": "block/chorus_plant",
+      "texture": "block/chorus_plant"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/cube.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [
+      {
+        "from": [
+          0,
+          0,
+          0
+        ],
+        "to": [
+          16,
+          16,
+          16
+        ]
+      }
+    ],
+    "local_tint_indices": [],
+    "parent": "block/block",
+    "source_sha256": "3e4aacd02e816aeba38f83076596e18ded4cf49c01e17c62d1fce79850ffb84e",
+    "textures": {}
+  },
+  "mojang_client:assets/minecraft/models/block/cube_all.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [],
+    "local_tint_indices": [],
+    "parent": "block/cube",
+    "source_sha256": "be3205d629ffb9e03834c3d1d083f8a2c62e9f9ae80820755129408634e9144a",
+    "textures": {
+      "down": "#all",
+      "east": "#all",
+      "north": "#all",
+      "particle": "#all",
+      "south": "#all",
+      "up": "#all",
+      "west": "#all"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/cube_column.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [],
+    "local_tint_indices": [],
+    "parent": "block/cube",
+    "source_sha256": "4cc89841e64bfb9be33aef096675291b585d05bae81cbbd14bf977f89aa81a6b",
+    "textures": {
+      "down": "#end",
+      "east": "#side",
+      "north": "#side",
+      "particle": "#side",
+      "south": "#side",
+      "up": "#end",
+      "west": "#side"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/cube_column_horizontal.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [
+      {
+        "from": [
+          0,
+          0,
+          0
+        ],
+        "to": [
+          16,
+          16,
+          16
+        ]
+      }
+    ],
+    "local_tint_indices": [],
+    "parent": "block/block",
+    "source_sha256": "d93df085677f4003b5785206966a8cd0e2b4ed5b40930cd20278feab01f8af0c",
+    "textures": {
+      "down": "#end",
+      "east": "#side",
+      "north": "#side",
+      "particle": "#side",
+      "south": "#side",
+      "up": "#end",
+      "west": "#side"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/cube_mirrored.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [
+      {
+        "from": [
+          0,
+          0,
+          0
+        ],
+        "to": [
+          16,
+          16,
+          16
+        ]
+      }
+    ],
+    "local_tint_indices": [],
+    "parent": null,
+    "source_sha256": "e0a7b21709196c8641177e68a0a5e2a25d1de8f82e7ece75120dd38ed5d7a0fa",
+    "textures": {}
+  },
+  "mojang_client:assets/minecraft/models/block/cube_mirrored_all.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [],
+    "local_tint_indices": [],
+    "parent": "block/cube_mirrored",
+    "source_sha256": "eb0682e3126d537e8a15af343bc40e32339baa63f4f541143ed969e25e9231e0",
+    "textures": {
+      "down": "#all",
+      "east": "#all",
+      "north": "#all",
+      "particle": "#all",
+      "south": "#all",
+      "up": "#all",
+      "west": "#all"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/end_gateway.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [],
+    "local_tint_indices": [],
+    "parent": null,
+    "source_sha256": "59bf81d9061e28c0a909b3a40d5b1c1793cb95c2320b3ed0568a2230c07f2526",
+    "textures": {
+      "particle": "minecraft:block/obsidian"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/end_stone.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [],
+    "local_tint_indices": [],
+    "parent": "minecraft:block/cube_all",
+    "source_sha256": "ce546037d62c977c5ca9d8a19541fbb31304c284a085c36cd175b0056111b6e6",
+    "textures": {
+      "all": "minecraft:block/end_stone"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/fire_floor0.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [],
+    "local_tint_indices": [],
+    "parent": "minecraft:block/template_fire_floor",
+    "source_sha256": "76afb2def96c3f22bcb6ce025ca5c204cb76c1d42630def8abffb02ad04798d7",
+    "textures": {
+      "fire": "minecraft:block/fire_0"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/fire_floor1.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [],
+    "local_tint_indices": [],
+    "parent": "minecraft:block/template_fire_floor",
+    "source_sha256": "5a3020a6b15dc94c1cee99fd342563c32442020257ea3532e99c1c5b68a89b02",
+    "textures": {
+      "fire": "minecraft:block/fire_1"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/fire_side0.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [],
+    "local_tint_indices": [],
+    "parent": "minecraft:block/template_fire_side",
+    "source_sha256": "597872685914c75788682c57e07effc260b26a5ec5b911f500e89a71781057a6",
+    "textures": {
+      "fire": "minecraft:block/fire_0"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/fire_side1.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [],
+    "local_tint_indices": [],
+    "parent": "minecraft:block/template_fire_side",
+    "source_sha256": "6f9c043e5d09e6bd7a4bb2a5f68449212a3e0b2e89763215a227038bf1c628f5",
+    "textures": {
+      "fire": "minecraft:block/fire_1"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/fire_side_alt0.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [],
+    "local_tint_indices": [],
+    "parent": "minecraft:block/template_fire_side_alt",
+    "source_sha256": "e99069eab4c0e3f0b077c0f11d8b63e9a84abe30544de12ff79cf50ae0c0540d",
+    "textures": {
+      "fire": "minecraft:block/fire_0"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/fire_side_alt1.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [],
+    "local_tint_indices": [],
+    "parent": "minecraft:block/template_fire_side_alt",
+    "source_sha256": "f74c158a13116fc122c9d65f2ea03c3780a69c87c7dffef1b35735f4215a6e36",
+    "textures": {
+      "fire": "minecraft:block/fire_1"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/fire_up0.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [],
+    "local_tint_indices": [],
+    "parent": "minecraft:block/template_fire_up",
+    "source_sha256": "60b2d647abd43cff6432c188fa866dc2631f2a2b4c8853fcfaf4e8418b03c176",
+    "textures": {
+      "fire": "minecraft:block/fire_0"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/fire_up1.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [],
+    "local_tint_indices": [],
+    "parent": "minecraft:block/template_fire_up",
+    "source_sha256": "8a9455d0be7546be9a3cbd3eca167d8ba39e24e79d9e000402c5c9d491259aa6",
+    "textures": {
+      "fire": "minecraft:block/fire_1"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/fire_up_alt0.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [],
+    "local_tint_indices": [],
+    "parent": "minecraft:block/template_fire_up_alt",
+    "source_sha256": "b71983e7a54ef62ddf34958d2b75669e889fc2789c4a7962aa887a86e7363560",
+    "textures": {
+      "fire": "minecraft:block/fire_0"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/fire_up_alt1.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [],
+    "local_tint_indices": [],
+    "parent": "minecraft:block/template_fire_up_alt",
+    "source_sha256": "fe2cf7da5e10c9b54df904560837ad2e42c24d0f606899dc7aa13f92646b5c9d",
+    "textures": {
+      "fire": "minecraft:block/fire_1"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/ice.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [],
+    "local_tint_indices": [],
+    "parent": "minecraft:block/cube_all",
+    "source_sha256": "439747c08c41face491742d1e509959d8c13df46db20310efee8f45952e0db6d",
+    "textures": {
+      "all": "minecraft:block/ice"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/iron_bars_cap.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [],
+    "local_tint_indices": [],
+    "parent": "minecraft:block/template_bars_cap",
+    "source_sha256": "9af0531bb8f90a47f3596f19043d6e038dab8826195bc05eb89aeed40899b93e",
+    "textures": {
+      "bars": "minecraft:block/iron_bars",
+      "edge": "minecraft:block/iron_bars"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/iron_bars_cap_alt.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [],
+    "local_tint_indices": [],
+    "parent": "minecraft:block/template_bars_cap_alt",
+    "source_sha256": "5ffb9b4c904eb3bf98064d94e6b99469a1f88d73aff394e598eee7002db2fb11",
+    "textures": {
+      "bars": "minecraft:block/iron_bars",
+      "edge": "minecraft:block/iron_bars"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/iron_bars_post.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [],
+    "local_tint_indices": [],
+    "parent": "minecraft:block/template_bars_post",
+    "source_sha256": "3d8c5f7611083936f7c554048729f7e42d489e6401891be2404491a407946d6a",
+    "textures": {
+      "bars": "minecraft:block/iron_bars",
+      "edge": "minecraft:block/iron_bars"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/iron_bars_post_ends.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [],
+    "local_tint_indices": [],
+    "parent": "minecraft:block/template_bars_post_ends",
+    "source_sha256": "71c5d582ee3f72b292bc2039ba438d32f2544267bc0365e3b7f931cd083430c0",
+    "textures": {
+      "bars": "minecraft:block/iron_bars",
+      "edge": "minecraft:block/iron_bars"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/iron_bars_side.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [],
+    "local_tint_indices": [],
+    "parent": "minecraft:block/template_bars_side",
+    "source_sha256": "2973b4a3cb94d4a14788997b4d5a2a429a2259f286cbcb8b5b28f04d6dc98d2d",
+    "textures": {
+      "bars": "minecraft:block/iron_bars",
+      "edge": "minecraft:block/iron_bars"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/iron_bars_side_alt.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [],
+    "local_tint_indices": [],
+    "parent": "minecraft:block/template_bars_side_alt",
+    "source_sha256": "d489ebbea6180bbc39d312229532c3960c6c65f37bdff1e766c8eed6ce8d63de",
+    "textures": {
+      "bars": "minecraft:block/iron_bars",
+      "edge": "minecraft:block/iron_bars"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/leaves.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [
+      {
+        "from": [
+          0,
+          0,
+          0
+        ],
+        "to": [
+          16,
+          16,
+          16
+        ]
+      }
+    ],
+    "local_tint_indices": [
+      0
+    ],
+    "parent": "block/block",
+    "source_sha256": "fc181ca88dee45f7f3c606f2cc5158466538fe26f3a9fe40554b3c83093d1d42",
+    "textures": {
+      "particle": "#all"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/oak_leaves.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [],
+    "local_tint_indices": [],
+    "parent": "minecraft:block/leaves",
+    "source_sha256": "204bc27cdfedd3922394c3ed42d7e9ec8cb3091aaa72f9f141920b98f35e9e42",
+    "textures": {
+      "all": "minecraft:block/oak_leaves"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/oak_log.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [],
+    "local_tint_indices": [],
+    "parent": "minecraft:block/cube_column",
+    "source_sha256": "e029dda3262e41fab2ffa265c36ab4db51ab79e726e6d31bd2518d74c0ef9d7e",
+    "textures": {
+      "end": "minecraft:block/oak_log_top",
+      "side": "minecraft:block/oak_log"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/oak_log_horizontal.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [],
+    "local_tint_indices": [],
+    "parent": "minecraft:block/cube_column_horizontal",
+    "source_sha256": "7556a3837c45196dd2b7de401c51170fbb17d63fd488089faa63c3171b346ee7",
+    "textures": {
+      "end": "minecraft:block/oak_log_top",
+      "side": "minecraft:block/oak_log"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/obsidian.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [],
+    "local_tint_indices": [],
+    "parent": "minecraft:block/cube_all",
+    "source_sha256": "947016d370d816f30eeb55b71ee3acec67d0ccbbd735e32f95b7680d9a5c60d7",
+    "textures": {
+      "all": "minecraft:block/obsidian"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/packed_ice.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [],
+    "local_tint_indices": [],
+    "parent": "minecraft:block/cube_all",
+    "source_sha256": "33fb85fc9d768a48a6c19bcf2a8d3bad26bee6f074cbf207771147d42d0e57ba",
+    "textures": {
+      "all": "minecraft:block/packed_ice"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/short_grass.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [],
+    "local_tint_indices": [],
+    "parent": "minecraft:block/tinted_cross",
+    "source_sha256": "5ef3f5aea70d45c58f76dee483e1f40ca93be8aa362c2f5fdf8566366ca3fe8c",
+    "textures": {
+      "cross": "minecraft:block/short_grass"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/snow_block.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [],
+    "local_tint_indices": [],
+    "parent": "minecraft:block/cube_all",
+    "source_sha256": "2693a597b23f10470fcd0046523af081ca3c5e20a55295d232421c192fe2f36b",
+    "textures": {
+      "all": "minecraft:block/snow"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/snow_height10.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [
+      {
+        "from": [
+          0,
+          0,
+          0
+        ],
+        "to": [
+          16,
+          10,
+          16
+        ]
+      }
+    ],
+    "local_tint_indices": [],
+    "parent": null,
+    "source_sha256": "7572b77dd59a5e55b9a995f242f62ad025d86552f8d9179707324d1fba4cd4e8",
+    "textures": {
+      "particle": "block/snow",
+      "texture": "block/snow"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/snow_height12.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [
+      {
+        "from": [
+          0,
+          0,
+          0
+        ],
+        "to": [
+          16,
+          12,
+          16
+        ]
+      }
+    ],
+    "local_tint_indices": [],
+    "parent": null,
+    "source_sha256": "795b4b55ea8c8f26e77d6e3022147428058fc677c9cf02b253d26c80554af945",
+    "textures": {
+      "particle": "block/snow",
+      "texture": "block/snow"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/snow_height14.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [
+      {
+        "from": [
+          0,
+          0,
+          0
+        ],
+        "to": [
+          16,
+          14,
+          16
+        ]
+      }
+    ],
+    "local_tint_indices": [],
+    "parent": null,
+    "source_sha256": "95077c6af1844c1bdca86cdda82ee5c7f1698c048abf7d95a4147ad75cf19039",
+    "textures": {
+      "particle": "block/snow",
+      "texture": "block/snow"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/snow_height2.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [
+      {
+        "from": [
+          0,
+          0,
+          0
+        ],
+        "to": [
+          16,
+          2,
+          16
+        ]
+      }
+    ],
+    "local_tint_indices": [],
+    "parent": "block/thin_block",
+    "source_sha256": "1ad3228902c78428faf5a0648fb2cfe67f3efc6eb8ea918b98fabe85a9479c32",
+    "textures": {
+      "particle": "block/snow",
+      "texture": "block/snow"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/snow_height4.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [
+      {
+        "from": [
+          0,
+          0,
+          0
+        ],
+        "to": [
+          16,
+          4,
+          16
+        ]
+      }
+    ],
+    "local_tint_indices": [],
+    "parent": null,
+    "source_sha256": "2589262a2ba8caa24eb83686233cca630fa35f663cbaeadcfe5f023eb11af072",
+    "textures": {
+      "particle": "block/snow",
+      "texture": "block/snow"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/snow_height6.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [
+      {
+        "from": [
+          0,
+          0,
+          0
+        ],
+        "to": [
+          16,
+          6,
+          16
+        ]
+      }
+    ],
+    "local_tint_indices": [],
+    "parent": null,
+    "source_sha256": "db183c3b0c3e0efed8e12a2661449a4ef9fdb9dd9ba0c64bab6ad1cfdbf5cfe5",
+    "textures": {
+      "particle": "block/snow",
+      "texture": "block/snow"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/snow_height8.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [
+      {
+        "from": [
+          0,
+          0,
+          0
+        ],
+        "to": [
+          16,
+          8,
+          16
+        ]
+      }
+    ],
+    "local_tint_indices": [],
+    "parent": null,
+    "source_sha256": "77236fed0840666eda16c05b9cf0130935610c01a8b20078c8645706b061fc81",
+    "textures": {
+      "particle": "block/snow",
+      "texture": "block/snow"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/template_bars_cap.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [
+      {
+        "from": [
+          8,
+          0,
+          8
+        ],
+        "to": [
+          8,
+          16,
+          9
+        ]
+      },
+      {
+        "from": [
+          7,
+          0,
+          9
+        ],
+        "to": [
+          9,
+          16,
+          9
+        ]
+      }
+    ],
+    "local_tint_indices": [],
+    "parent": null,
+    "source_sha256": "6b2bfa3ebee241d0ce52253178729948bd075e67b97061c5751fff758ba0db1c",
+    "textures": {
+      "particle": "#bars"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/template_bars_cap_alt.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [
+      {
+        "from": [
+          8,
+          0,
+          7
+        ],
+        "to": [
+          8,
+          16,
+          8
+        ]
+      },
+      {
+        "from": [
+          7,
+          0,
+          7
+        ],
+        "to": [
+          9,
+          16,
+          7
+        ]
+      }
+    ],
+    "local_tint_indices": [],
+    "parent": null,
+    "source_sha256": "74f6c3a1733e3b7cb91c160a04dc19adc2921792209dec40c7d48ab9e3fc7f7f",
+    "textures": {
+      "particle": "#bars"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/template_bars_post.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [
+      {
+        "from": [
+          8,
+          0,
+          7
+        ],
+        "to": [
+          8,
+          16,
+          9
+        ]
+      },
+      {
+        "from": [
+          7,
+          0,
+          8
+        ],
+        "to": [
+          9,
+          16,
+          8
+        ]
+      }
+    ],
+    "local_tint_indices": [],
+    "parent": null,
+    "source_sha256": "f6f7db8a965985fc9911e8199fb8f1c97801fa554187690b2bb791c26b2b9b2c",
+    "textures": {
+      "particle": "#bars"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/template_bars_post_ends.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [
+      {
+        "from": [
+          7,
+          0.001,
+          7
+        ],
+        "to": [
+          9,
+          0.001,
+          9
+        ]
+      },
+      {
+        "from": [
+          7,
+          15.999,
+          7
+        ],
+        "to": [
+          9,
+          15.999,
+          9
+        ]
+      }
+    ],
+    "local_tint_indices": [],
+    "parent": null,
+    "source_sha256": "85d9129ef63ace95ed8d1c9683d9ccb46152472fbe5bb5b72dc303328f2c9981",
+    "textures": {
+      "particle": "#bars"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/template_bars_side.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [
+      {
+        "from": [
+          8,
+          0,
+          0
+        ],
+        "to": [
+          8,
+          16,
+          8
+        ]
+      },
+      {
+        "from": [
+          7,
+          0,
+          0
+        ],
+        "to": [
+          9,
+          16,
+          7
+        ]
+      },
+      {
+        "from": [
+          7,
+          0.001,
+          0
+        ],
+        "to": [
+          9,
+          0.001,
+          7
+        ]
+      },
+      {
+        "from": [
+          7,
+          15.999,
+          0
+        ],
+        "to": [
+          9,
+          15.999,
+          7
+        ]
+      }
+    ],
+    "local_tint_indices": [],
+    "parent": null,
+    "source_sha256": "86379cc5e3f7d14ea010955215a2843712ca7240f7d100f85a24e2c4ec1237f2",
+    "textures": {
+      "particle": "#bars"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/template_bars_side_alt.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [
+      {
+        "from": [
+          8,
+          0,
+          8
+        ],
+        "to": [
+          8,
+          16,
+          16
+        ]
+      },
+      {
+        "from": [
+          7,
+          0,
+          9
+        ],
+        "to": [
+          9,
+          16,
+          16
+        ]
+      },
+      {
+        "from": [
+          7,
+          0.001,
+          9
+        ],
+        "to": [
+          9,
+          0.001,
+          16
+        ]
+      },
+      {
+        "from": [
+          7,
+          15.999,
+          9
+        ],
+        "to": [
+          9,
+          15.999,
+          16
+        ]
+      }
+    ],
+    "local_tint_indices": [],
+    "parent": null,
+    "source_sha256": "3f5c039e79e616dcf8ffb6e7a4a44b8a3621ac9f13915993b48ae5691897c6b0",
+    "textures": {
+      "particle": "#bars"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/template_chorus_flower.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [
+      {
+        "from": [
+          2,
+          14,
+          2
+        ],
+        "to": [
+          14,
+          16,
+          14
+        ]
+      },
+      {
+        "from": [
+          0,
+          2,
+          2
+        ],
+        "to": [
+          2,
+          14,
+          14
+        ]
+      },
+      {
+        "from": [
+          2,
+          2,
+          0
+        ],
+        "to": [
+          14,
+          14,
+          2
+        ]
+      },
+      {
+        "from": [
+          2,
+          2,
+          14
+        ],
+        "to": [
+          14,
+          14,
+          16
+        ]
+      },
+      {
+        "from": [
+          14,
+          2,
+          2
+        ],
+        "to": [
+          16,
+          14,
+          14
+        ]
+      },
+      {
+        "from": [
+          2,
+          0,
+          2
+        ],
+        "to": [
+          14,
+          14,
+          14
+        ]
+      }
+    ],
+    "local_tint_indices": [],
+    "parent": "block/block",
+    "source_sha256": "4ef4092a4a21c5015a8de5bef4bc41e98748e07dfbf16a100648944a1962aa35",
+    "textures": {
+      "bottom": "block/chorus_plant",
+      "particle": "#texture"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/template_fire_floor.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [
+      {
+        "from": [
+          0,
+          0,
+          8.8
+        ],
+        "to": [
+          16,
+          22.4,
+          8.8
+        ]
+      },
+      {
+        "from": [
+          0,
+          0,
+          7.2
+        ],
+        "to": [
+          16,
+          22.4,
+          7.2
+        ]
+      },
+      {
+        "from": [
+          8.8,
+          0,
+          0
+        ],
+        "to": [
+          8.8,
+          22.4,
+          16
+        ]
+      },
+      {
+        "from": [
+          7.2,
+          0,
+          0
+        ],
+        "to": [
+          7.2,
+          22.4,
+          16
+        ]
+      }
+    ],
+    "local_tint_indices": [],
+    "parent": null,
+    "source_sha256": "7c6212930b109bacd62090160cd061960d93d6d2d5807b2314509e3e51cb28d2",
+    "textures": {
+      "particle": "#fire"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/template_fire_side.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [
+      {
+        "from": [
+          0,
+          0,
+          0.01
+        ],
+        "to": [
+          16,
+          22.4,
+          0.01
+        ]
+      }
+    ],
+    "local_tint_indices": [],
+    "parent": null,
+    "source_sha256": "a8474297f100cc80da91a79450b1664c2967f63ac00003f2efb40d8963c8bd8d",
+    "textures": {
+      "particle": "#fire"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/template_fire_side_alt.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [
+      {
+        "from": [
+          0,
+          0,
+          0.01
+        ],
+        "to": [
+          16,
+          22.4,
+          0.01
+        ]
+      }
+    ],
+    "local_tint_indices": [],
+    "parent": null,
+    "source_sha256": "ab5d5e7c9592b69ea8b4c6631619311338390a0c806521012915a1abc0c0c7fe",
+    "textures": {
+      "particle": "#fire"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/template_fire_up.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [
+      {
+        "from": [
+          0,
+          16,
+          0
+        ],
+        "to": [
+          16,
+          16,
+          16
+        ]
+      },
+      {
+        "from": [
+          0,
+          16,
+          0
+        ],
+        "to": [
+          16,
+          16,
+          16
+        ]
+      }
+    ],
+    "local_tint_indices": [],
+    "parent": null,
+    "source_sha256": "11b734b9b243d41f8576ce24f8157c9607e53eb2bb8801fc15b9d71af3a0b942",
+    "textures": {
+      "particle": "#fire"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/template_fire_up_alt.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [
+      {
+        "from": [
+          0,
+          16,
+          0
+        ],
+        "to": [
+          16,
+          16,
+          16
+        ]
+      },
+      {
+        "from": [
+          0,
+          16,
+          0
+        ],
+        "to": [
+          16,
+          16,
+          16
+        ]
+      }
+    ],
+    "local_tint_indices": [],
+    "parent": null,
+    "source_sha256": "727c1014d37022d2974758585f1b388f13b4a30af4c98cc76dfb0ee35aab2e68",
+    "textures": {
+      "particle": "#fire"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/template_torch_wall.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [
+      {
+        "from": [
+          -1,
+          3.5,
+          7
+        ],
+        "to": [
+          1,
+          13.5,
+          9
+        ]
+      }
+    ],
+    "local_tint_indices": [],
+    "parent": null,
+    "source_sha256": "9824919342dbaa7ecc59b4fcd0026b423e77987333f59acf10ca8f90f2a74248",
+    "textures": {
+      "particle": "#torch"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/thin_block.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [],
+    "local_tint_indices": [],
+    "parent": "block/block",
+    "source_sha256": "eaf9db8960529736bda0fbfe31c439f1e87c02d48dcab9a769f2f55ba26f5e3f",
+    "textures": {}
+  },
+  "mojang_client:assets/minecraft/models/block/tinted_cross.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [
+      {
+        "from": [
+          0.8,
+          0,
+          8
+        ],
+        "to": [
+          15.2,
+          16,
+          8
+        ]
+      },
+      {
+        "from": [
+          8,
+          0,
+          0.8
+        ],
+        "to": [
+          8,
+          16,
+          15.2
+        ]
+      }
+    ],
+    "local_tint_indices": [
+      0
+    ],
+    "parent": null,
+    "source_sha256": "f3b9e4830f62d4bc38f473700aa6878fb390a8118e0cdbf1e61016630433c1f9",
+    "textures": {
+      "particle": "#cross"
+    }
+  },
+  "mojang_client:assets/minecraft/models/block/wall_torch.json": {
+    "inherited_elements_not_flattened": true,
+    "local_element_bounds": [],
+    "local_tint_indices": [],
+    "parent": "minecraft:block/template_torch_wall",
+    "source_sha256": "e40eb7b4c4bcefec02b611007e5b1acf2c01a174c95b7082af9f8122a3c7ecaa",
+    "textures": {
+      "torch": "minecraft:block/torch"
+    }
+  }
+}

@@ -1,0 +1,308 @@
+{
+  "mojang_client:assets/minecraft/textures/block/bedrock.png": {
+    "alpha_max": 255,
+    "alpha_min": 255,
+    "has_animation_metadata": false,
+    "is_perceptual_equivalence_measure": false,
+    "mean_rgba_encoded_8bit": [
+      85.1172,
+      85.1172,
+      85.1172,
+      255.0
+    ],
+    "size": [
+      16,
+      16
+    ],
+    "source_sha256": "a71e7dce773df8c797506296f58eca840e53ceb3319bc405af7e15e5c25551da"
+  },
+  "mojang_client:assets/minecraft/textures/block/blue_ice.png": {
+    "alpha_max": 255,
+    "alpha_min": 255,
+    "has_animation_metadata": false,
+    "is_perceptual_equivalence_measure": false,
+    "mean_rgba_encoded_8bit": [
+      116.0898,
+      167.6484,
+      253.0156,
+      255.0
+    ],
+    "size": [
+      16,
+      16
+    ],
+    "source_sha256": "6a9e9a3a604a935a6fadbea65434cff7a5677fa4cc3e7abe365d29969309211b"
+  },
+  "mojang_client:assets/minecraft/textures/block/chorus_flower.png": {
+    "alpha_max": 255,
+    "alpha_min": 255,
+    "has_animation_metadata": false,
+    "is_perceptual_equivalence_measure": false,
+    "mean_rgba_encoded_8bit": [
+      151.3359,
+      120.9688,
+      151.7578,
+      255.0
+    ],
+    "size": [
+      16,
+      16
+    ],
+    "source_sha256": "1513916d623ea4d40b351da2524b247b84f3da6ab62d9feb80c93edef3cca7dd"
+  },
+  "mojang_client:assets/minecraft/textures/block/chorus_flower_dead.png": {
+    "alpha_max": 255,
+    "alpha_min": 255,
+    "has_animation_metadata": false,
+    "is_perceptual_equivalence_measure": false,
+    "mean_rgba_encoded_8bit": [
+      96.6289,
+      61.1328,
+      94.5664,
+      255.0
+    ],
+    "size": [
+      16,
+      16
+    ],
+    "source_sha256": "5859b8f5546255ba6bc264d0d2a46851bc5d100446784b094f651aa5c8618abe"
+  },
+  "mojang_client:assets/minecraft/textures/block/chorus_plant.png": {
+    "alpha_max": 255,
+    "alpha_min": 255,
+    "has_animation_metadata": false,
+    "is_perceptual_equivalence_measure": false,
+    "mean_rgba_encoded_8bit": [
+      93.8789,
+      57.0938,
+      93.8086,
+      255.0
+    ],
+    "size": [
+      16,
+      16
+    ],
+    "source_sha256": "a0af7aa83ac49c99d0adc1626ccff7532e4a0bf25a20eead0e7b02f6db86fd3f"
+  },
+  "mojang_client:assets/minecraft/textures/block/end_stone.png": {
+    "alpha_max": 255,
+    "alpha_min": 255,
+    "has_animation_metadata": false,
+    "is_perceptual_equivalence_measure": false,
+    "mean_rgba_encoded_8bit": [
+      219.5039,
+      222.9375,
+      158.3398,
+      255.0
+    ],
+    "size": [
+      16,
+      16
+    ],
+    "source_sha256": "1fd05dbb86e8f49c518cabb82f706b71db6e94f03d9fd2b18f053f8e7a01e498"
+  },
+  "mojang_client:assets/minecraft/textures/block/fire_0.png": {
+    "alpha_max": 255,
+    "alpha_min": 0,
+    "has_animation_metadata": true,
+    "is_perceptual_equivalence_measure": false,
+    "mean_rgba_encoded_8bit": [
+      116.1637,
+      76.9146,
+      29.5034,
+      139.8267
+    ],
+    "size": [
+      16,
+      512
+    ],
+    "source_sha256": "00cd7ff06026f0261b9d8dc4dc492e9e8abebc50b057738d0f3e4a39a3df7a09"
+  },
+  "mojang_client:assets/minecraft/textures/block/fire_1.png": {
+    "alpha_max": 255,
+    "alpha_min": 0,
+    "has_animation_metadata": true,
+    "is_perceptual_equivalence_measure": false,
+    "mean_rgba_encoded_8bit": [
+      121.7773,
+      79.7906,
+      28.6538,
+      147.0172
+    ],
+    "size": [
+      16,
+      512
+    ],
+    "source_sha256": "14f2aff3b724d5c0e015536b591d21735f4954bc04241f34f2fc2cbce2f263ec"
+  },
+  "mojang_client:assets/minecraft/textures/block/ice.png": {
+    "alpha_max": 190,
+    "alpha_min": 190,
+    "has_animation_metadata": false,
+    "is_perceptual_equivalence_measure": false,
+    "mean_rgba_encoded_8bit": [
+      145.7188,
+      183.7617,
+      253.9727,
+      190.0
+    ],
+    "size": [
+      16,
+      16
+    ],
+    "source_sha256": "3049e6ae0c7d0625bb92238e69a520fa2e4f1067f234653b20dc91b1d84b07ad"
+  },
+  "mojang_client:assets/minecraft/textures/block/iron_bars.png": {
+    "alpha_max": 255,
+    "alpha_min": 0,
+    "has_animation_metadata": false,
+    "is_perceptual_equivalence_measure": false,
+    "mean_rgba_encoded_8bit": [
+      62.0078,
+      63.0781,
+      61.4297,
+      115.5469
+    ],
+    "size": [
+      16,
+      16
+    ],
+    "source_sha256": "55c60ab25a9ef48ece153a10f6195cdc890dbb3a1c667362e323e1f8ea08bfce"
+  },
+  "mojang_client:assets/minecraft/textures/block/oak_leaves.png": {
+    "alpha_max": 255,
+    "alpha_min": 0,
+    "has_animation_metadata": true,
+    "is_perceptual_equivalence_measure": false,
+    "mean_rgba_encoded_8bit": [
+      96.9102,
+      96.8477,
+      96.9102,
+      171.3281
+    ],
+    "size": [
+      16,
+      16
+    ],
+    "source_sha256": "69c9c7048695e014aee6b8a2c4cb080607bd7a2a5291c06218b8134cbfcdc04f"
+  },
+  "mojang_client:assets/minecraft/textures/block/oak_log.png": {
+    "alpha_max": 255,
+    "alpha_min": 255,
+    "has_animation_metadata": false,
+    "is_perceptual_equivalence_measure": false,
+    "mean_rgba_encoded_8bit": [
+      109.0938,
+      85.125,
+      50.6875,
+      255.0
+    ],
+    "size": [
+      16,
+      16
+    ],
+    "source_sha256": "61735859c9c9ea82601191a77c6f256d93619cbaf7cad998a3ed5762877a34e6"
+  },
+  "mojang_client:assets/minecraft/textures/block/oak_log_top.png": {
+    "alpha_max": 255,
+    "alpha_min": 255,
+    "has_animation_metadata": false,
+    "is_perceptual_equivalence_measure": false,
+    "mean_rgba_encoded_8bit": [
+      151.4336,
+      121.6484,
+      73.0156,
+      255.0
+    ],
+    "size": [
+      16,
+      16
+    ],
+    "source_sha256": "a520800a833ea0c6214481245ab40397aa0c08b4ffc909046dac266386f9fc01"
+  },
+  "mojang_client:assets/minecraft/textures/block/obsidian.png": {
+    "alpha_max": 255,
+    "alpha_min": 255,
+    "has_animation_metadata": false,
+    "is_perceptual_equivalence_measure": false,
+    "mean_rgba_encoded_8bit": [
+      15.1367,
+      10.6172,
+      24.5508,
+      255.0
+    ],
+    "size": [
+      16,
+      16
+    ],
+    "source_sha256": "d9c7dc812d8e8b995e22caff2b10c1fc663b5e127a94c20a7476cfd88af2cd82"
+  },
+  "mojang_client:assets/minecraft/textures/block/packed_ice.png": {
+    "alpha_max": 255,
+    "alpha_min": 255,
+    "has_animation_metadata": false,
+    "is_perceptual_equivalence_measure": false,
+    "mean_rgba_encoded_8bit": [
+      141.5742,
+      180.0117,
+      250.4922,
+      255.0
+    ],
+    "size": [
+      16,
+      16
+    ],
+    "source_sha256": "c4d8f5f496dc63c9e667178332e855e3bded96a4654510f45aa5c79cc7ef5f48"
+  },
+  "mojang_client:assets/minecraft/textures/block/short_grass.png": {
+    "alpha_max": 255,
+    "alpha_min": 0,
+    "has_animation_metadata": false,
+    "is_perceptual_equivalence_measure": false,
+    "mean_rgba_encoded_8bit": [
+      79.7383,
+      79.5234,
+      79.7383,
+      139.4531
+    ],
+    "size": [
+      16,
+      16
+    ],
+    "source_sha256": "40e2ad5d034d0ffc58b4c496c0badfa2104e0fc1888fc92c5f9bd79dcd84cb20"
+  },
+  "mojang_client:assets/minecraft/textures/block/snow.png": {
+    "alpha_max": 255,
+    "alpha_min": 255,
+    "has_animation_metadata": false,
+    "is_perceptual_equivalence_measure": false,
+    "mean_rgba_encoded_8bit": [
+      249.0195,
+      254.2227,
+      254.2227,
+      255.0
+    ],
+    "size": [
+      16,
+      16
+    ],
+    "source_sha256": "a9ca00fc88b23dce0d8e9ee2677d17e8b760a766dfc96ab4b301112908dc88cf"
+  },
+  "mojang_client:assets/minecraft/textures/block/torch.png": {
+    "alpha_max": 255,
+    "alpha_min": 0,
+    "has_animation_metadata": false,
+    "is_perceptual_equivalence_measure": false,
+    "mean_rgba_encoded_8bit": [
+      10.8477,
+      8.8594,
+      4.9961,
+      19.9219
+    ],
+    "size": [
+      16,
+      16
+    ],
+    "source_sha256": "1e0a18d6a5f4e839f07b3a7cbe2703f98d7db1c65eb1c96e1e575eec61410e16"
+  }
+}

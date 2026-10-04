@@ -1,0 +1,29 @@
+{
+  "acceptance_bindable": false,
+  "ambiguity_groups": 5,
+  "artifact_sha256": "bae1d7dbfb0729ba2a470b8c9b1ce9e4267581c4019ad1dc416415c4bea1bc24",
+  "canonical_state_population_complete": false,
+  "cohort_block_names": 18,
+  "family_candidates": 44,
+  "json_hash_kind": "canonical-json-sorted-indent2-utf8-lf",
+  "lf_crlf_digest_regression": "passed",
+  "membership_candidates": 19,
+  "negative_mutations_rejected": [
+    "missing-source",
+    "broken-hierarchy",
+    "false-binding",
+    "fabricated-registry",
+    "fabricated-profile",
+    "fabricated-population",
+    "adjudicated-family",
+    "zero-binding",
+    "null-completeness",
+    "capture-hash-drift"
+  ],
+  "perceptual_correctness_proven": false,
+  "primary_and_disassembled_entries_verified": 160,
+  "primary_verification_status": "verified",
+  "production_files_written": false,
+  "schema": "voxygen.material-taxonomy-witness-receipt/0",
+  "source_capture_sha256": "3314e89619337b8e25377ab8fd2a373e34407ea41932a8c7a04fc9f6a7441a96"
+}
