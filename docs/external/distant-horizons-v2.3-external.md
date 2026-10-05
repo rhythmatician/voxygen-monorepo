@@ -6,7 +6,7 @@
 > upstream: https://gitlab.com/distant-horizons-team/distant-horizons
 > sanitized-from: `java/.github/copilot-instructions/distant-horizons-integration.md` (347 lines, 37KB, 2026-08-13)
 > research date: 2026-08-17
-> successor: none — Voxygen does not integrate DH; correct distant terrain is defined in `CONTEXT.md` + `docs/adr/0003-correct-distant-terrain.md`; LOD store is Voxy (`docs/reference/upstream/VOXY-FORMAT.md`, `external/voxy`)
+> successor: none — Voxygen does not integrate DH; correct distant terrain is defined in `GLOSSARY.md` + `docs/adr/0003-correct-distant-terrain.md`; LOD store is Voxy (`docs/reference/upstream/VOXY-FORMAT.md`, `external/voxy`)
 > scope: Describes only DH's LOD system, storage, and API as external facts. Not a Voxygen requirement or architecture truth.
 > invalidation rule: If DH API or Voxygen LOD store changes, re-verify against pinned GitLab revision; do not edit to describe different revision.
 

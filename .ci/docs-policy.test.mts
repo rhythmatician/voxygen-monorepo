@@ -57,8 +57,11 @@ describe("R-02 Documentation policy", () => {
     }
   });
 
-  it("admits CONTEXT.md, docs/adr, docs/agents, README, skills, sandcastle, docs/external, upstream refs, INDEX", () => {
-    expect(isAdmitted("CONTEXT.md")).toBe(true);
+  it("admits GLOSSARY.md, docs/adr, docs/agents, README, skills, sandcastle, docs/external, upstream refs, INDEX", () => {
+    expect(isAdmitted("GLOSSARY.md")).toBe(true);
+    expect(isAdmitted("GLOSSARY-MAP.md")).toBe(true);
+    expect(isAdmitted("CONTEXT.md")).toBe(false);
+    expect(isAdmitted("CONTEXT-MAP.md")).toBe(false);
     expect(isAdmitted("docs/adr/0001-foo.md")).toBe(true);
     expect(isAdmitted("docs/agents/documentation.md")).toBe(true);
     expect(isAdmitted("README.md")).toBe(true);

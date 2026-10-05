@@ -56,7 +56,7 @@ The screen-space threshold and budget constants start as named constants owned b
 
 - **Fixed radii per Level** (e.g., L3 within 8 sections, L2 within 4, …): rejected — it hard-codes a view-distance assumption into generation, produces square-ring artifacts, and re-derives badly what screen-space error computes naturally (a voxel's visual relevance depends on distance *and* size *and* viewport).
 - **Port Voxy's GPU traversal shader**: rejected — we need demand selection for a deterministic producer, not render-list building; the CPU-side criterion captures the same geometry at our scale.
-- **Distance-only thresholds without viewport**: rejected — couples selection to an invented "viewing distance" rather than the actual runtime Level-selection geometry (see CONTEXT.md, Training vs Acceptance Observables).
+- **Distance-only thresholds without viewport**: rejected — couples selection to an invented "viewing distance" rather than the actual runtime Level-selection geometry (see GLOSSARY.md, Training vs Acceptance Observables).
 
 ## Consequences
 

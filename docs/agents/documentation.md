@@ -27,9 +27,9 @@ CURRENT_STATUS.md
 INTEGRATION_CHECKLIST.md
 ```
 
-## B. CONTEXT.md owns domain language — and only domain language
+## B. GLOSSARY.md owns domain language
 
-`CONTEXT.md` answers:
+`GLOSSARY.md` answers:
 
 * What does `SectionPos` mean in Voxygen?
 * What does `Level` mean?
@@ -38,7 +38,7 @@ INTEGRATION_CHECKLIST.md
 
 It **MUST NOT** contain: implementation status, file inventories, class inventories, TODOs, plans, implementation instructions, “currently implemented by X”, “planned”, “complete”, detailed algorithms readable from code.
 
-`CONTEXT.md` should be totally devoid of implementation details. It is a glossary and nothing else.
+The Language section of `GLOSSARY.md` should be totally devoid of implementation details. It is a glossary and nothing else. The retained Cross-system terminology section provides supporting definitions; its linked version-bound references own detailed upstream behavior.
 
 ## C. ADRs own architectural rationale
 
@@ -63,7 +63,7 @@ Good:
 ```
 Runtime generation lives under java/.../voxy/.
 Model contracts live under python/voxel_tree/contracts/.
-Canonical terminology is in CONTEXT.md.
+Canonical terminology is in GLOSSARY.md.
 Architectural decisions are in docs/adr/.
 ```
 
@@ -100,7 +100,7 @@ These control the factory and require independent human approval. Ordinary produ
 
 ## H. No duplication
 
-Every fact gets one authoritative home. If something already has a source of truth, link to it. Do not copy the same explanation into README, CONTEXT.md, AGENTS.md, a skill, and an implementation guide.
+Every fact gets one authoritative home. If something already has a source of truth, link to it. Do not copy the same explanation into README, GLOSSARY.md, AGENTS.md, a skill, and an implementation guide.
 
 ## I. The admission test
 
@@ -109,7 +109,7 @@ Before committing prose, answer: *Why can this information not live in code, tes
 | Information | Home |
 |---|---|
 | Current behavior/mechanics | Code/tests/contracts/config |
-| Domain language | `CONTEXT.md` |
+| Domain language | `GLOSSARY.md` |
 | Architectural rationale | ADR |
 | Navigation/onboarding | Thin README/navigation |
 | Documentation authority/traceability index | `docs/INDEX.md` |

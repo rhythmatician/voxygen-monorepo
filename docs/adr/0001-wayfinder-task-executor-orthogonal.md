@@ -60,7 +60,7 @@ No new `hitl-task`/`afk-task` labels. `agent:implement` remains the sole AFK aut
 * Dispatch must allow `wayfinder:research` (remove from FORBIDDEN) but still not dispatch it via Sandcastle — it has no `agent:implement` so it remains ineligible; Sandcastle simply stops misclassifying it as HITL.
 * `wayfinder:task` without `agent:implement` is a valid HITL task, not an error — dispatch ineligibility reason changes to “missing agent:implement” (already the case), not “forbidden type”.
 * Existing open `wayfinder:task` #25/#61/#64 must be given an executor label to be unambiguous (done separately).
-* CONTEXT.md holds the canonical glossary (Wayfinder Task, HITL Task, AFK Task, Research Ticket).
+* GLOSSARY.md holds the canonical glossary (Wayfinder Task, HITL Task, AFK Task, Research Ticket).
 
 ## When to reconsider
 
