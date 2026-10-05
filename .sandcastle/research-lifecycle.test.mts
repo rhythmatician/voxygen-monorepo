@@ -681,7 +681,7 @@ describe("Research lifecycle — behavioral regressions", () => {
     expect(released).toBe(true);
 
     const after = store.get("601")!;
-    // Branch/commit preserved — optional CONTEXT.md commit not deleted
+    // Branch/commit preserved — optional GLOSSARY.md commit not deleted
     expect(simulatedBranchCommits).toEqual(["abc123"]);
     expect(after.commits).toEqual(["abc123"]);
     // Transient claim removed

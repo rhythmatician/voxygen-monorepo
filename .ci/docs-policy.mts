@@ -2,15 +2,15 @@
  * R-02 Documentation policy — deterministic gate.
  * Rejects newly created general-purpose Markdown unless admitted.
  * Admitted classes:
- * - CONTEXT.md, CONTEXT-MAP.md, AGENTS.md, docs/adr/*.md, docs/agents/*.md, README.md (any depth), .muse/skills/** /*.md, .sandcastle/*.md, docs/external/*.md (with provenance), docs/reference/upstream/*.md (with provenance), docs/INDEX.md, docs/FUTURES.md, GLOSSARY.md (legacy exception)
+ * - GLOSSARY.md, GLOSSARY-MAP.md, AGENTS.md, docs/adr/*.md, docs/agents/*.md, README.md (any depth), .muse/skills/** /*.md, .sandcastle/*.md, docs/external/*.md (with provenance), docs/reference/upstream/*.md (with provenance), docs/INDEX.md, docs/FUTURES.md
  * Fail patterns: *IMPLEMENTATION*, *SUMMARY*, *STATUS*, *TODO*, *PLAN*, *HANDOFF*, *DELIVERABLE*, *CHECKLIST*, *ROADMAP*, *PROGRESS*
  * Incremental debt rule for non-admitted existing files: D→PASS, M→PASS only if candidate < base, A→enforce, R→ destination as new
  */
 
 const ADMITTED = [
   /^AGENTS\.md$/,
-  /^CONTEXT\.md$/,
-  /^CONTEXT-MAP\.md$/,
+  /^GLOSSARY\.md$/,
+  /^GLOSSARY-MAP\.md$/,
   /^docs\/adr\/.+\.md$/,
   /^docs\/agents\/.+\.md$/,
   /(^|\/)README\.md$/,
@@ -21,8 +21,6 @@ const ADMITTED = [
   /^docs\/reference\/upstream\/.+\.md$/,
   /^docs\/INDEX\.md$/,
   /^docs\/FUTURES\.md$/,
-  // exception: legacy glossary — narrow factual corrections allowed; prefer CONTEXT.md for new domain language
-  /^GLOSSARY\.md$/,
 ];
 
 const SUSPICIOUS = /IMPLEMENTATION|SUMMARY|STATUS|TODO|PLAN|HANDOFF|DELIVERABLE|CHECKLIST|ROADMAP|PROGRESS/i;
@@ -105,7 +103,7 @@ export function checkFilesWithStatus(
         error:
           `Documentation policy violation: ${f}\nRepository prose may not duplicate implementation state.\n` +
           `Put current mechanics in code/tests/contracts and work state in the GitHub issue/PR. ` +
-          `If this is domain language, update CONTEXT.md. If this records a durable architectural trade-off, create an ADR.`,
+          `If this is domain language, update GLOSSARY.md. If this records a durable architectural trade-off, create an ADR.`,
       });
       continue;
     }
@@ -114,7 +112,7 @@ export function checkFilesWithStatus(
         path: f,
         error:
           `Documentation policy violation: ${f} is not an admitted documentation class.\n` +
-          `Permitted: AGENTS.md, CONTEXT.md, CONTEXT-MAP.md, docs/adr/*.md, docs/agents/*.md, **/README.md, .muse/skills/**/*.md, .sandcastle/*.md, docs/external/*.md and docs/reference/upstream/*.md (with doc-type: external-reference + source-revision), docs/INDEX.md, docs/FUTURES.md, GLOSSARY.md.\n` +
+          `Permitted: AGENTS.md, GLOSSARY.md, GLOSSARY-MAP.md, docs/adr/*.md, docs/agents/*.md, **/README.md, .muse/skills/**/*.md, .sandcastle/*.md, docs/external/*.md and docs/reference/upstream/*.md (with doc-type: external-reference + source-revision), docs/INDEX.md, docs/FUTURES.md.\n` +
           `If this is an ADR, use docs/adr/NNNN-*.md with proper structure.`,
       });
       continue;

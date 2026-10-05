@@ -65,7 +65,7 @@ export function classifyChanges(files: string[]): ChangeClass[] {
   const classes = new Set<ChangeClass>();
   for (const raw of files) {
     const path = normalized(raw);
-    if (/^(README|CONTEXT|GLOSSARY)\.md$|^docs\//.test(path)) classes.add("C0");
+    if (/^(README|GLOSSARY(?:-MAP)?)\.md$|^docs\//.test(path)) classes.add("C0");
     if (/^mod\//.test(path)) classes.add("C1_JAVA");
     if (/^training\//.test(path)) classes.add("C1_PYTHON");
     if (registry.evidencePathRules.some((rule) => rule.changeClass === "C1_FACTORY" && matchesPathSet(path, rule.pathSet))) classes.add("C1_FACTORY");

@@ -368,7 +368,7 @@ export type EligibilityResult = { eligible: true } | { eligible: false; reason: 
  * Requires a substantive nonempty "## Question" section, consistent with
  * current research tickets (e.g., #163 fresh-world-scenario-automation,
  * #86 refinement-topology). No tracer, no implementation contract.
- * See CONTEXT.md “Research Ticket” and ADR 0010 research input contract.
+ * See GLOSSARY.md “Research Ticket” and ADR 0010 research input contract.
  */
 export function validateResearchTicketInput(body: string | undefined): { valid: boolean; reason?: string; code?: string } {
   if (body === undefined || body === null || body.trim().length === 0) {
@@ -464,7 +464,7 @@ export function isResearchEligible(issue: IssueInput): EligibilityResult {
     }
   }
 
-  // Research input contract — per CONTEXT.md Research Ticket and ADR 0010:
+  // Research input contract — per GLOSSARY.md Research Ticket and ADR 0010:
   // Research ticket body must contain a substantive nonempty Question section
   // ("## Question" heading) consistent with current Wayfinder Research tickets
   // (e.g., #163, #86, #68, #66, #37). No tracer required.

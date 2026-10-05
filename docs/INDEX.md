@@ -8,9 +8,9 @@
 
 1. **Code, tests, contracts, configuration** — current behavior and mechanics.
 2. **GitHub Issues / PRs** — requirements and work state.
-3. **`CONTEXT.md`** — canonical domain language.
+3. **[`GLOSSARY.md`, Language](../GLOSSARY.md#language)**, canonical domain language.
 4. **`docs/adr/`** — architectural rationale (accepted ADRs).
-5. **`GLOSSARY.md`** — cross-system term disambiguation (defers to `CONTEXT.md` on conflict).
+5. **[`GLOSSARY.md`, Cross-system terminology](../GLOSSARY.md#cross-system-terminology)**, supporting definitions that defer to the Language section on conflict.
 6. **`docs/reference/upstream/`, `docs/external/`** — version-bound grounding for external systems.
 7. **Historical evidence** — retained historical artifacts and git history.
 
@@ -22,7 +22,7 @@
 
 ### Architecture / specification
 
-* `CONTEXT.md` — domain language only.
+* [`GLOSSARY.md`, Language](../GLOSSARY.md#language), canonical domain language. The cross-system terminology section retains supporting reference definitions.
 * `docs/adr/0001-wayfinder-task-executor-orthogonal.md`
 * `docs/adr/0002-drop-router6-conditioning.md`
 * `docs/adr/0003-correct-distant-terrain.md`

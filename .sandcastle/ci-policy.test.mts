@@ -76,7 +76,7 @@ describe("factory CI policy", () => {
     expect(mayAutonomouslyMerge(files)).toBe(false);
   });
 
-  it.each(["CONTEXT.md", "docs/adr/0003-example.md"])(
+  it.each(["GLOSSARY.md", "docs/adr/0003-example.md"])(
     "prevents a candidate from rewriting accepted normative input %s and using it to justify the same diff",
     (file) => {
       const files = [file];

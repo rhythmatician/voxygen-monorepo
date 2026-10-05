@@ -47,7 +47,7 @@ public final class DimensionSynthesizers {
             throw new UnsupportedOperationException(
                     "Dimension " + dimension + " synthesizer not yet implemented. "
                     + "Needs DimensionGenerationDomain + Fidelity Profile. "
-                    + "See CONTEXT.md:Generation and Worldgen Partition v1.");
+                    + "See GLOSSARY.md:Generation and Worldgen Partition v1.");
         };
     }
 }
