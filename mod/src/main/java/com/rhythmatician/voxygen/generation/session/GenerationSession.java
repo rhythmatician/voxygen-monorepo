@@ -78,6 +78,11 @@ import com.rhythmatician.voxygen.worldgen.WorldNoiseAccess;
  */
 @SuppressWarnings("deprecation")
 public final class GenerationSession {
+    private volatile com.rhythmatician.voxygen.generation.refinement.RefinementView refinementView;
+
+    public void updateRefinementView(com.rhythmatician.voxygen.generation.refinement.RefinementView view) {
+        refinementView = running.get() && !stopRequested.get() ? view : null;
+    }
 
     /** How many sections of Y range to generate (from y=-64 upward). */
     public static final int Y_SECTIONS = 16;  // y sections -4..11 → blocks -64..191
@@ -620,6 +625,7 @@ public final class GenerationSession {
         com.rhythmatician.voxygen.backend.voxy.VoxyNodeRequestRetry.clear();
 
         stopRequested.set(false);
+        refinementView = null;
         positionReady.set(false);
         generatedSections.clear();
         columnContextCache.clear();
@@ -657,6 +663,7 @@ public final class GenerationSession {
      * Stop the service and wait for the worker to finish.
      */
     public void stop() {
+        refinementView = null;
         if (!running.get()) return;
 
         stopRequested.set(true);
@@ -2026,7 +2033,7 @@ public final class GenerationSession {
             EndRefinement.StepResult step = refinement.advance(new EndRefinement.Frame(
                     System.currentTimeMillis(),
                     new SectionPos(playerSectionX, playerSectionY, playerSectionZ),
-                    cachedEndL4HorizonTargets(), false));
+                    cachedEndL4HorizonTargets(), false, refinementView));
             EndRefinement.Snapshot currentSnapshot = refinement.snapshot();
             maybeEmitTracerTerminal(currentSnapshot);
             if (step.status() == EndRefinement.StepResult.Status.IDLE) {
@@ -2051,7 +2058,8 @@ public final class GenerationSession {
                         w, s, f, currentSnapshot.refinement().executing(),
                         "H " + currentSnapshot.horizon().compact()
                                 + " R " + currentSnapshot.refinement().compact(),
-                        currentSnapshot.lifecycle(), exactL1Sampling.compact());
+                        currentSnapshot.lifecycle() + " view=" + currentSnapshot.visualSelection().compact(),
+                        exactL1Sampling.compact());
                 lastProgressLogMs = now;
             }
         }

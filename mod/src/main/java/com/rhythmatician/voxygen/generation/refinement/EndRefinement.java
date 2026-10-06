@@ -31,7 +31,11 @@ public interface EndRefinement {
     }
 
     public record Frame(long monotonicMillis, SectionPos playerSection,
-                 List<SectionPos> horizonTargets, boolean stopped) {
+                 List<SectionPos> horizonTargets, boolean stopped, RefinementView view) {
+        public Frame(long monotonicMillis, SectionPos playerSection,
+                     List<SectionPos> horizonTargets, boolean stopped) {
+            this(monotonicMillis, playerSection, horizonTargets, stopped, null);
+        }
         public Frame {
             if (playerSection == null || horizonTargets == null) {
                 throw new NullPointerException("frame positions");
@@ -68,5 +72,11 @@ public interface EndRefinement {
                     long vanillaCoveredChildren, long retryableChildren,
                     long exhaustedChildren,
                     InitialHorizonSummary initialHorizon,
-                    String lifecycle) {}
+                    String lifecycle, VisualSelectionSummary visualSelection) {}
+
+    record VisualSelectionSummary(long considered, long admitted, long frustumRejected) {
+        public String compact() {
+            return "considered=" + considered + "/admitted=" + admitted + "/frustumRejected=" + frustumRejected;
+        }
+    }
 }

@@ -202,6 +202,10 @@ public final class DefaultEndRefinement implements EndRefinement {
     private long refinementSkipped;
     private long lastSelectionMillis;
     private SectionPos lastSelectionPlayer;
+    private RefinementView lastSelectionView;
+    private long visualConsidered;
+    private long visualAdmitted;
+    private long visualFrustumRejected;
     private boolean stopped;
     private long epoch;
 
@@ -605,14 +609,19 @@ public final class DefaultEndRefinement implements EndRefinement {
     }
 
     private void admitSelectionIfDue(Frame frame) {
+        RefinementView view = frame.view() != null && frame.view().usable(frame.monotonicMillis())
+                ? frame.view() : null;
+        boolean viewChanged = view == null ? lastSelectionView != null
+                : !view.sameGeometry(lastSelectionView);
         boolean moved = lastSelectionPlayer == null
                 || frame.playerSection().x() != lastSelectionPlayer.x()
                 || frame.playerSection().z() != lastSelectionPlayer.z();
         boolean elapsed = lastSelectionMillis == 0
                 || frame.monotonicMillis() - lastSelectionMillis >= config.selectionIntervalMillis();
-        if (!moved && !elapsed) return;
+        if (!moved && !elapsed && !viewChanged) return;
         lastSelectionMillis = frame.monotonicMillis();
         lastSelectionPlayer = frame.playerSection();
+        lastSelectionView = view;
         int visualOutstanding = 0;
         for (ParentState state : parents.values()) {
             if (state.urgency == Urgency.VISUAL) {
@@ -622,9 +631,12 @@ public final class DefaultEndRefinement implements EndRefinement {
         int capacity = Math.min(config.selectionBudget(),
                 Math.max(0, config.visualWorkingSet() - visualOutstanding));
         if (capacity == 0) return;
-        double camX = WorldSectionCoord.sectionToBlockMin(frame.playerSection().x()) + 8.0;
-        double camY = WorldSectionCoord.sectionToBlockMin(frame.playerSection().y()) + 8.0;
-        double camZ = WorldSectionCoord.sectionToBlockMin(frame.playerSection().z()) + 8.0;
+        double camX = view != null ? view.cameraX()
+                : WorldSectionCoord.sectionToBlockMin(frame.playerSection().x()) + 8.0;
+        double camY = view != null ? view.cameraY()
+                : WorldSectionCoord.sectionToBlockMin(frame.playerSection().y()) + 8.0;
+        double camZ = view != null ? view.cameraZ()
+                : WorldSectionCoord.sectionToBlockMin(frame.playerSection().z()) + 8.0;
         List<RefinementDemandSelector.Emission> selected = RefinementDemandSelector.select(
                 new RefinementDemandSelector.Params(camX, camY, camZ,
                         config.focalPx(), config.subdivisionPx(), Level.L0.value(),
@@ -640,7 +652,14 @@ public final class DefaultEndRefinement implements EndRefinement {
                     clearRetryState(state, 0xFF);
                 }
                 case FRONTIER -> frontier.add(emission);
-                case ORDINARY -> ordinary.add(emission);
+                case ORDINARY -> {
+                    visualConsidered++;
+                    if (view != null && !view.intersects(key.level(), key.origin())) {
+                        visualFrustumRejected++;
+                    } else {
+                        ordinary.add(emission);
+                    }
+                }
             }
         }
         int admitted = 0;
@@ -650,7 +669,10 @@ public final class DefaultEndRefinement implements EndRefinement {
             ParentKey key = fromSelector(emission.request());
             Urgency urgency = occupancy.relation(cell(key))
                     == VanillaOccupancyPyramid.Relation.FRONTIER ? Urgency.FRONTIER : Urgency.VISUAL;
-            if (admit(key, emission.demandedChildMask(), urgency, emission.distBlocks())) admitted++;
+            if (admit(key, emission.demandedChildMask(), urgency, emission.distBlocks())) {
+                admitted++;
+                if (urgency == Urgency.VISUAL) visualAdmitted++;
+            }
         }
     }
 
@@ -840,7 +862,8 @@ public final class DefaultEndRefinement implements EndRefinement {
                         initialHorizonTargets == null ? 0 : initialHorizonTargets.size(),
                         initialTerminal, initialWritten, initialExisting,
                         initialEmpty, initialFailed),
-                lifecycle.compact());
+                lifecycle.compact(), new VisualSelectionSummary(
+                        visualConsidered, visualAdmitted, visualFrustumRejected));
     }
 
     private void reset() {
@@ -856,6 +879,8 @@ public final class DefaultEndRefinement implements EndRefinement {
         lifecycle.reset();
         lastSelectionMillis = 0;
         lastSelectionPlayer = null;
+        lastSelectionView = null;
+        visualConsidered = visualAdmitted = visualFrustumRejected = 0;
         horizonDispatchesSinceRefinement = 0;
         horizonAdmitted = horizonCompleted = horizonFailed = horizonSkipped = 0;
         refinementAdmitted = refinementCompleted = refinementFailed = refinementSkipped = 0;
